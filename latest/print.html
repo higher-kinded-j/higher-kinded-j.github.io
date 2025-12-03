@@ -6344,6 +6344,342 @@ Kind2&lt;EitherKind2.Witness, ApiError, ApiResponse&gt; apiResult =
 }
 
 </style>
+<h1 id="natural-transformation"><a class="header" href="#natural-transformation">Natural Transformation</a></h1>
+<h2 id="polymorphic-functions-between-type-constructors"><a class="header" href="#polymorphic-functions-between-type-constructors"><em>Polymorphic Functions Between Type Constructors</em></a></h2>
+<div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
+<div class="admonition-title">
+<div id="admonition-what-youll-learn-title">
+<p>What You'll Learn</p>
+</div>
+<a class="admonition-anchor-link" href="functional/natural_transformation.html#admonition-what-youll-learn"></a>
+</div>
+<div>
+<ul>
+<li>What natural transformations are and why they matter</li>
+<li>How to transform between different computational contexts</li>
+<li>The naturality law and why it ensures correctness</li>
+<li>Composing natural transformations</li>
+<li>Using natural transformations with Free monads</li>
+<li>Converting between types like Maybe, List, and Either</li>
+</ul>
+</div>
+</div>
+<div id="admonition-see-example-code" class="admonition admonish-example" role="note" aria-labelledby="admonition-see-example-code-title">
+<div class="admonition-title">
+<div id="admonition-see-example-code-title">
+<p>See Example Code</p>
+</div>
+<a class="admonition-anchor-link" href="functional/natural_transformation.html#admonition-see-example-code"></a>
+</div>
+<div>
+<ul>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/NaturalTest.java">NaturalTest.java</a> - Comprehensive test suite</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/natural/NaturalTransformationExample.java">NaturalTransformationExample.java</a> - Practical examples</li>
+</ul>
+</div>
+</div>
+<div id="admonition-further-reading" class="admonition admonish-tip" role="note" aria-labelledby="admonition-further-reading-title">
+<div class="admonition-title">
+<div id="admonition-further-reading-title">
+<p>Further Reading</p>
+</div>
+<a class="admonition-anchor-link" href="functional/natural_transformation.html#admonition-further-reading"></a>
+</div>
+<div>
+<ul>
+<li><strong>Bartosz Milewski</strong>: <a href="https://bartoszmilewski.com/2015/04/07/natural-transformations/">Natural Transformations</a> - Accessible introduction with diagrams</li>
+<li><strong>Cats Documentation</strong>: <a href="https://typelevel.org/cats/datatypes/functionk.html">FunctionK</a> - Scala's equivalent (called <code>~&gt;</code> or <code>FunctionK</code>)</li>
+<li><strong>Functional Programming in Scala</strong>: Chapter 11 covers natural transformations in the context of Free monads</li>
+</ul>
+</div>
+</div>
+<h2 id="purpose"><a class="header" href="#purpose">Purpose</a></h2>
+<p>In functional programming, we often work with values wrapped in different contexts: <code>Maybe&lt;A&gt;</code>, <code>List&lt;A&gt;</code>, <code>Either&lt;E, A&gt;</code>, <code>IO&lt;A&gt;</code>, and so on. Sometimes we need to convert between these contexts whilst preserving the value inside.</p>
+<p>A <strong>natural transformation</strong> is a polymorphic function that converts from one type constructor to another:</p>
+<pre><code>F[A] ────Natural&lt;F, G&gt;────&gt; G[A]
+</code></pre>
+<p>The key insight is that this transformation works for <strong>any</strong> type <code>A</code>. It transforms the "container" without knowing or caring about what's inside.</p>
+<h3 id="everyday-examples"><a class="header" href="#everyday-examples">Everyday Examples</a></h3>
+<p>You've likely encountered natural transformations without realising it:</p>
+<div class="table-wrapper"><table><thead><tr><th>From</th><th>To</th><th>Transformation</th></tr></thead><tbody>
+<tr><td><code>Maybe&lt;A&gt;</code></td><td><code>List&lt;A&gt;</code></td><td>Nothing becomes <code>[]</code>, Just(x) becomes <code>[x]</code></td></tr>
+<tr><td><code>List&lt;A&gt;</code></td><td><code>Maybe&lt;A&gt;</code></td><td>Take the head element (if any)</td></tr>
+<tr><td><code>Either&lt;E, A&gt;</code></td><td><code>Maybe&lt;A&gt;</code></td><td>Left becomes Nothing, Right(x) becomes Just(x)</td></tr>
+<tr><td><code>Try&lt;A&gt;</code></td><td><code>Either&lt;Throwable, A&gt;</code></td><td>Success/Failure maps to Right/Left</td></tr>
+</tbody></table>
+</div>
+<h2 id="core-interface"><a class="header" href="#core-interface">Core Interface</a></h2>
+<p>The <code>Natural&lt;F, G&gt;</code> interface in Higher-Kinded-J is straightforward:</p>
+<pre><code class="language-java">@FunctionalInterface
+public interface Natural&lt;F, G&gt; {
+
+    /**
+     * Applies this natural transformation to convert a value in context F to context G.
+     */
+    &lt;A&gt; Kind&lt;G, A&gt; apply(Kind&lt;F, A&gt; fa);
+
+    /**
+     * Composes this transformation with another: F ~&gt; G ~&gt; H becomes F ~&gt; H
+     */
+    default &lt;H&gt; Natural&lt;F, H&gt; andThen(Natural&lt;G, H&gt; after);
+
+    /**
+     * Composes another transformation before this one: E ~&gt; F ~&gt; G becomes E ~&gt; G
+     */
+    default &lt;E&gt; Natural&lt;E, G&gt; compose(Natural&lt;E, F&gt; before);
+
+    /**
+     * Returns the identity transformation: F ~&gt; F
+     */
+    static &lt;F&gt; Natural&lt;F, F&gt; identity();
+}
+</code></pre>
+<p>The <code>@FunctionalInterface</code> annotation means you can implement natural transformations using lambda expressions.</p>
+<h2 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h2>
+<h3 id="example-1-maybe-to-list"><a class="header" href="#example-1-maybe-to-list">Example 1: Maybe to List</a></h3>
+<p>Converting a <code>Maybe</code> to a <code>List</code> is a classic natural transformation:</p>
+<pre><code class="language-java">import static org.higherkindedj.hkt.maybe.MaybeKindHelper.MAYBE;
+import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
+
+Natural&lt;MaybeKind.Witness, ListKind.Witness&gt; maybeToList = new Natural&lt;&gt;() {
+    @Override
+    public &lt;A&gt; Kind&lt;ListKind.Witness, A&gt; apply(Kind&lt;MaybeKind.Witness, A&gt; fa) {
+        Maybe&lt;A&gt; maybe = MAYBE.narrow(fa);
+        List&lt;A&gt; list = maybe.fold(
+            () -&gt; List.of(),           // Nothing -&gt; empty list
+            value -&gt; List.of(value)    // Just(x) -&gt; singleton list
+        );
+        return LIST.widen(list);
+    }
+};
+
+// Usage
+Kind&lt;MaybeKind.Witness, String&gt; maybeValue = MAYBE.widen(Maybe.just("hello"));
+Kind&lt;ListKind.Witness, String&gt; listValue = maybeToList.apply(maybeValue);
+// Result: List containing "hello"
+</code></pre>
+<h3 id="example-2-either-to-maybe"><a class="header" href="#example-2-either-to-maybe">Example 2: Either to Maybe</a></h3>
+<p>Discarding the error information from an <code>Either</code>:</p>
+<pre><code class="language-java">Natural&lt;EitherKind.Witness&lt;String&gt;, MaybeKind.Witness&gt; eitherToMaybe = new Natural&lt;&gt;() {
+    @Override
+    public &lt;A&gt; Kind&lt;MaybeKind.Witness, A&gt; apply(Kind&lt;EitherKind.Witness&lt;String&gt;, A&gt; fa) {
+        Either&lt;String, A&gt; either = EITHER.&lt;String, A&gt;narrow(fa);
+        return MAYBE.widen(
+            either.fold(
+                left -&gt; Maybe.nothing(),
+                Maybe::just
+            )
+        );
+    }
+};
+</code></pre>
+<h3 id="example-3-list-head"><a class="header" href="#example-3-list-head">Example 3: List Head</a></h3>
+<p>Getting the first element of a list (if any):</p>
+<pre><code class="language-java">Natural&lt;ListKind.Witness, MaybeKind.Witness&gt; listHead = new Natural&lt;&gt;() {
+    @Override
+    public &lt;A&gt; Kind&lt;MaybeKind.Witness, A&gt; apply(Kind&lt;ListKind.Witness, A&gt; fa) {
+        List&lt;A&gt; list = LIST.narrow(fa);
+        return MAYBE.widen(
+            list.isEmpty()
+                ? Maybe.nothing()
+                : Maybe.just(list.get(0))
+        );
+    }
+};
+</code></pre>
+<h2 id="the-naturality-law"><a class="header" href="#the-naturality-law">The Naturality Law</a></h2>
+<p>For a transformation to be truly "natural", it must satisfy the <strong>naturality law</strong>:</p>
+<pre><code>For any function f: A -&gt; B and any value fa: F[A]
+nat.apply(functor.map(f, fa)) == functor.map(f, nat.apply(fa))
+</code></pre>
+<p>In plain terms: it doesn't matter whether you map first then transform, or transform first then map. The diagram commutes:</p>
+<pre><code>         map(f)
+  F[A] ─────────&gt; F[B]
+    │               │
+nat │               │ nat
+    ↓               ↓
+  G[A] ─────────&gt; G[B]
+         map(f)
+</code></pre>
+<h3 id="why-this-matters-1"><a class="header" href="#why-this-matters-1">Why This Matters</a></h3>
+<p>The naturality law ensures that your transformation is <strong>structure-preserving</strong>. It doesn't peek inside the values or behave differently based on what type <code>A</code> is. This makes natural transformations predictable and composable.</p>
+<div id="admonition-violating-the-naturality-law" class="admonition admonish-warning" role="note" aria-labelledby="admonition-violating-the-naturality-law-title">
+<div class="admonition-title">
+<div id="admonition-violating-the-naturality-law-title">
+<p>Violating the Naturality Law</p>
+</div>
+<a class="admonition-anchor-link" href="functional/natural_transformation.html#admonition-violating-the-naturality-law"></a>
+</div>
+<div>
+<p>A transformation that inspects the type of <code>A</code> or behaves inconsistently would violate naturality. For example, a "transformation" that converts <code>List&lt;Integer&gt;</code> differently from <code>List&lt;String&gt;</code> is not a natural transformation.</p>
+</div>
+</div>
+<h2 id="composition"><a class="header" href="#composition">Composition</a></h2>
+<p>Natural transformations compose beautifully. Given:</p>
+<ul>
+<li><code>nat1: F ~&gt; G</code></li>
+<li><code>nat2: G ~&gt; H</code></li>
+</ul>
+<p>You can create <code>F ~&gt; H</code>:</p>
+<pre><code class="language-java">Natural&lt;F, G&gt; maybeToEither = ...;
+Natural&lt;G, H&gt; eitherToIO = ...;
+
+// Compose to get Maybe ~&gt; IO
+Natural&lt;F, H&gt; maybeToIO = maybeToEither.andThen(eitherToIO);
+</code></pre>
+<p>Composition is <strong>associative</strong>:</p>
+<pre><code class="language-java">// These are equivalent:
+(f.andThen(g)).andThen(h)
+f.andThen(g.andThen(h))
+</code></pre>
+<h2 id="use-with-free-monads"><a class="header" href="#use-with-free-monads">Use with Free Monads</a></h2>
+<p>The most common use case for natural transformations is <strong>interpreting Free monads</strong>. A Free monad program is built from an instruction set <code>F</code>, and a natural transformation <code>F ~&gt; M</code> interprets those instructions into a target monad <code>M</code>.</p>
+<pre><code class="language-java">// Define DSL instructions
+sealed interface ConsoleOp&lt;A&gt; {
+    record PrintLine(String text) implements ConsoleOp&lt;Unit&gt; {}
+    record ReadLine() implements ConsoleOp&lt;String&gt; {}
+}
+
+// Interpreter as natural transformation: ConsoleOp ~&gt; IO
+Natural&lt;ConsoleOpKind.Witness, IOKind.Witness&gt; interpreter = new Natural&lt;&gt;() {
+    @Override
+    public &lt;A&gt; Kind&lt;IOKind.Witness, A&gt; apply(Kind&lt;ConsoleOpKind.Witness, A&gt; fa) {
+        ConsoleOp&lt;A&gt; op = CONSOLE_OP.narrow(fa);
+        return switch (op) {
+            case ConsoleOp.PrintLine p -&gt; IO.widen(IO.of(() -&gt; {
+                System.out.println(p.text());
+                return (A) Unit.INSTANCE;
+            }));
+            case ConsoleOp.ReadLine r -&gt; IO.widen(IO.of(() -&gt; {
+                return (A) scanner.nextLine();
+            }));
+        };
+    }
+};
+
+// Use with Free monad's foldMap
+Free&lt;ConsoleOpKind.Witness, String&gt; program = ...;
+Kind&lt;IOKind.Witness, String&gt; executable = program.foldMap(interpreter, ioMonad);
+</code></pre>
+<div id="admonition-see-also" class="admonition admonish-note" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="functional/natural_transformation.html#admonition-see-also"></a>
+</div>
+<div>
+<p>For a complete guide to building DSLs with Free monads and natural transformations, see the <a href="functional/../monads/free_monad.html">Free Monad</a> documentation.</p>
+</div>
+</div>
+<h2 id="identity-transformation"><a class="header" href="#identity-transformation">Identity Transformation</a></h2>
+<p>The identity natural transformation returns its input unchanged:</p>
+<pre><code class="language-java">Natural&lt;F, F&gt; id = Natural.identity();
+// id.apply(fa) == fa for all fa
+</code></pre>
+<p>This satisfies the identity laws for composition:</p>
+<pre><code class="language-java">// Left identity
+Natural.identity().andThen(nat) == nat
+
+// Right identity
+nat.andThen(Natural.identity()) == nat
+</code></pre>
+<h2 id="relationship-to-other-concepts"><a class="header" href="#relationship-to-other-concepts">Relationship to Other Concepts</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Concept</th><th>Relationship</th></tr></thead><tbody>
+<tr><td><strong>Functor</strong></td><td>Natural transformations operate on Functors; the naturality law involves <code>map</code></td></tr>
+<tr><td><strong>Free Monad</strong></td><td>Interpretation via <code>foldMap</code> uses natural transformations</td></tr>
+<tr><td><strong>Free Applicative</strong></td><td>Interpretation via <code>foldMap</code> also uses natural transformations</td></tr>
+<tr><td><strong>Monad Transformers</strong></td><td><code>lift</code> operations are natural transformations</td></tr>
+<tr><td><strong>Coyoneda</strong></td><td>Lowering from Coyoneda uses a natural transformation internally</td></tr>
+</tbody></table>
+</div>
+<h2 id="when-to-use-natural-transformations"><a class="header" href="#when-to-use-natural-transformations">When to Use Natural Transformations</a></h2>
+<h3 id="good-use-cases"><a class="header" href="#good-use-cases">Good Use Cases</a></h3>
+<ol>
+<li><strong>Free monad/applicative interpretation</strong> - The primary use case</li>
+<li><strong>Type conversions</strong> - Converting between similar container types</li>
+<li><strong>Abstracting over interpreters</strong> - Swapping implementations at runtime</li>
+<li><strong>Monad transformer lifting</strong> - Moving values up the transformer stack</li>
+</ol>
+<h3 id="when-you-might-not-need-them"><a class="header" href="#when-you-might-not-need-them">When You Might Not Need Them</a></h3>
+<p>If you're simply converting a single concrete value (e.g., one specific <code>Maybe&lt;String&gt;</code> to <code>List&lt;String&gt;</code>), you can use regular methods. Natural transformations shine when you need the <strong>polymorphic</strong> behaviour, working uniformly across all types <code>A</code>.</p>
+<h2 id="summary-1"><a class="header" href="#summary-1">Summary</a></h2>
+<p>Natural transformations are polymorphic functions between type constructors that:</p>
+<ul>
+<li>Transform <code>F[A]</code> to <code>G[A]</code> for <strong>any</strong> type <code>A</code></li>
+<li>Preserve structure (satisfy the naturality law)</li>
+<li>Compose associatively</li>
+<li>Form the basis for Free monad interpretation</li>
+<li>Enable clean separation between program description and execution</li>
+</ul>
+<p>They are a fundamental building block in functional programming, particularly when working with effect systems and domain-specific languages.</p>
+<div style="break-before: page; page-break-before: always;"></div><style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
 <h1 id="for-comprehensions"><a class="header" href="#for-comprehensions">For-Comprehensions</a></h1>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
@@ -7681,7 +8017,7 @@ ForIndexed.overIndexed(indexedPlayers, players, idApplicative)
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/either/EitherExample.java">EitherExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose"><a class="header" href="#purpose">Purpose</a></h2>
+<h2 id="purpose-1"><a class="header" href="#purpose-1">Purpose</a></h2>
 <p>The <code>Either&lt;L, R&gt;</code> type represents a value that can be one of two possible types, conventionally denoted as <code>Left</code> and <code>Right</code>. Its primary purpose in functional programming and this library is to provide an explicit, type-safe way to handle computations that can result in either a successful outcome or a specific kind of failure.</p>
 <ul>
 <li><strong><code>Right&lt;L, R&gt;</code></strong>: By convention, represents the <strong>success</strong> case, holding a value of type <code>R</code>.</li>
@@ -8868,7 +9204,7 @@ try{
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/list/ListMonadExample.java">ListMonadExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose-1"><a class="header" href="#purpose-1">Purpose</a></h2>
+<h2 id="purpose-2"><a class="header" href="#purpose-2">Purpose</a></h2>
 <p>The <code>ListMonad</code> in the <code>Higher-Kinded-J</code> library provides a monadic interface for Java's standard <code>java.util.List</code>. It allows developers to work with lists in a more functional style, enabling operations like <code>map</code>, <code>flatMap</code>, and <code>ap</code> (apply) within the higher-kinded type system. This is particularly useful for sequencing operations that produce lists, transforming list elements, and applying functions within a list context, all while integrating with the generic <code>Kind&lt;F, A&gt;</code> abstractions.</p>
 <p>Key benefits include:</p>
 <ul>
@@ -9212,7 +9548,7 @@ public class ListMonadExample {
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/maybe/MaybeExample.java">MaybeExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose-2"><a class="header" href="#purpose-2">Purpose</a></h2>
+<h2 id="purpose-3"><a class="header" href="#purpose-3">Purpose</a></h2>
 <p>How do you handle optional values in Java without falling into the null pointer trap? The <code>Maybe&lt;T&gt;</code> type in Higher-Kinded-J provides an elegant solution: representing a value that might be present (<code>Just&lt;T&gt;</code>) or absent (<code>Nothing&lt;T&gt;</code>), with one crucial guarantee: a <code>Just&lt;T&gt;</code> will never hold null.</p>
 <p>The <code>Maybe&lt;T&gt;</code> type is conceptually similar to <code>java.util.Optional&lt;T&gt;</code> but with a key distinction: a <code>Just&lt;T&gt;</code> is guaranteed to hold a <strong>non-null</strong> value. This strictness helps prevent <code>NullPointerExceptions</code> when a value is asserted to be present. <code>Maybe.fromNullable(T value)</code> or <code>MaybeMonad.of(T value)</code> should be used if the input value could be null, as these will correctly produce a <code>Nothing</code> in such cases.</p>
 <p>The <code>MaybeMonad</code> provides a monadic interface for <code>Maybe</code>, allowing for functional composition and integration with the Higher-Kinded Type (HKT) system. This facilitates chaining operations that may or may not yield a value, propagating the <code>Nothing</code> state automatically.</p>
@@ -9675,7 +10011,7 @@ public static &lt;A, B&gt; Kind&lt;MaybeKind.Witness, B&gt; processData(
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/optional/OptionalExample.java">OptionalExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose-3"><a class="header" href="#purpose-3">Purpose</a></h2>
+<h2 id="purpose-4"><a class="header" href="#purpose-4">Purpose</a></h2>
 <p>The <code>OptionalMonad</code> in the <code>Higher-Kinded-J</code> library provides a monadic interface for Java's standard <code>java.util.Optional&lt;T&gt;</code>. It allows developers to work with <code>Optional</code> values in a more functional and composable style, enabling operations like <code>map</code>, <code>flatMap</code>, and <code>ap</code> (apply) within the higher-kinded type (HKT) system. This is particularly useful for sequencing operations that may or may not produce a value, handling the presence or absence of values gracefully.</p>
 <p>Key benefits include:</p>
 <ul>
@@ -10083,7 +10419,7 @@ public void mapExample() {
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/reader/ReaderExample.java">ReaderExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose-4"><a class="header" href="#purpose-4">Purpose</a></h2>
+<h2 id="purpose-5"><a class="header" href="#purpose-5">Purpose</a></h2>
 <p>The <strong>Reader monad</strong> is a functional programming pattern primarily used for managing dependencies and context propagation in a clean and composable way. Imagine you have multiple functions or components that all need access to some shared, read-only environment, such as:</p>
 <ul>
 <li>Configuration settings (database URLs, API keys, feature flags).</li>
@@ -10449,7 +10785,7 @@ Kind&lt;ReaderKind.Witness&lt;AppConfig&gt;, Unit&gt; getUrlAndLogKey = readerMo
 </ul>
 </div>
 </div>
-<h2 id="purpose-5"><a class="header" href="#purpose-5">Purpose</a></h2>
+<h2 id="purpose-6"><a class="header" href="#purpose-6">Purpose</a></h2>
 <p>State is everywhere in programming: counters increment, configurations update, game characters level up. Yet managing state functionally, without mutation, often feels like fighting the paradigm. The State monad resolves this tension elegantly.</p>
 <p>In many applications, we need to manage computations that involve <strong>state</strong> that changes over time.</p>
 <p>Examples include:</p>
@@ -10892,7 +11228,7 @@ History contains 4 transaction(s):
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/StreamExample.java">StreamExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose-6"><a class="header" href="#purpose-6">Purpose</a></h2>
+<h2 id="purpose-7"><a class="header" href="#purpose-7">Purpose</a></h2>
 <p>The <code>StreamMonad</code> in the <code>Higher-Kinded-J</code> library provides a monadic interface for Java's standard <code>java.util.stream.Stream</code>. It allows developers to work with streams in a functional style, enabling operations like <code>map</code>, <code>flatMap</code>, and <code>ap</code> within the higher-kinded type system. This is particularly useful for processing sequences of data lazily, handling potentially infinite sequences, and composing stream operations in a type-safe manner.</p>
 <p>Key benefits include:</p>
 <ul>
@@ -11841,7 +12177,7 @@ public class TrampolineUtilsExample {
 <p>This design ensures that regardless of how deeply nested the recursive calls were in the original algorithm, the execution happens in constant stack space.</p>
 <h2 id="type-safety-considerations"><a class="header" href="#type-safety-considerations">Type Safety Considerations</a></h2>
 <p>The implementation uses a <code>Continuation</code> wrapper to safely handle heterogeneous types on the continuation stack. This design confines the necessary unsafe cast to a single, controlled location in the code, making the type erasure explicit, documented, and verified to be safe.</p>
-<h2 id="summary-1"><a class="header" href="#summary-1">Summary</a></h2>
+<h2 id="summary-2"><a class="header" href="#summary-2">Summary</a></h2>
 <p>The <code>Trampoline</code> monad provides a practical solution to Java's lack of tail-call optimisation. By converting recursive algorithms into trampolined form, you can:</p>
 <ul>
 <li>Write naturally recursive code that's guaranteed stack-safe</li>
@@ -11968,9 +12304,15 @@ public class TrampolineUtilsExample {
 <li><strong>Cats Documentation</strong>: <a href="https://typelevel.org/cats/datatypes/freemonad.html">Free Monad</a> - Scala implementation and examples</li>
 <li><strong>John A De Goes</strong>: <a href="http://degoes.net/articles/modern-fp-part-2">Modern Functional Programming (Part 2)</a> - Practical applications in real systems</li>
 </ul>
+<p><strong>Related Higher-Kinded-J Documentation:</strong></p>
+<ul>
+<li><a href="monads/../functional/natural_transformation.html">Natural Transformation</a> - Polymorphic functions used for Free monad interpretation</li>
+<li><a href="monads/free_applicative.html">Free Applicative</a> - For independent computations that can run in parallel</li>
+<li><a href="monads/coyoneda.html">Coyoneda</a> - Automatic Functor instances and map fusion</li>
+</ul>
 </div>
 </div>
-<h2 id="purpose-7"><a class="header" href="#purpose-7">Purpose</a></h2>
+<h2 id="purpose-8"><a class="header" href="#purpose-8">Purpose</a></h2>
 <p>In traditional Java programming, when you want to execute side effects (like printing to the console, reading files, or making database queries), you directly execute them:</p>
 <pre><code class="language-java">// Traditional imperative approach
 System.out.println("What is your name?");
@@ -12542,6 +12884,17 @@ Free&lt;ConsoleOpKind.Witness, String&gt; simpleReadLine =
 </ul>
 <h2 id="advanced-topics"><a class="header" href="#advanced-topics">Advanced Topics</a></h2>
 <h3 id="free-applicative-vs-free-monad"><a class="header" href="#free-applicative-vs-free-monad">Free Applicative vs. Free Monad</a></h3>
+<div id="admonition-see-also" class="admonition admonish-note" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="monads/free_monad.html#admonition-see-also"></a>
+</div>
+<div>
+<p>For comprehensive coverage of Free Applicative, see the dedicated <a href="monads/free_applicative.html">Free Applicative</a> documentation.</p>
+</div>
+</div>
 <p>The <strong>Free Applicative</strong> is a related but distinct structure:</p>
 <pre><code class="language-java">// Free Monad: Sequential, dependent operations
 Free&lt;F, C&gt; sequential =
@@ -12585,6 +12938,17 @@ Applicative&lt;DatabaseQuery, Report&gt; report =
 // Interpreter can optimise: "SELECT * FROM users, orders, products"
 </code></pre>
 <h3 id="coyoneda-optimisation"><a class="header" href="#coyoneda-optimisation">Coyoneda Optimisation</a></h3>
+<div id="admonition-see-also-1" class="admonition admonish-note" role="note" aria-labelledby="admonition-see-also-1-title">
+<div class="admonition-title">
+<div id="admonition-see-also-1-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="monads/free_monad.html#admonition-see-also-1"></a>
+</div>
+<div>
+<p>For comprehensive coverage of Coyoneda, see the dedicated <a href="monads/coyoneda.html">Coyoneda</a> documentation.</p>
+</div>
+</div>
 <p>The <strong>Coyoneda lemma</strong> states that every type constructor can be made into a Functor. This allows Free monads to work with non-functor instruction sets:</p>
 <pre><code class="language-java">// Without Coyoneda: instruction set must be a Functor
 public sealed interface DatabaseOp&lt;A&gt; {
@@ -12879,7 +13243,7 @@ analyticsInterpreter.run(eventStream);   // Send to analytics
 testInterpreter.run(eventStream);        // Collect for assertions
 </code></pre>
 <p><strong>Advantage of Free</strong>: Event streams are first-class values that can be composed, transformed, and replayed.</p>
-<h2 id="summary-2"><a class="header" href="#summary-2">Summary</a></h2>
+<h2 id="summary-3"><a class="header" href="#summary-3">Summary</a></h2>
 <p>The Free monad provides a powerful abstraction for building domain-specific languages in Java:</p>
 <ul>
 <li><strong>Separation of Concerns</strong>: Program description (data) vs. execution (interpreters)</li>
@@ -12907,6 +13271,713 @@ testInterpreter.run(eventStream);        // Collect for assertions
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/free/FreeMonadTest.java">FreeMonadTest.java</a> - Comprehensive test suite including monad laws and stack safety</li>
 </ul>
 <p>The Free monad represents a sophisticated approach to building composable, testable, and maintainable programs in Java. Whilst it requires understanding of advanced functional programming concepts, it pays dividends in large-scale applications where flexibility and testability are paramount.</p>
+<div style="break-before: page; page-break-before: always;"></div><style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
+<h1 id="free-applicative"><a class="header" href="#free-applicative">Free Applicative</a></h1>
+<h2 id="independent-computations-and-parallel-composition"><a class="header" href="#independent-computations-and-parallel-composition"><em>Independent Computations and Parallel Composition</em></a></h2>
+<div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
+<div class="admonition-title">
+<div id="admonition-what-youll-learn-title">
+<p>What You'll Learn</p>
+</div>
+<a class="admonition-anchor-link" href="monads/free_applicative.html#admonition-what-youll-learn"></a>
+</div>
+<div>
+<ul>
+<li>The difference between Free Monad (sequential) and Free Applicative (independent)</li>
+<li>When to choose Free Applicative over Free Monad</li>
+<li>Building programs with independent computations</li>
+<li>Interpreting Free Applicative programs with natural transformations</li>
+<li>Enabling parallel execution, batching, and static analysis</li>
+<li>Validation patterns that accumulate all errors</li>
+</ul>
+</div>
+</div>
+<div id="admonition-see-example-code" class="admonition admonish-example" role="note" aria-labelledby="admonition-see-example-code-title">
+<div class="admonition-title">
+<div id="admonition-see-example-code-title">
+<p>See Example Code</p>
+</div>
+<a class="admonition-anchor-link" href="monads/free_applicative.html#admonition-see-example-code"></a>
+</div>
+<div>
+<ul>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/free_ap/FreeApTest.java">FreeApTest.java</a> - Comprehensive test suite</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/free_ap/FreeApApplicativeTest.java">FreeApApplicativeTest.java</a> - Applicative law verification</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/free_ap/FreeApplicativeExample.java">FreeApplicativeExample.java</a> - Practical examples</li>
+</ul>
+</div>
+</div>
+<div id="admonition-further-reading" class="admonition admonish-tip" role="note" aria-labelledby="admonition-further-reading-title">
+<div class="admonition-title">
+<div id="admonition-further-reading-title">
+<p>Further Reading</p>
+</div>
+<a class="admonition-anchor-link" href="monads/free_applicative.html#admonition-further-reading"></a>
+</div>
+<div>
+<ul>
+<li><strong>Functional Programming in Scala</strong> (Red Book): Chapter 12 covers applicative functors and their relationship to monads</li>
+<li><strong>Cats Documentation</strong>: <a href="https://typelevel.org/cats/datatypes/freeapplicative.html">Free Applicative</a> - Scala implementation with examples</li>
+<li><strong>Paolo Capriotti</strong>: <a href="https://arxiv.org/abs/1403.0749">Free Applicative Functors</a> - The original paper (more academic)</li>
+</ul>
+</div>
+</div>
+<h2 id="purpose-9"><a class="header" href="#purpose-9">Purpose</a></h2>
+<p>The <strong>Free Applicative</strong> (<code>FreeAp</code>) is the applicative counterpart to the <a href="monads/free_monad.html">Free Monad</a>. Whilst the Free Monad captures <strong>sequential, dependent</strong> computations, Free Applicative captures <strong>independent</strong> computations that can potentially run in parallel.</p>
+<h3 id="the-key-distinction"><a class="header" href="#the-key-distinction">The Key Distinction</a></h3>
+<p>Consider fetching a user and their posts:</p>
+<p><strong>With Free Monad (sequential, dependent):</strong></p>
+<pre><code class="language-java">// Each step depends on the previous result
+Free&lt;DbOp, UserProfile&gt; program =
+    getUser(userId)
+        .flatMap(user -&gt;              // Must wait for user
+            getPosts(user.id())       // Uses user.id() from previous step
+                .flatMap(posts -&gt;
+                    Free.pure(new UserProfile(user, posts))));
+</code></pre>
+<p><strong>With Free Applicative (independent):</strong></p>
+<pre><code class="language-java">// Both fetches are independent - neither needs the other's result
+FreeAp&lt;DbOp, UserProfile&gt; program =
+    FreeAp.lift(getUser(userId))
+        .map2(
+            FreeAp.lift(getPosts(userId)),  // Doesn't depend on getUser result
+            UserProfile::new
+        );
+</code></pre>
+<p>The Free Applicative version makes it explicit that the two fetches are <strong>independent</strong>. A smart interpreter can execute them in parallel or batch them into a single database query.</p>
+<h2 id="free-monad-vs-free-applicative"><a class="header" href="#free-monad-vs-free-applicative">Free Monad vs Free Applicative</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Aspect</th><th>Free Monad</th><th>Free Applicative</th></tr></thead><tbody>
+<tr><td><strong>Composition</strong></td><td>Sequential, dependent</td><td>Independent, parallel</td></tr>
+<tr><td><strong>Core operation</strong></td><td><code>flatMap: A -&gt; Free[F, B]</code></td><td><code>ap: FreeAp[F, A-&gt;B] x FreeAp[F, A]</code></td></tr>
+<tr><td><strong>Structure</strong></td><td>Tree (one branch at a time)</td><td>DAG (multiple independent branches)</td></tr>
+<tr><td><strong>Static analysis</strong></td><td>Cannot see full structure ahead</td><td>Full structure visible before interpretation</td></tr>
+<tr><td><strong>Parallelism</strong></td><td>Not possible (each step depends on previous)</td><td>Natural fit (independent computations)</td></tr>
+<tr><td><strong>Use case</strong></td><td>Workflows with conditional logic</td><td>Validation, parallel fetches, batching</td></tr>
+</tbody></table>
+</div><div id="admonition-choosing-between-them" class="admonition admonish-note" role="note" aria-labelledby="admonition-choosing-between-them-title">
+<div class="admonition-title">
+<div id="admonition-choosing-between-them-title">
+<p>Choosing Between Them</p>
+</div>
+<a class="admonition-anchor-link" href="monads/free_applicative.html#admonition-choosing-between-them"></a>
+</div>
+<div>
+<p>Ask yourself: "Does step B need the <strong>result</strong> of step A?"</p>
+<ul>
+<li><strong>Yes</strong> -&gt; Use Free Monad (<code>flatMap</code>)</li>
+<li><strong>No</strong> -&gt; Use Free Applicative (<code>map2</code>, <code>map3</code>, etc.)</li>
+</ul>
+</div>
+</div>
+<h2 id="core-structure"><a class="header" href="#core-structure">Core Structure</a></h2>
+<p><code>FreeAp&lt;F, A&gt;</code> is a sealed interface with three constructors:</p>
+<pre><code class="language-java">public sealed interface FreeAp&lt;F, A&gt; permits FreeAp.Pure, FreeAp.Lift, FreeAp.Ap {
+
+    // A completed computation with a value
+    record Pure&lt;F, A&gt;(A value) implements FreeAp&lt;F, A&gt; {}
+
+    // A suspended single operation in F
+    record Lift&lt;F, A&gt;(Kind&lt;F, A&gt; fa) implements FreeAp&lt;F, A&gt; {}
+
+    // Application: independent function and argument computations
+    record Ap&lt;F, X, A&gt;(
+        FreeAp&lt;F, Function&lt;X, A&gt;&gt; ff,  // Computation producing a function
+        FreeAp&lt;F, X&gt; fa                 // Computation producing a value
+    ) implements FreeAp&lt;F, A&gt; {}
+}
+</code></pre>
+<p>The crucial insight is in <code>Ap</code>: both <code>ff</code> and <code>fa</code> are <strong>independent</strong>. Neither depends on the other's result, which is what enables parallelism and static analysis.</p>
+<h2 id="basic-usage-1"><a class="header" href="#basic-usage-1">Basic Usage</a></h2>
+<h3 id="creating-freeap-values"><a class="header" href="#creating-freeap-values">Creating FreeAp Values</a></h3>
+<pre><code class="language-java">// Pure value (no effects)
+FreeAp&lt;MyOp, Integer&gt; pure = FreeAp.pure(42);
+
+// Lift a single instruction
+FreeAp&lt;MyOp, User&gt; userFetch = FreeAp.lift(new GetUser(userId));
+
+// Map over a FreeAp
+FreeAp&lt;MyOp, String&gt; userName = userFetch.map(User::name);
+</code></pre>
+<h3 id="combining-independent-computations"><a class="header" href="#combining-independent-computations">Combining Independent Computations</a></h3>
+<p>The <code>map2</code> method combines two independent computations:</p>
+<pre><code class="language-java">FreeAp&lt;DbOp, User&gt; userFetch = FreeAp.lift(new GetUser(1));
+FreeAp&lt;DbOp, List&lt;Post&gt;&gt; postsFetch = FreeAp.lift(new GetPosts(1));
+
+// Combine them - these are INDEPENDENT
+FreeAp&lt;DbOp, UserProfile&gt; profile = userFetch.map2(
+    postsFetch,
+    (user, posts) -&gt; new UserProfile(user, posts)
+);
+</code></pre>
+<p>For more values, chain <code>map2</code> or use the applicative instance:</p>
+<pre><code class="language-java">FreeApApplicative&lt;DbOp&gt; applicative = new FreeApApplicative&lt;&gt;();
+
+// Combine three independent fetches
+FreeAp&lt;DbOp, Dashboard&gt; dashboard = applicative.map3(
+    FreeAp.lift(new GetUser(1)),
+    FreeAp.lift(new GetPosts(1)),
+    FreeAp.lift(new GetNotifications(1)),
+    Dashboard::new
+);
+</code></pre>
+<h3 id="interpreting-with-foldmap"><a class="header" href="#interpreting-with-foldmap">Interpreting with foldMap</a></h3>
+<p>To execute a <code>FreeAp</code> program, provide a natural transformation and an <code>Applicative</code> instance:</p>
+<pre><code class="language-java">// Natural transformation: DbOp ~&gt; IO
+Natural&lt;DbOpKind.Witness, IOKind.Witness&gt; interpreter = fa -&gt; {
+    DbOp&lt;?&gt; op = DB_OP.narrow(fa);
+    return switch (op) {
+        case GetUser g -&gt; IO.widen(IO.of(() -&gt; database.findUser(g.id())));
+        case GetPosts g -&gt; IO.widen(IO.of(() -&gt; database.findPosts(g.userId())));
+        case GetNotifications g -&gt; IO.widen(IO.of(() -&gt; database.findNotifications(g.userId())));
+    };
+};
+
+// Interpret the program
+FreeAp&lt;DbOp, Dashboard&gt; program = ...;
+Kind&lt;IOKind.Witness, Dashboard&gt; result = program.foldMap(interpreter, ioApplicative);
+</code></pre>
+<h2 id="parallel-execution"><a class="header" href="#parallel-execution">Parallel Execution</a></h2>
+<p>The power of Free Applicative emerges when the target <code>Applicative</code> supports parallelism. Consider using <code>CompletableFuture</code>:</p>
+<pre><code class="language-java">// Interpreter to CompletableFuture (can run in parallel)
+Natural&lt;DbOpKind.Witness, CFKind.Witness&gt; parallelInterpreter = fa -&gt; {
+    DbOp&lt;?&gt; op = DB_OP.narrow(fa);
+    return switch (op) {
+        case GetUser g -&gt; CF.widen(
+            CompletableFuture.supplyAsync(() -&gt; database.findUser(g.id()))
+        );
+        case GetPosts g -&gt; CF.widen(
+            CompletableFuture.supplyAsync(() -&gt; database.findPosts(g.userId()))
+        );
+    };
+};
+
+// When interpreted, GetUser and GetPosts can run in parallel!
+FreeAp&lt;DbOp, UserProfile&gt; program = userFetch.map2(postsFetch, UserProfile::new);
+Kind&lt;CFKind.Witness, UserProfile&gt; future = program.foldMap(parallelInterpreter, cfApplicative);
+</code></pre>
+<p>Because the Free Applicative structure makes independence explicit, the <code>CompletableFuture</code> applicative can start both operations immediately rather than waiting for one to complete.</p>
+<h2 id="static-analysis"><a class="header" href="#static-analysis">Static Analysis</a></h2>
+<p>Unlike Free Monad, Free Applicative programs can be analysed before execution. The <code>analyze</code> method (an alias for <code>foldMap</code>) emphasises this capability:</p>
+<pre><code class="language-java">// Count operations before executing
+Natural&lt;DbOpKind.Witness, ConstKind.Witness&lt;Integer&gt;&gt; counter = fa -&gt; {
+    return CONST.widen(Const.of(1));  // Each operation counts as 1
+};
+
+FreeAp&lt;DbOp, Dashboard&gt; program = ...;
+Kind&lt;ConstKind.Witness&lt;Integer&gt;, Dashboard&gt; analysis =
+    program.analyze(counter, constApplicative);
+
+int operationCount = CONST.narrow(analysis).value();
+System.out.println("Program will execute " + operationCount + " operations");
+</code></pre>
+<p>This is useful for:</p>
+<ul>
+<li><strong>Query optimisation</strong>: Batch similar database operations</li>
+<li><strong>Cost estimation</strong>: Calculate resource usage before execution</li>
+<li><strong>Validation</strong>: Check program structure meets constraints</li>
+<li><strong>Logging</strong>: Record what operations will be performed</li>
+</ul>
+<h2 id="validation-with-error-accumulation"><a class="header" href="#validation-with-error-accumulation">Validation with Error Accumulation</a></h2>
+<p>Free Applicative is excellent for validation that should report <strong>all</strong> errors, not just the first:</p>
+<pre><code class="language-java">// Define validation operations
+sealed interface ValidationOp&lt;A&gt; {
+    record ValidateEmail(String email) implements ValidationOp&lt;String&gt; {}
+    record ValidateAge(int age) implements ValidationOp&lt;Integer&gt; {}
+    record ValidateName(String name) implements ValidationOp&lt;String&gt; {}
+}
+
+// Build validation program
+FreeAp&lt;ValidationOp, User&gt; validateUser(String name, String email, int age) {
+    return FreeAp.lift(new ValidateName(name)).map2(
+        FreeAp.lift(new ValidateEmail(email)).map2(
+            FreeAp.lift(new ValidateAge(age)),
+            (e, a) -&gt; new Pair&lt;&gt;(e, a)
+        ),
+        (n, pair) -&gt; new User(n, pair.first(), pair.second())
+    );
+}
+
+// Interpreter to Validated (accumulates all errors)
+Natural&lt;ValidationOpKind.Witness, ValidatedKind.Witness&lt;List&lt;String&gt;&gt;&gt; interpreter = fa -&gt; {
+    ValidationOp&lt;?&gt; op = VALIDATION_OP.narrow(fa);
+    return switch (op) {
+        case ValidateName v -&gt; VALIDATED.widen(
+            v.name().length() &gt;= 2
+                ? Validated.valid(v.name())
+                : Validated.invalid(List.of("Name must be at least 2 characters"))
+        );
+        case ValidateEmail v -&gt; VALIDATED.widen(
+            v.email().contains("@")
+                ? Validated.valid(v.email())
+                : Validated.invalid(List.of("Invalid email format"))
+        );
+        case ValidateAge v -&gt; VALIDATED.widen(
+            v.age() &gt;= 0 &amp;&amp; v.age() &lt;= 150
+                ? Validated.valid(v.age())
+                : Validated.invalid(List.of("Age must be between 0 and 150"))
+        );
+    };
+}
+
+// Execute validation
+FreeAp&lt;ValidationOp, User&gt; program = validateUser("X", "invalid", -5);
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, User&gt; result =
+    program.foldMap(interpreter, validatedApplicative);
+
+// Result: Invalid(["Name must be at least 2 characters", "Invalid email format", "Age must be between 0 and 150"])
+// All three errors are reported!
+</code></pre>
+<h2 id="retracting-to-the-original-applicative"><a class="header" href="#retracting-to-the-original-applicative">Retracting to the Original Applicative</a></h2>
+<p>If your instruction type <code>F</code> is already an <code>Applicative</code>, you can "retract" back to it:</p>
+<pre><code class="language-java">FreeAp&lt;IOKind.Witness, String&gt; program = ...;
+
+// Retract: FreeAp[IO, A] -&gt; IO[A]
+Kind&lt;IOKind.Witness, String&gt; io = program.retract(ioApplicative);
+
+// Equivalent to:
+Kind&lt;IOKind.Witness, String&gt; io = program.foldMap(Natural.identity(), ioApplicative);
+</code></pre>
+<h2 id="applicative-laws"><a class="header" href="#applicative-laws">Applicative Laws</a></h2>
+<p><code>FreeAp</code> satisfies the applicative laws by construction:</p>
+<ol>
+<li><strong>Identity</strong>: <code>pure(id).ap(fa) == fa</code></li>
+<li><strong>Homomorphism</strong>: <code>pure(f).ap(pure(x)) == pure(f(x))</code></li>
+<li><strong>Interchange</strong>: <code>ff.ap(pure(x)) == pure(f -&gt; f(x)).ap(ff)</code></li>
+<li><strong>Composition</strong>: <code>pure(.).ap(ff).ap(fg).ap(fa) == ff.ap(fg.ap(fa))</code></li>
+</ol>
+<p>These laws ensure that combining computations behaves predictably.</p>
+<h2 id="when-to-use-free-applicative"><a class="header" href="#when-to-use-free-applicative">When to Use Free Applicative</a></h2>
+<h3 id="good-use-cases-1"><a class="header" href="#good-use-cases-1">Good Use Cases</a></h3>
+<ol>
+<li><strong>Parallel data fetching</strong>: Multiple independent API calls or database queries</li>
+<li><strong>Validation</strong>: Accumulate all validation errors rather than failing on first</li>
+<li><strong>Batching</strong>: Combine similar operations into bulk requests</li>
+<li><strong>Static analysis</strong>: Inspect program structure before execution</li>
+<li><strong>Cost estimation</strong>: Calculate resource requirements upfront</li>
+</ol>
+<h3 id="when-free-monad-is-better"><a class="header" href="#when-free-monad-is-better">When Free Monad is Better</a></h3>
+<ol>
+<li><strong>Conditional logic</strong>: "If user is admin, do X, otherwise do Y"</li>
+<li><strong>Sequential dependencies</strong>: "Use the user ID from step 1 in step 2"</li>
+<li><strong>Early termination</strong>: "Stop processing if validation fails"</li>
+</ol>
+<h3 id="combining-both"><a class="header" href="#combining-both">Combining Both</a></h3>
+<p>In practice, you might use both. Free Applicative for independent parts, Free Monad for the sequential orchestration:</p>
+<pre><code class="language-java">// Free Applicative: independent fetches
+FreeAp&lt;DbOp, UserData&gt; fetchUserData = userFetch.map2(postsFetch, UserData::new);
+
+// Free Monad: sequential workflow that uses the fetched data
+Free&lt;WorkflowOp, Result&gt; workflow =
+    liftFreeAp(fetchUserData)               // Run independent fetches
+        .flatMap(userData -&gt;                 // Then use the result
+            processUser(userData)            // This depends on fetchUserData
+                .flatMap(processed -&gt;
+                    saveResult(processed))); // This depends on processUser
+</code></pre>
+<h2 id="summary-4"><a class="header" href="#summary-4">Summary</a></h2>
+<p>Free Applicative provides:</p>
+<ul>
+<li><strong>Independence</strong>: Computations don't depend on each other's results</li>
+<li><strong>Parallelism</strong>: Smart interpreters can execute operations concurrently</li>
+<li><strong>Static analysis</strong>: Full program structure visible before execution</li>
+<li><strong>Error accumulation</strong>: Collect all errors rather than failing fast</li>
+<li><strong>Batching potential</strong>: Similar operations can be combined</li>
+</ul>
+<p>Use Free Applicative when your computations are independent; use Free Monad when they have sequential dependencies. Often the best solution combines both.</p>
+<div style="break-before: page; page-break-before: always;"></div><style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
+<h1 id="coyoneda"><a class="header" href="#coyoneda">Coyoneda</a></h1>
+<h2 id="the-free-functor-and-map-fusion"><a class="header" href="#the-free-functor-and-map-fusion"><em>The Free Functor and Map Fusion</em></a></h2>
+<div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
+<div class="admonition-title">
+<div id="admonition-what-youll-learn-title">
+<p>What You'll Learn</p>
+</div>
+<a class="admonition-anchor-link" href="monads/coyoneda.html#admonition-what-youll-learn"></a>
+</div>
+<div>
+<ul>
+<li>What Coyoneda is and why it's called the "free functor"</li>
+<li>How Coyoneda provides automatic Functor instances for any type constructor</li>
+<li>The map fusion optimisation and how it works</li>
+<li>Using Coyoneda with Free monads to simplify DSL definitions</li>
+<li>The lift and lower pattern</li>
+<li>When Coyoneda improves performance</li>
+</ul>
+</div>
+</div>
+<div id="admonition-see-example-code" class="admonition admonish-example" role="note" aria-labelledby="admonition-see-example-code-title">
+<div class="admonition-title">
+<div id="admonition-see-example-code-title">
+<p>See Example Code</p>
+</div>
+<a class="admonition-anchor-link" href="monads/coyoneda.html#admonition-see-example-code"></a>
+</div>
+<div>
+<ul>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/coyoneda/CoyonedaTest.java">CoyonedaTest.java</a> - Comprehensive test suite</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/coyoneda/CoyonedaFunctorTest.java">CoyonedaFunctorTest.java</a> - Functor law verification</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/coyoneda/CoyonedaExample.java">CoyonedaExample.java</a> - Practical examples</li>
+</ul>
+</div>
+</div>
+<div id="admonition-further-reading" class="admonition admonish-tip" role="note" aria-labelledby="admonition-further-reading-title">
+<div class="admonition-title">
+<div id="admonition-further-reading-title">
+<p>Further Reading</p>
+</div>
+<a class="admonition-anchor-link" href="monads/coyoneda.html#admonition-further-reading"></a>
+</div>
+<div>
+<ul>
+<li><strong>Chris Penner</strong>: <a href="https://chrispenner.ca/posts/free-monads">Free Monads and Coyoneda</a> - Practical explanation with examples</li>
+<li><strong>Scala with Cats</strong>: The Free Monad chapter discusses Coyoneda in the context of DSLs</li>
+<li><strong>Bartosz Milewski</strong>: <a href="https://bartoszmilewski.com/2015/09/01/the-yoneda-lemma/">The Yoneda Lemma</a> - The mathematical foundation (more theoretical)</li>
+</ul>
+</div>
+</div>
+<h2 id="purpose-10"><a class="header" href="#purpose-10">Purpose</a></h2>
+<p>Coyoneda solves two practical problems:</p>
+<ol>
+<li>
+<p><strong>Automatic Functor instances</strong>: Any type constructor <code>F</code> can be wrapped in Coyoneda, which gives it a Functor instance for free, even if <code>F</code> itself doesn't have one.</p>
+</li>
+<li>
+<p><strong>Map fusion</strong>: Multiple consecutive <code>map</code> operations are automatically fused into a single function composition, reducing overhead.</p>
+</li>
+</ol>
+<h3 id="the-problem-coyoneda-solves"><a class="header" href="#the-problem-coyoneda-solves">The Problem Coyoneda Solves</a></h3>
+<p>When building Free monads, each instruction type needs a Functor instance. This can be tedious:</p>
+<pre><code class="language-java">// Without Coyoneda: must implement Functor for every DSL
+sealed interface DatabaseOp&lt;A&gt; {
+    record Query(String sql) implements DatabaseOp&lt;ResultSet&gt; {}
+    record Update(String sql) implements DatabaseOp&lt;Integer&gt; {}
+}
+
+// Tedious: implement Functor&lt;DatabaseOp&gt; manually
+// Even more tedious if DatabaseOp has many variants
+</code></pre>
+<p>With Coyoneda, you can skip the Functor implementation entirely:</p>
+<pre><code class="language-java">// With Coyoneda: wrap your DSL and get Functor for free
+Coyoneda&lt;DatabaseOp, ResultSet&gt; coyo = Coyoneda.lift(new Query("SELECT * FROM users"));
+// Now you can map over it without implementing Functor&lt;DatabaseOp&gt;!
+</code></pre>
+<h2 id="how-coyoneda-works"><a class="header" href="#how-coyoneda-works">How Coyoneda Works</a></h2>
+<p>Coyoneda stores two things:</p>
+<ol>
+<li>A value of type <code>Kind&lt;F, X&gt;</code> (the original wrapped value)</li>
+<li>A function <code>X -&gt; A</code> (the accumulated transformations)</li>
+</ol>
+<p>When you call <code>map(f)</code>, instead of applying <code>f</code> immediately, Coyoneda just composes <code>f</code> with the existing transformation:</p>
+<pre><code>Coyoneda(fx, transform).map(f) = Coyoneda(fx, f.compose(transform))
+</code></pre>
+<p>The actual mapping only happens when you "lower" back to <code>F</code> using a real Functor instance.</p>
+<pre><code>lift: F[A] ──────────────&gt; Coyoneda[F, A]    (wrap with identity function)
+                               │
+                          map(f).map(g).map(h)
+                               │
+                               ▼
+                          Coyoneda[F, D]    (functions composed, not applied)
+                               │
+lower: Coyoneda[F, D] ─────────&gt; F[D]       (apply composed function once)
+</code></pre>
+<h2 id="core-interface-1"><a class="header" href="#core-interface-1">Core Interface</a></h2>
+<pre><code class="language-java">public sealed interface Coyoneda&lt;F, A&gt; {
+
+    /**
+     * Lifts a Kind&lt;F, A&gt; into Coyoneda with the identity transformation.
+     */
+    static &lt;F, A&gt; Coyoneda&lt;F, A&gt; lift(Kind&lt;F, A&gt; fa);
+
+    /**
+     * Creates a Coyoneda with a value and transformation function.
+     */
+    static &lt;F, X, A&gt; Coyoneda&lt;F, A&gt; apply(Kind&lt;F, X&gt; fx, Function&lt;? super X, ? extends A&gt; transform);
+
+    /**
+     * Maps a function, composing it with existing transformations.
+     * No Functor instance required!
+     */
+    &lt;B&gt; Coyoneda&lt;F, B&gt; map(Function&lt;? super A, ? extends B&gt; f);
+
+    /**
+     * Lowers back to Kind&lt;F, A&gt; by applying the accumulated transformation.
+     * This is where the actual mapping happens.
+     */
+    Kind&lt;F, A&gt; lower(Functor&lt;F&gt; functor);
+
+    /**
+     * Returns the underlying Kind value (before transformations).
+     */
+    Kind&lt;F, ?&gt; underlying();
+}
+</code></pre>
+<h2 id="basic-usage-2"><a class="header" href="#basic-usage-2">Basic Usage</a></h2>
+<h3 id="lifting-and-mapping"><a class="header" href="#lifting-and-mapping">Lifting and Mapping</a></h3>
+<pre><code class="language-java">import static org.higherkindedj.hkt.maybe.MaybeKindHelper.MAYBE;
+
+// Lift a Maybe into Coyoneda
+Kind&lt;MaybeKind.Witness, Integer&gt; maybe = MAYBE.widen(Maybe.just(42));
+Coyoneda&lt;MaybeKind.Witness, Integer&gt; coyo = Coyoneda.lift(maybe);
+
+// Map without needing a Functor instance
+Coyoneda&lt;MaybeKind.Witness, String&gt; mapped = coyo
+    .map(x -&gt; x * 2)           // 42 -&gt; 84
+    .map(x -&gt; x + 1)           // 84 -&gt; 85
+    .map(Object::toString);    // 85 -&gt; "85"
+
+// All three maps are fused into ONE composed function!
+// The function (x -&gt; ((x * 2) + 1).toString()) is stored but not yet applied
+</code></pre>
+<h3 id="lowering-with-a-functor"><a class="header" href="#lowering-with-a-functor">Lowering with a Functor</a></h3>
+<pre><code class="language-java">// When ready, lower back using a Functor instance
+MaybeFunctor functor = MaybeFunctor.INSTANCE;
+Kind&lt;MaybeKind.Witness, String&gt; result = mapped.lower(functor);
+
+// Only NOW does the actual mapping happen - just once!
+Maybe&lt;String&gt; finalResult = MAYBE.narrow(result);
+// Result: Just("85")
+</code></pre>
+<h3 id="using-coyonedafunctor"><a class="header" href="#using-coyonedafunctor">Using CoyonedaFunctor</a></h3>
+<p>The <code>CoyonedaFunctor&lt;F&gt;</code> class provides a Functor instance for any <code>Coyoneda&lt;F, _&gt;</code>:</p>
+<pre><code class="language-java">CoyonedaFunctor&lt;MaybeKind.Witness&gt; coyoFunctor = new CoyonedaFunctor&lt;&gt;();
+
+Kind&lt;CoyonedaKind.Witness&lt;MaybeKind.Witness&gt;, Integer&gt; kindCoyo =
+    COYONEDA.widen(Coyoneda.lift(maybe));
+
+Kind&lt;CoyonedaKind.Witness&lt;MaybeKind.Witness&gt;, String&gt; mapped =
+    coyoFunctor.map(x -&gt; x.toString(), kindCoyo);
+</code></pre>
+<h2 id="map-fusion"><a class="header" href="#map-fusion">Map Fusion</a></h2>
+<p>Map fusion is the key performance benefit. Consider:</p>
+<pre><code class="language-java">// Without Coyoneda: three separate traversals
+List&lt;String&gt; result = list.stream()
+    .map(x -&gt; x * 2)
+    .map(x -&gt; x + 1)
+    .map(Object::toString)
+    .toList();
+// Each map creates intermediate results
+</code></pre>
+<pre><code class="language-java">// With Coyoneda: functions are composed, single traversal
+Coyoneda&lt;ListKind.Witness, Integer&gt; coyo = Coyoneda.lift(LIST.widen(list));
+Coyoneda&lt;ListKind.Witness, String&gt; mapped = coyo
+    .map(x -&gt; x * 2)
+    .map(x -&gt; x + 1)
+    .map(Object::toString);
+// No mapping yet - just function composition
+
+Kind&lt;ListKind.Witness, String&gt; result = mapped.lower(listFunctor);
+// NOW the composed function is applied in ONE traversal
+</code></pre>
+<p>The benefit is most noticeable when:</p>
+<ul>
+<li>The underlying structure is expensive to traverse</li>
+<li>You have many consecutive map operations</li>
+<li>The intermediate types are complex</li>
+</ul>
+<h2 id="use-with-free-monads-1"><a class="header" href="#use-with-free-monads-1">Use with Free Monads</a></h2>
+<p>Coyoneda is particularly useful with Free monads. Without Coyoneda, your instruction set must be a Functor:</p>
+<pre><code class="language-java">// Without Coyoneda: must implement Functor&lt;ConsoleOp&gt;
+Free&lt;ConsoleOpKind.Witness, String&gt; program = Free.liftF(readLine, consoleOpFunctor);
+</code></pre>
+<p>With Coyoneda, you can wrap any instruction set:</p>
+<pre><code class="language-java">// With Coyoneda: no Functor needed for ConsoleOp
+// The Free monad operates on Coyoneda&lt;ConsoleOp, _&gt; instead
+
+// Lift instruction into Coyoneda, then into Free
+Coyoneda&lt;ConsoleOpKind.Witness, String&gt; coyoOp = Coyoneda.lift(readLineKind);
+Free&lt;CoyonedaKind.Witness&lt;ConsoleOpKind.Witness&gt;, String&gt; program =
+    Free.liftF(COYONEDA.widen(coyoOp), new CoyonedaFunctor&lt;&gt;());
+</code></pre>
+<p>This eliminates boilerplate when you have many instruction types.</p>
+<h2 id="the-yoneda-lemma"><a class="header" href="#the-yoneda-lemma">The Yoneda Lemma</a></h2>
+<p>Coyoneda is based on the <strong>covariant Yoneda lemma</strong> from category theory. In simplified terms:</p>
+<pre><code>Coyoneda[F, A] ≅ F[A]
+</code></pre>
+<p>This isomorphism is witnessed by:</p>
+<ul>
+<li><code>lift</code>: <code>F[A] -&gt; Coyoneda[F, A]</code> (wraps with identity function)</li>
+<li><code>lower</code>: <code>Coyoneda[F, A] -&gt; F[A]</code> (applies accumulated function via Functor)</li>
+</ul>
+<p>The isomorphism holds for any Functor <code>F</code>. Coyoneda essentially "delays" the functor operations until lowering.</p>
+<h2 id="functor-laws"><a class="header" href="#functor-laws">Functor Laws</a></h2>
+<p><code>CoyonedaFunctor</code> satisfies the Functor laws automatically:</p>
+<p><strong>Identity Law:</strong></p>
+<pre><code class="language-java">coyo.map(x -&gt; x) == coyo
+// Composing with identity doesn't change the accumulated function
+</code></pre>
+<p><strong>Composition Law:</strong></p>
+<pre><code class="language-java">coyo.map(f).map(g) == coyo.map(x -&gt; g.apply(f.apply(x)))
+// Multiple maps compose into one - this is map fusion!
+</code></pre>
+<p>These laws hold by construction because <code>map</code> simply composes functions.</p>
+<h2 id="when-to-use-coyoneda"><a class="header" href="#when-to-use-coyoneda">When to Use Coyoneda</a></h2>
+<h3 id="good-use-cases-2"><a class="header" href="#good-use-cases-2">Good Use Cases</a></h3>
+<ol>
+<li><strong>Free monad DSLs</strong>: Avoid implementing Functor for each instruction type</li>
+<li><strong>Map fusion</strong>: Optimise chains of map operations on expensive structures</li>
+<li><strong>Deferred computation</strong>: Delay mapping until you have a Functor available</li>
+<li><strong>Generic programming</strong>: Work with type constructors that don't have Functor instances</li>
+</ol>
+<h3 id="when-you-might-not-need-it"><a class="header" href="#when-you-might-not-need-it">When You Might Not Need It</a></h3>
+<ol>
+<li><strong>Single map operations</strong>: No fusion benefit with just one map</li>
+<li><strong>Already have a Functor</strong>: If implementing Functor is easy, Coyoneda adds indirection</li>
+<li><strong>Simple types</strong>: For types like <code>Optional</code> or <code>List</code>, the built-in map is already efficient</li>
+</ol>
+<h2 id="performance-considerations"><a class="header" href="#performance-considerations">Performance Considerations</a></h2>
+<p>Coyoneda trades:</p>
+<ul>
+<li><strong>Pros</strong>: Reduced traversals, function composition is cheap, deferred execution</li>
+<li><strong>Cons</strong>: Object allocation for Coyoneda wrapper, slightly more complex types</li>
+</ul>
+<p>The benefit is most significant when:</p>
+<ul>
+<li>The underlying <code>F</code> is expensive to map over (e.g., large trees, IO operations)</li>
+<li>You have many consecutive map operations</li>
+<li>You want to defer all mapping to a single point</li>
+</ul>
+<p>For simple cases with one or two maps on efficient structures, the overhead may not be worth it.</p>
+<h2 id="summary-5"><a class="header" href="#summary-5">Summary</a></h2>
+<p>Coyoneda provides:</p>
+<ul>
+<li><strong>Automatic Functor instances</strong>: Any type constructor gains a Functor via wrapping</li>
+<li><strong>Map fusion</strong>: Multiple maps compose into a single function application</li>
+<li><strong>Deferred execution</strong>: Actual mapping happens only at lowering</li>
+<li><strong>DSL simplification</strong>: Free monad instruction sets don't need Functor instances</li>
+</ul>
+<p>It's a powerful tool for optimising functional pipelines and simplifying Free monad definitions, based on the elegant mathematics of the Yoneda lemma.</p>
 <div style="break-before: page; page-break-before: always;"></div><style>
 .mdbook-alerts {
   padding: 8px 16px;
@@ -13004,7 +14075,7 @@ testInterpreter.run(eventStream);        // Collect for assertions
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java">TryExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose-8"><a class="header" href="#purpose-8">Purpose</a></h2>
+<h2 id="purpose-11"><a class="header" href="#purpose-11">Purpose</a></h2>
 <p>The <code>Try&lt;T&gt;</code> type in the <code>Higher-Kinded-J</code> library represents a computation that might result in a value of type <code>T</code> (a <code>Success</code>) or fail with a <code>Throwable</code> (a <code>Failure</code>). It serves as a functional alternative to traditional <code>try-catch</code> blocks for handling exceptions, particularly checked exceptions, within a computation chain.  We can think of it as an <code>Either</code> where the <code>Left</code> is an <code>Exception</code>, but also using try-catch blocks behind the scene, so that we don’t have to.</p>
 <p><strong>Try Type</strong></p>
 <p><img src="monads/../images/puml/try_type.svg" alt="try_type.svg" /></p>
@@ -13337,7 +14408,7 @@ System.out.println(handledTry);
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/validated/ValidatedMonadExample.java">ValidatedMonadExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose-9"><a class="header" href="#purpose-9">Purpose</a></h2>
+<h2 id="purpose-12"><a class="header" href="#purpose-12">Purpose</a></h2>
 <p>The <code>Validated&lt;E, A&gt;</code> type in <code>Higher-Kinded-J</code> represents a value that can either be <code>Valid&lt;A&gt;</code> (correct) or <code>Invalid&lt;E&gt;</code> (erroneous). It is commonly used in scenarios like input validation where you want to clearly distinguish between a successful result and an error. Unlike types like <code>Either</code> which are often used for general-purpose sum types, <code>Validated</code> is specifically focused on the valid/invalid dichotomy. Operations like <code>map</code>, <code>flatMap</code>, and <code>ap</code> are right-biased, meaning they operate on the <code>Valid</code> value and propagate <code>Invalid</code> values unchanged.</p>
 <p>The <code>ValidatedMonad&lt;E&gt;</code> provides a monadic interface for <code>Validated&lt;E, A&gt;</code> (where the error type <code>E</code> is fixed for the monad instance), allowing for functional composition and integration with the Higher-Kinded-J framework. This facilitates chaining operations that can result in either a valid outcome or an error.</p>
 <div id="admonition-key-benefits-include" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-benefits-include-title">
@@ -13767,7 +14838,7 @@ public void combinedValidationScenarioWithMonadError() {
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/writer/WriterExample.java">WriterExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose-10"><a class="header" href="#purpose-10">Purpose</a></h2>
+<h2 id="purpose-13"><a class="header" href="#purpose-13">Purpose</a></h2>
 <p>The <strong>Writer monad</strong> is a functional pattern designed for computations that, in addition to producing a primary result value, also need to <strong>accumulate</strong> some secondary output or log along the way. Think of scenarios like:</p>
 <ul>
 <li>Detailed logging of steps within a complex calculation.</li>
@@ -14377,7 +15448,7 @@ Const&lt;String, Double&gt; result = const_.mapSecond(i -&gt; {
 Const&lt;String, Double&gt; safe = const_.mapSecond(i -&gt; 3.14);
 </code></pre>
 <hr />
-<h2 id="summary-3"><a class="header" href="#summary-3">Summary</a></h2>
+<h2 id="summary-6"><a class="header" href="#summary-6">Summary</a></h2>
 <ul>
 <li><strong>Const&lt;C, A&gt;</strong> holds a constant value of type <code>C</code> with a phantom type parameter <code>A</code></li>
 <li><strong>Phantom types</strong> exist only in type signatures, enabling type-safe composition without runtime overhead</li>
@@ -18617,7 +19688,7 @@ void exercise1_yourFirstChallenge() {
 
 </style>
 <h1 id="core-types-tutorial-track"><a class="header" href="#core-types-tutorial-track">Core Types Tutorial Track</a></h1>
-<p><strong>Duration</strong>: ~60 minutes | <strong>Tutorials</strong>: 7 | <strong>Exercises</strong>: 44</p>
+<p><strong>Duration</strong>: ~86 minutes | <strong>Tutorials</strong>: 10 | <strong>Exercises</strong>: 60</p>
 <h2 id="what-youll-master"><a class="header" href="#what-youll-master">What You'll Master</a></h2>
 <p>By the end of this track, you'll confidently use Higher-Kinded Types to:</p>
 <ul>
@@ -18625,11 +19696,18 @@ void exercise1_yourFirstChallenge() {
 <li>Combine independent operations for parallel validation (Applicative)</li>
 <li>Chain dependent computations with automatic error handling (Monad)</li>
 <li>Choose the right type for error handling, optionality, and accumulation</li>
+<li>Transform between type constructors with Natural Transformations</li>
+<li>Optimise mapping operations with Coyoneda (map fusion)</li>
+<li>Model independent, parallelisable computations with Free Applicative</li>
 </ul>
 <p>This track teaches you the theoretical foundation that powers the entire Higher-Kinded-J library, including the optics system. You'll learn to write generic code that works uniformly across <code>List</code>, <code>Optional</code>, <code>Either</code>, <code>CompletableFuture</code>, and custom types.</p>
 <h2 id="the-progression"><a class="header" href="#the-progression">The Progression</a></h2>
 <p>Each tutorial introduces a new abstraction that builds on the previous one:</p>
 <pre><code>Kind (container) → Functor (map) → Applicative (combine) → Monad (chain)
+                                                              ↓
+                          Coyoneda ← Natural Transformation ← Real World
+                              ↓
+                      Free Applicative
 </code></pre>
 <h3 id="tutorial-01-kind-basics-8-minutes"><a class="header" href="#tutorial-01-kind-basics-8-minutes">Tutorial 01: Kind Basics (~8 minutes)</a></h3>
 <p><strong>File</strong>: <code>Tutorial01_KindBasics.java</code> | <strong>Exercises</strong>: 4</p>
@@ -18740,6 +19818,51 @@ void exercise1_yourFirstChallenge() {
 </ul>
 <p><strong>Links to documentation</strong>: <a href="tutorials/../monads/reader_monad.html">Reader Monad</a> | <a href="tutorials/../functional/for_comprehension.html">For Comprehensions</a></p>
 <hr />
+<h3 id="tutorial-08-natural-transformations-8-minutes"><a class="header" href="#tutorial-08-natural-transformations-8-minutes">Tutorial 08: Natural Transformations (~8 minutes)</a></h3>
+<p><strong>File</strong>: <code>Tutorial08_NaturalTransformation.java</code> | <strong>Exercises</strong>: 5</p>
+<p>Learn to transform between type constructors while preserving structure.</p>
+<p><strong>What you'll learn</strong>:</p>
+<ul>
+<li>What natural transformations are and why they matter</li>
+<li>The <code>Natural&lt;F, G&gt;</code> interface for polymorphic transformations</li>
+<li>Composing transformations with <code>andThen</code> and <code>compose</code></li>
+<li>Using transformations to interpret Free structures</li>
+<li>The identity transformation and its uses</li>
+</ul>
+<p><strong>Key insight</strong>: Natural transformations let you change the "container" without touching the contents. They're the morphisms between functors.</p>
+<p><strong>Real-world application</strong>: Interpreting DSLs, converting between effect types, abstracting over different backends.</p>
+<p><strong>Links to documentation</strong>: <a href="tutorials/../functional/natural_transformation.html">Natural Transformation Guide</a></p>
+<hr />
+<h3 id="tutorial-09-coyoneda-8-minutes"><a class="header" href="#tutorial-09-coyoneda-8-minutes">Tutorial 09: Coyoneda (~8 minutes)</a></h3>
+<p><strong>File</strong>: <code>Tutorial09_Coyoneda.java</code> | <strong>Exercises</strong>: 5</p>
+<p>Learn how Coyoneda gives you a free Functor and enables map fusion.</p>
+<p><strong>What you'll learn</strong>:</p>
+<ul>
+<li>Lifting values into Coyoneda with <code>lift</code></li>
+<li>Mapping without a Functor instance (deferred execution)</li>
+<li>Map fusion: chaining maps accumulates into one traversal</li>
+<li>Lowering back to execute accumulated transformations</li>
+<li>When and why to use Coyoneda</li>
+</ul>
+<p><strong>Key insight</strong>: Coyoneda stores the value and accumulated function separately, executing only when you lower. Multiple maps become a single traversal.</p>
+<p><strong>Real-world application</strong>: Optimising repeated transformations, working with types that lack Functor instances, building efficient pipelines.</p>
+<p><strong>Links to documentation</strong>: <a href="tutorials/../monads/coyoneda.html">Coyoneda Guide</a></p>
+<hr />
+<h3 id="tutorial-10-free-applicative-10-minutes"><a class="header" href="#tutorial-10-free-applicative-10-minutes">Tutorial 10: Free Applicative (~10 minutes)</a></h3>
+<p><strong>File</strong>: <code>Tutorial10_FreeApplicative.java</code> | <strong>Exercises</strong>: 6</p>
+<p>Learn to model independent computations that can potentially run in parallel.</p>
+<p><strong>What you'll learn</strong>:</p>
+<ul>
+<li>Creating pure values with <code>FreeAp.pure</code></li>
+<li>Lifting instructions with <code>FreeAp.lift</code></li>
+<li>Combining independent computations with <code>map2</code></li>
+<li>Interpreting programs with <code>foldMap</code></li>
+<li>The key difference from Free Monad: independence vs dependence</li>
+</ul>
+<p><strong>Key insight</strong>: With Free Applicative, neither computation in <code>map2</code> depends on the other's result. This structural independence enables parallel execution.</p>
+<p><strong>Real-world application</strong>: Parallel data fetching, form validation, batch API calls, request deduplication.</p>
+<p><strong>Links to documentation</strong>: <a href="tutorials/../monads/free_applicative.html">Free Applicative Guide</a></p>
+<hr />
 <h2 id="learning-map"><a class="header" href="#learning-map">Learning Map</a></h2>
 <pre><code>Tutorial 01: Kind Basics
     ↓
@@ -18768,6 +19891,18 @@ Tutorial 06: Concrete Types
 Tutorial 07: Real World
     ↓
     └─ Combine everything into production patterns
+       ↓
+Tutorial 08: Natural Transformations
+    ↓
+    └─ Transform between type constructors
+       ↓
+Tutorial 09: Coyoneda
+    ↓
+    └─ Free functor and map fusion
+       ↓
+Tutorial 10: Free Applicative
+    ↓
+    └─ Model independent, parallelisable computations
 </code></pre>
 <h2 id="key-concepts-summary"><a class="header" href="#key-concepts-summary">Key Concepts Summary</a></h2>
 <h3 id="kindf-a"><a class="header" href="#kindf-a">Kind&lt;F, A&gt;</a></h3>
@@ -18780,6 +19915,12 @@ Tutorial 07: Real World
 <p>A typeclass for chaining dependent computations. Provides <code>flatMap</code> for sequences where each step depends on the previous result.</p>
 <h3 id="monaderror-1"><a class="header" href="#monaderror-1">MonadError</a></h3>
 <p>A typeclass for explicit error handling. Provides <code>raiseError</code> and <code>handleErrorWith</code> for working with failures.</p>
+<h3 id="natural-transformation-1"><a class="header" href="#natural-transformation-1">Natural Transformation</a></h3>
+<p>A polymorphic function between type constructors: <code>Natural&lt;F, G&gt;</code> transforms <code>Kind&lt;F, A&gt;</code> to <code>Kind&lt;G, A&gt;</code> for any type <code>A</code>. Used to interpret Free structures.</p>
+<h3 id="coyoneda-1"><a class="header" href="#coyoneda-1">Coyoneda</a></h3>
+<p>The "free functor" that gives any type a Functor instance. Stores a value and an accumulated function, enabling map fusion where multiple maps become a single traversal.</p>
+<h3 id="free-applicative-1"><a class="header" href="#free-applicative-1">Free Applicative</a></h3>
+<p>Captures independent computations that can potentially run in parallel. Unlike Free Monad's <code>flatMap</code>, <code>map2</code> combines values without creating dependencies.</p>
 <h2 id="running-the-tutorials"><a class="header" href="#running-the-tutorials">Running the Tutorials</a></h2>
 <h3 id="option-1-run-all-tests"><a class="header" href="#option-1-run-all-tests">Option 1: Run All Tests</a></h3>
 <pre><code class="language-bash">./gradlew :hkj-examples:test --tests "*coretypes*"
@@ -18828,7 +19969,7 @@ Kind&lt;EitherKind.Witness&lt;String&gt;, Integer&gt; kind = EITHER.widen(either
 <li><strong>Still stuck?</strong> Ask in <a href="https://github.com/higher-kinded-j/higher-kinded-j/discussions">GitHub Discussions</a></li>
 </ul>
 <hr />
-<p>Ready to start? Open <code>Tutorial01_KindBasics.java</code> and let's demystify Higher-Kinded Types! 🚀</p>
+<p>Ready to start? Open <code>Tutorial01_KindBasics.java</code> and let's demystify Higher-Kinded Types!</p>
 <div style="break-before: page; page-break-before: always;"></div><style>
 .mdbook-alerts {
   padding: 8px 16px;
@@ -23561,7 +24702,7 @@ Traversal&lt;List&lt;Order&gt;, Order&gt; activeOrders =
         .andThen(Traversals.filtered(Order::isActive));
 </code></pre>
 <hr />
-<h2 id="summary-4"><a class="header" href="#summary-4">Summary</a></h2>
+<h2 id="summary-7"><a class="header" href="#summary-7">Summary</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Composition</th><th>Result</th><th>Use Case</th></tr></thead><tbody>
 <tr><td>Lens &gt;&gt;&gt; Lens</td><td>Lens</td><td>Nested product types (records)</td></tr>
 <tr><td>Lens &gt;&gt;&gt; Prism</td><td>Affine</td><td>Product containing sum type</td></tr>
@@ -24005,7 +25146,7 @@ OptionalDouble average = allScores.stream().mapToInt(Integer::intValue).average(
 </code></pre>
 <hr />
 <h2 id="common-patterns-2"><a class="header" href="#common-patterns-2">Common Patterns</a></h2>
-<h3 id="validation-with-error-accumulation"><a class="header" href="#validation-with-error-accumulation">Validation with Error Accumulation</a></h3>
+<h3 id="validation-with-error-accumulation-1"><a class="header" href="#validation-with-error-accumulation-1">Validation with Error Accumulation</a></h3>
 <pre><code class="language-java">// Validate all email addresses in a userLogin list
 Traversal&lt;Company, String&gt; allEmails = CompanyTraversals.employees()
     .andThen(EmployeeTraversals.contactInfo())
@@ -24222,7 +25363,7 @@ Collections.rotate(prices, 3);            // Circular rotation
 prices.sort(Comparator.reverseOrder());   // Descending sort
 prices.removeIf(p -&gt; p &lt; 10.0);          // Filter (with caveats)
 </code></pre>
-<h3 id="performance-considerations"><a class="header" href="#performance-considerations">Performance Considerations</a></h3>
+<h3 id="performance-considerations-1"><a class="header" href="#performance-considerations-1">Performance Considerations</a></h3>
 <p><code>partsOf</code> operations traverse the structure twice:</p>
 <ol>
 <li><strong>Once for <code>get</code></strong>: Collect all focused elements</li>
@@ -24982,7 +26123,7 @@ Maybe&lt;Product&gt; maybe = Maybe.fromOptional(optional);
 Maybe&lt;Product&gt; maybe = previewMaybe(itemsFold, order);
 Optional&lt;Product&gt; optional = maybe.toOptional();
 </code></pre>
-<h4 id="performance-considerations-1"><a class="header" href="#performance-considerations-1">Performance Considerations</a></h4>
+<h4 id="performance-considerations-2"><a class="header" href="#performance-considerations-2">Performance Considerations</a></h4>
 <p>Maybe-based extensions have minimal overhead:</p>
 <ul>
 <li><strong><code>previewMaybe</code></strong>: Same performance as <code>preview()</code>, just wraps in <code>Maybe</code> instead of <code>Optional</code></li>
@@ -26189,7 +27330,7 @@ public class EmployeeService {
     }
 }
 </code></pre>
-<h4 id="performance-considerations-2"><a class="header" href="#performance-considerations-2">Performance Considerations</a></h4>
+<h4 id="performance-considerations-3"><a class="header" href="#performance-considerations-3">Performance Considerations</a></h4>
 <p><code>getMaybe</code> adds minimal overhead:</p>
 <ul>
 <li><strong>One null check</strong>: Checks if the extracted value is null</li>
@@ -26387,7 +27528,7 @@ Getter&lt;NullableRecord, String&gt; safeGetter = Getter.of(r -&gt;
     r.value() != null ? r.value() : "default");
 </code></pre>
 <hr />
-<h2 id="performance-considerations-3"><a class="header" href="#performance-considerations-3">Performance Considerations</a></h2>
+<h2 id="performance-considerations-4"><a class="header" href="#performance-considerations-4">Performance Considerations</a></h2>
 <p>Getters are <strong>extremely lightweight</strong>:</p>
 <ul>
 <li><strong>Zero overhead</strong>: Just a function wrapper</li>
@@ -27061,7 +28202,7 @@ Setter&lt;Product, Double&gt; priceSetter = Setter.fromGetSet(
     (p, price) -&gt; new Product(p.name(), price, p.stock(), p.tags()));
 </code></pre>
 <hr />
-<h2 id="performance-considerations-4"><a class="header" href="#performance-considerations-4">Performance Considerations</a></h2>
+<h2 id="performance-considerations-5"><a class="header" href="#performance-considerations-5">Performance Considerations</a></h2>
 <p>Setters are <strong>lightweight and efficient</strong>:</p>
 <ul>
 <li><strong>Minimal overhead</strong>: Just function composition</li>
@@ -27822,7 +28963,7 @@ Traversal&lt;Option&lt;Integer&gt;, Integer&gt; vavrOption = new Traversal&lt;&g
 <li><a href="https://arxiv.org/abs/1703.10857">Profunctor Optics: Modular Data Accessors</a> - Theoretical foundation</li>
 </ul>
 <hr />
-<h2 id="summary-5"><a class="header" href="#summary-5">Summary</a></h2>
+<h2 id="summary-8"><a class="header" href="#summary-8">Summary</a></h2>
 <p>Structure traversals extend the traversal pattern to common Java data types:</p>
 <div class="table-wrapper"><table><thead><tr><th>Structure</th><th>Traversal</th><th>Key Benefit</th></tr></thead><tbody>
 <tr><td><strong>Optional</strong></td><td><code>forOptional()</code></td><td>Null-safe composition without <code>.map()</code> chains</td></tr>
@@ -31487,7 +32628,7 @@ Config result = Traversals.modify(valueTraversal, String::trim, config);
 </div>
 </div>
 <hr />
-<h2 id="performance-considerations-5"><a class="header" href="#performance-considerations-5">Performance Considerations</a></h2>
+<h2 id="performance-considerations-6"><a class="header" href="#performance-considerations-6">Performance Considerations</a></h2>
 <p>Both At and Ixed create new collection instances on every modification:</p>
 <pre><code class="language-java">// Each operation copies the entire map - O(n)
 Map&lt;String, Integer&gt; step1 = at.insertOrUpdate("a", 1, map);   // Copy
@@ -31512,7 +32653,7 @@ result.remove("c");
 </div>
 </div>
 <hr />
-<h2 id="summary-6"><a class="header" href="#summary-6">Summary</a></h2>
+<h2 id="summary-9"><a class="header" href="#summary-9">Summary</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Use Case</th><th>Tool</th><th>Why</th></tr></thead><tbody>
 <tr><td>Add new map entry</td><td><code>At.insertOrUpdate()</code></td><td>Only At can insert</td></tr>
 <tr><td>Delete map entry</td><td><code>At.remove()</code></td><td>Only At can delete</td></tr>
@@ -34094,7 +35235,7 @@ Validated&lt;List&lt;String&gt;, Order&gt; result = OpticOps.modifyAllValidated(
 <p>For standard validation scenarios, the dedicated methods are clearer and more concise.</p>
 </div>
 </div>
-<h3 id="performance-considerations-6"><a class="header" href="#performance-considerations-6">Performance Considerations</a></h3>
+<h3 id="performance-considerations-7"><a class="header" href="#performance-considerations-7">Performance Considerations</a></h3>
 <ul>
 <li><strong><code>Either</code> short-circuiting</strong>: Stops at first error, potentially faster for large collections</li>
 <li><strong><code>Validated</code> accumulation</strong>: Checks all elements, more work but better UX</li>
@@ -34295,7 +35436,7 @@ Team updateTopPerformers(Team team, int threshold) {
 }
 </code></pre>
 <hr />
-<h2 id="performance-considerations-7"><a class="header" href="#performance-considerations-7">Performance Considerations</a></h2>
+<h2 id="performance-considerations-8"><a class="header" href="#performance-considerations-8">Performance Considerations</a></h2>
 <h3 id="object-allocation"><a class="header" href="#object-allocation">Object Allocation</a></h3>
 <ul>
 <li><strong>Static methods</strong>: Minimal allocation (just the result)</li>
@@ -35206,7 +36347,7 @@ Person result = interpreter.run(program);
 <hr />
 <h2 id="part-2-the-direct-interpreter"><a class="header" href="#part-2-the-direct-interpreter">Part 2: The Direct Interpreter</a></h2>
 <p>The <code>DirectOpticInterpreter</code> is the simplest interpreter: it executes optic operations immediately, exactly as you'd expect.</p>
-<h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
+<h3 id="basic-usage-3"><a class="header" href="#basic-usage-3">Basic Usage</a></h3>
 <pre><code class="language-java">@GenerateLenses
 public record Person(String name, int age) {}
 
@@ -35267,7 +36408,7 @@ public Employee processAnnualReview(
 <li><strong>Debugging</strong>: Understanding what happened when</li>
 <li><strong>Monitoring</strong>: Tracking data changes in production</li>
 </ul>
-<h3 id="basic-usage-1"><a class="header" href="#basic-usage-1">Basic Usage</a></h3>
+<h3 id="basic-usage-4"><a class="header" href="#basic-usage-4">Basic Usage</a></h3>
 <pre><code class="language-java">@GenerateLenses
 public record Account(String accountId, BigDecimal balance) {}
 
@@ -35382,7 +36523,7 @@ List&lt;String&gt; secondLog = logger.getLog();
 <li><strong>Testing</strong>: Verify logic without side effects</li>
 <li><strong>What-if scenarios</strong>: See what would happen</li>
 </ul>
-<h3 id="basic-usage-2"><a class="header" href="#basic-usage-2">Basic Usage</a></h3>
+<h3 id="basic-usage-5"><a class="header" href="#basic-usage-5">Basic Usage</a></h3>
 <pre><code class="language-java">@GenerateLenses
 public record Person(String name, int age) {}
 
@@ -37240,7 +38381,7 @@ Maybe&lt;String&gt; backToMaybe = value
 </div>
 </div>
 <hr />
-<h2 id="summary-7"><a class="header" href="#summary-7">Summary</a></h2>
+<h2 id="summary-10"><a class="header" href="#summary-10">Summary</a></h2>
 <p>Core Type Integration provides:</p>
 <p><strong>Safe Extraction</strong> – Extract values from <code>Maybe</code>, <code>Either</code>, <code>Validated</code>, and <code>Try</code> without null checks or verbose pattern matching</p>
 <p><strong>Pattern Matching</strong> – Use <code>matches()</code> to check cases, <code>getOptional()</code> to extract values</p>
@@ -37763,7 +38904,7 @@ Maybe&lt;String&gt; safeBio = maybeProfile.flatMap(p -&gt; getMaybe(bioLens, p))
 </div>
 </div>
 <hr />
-<h2 id="summary-8"><a class="header" href="#summary-8">Summary</a></h2>
+<h2 id="summary-11"><a class="header" href="#summary-11">Summary</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Method</th><th>Returns</th><th>Use Case</th></tr></thead><tbody>
 <tr><td><code>getMaybe</code></td><td><code>Maybe&lt;A&gt;</code></td><td>Null-safe field access</td></tr>
 <tr><td><code>getEither</code></td><td><code>Either&lt;E, A&gt;</code></td><td>Access with error message</td></tr>
@@ -38981,7 +40122,7 @@ public Either&lt;DomainError, List&lt;Order&gt;&gt; getUserOrders(@PathVariable 
 <h2 id="core-features"><a class="header" href="#core-features">Core Features</a></h2>
 <h3 id="1-either-success-or-typed-error"><a class="header" href="#1-either-success-or-typed-error">1. Either: Success or Typed Error</a></h3>
 <p><code>Either&lt;L, R&gt;</code> represents a computation that can succeed with a <code>Right(value)</code> or fail with a <code>Left(error)</code>.</p>
-<h4 id="basic-usage-3"><a class="header" href="#basic-usage-3">Basic Usage</a></h4>
+<h4 id="basic-usage-6"><a class="header" href="#basic-usage-6">Basic Usage</a></h4>
 <pre><code class="language-java">@RestController
 @RequestMapping("/api/users")
 public class UserController {
@@ -39024,7 +40165,7 @@ public Either&lt;DomainError, Order&gt; getUserOrder(
 <hr />
 <h3 id="2-validated-accumulating-multiple-errors"><a class="header" href="#2-validated-accumulating-multiple-errors">2. Validated: Accumulating Multiple Errors</a></h3>
 <p><code>Validated&lt;E, A&gt;</code> is designed for validation scenarios where you want to accumulate <strong>all</strong> errors, not just the first one.</p>
-<h4 id="basic-usage-4"><a class="header" href="#basic-usage-4">Basic Usage</a></h4>
+<h4 id="basic-usage-7"><a class="header" href="#basic-usage-7">Basic Usage</a></h4>
 <pre><code class="language-java">@PostMapping
 public Validated&lt;List&lt;ValidationError&gt;, User&gt; createUser(@RequestBody UserRequest request) {
     return userService.validateAndCreate(request);
@@ -39076,7 +40217,7 @@ public class UserService {
 <hr />
 <h3 id="3-eithert-async-operations-with-typed-errors"><a class="header" href="#3-eithert-async-operations-with-typed-errors">3. EitherT: Async Operations with Typed Errors</a></h3>
 <p><code>EitherT&lt;F, L, R&gt;</code> combines asynchronous computation (<code>CompletableFuture</code>) with typed errors (<code>Either</code>), allowing you to work with <code>CompletableFuture&lt;Either&lt;L, R&gt;&gt;</code> in a composable way.</p>
-<h4 id="basic-usage-5"><a class="header" href="#basic-usage-5">Basic Usage</a></h4>
+<h4 id="basic-usage-8"><a class="header" href="#basic-usage-8">Basic Usage</a></h4>
 <pre><code class="language-java">@GetMapping("/{id}/async")
 public EitherT&lt;CompletableFutureKind.Witness, DomainError, User&gt; getUserAsync(
         @PathVariable String id) {
@@ -39643,7 +40784,7 @@ public class UserService {
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/example/TESTING.md">Testing Guide</a> - Testing patterns</li>
 </ul>
 <hr />
-<h2 id="summary-9"><a class="header" href="#summary-9">Summary</a></h2>
+<h2 id="summary-12"><a class="header" href="#summary-12">Summary</a></h2>
 <p>The hkj-spring-boot-starter brings functional programming patterns seamlessly into Spring Boot applications:</p>
 <ul>
 <li>
@@ -40481,7 +41622,7 @@ void shouldReturnLeftWhenUserNotFound() {
 </code></pre>
 <p><strong>Much cleaner:</strong> No need to set up exception expectations or catch blocks.</p>
 <hr />
-<h2 id="performance-considerations-8"><a class="header" href="#performance-considerations-8">Performance Considerations</a></h2>
+<h2 id="performance-considerations-9"><a class="header" href="#performance-considerations-9">Performance Considerations</a></h2>
 <p>Functional error handling is typically <strong>as fast or faster</strong> than exception-throwing:</p>
 <p><strong>Exception Throwing:</strong></p>
 <ul>
@@ -41214,6 +42355,104 @@ Kind&lt;IOKind.Witness, Unit&gt; conditionalLog = selective.whenS(debugEnabled, 
 </code></pre>
 <p><strong>When To Use:</strong> Feature flags, conditional logging, configuration-based behaviour, multi-source fallback strategies.</p>
 <p><strong>Related:</strong> <a href="functional/selective.html">Selective Documentation</a></p>
+<hr />
+<h3 id="natural-transformation-2"><a class="header" href="#natural-transformation-2">Natural Transformation</a></h3>
+<p><strong>Definition:</strong> A polymorphic function between type constructors. Given type constructors <code>F</code> and <code>G</code>, a natural transformation is a function that converts <code>F[A]</code> to <code>G[A]</code> for any type <code>A</code>, without knowing or inspecting what <code>A</code> is.</p>
+<p><strong>Core Operation:</strong></p>
+<ul>
+<li><code>apply(Kind&lt;F, A&gt; fa)</code> - Transform from context F to context G</li>
+</ul>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Natural transformation from Maybe to List
+Natural&lt;MaybeKind.Witness, ListKind.Witness&gt; maybeToList = new Natural&lt;&gt;() {
+    @Override
+    public &lt;A&gt; Kind&lt;ListKind.Witness, A&gt; apply(Kind&lt;MaybeKind.Witness, A&gt; fa) {
+        Maybe&lt;A&gt; maybe = MAYBE.narrow(fa);
+        List&lt;A&gt; list = maybe.map(List::of).orElse(List.of());
+        return LIST.widen(list);
+    }
+};
+
+// Use with Free monad interpretation
+Free&lt;ConsoleOpKind.Witness, String&gt; program = ...;
+Kind&lt;IOKind.Witness, String&gt; executable = program.foldMap(interpreter, ioMonad);
+</code></pre>
+<p><strong>The Naturality Law:</strong> For any function <code>f: A -&gt; B</code>:</p>
+<pre><code>nat.apply(functor.map(f, fa)) == functor.map(f, nat.apply(fa))
+</code></pre>
+<p><strong>When To Use:</strong> Free monad/applicative interpretation, type conversions between containers, monad transformer lifting.</p>
+<p><strong>Related:</strong> <a href="functional/natural_transformation.html">Natural Transformation Documentation</a></p>
+<hr />
+<h3 id="coyoneda-2"><a class="header" href="#coyoneda-2">Coyoneda</a></h3>
+<p><strong>Definition:</strong> The "free functor" that provides automatic Functor instances for any type constructor. Coyoneda stores a value and an accumulated transformation function, deferring actual mapping until lowering.</p>
+<p><strong>Core Operations:</strong></p>
+<ul>
+<li><code>lift(Kind&lt;F, A&gt; fa)</code> - Wrap a value in Coyoneda</li>
+<li><code>map(Function&lt;A, B&gt; f)</code> - Compose functions (no Functor needed)</li>
+<li><code>lower(Functor&lt;F&gt; functor)</code> - Apply accumulated function using provided Functor</li>
+</ul>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Lift into Coyoneda - no Functor required for mapping!
+Coyoneda&lt;MyDSL, Integer&gt; coyo = Coyoneda.lift(myInstruction);
+
+// Chain maps - functions are composed, not applied
+Coyoneda&lt;MyDSL, String&gt; mapped = coyo
+    .map(x -&gt; x * 2)
+    .map(x -&gt; x + 1)
+    .map(Object::toString);
+
+// Only when lowering is the Functor used (and functions applied once)
+Kind&lt;MyDSL, String&gt; result = mapped.lower(myDslFunctor);
+</code></pre>
+<p><strong>Key Benefit:</strong> Enables map fusion (multiple maps become one function composition) and eliminates the need for Functor instances on Free monad instruction sets.</p>
+<p><strong>When To Use:</strong> With Free monads to avoid implementing Functor for every DSL instruction type; optimising chains of map operations.</p>
+<p><strong>Related:</strong> <a href="monads/coyoneda.html">Coyoneda Documentation</a>, <a href="glossary.html#map-fusion">Map Fusion</a></p>
+<hr />
+<h3 id="free-applicative-2"><a class="header" href="#free-applicative-2">Free Applicative</a></h3>
+<p><strong>Definition:</strong> The applicative counterpart to Free Monad. Whilst Free Monad captures sequential, dependent computations, Free Applicative captures independent computations that can potentially run in parallel.</p>
+<p><strong>Core Operations:</strong></p>
+<ul>
+<li><code>pure(A value)</code> - Lift a pure value</li>
+<li><code>lift(Kind&lt;F, A&gt; fa)</code> - Lift a single instruction</li>
+<li><code>map2(FreeAp&lt;F, B&gt; fb, BiFunction&lt;A, B, C&gt; f)</code> - Combine independent computations</li>
+<li><code>foldMap(Natural&lt;F, G&gt; nat, Applicative&lt;G&gt; app)</code> - Interpret using a natural transformation</li>
+</ul>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Independent computations - can run in parallel
+FreeAp&lt;DbOp, User&gt; userFetch = FreeAp.lift(new GetUser(userId));
+FreeAp&lt;DbOp, List&lt;Post&gt;&gt; postsFetch = FreeAp.lift(new GetPosts(userId));
+
+// Combine them - neither depends on the other's result
+FreeAp&lt;DbOp, UserProfile&gt; profile = userFetch.map2(
+    postsFetch,
+    UserProfile::new
+);
+
+// Smart interpreter can execute both in parallel or batch them
+Kind&lt;CompletableFutureKind.Witness, UserProfile&gt; result =
+    profile.foldMap(parallelInterpreter, cfApplicative);
+</code></pre>
+<p><strong>When To Use:</strong> Parallel data fetching, validation that accumulates all errors, batching independent operations, static analysis of programs before execution.</p>
+<p><strong>Related:</strong> <a href="monads/free_applicative.html">Free Applicative Documentation</a>, <a href="monads/free_monad.html">Free Monad</a></p>
+<hr />
+<h3 id="map-fusion-1"><a class="header" href="#map-fusion-1">Map Fusion</a></h3>
+<p><strong>Definition:</strong> An optimisation where multiple consecutive <code>map</code> operations are combined into a single function composition, reducing the number of traversals over a data structure.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Without fusion: three separate traversals
+list.map(x -&gt; x * 2)      // Traversal 1
+    .map(x -&gt; x + 1)      // Traversal 2
+    .map(Object::toString); // Traversal 3
+
+// With Coyoneda: one traversal
+Coyoneda.lift(list)
+    .map(x -&gt; x * 2)       // Just composes functions
+    .map(x -&gt; x + 1)       // Just composes functions
+    .map(Object::toString) // Just composes functions
+    .lower(listFunctor);   // ONE traversal with composed function
+</code></pre>
+<p><strong>How It Works:</strong> Coyoneda stores the accumulated function <code>f.andThen(g).andThen(h)</code> instead of applying each map immediately. The composed function is applied once during <code>lower()</code>.</p>
+<p><strong>When To Use:</strong> Chains of transformations on expensive-to-traverse structures; automatically enabled when using Coyoneda.</p>
+<p><strong>Related:</strong> <a href="glossary.html#coyoneda">Coyoneda</a>, <a href="monads/coyoneda.html">Coyoneda Documentation</a></p>
 <hr />
 <h2 id="data-types-and-structures"><a class="header" href="#data-types-and-structures">Data Types and Structures</a></h2>
 <h3 id="choice"><a class="header" href="#choice">Choice</a></h3>
