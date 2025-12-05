@@ -35596,6 +35596,980 @@ for (Order order : orders) {
 }
 
 </style>
+<h1 id="focus-dsl-path-based-optic-syntax"><a class="header" href="#focus-dsl-path-based-optic-syntax">Focus DSL: Path-Based Optic Syntax</a></h1>
+<h2 id="type-safe-navigation-through-nested-data"><a class="header" href="#type-safe-navigation-through-nested-data"><em>Type-Safe Navigation Through Nested Data</em></a></h2>
+<div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
+<div class="admonition-title">
+<div id="admonition-what-youll-learn-title">
+<p>What You'll Learn</p>
+</div>
+<a class="admonition-anchor-link" href="optics/focus_dsl.html#admonition-what-youll-learn"></a>
+</div>
+<div>
+<ul>
+<li>How to navigate deeply nested data structures with type-safe paths</li>
+<li>Using <code>@GenerateFocus</code> to generate path builders automatically</li>
+<li><strong>Fluent cross-type navigation</strong> with generated navigators (no <code>.via()</code> needed)</li>
+<li>The difference between <code>FocusPath</code>, <code>AffinePath</code>, and <code>TraversalPath</code></li>
+<li>Collection navigation with <code>.each()</code>, <code>.at()</code>, <code>.some()</code>, and <code>.traverseOver()</code></li>
+<li>Type class integration: effectful operations, monoid aggregation, and Traverse support</li>
+<li>Working with sum types using <code>instanceOf()</code> and conditional modification with <code>modifyWhen()</code></li>
+<li>Composing Focus paths with existing optics</li>
+<li>Debugging paths with <code>traced()</code></li>
+<li>When to use Focus DSL vs manual lens composition</li>
+</ul>
+</div>
+</div>
+<div id="admonition-example-code" class="admonition admonish-note" role="note" aria-labelledby="admonition-example-code-title">
+<div class="admonition-title">
+<div id="admonition-example-code-title">
+<p>Example Code</p>
+</div>
+<a class="admonition-anchor-link" href="optics/focus_dsl.html#admonition-example-code"></a>
+</div>
+<div>
+<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/focus/NavigatorExample.java">NavigatorExample</a> | <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/focus/TraverseIntegrationExample.java">TraverseIntegrationExample</a> | <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/focus/ValidationPipelineExample.java">ValidationPipelineExample</a></p>
+</div>
+</div>
+<p>The Focus DSL provides a fluent, path-based syntax for working with optics. Instead of manually composing lenses, prisms, and traversals, you can navigate through your data structures using intuitive method chains that mirror the shape of your data.</p>
+<hr />
+<h2 id="the-problem-verbose-manual-composition"><a class="header" href="#the-problem-verbose-manual-composition">The Problem: Verbose Manual Composition</a></h2>
+<p>When working with deeply nested data structures, manual optic composition becomes verbose:</p>
+<pre><code class="language-java">// Manual composition - verbose and repetitive
+Lens&lt;Company, String&gt; employeeNameLens =
+    CompanyLenses.departments()
+        .andThen(DepartmentLenses.employees())
+        .andThen(EmployeeLenses.name());
+
+// Must compose at each use site
+String name = employeeNameLens.get(company);
+</code></pre>
+<p>With the Focus DSL, the same operation becomes:</p>
+<pre><code class="language-java">// Focus DSL - fluent and intuitive
+String name = CompanyFocus.departments().employees().name().get(company);
+</code></pre>
+<hr />
+<h2 id="think-of-focus-paths-like"><a class="header" href="#think-of-focus-paths-like">Think of Focus Paths Like...</a></h2>
+<ul>
+<li><strong>File system paths</strong>: <code>/company/departments/employees/name</code></li>
+<li><strong>JSON pointers</strong>: <code>$.departments[*].employees[*].name</code></li>
+<li><strong>XPath expressions</strong>: <code>//department/employee/name</code></li>
+<li><strong>IDE navigation</strong>: Click through nested fields with autocomplete</li>
+</ul>
+<p>The key difference: Focus paths are fully type-safe, with compile-time checking at every step.</p>
+<hr />
+<h2 id="a-step-by-step-walkthrough-12"><a class="header" href="#a-step-by-step-walkthrough-12">A Step-by-Step Walkthrough</a></h2>
+<h3 id="step-1-annotate-your-records"><a class="header" href="#step-1-annotate-your-records">Step 1: Annotate Your Records</a></h3>
+<p>Add <code>@GenerateFocus</code> alongside <code>@GenerateLenses</code> to generate path builders:</p>
+<pre><code class="language-java">import org.higherkindedj.optics.annotations.GenerateLenses;
+import org.higherkindedj.optics.annotations.GenerateFocus;
+
+@GenerateLenses
+@GenerateFocus
+public record Company(String name, List&lt;Department&gt; departments) {}
+
+@GenerateLenses
+@GenerateFocus
+public record Department(String name, List&lt;Employee&gt; employees) {}
+
+@GenerateLenses
+@GenerateFocus
+public record Employee(String name, int age, Optional&lt;String&gt; email) {}
+</code></pre>
+<h3 id="step-2-use-generated-focus-classes"><a class="header" href="#step-2-use-generated-focus-classes">Step 2: Use Generated Focus Classes</a></h3>
+<p>The annotation processor generates companion Focus classes with path builders:</p>
+<pre><code class="language-java">// Generated: CompanyFocus.java
+// Navigate to company name
+FocusPath&lt;Company, String&gt; namePath = CompanyFocus.name();
+String companyName = namePath.get(company);
+
+// Navigate through collections
+TraversalPath&lt;Company, Department&gt; deptPath = CompanyFocus.departments();
+List&lt;Department&gt; allDepts = deptPath.getAll(company);
+
+// Navigate to specific index
+AffinePath&lt;Company, Department&gt; firstDeptPath = CompanyFocus.department(0);
+Optional&lt;Department&gt; firstDept = firstDeptPath.getOptional(company);
+</code></pre>
+<h3 id="step-3-chain-navigation-methods"><a class="header" href="#step-3-chain-navigation-methods">Step 3: Chain Navigation Methods</a></h3>
+<p>Focus paths support fluent chaining for deep navigation:</p>
+<pre><code class="language-java">// Deep path through collections
+TraversalPath&lt;Company, String&gt; allEmployeeNames =
+    CompanyFocus.departments()     // TraversalPath&lt;Company, Department&gt;
+        .employees()               // TraversalPath&lt;Company, Employee&gt;
+        .name();                   // TraversalPath&lt;Company, String&gt;
+
+// Get all employee names across all departments
+List&lt;String&gt; names = allEmployeeNames.getAll(company);
+
+// Modify all employee names
+Company updated = allEmployeeNames.modifyAll(String::toUpperCase, company);
+</code></pre>
+<hr />
+<h2 id="the-three-path-types"><a class="header" href="#the-three-path-types">The Three Path Types</a></h2>
+<p>Focus DSL provides three path types, mirroring the optic hierarchy:</p>
+<pre><code>         FocusPath&lt;S, A&gt;
+        (exactly one focus)
+               |
+        AffinePath&lt;S, A&gt;
+      (zero or one focus)
+               |
+      TraversalPath&lt;S, A&gt;
+      (zero or more focus)
+</code></pre>
+<h3 id="focuspath-exactly-one-element"><a class="header" href="#focuspath-exactly-one-element">FocusPath: Exactly One Element</a></h3>
+<p><code>FocusPath&lt;S, A&gt;</code> wraps a <code>Lens&lt;S, A&gt;</code> and guarantees exactly one focused element:</p>
+<pre><code class="language-java">// Always succeeds - the field always exists
+FocusPath&lt;Employee, String&gt; namePath = EmployeeFocus.name();
+
+String name = namePath.get(employee);           // Always returns a value
+Employee updated = namePath.set("Bob", employee);  // Always succeeds
+Employee modified = namePath.modify(String::toUpperCase, employee);
+</code></pre>
+<p><strong>Key Operations:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Return Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>get(S)</code></td><td><code>A</code></td><td>Extract the focused value</td></tr>
+<tr><td><code>set(A, S)</code></td><td><code>S</code></td><td>Replace the focused value</td></tr>
+<tr><td><code>modify(Function&lt;A,A&gt;, S)</code></td><td><code>S</code></td><td>Transform the focused value</td></tr>
+<tr><td><code>toLens()</code></td><td><code>Lens&lt;S, A&gt;</code></td><td>Extract underlying optic</td></tr>
+</tbody></table>
+</div>
+<h3 id="affinepath-zero-or-one-element"><a class="header" href="#affinepath-zero-or-one-element">AffinePath: Zero or One Element</a></h3>
+<p><code>AffinePath&lt;S, A&gt;</code> wraps an <code>Affine&lt;S, A&gt;</code> for optional access:</p>
+<pre><code class="language-java">// May or may not have a value
+AffinePath&lt;Employee, String&gt; emailPath = EmployeeFocus.email();
+
+Optional&lt;String&gt; email = emailPath.getOptional(employee);  // May be empty
+Employee updated = emailPath.set("new@email.com", employee);  // Always succeeds
+Employee modified = emailPath.modify(String::toLowerCase, employee);  // No-op if absent
+</code></pre>
+<p><strong>Key Operations:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Return Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>getOptional(S)</code></td><td><code>Optional&lt;A&gt;</code></td><td>Extract if present</td></tr>
+<tr><td><code>set(A, S)</code></td><td><code>S</code></td><td>Replace (creates if structure allows)</td></tr>
+<tr><td><code>modify(Function&lt;A,A&gt;, S)</code></td><td><code>S</code></td><td>Transform if present</td></tr>
+<tr><td><code>matches(S)</code></td><td><code>boolean</code></td><td>Check if value exists</td></tr>
+<tr><td><code>toAffine()</code></td><td><code>Affine&lt;S, A&gt;</code></td><td>Extract underlying optic</td></tr>
+</tbody></table>
+</div>
+<h3 id="traversalpath-zero-or-more-elements"><a class="header" href="#traversalpath-zero-or-more-elements">TraversalPath: Zero or More Elements</a></h3>
+<p><code>TraversalPath&lt;S, A&gt;</code> wraps a <code>Traversal&lt;S, A&gt;</code> for collection access:</p>
+<pre><code class="language-java">// Focuses on multiple elements
+TraversalPath&lt;Department, Employee&gt; employeesPath = DepartmentFocus.employees();
+
+List&lt;Employee&gt; all = employeesPath.getAll(department);    // All employees
+Department updated = employeesPath.setAll(defaultEmployee, department);
+Department modified = employeesPath.modifyAll(e -&gt; promote(e), department);
+</code></pre>
+<p><strong>Key Operations:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Return Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>getAll(S)</code></td><td><code>List&lt;A&gt;</code></td><td>Extract all focused values</td></tr>
+<tr><td><code>setAll(A, S)</code></td><td><code>S</code></td><td>Replace all focused values</td></tr>
+<tr><td><code>modifyAll(Function&lt;A,A&gt;, S)</code></td><td><code>S</code></td><td>Transform all focused values</td></tr>
+<tr><td><code>filter(Predicate&lt;A&gt;)</code></td><td><code>TraversalPath&lt;S, A&gt;</code></td><td>Filter focused elements</td></tr>
+<tr><td><code>toTraversal()</code></td><td><code>Traversal&lt;S, A&gt;</code></td><td>Extract underlying optic</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="collection-navigation"><a class="header" href="#collection-navigation">Collection Navigation</a></h2>
+<p>The Focus DSL provides intuitive methods for navigating collections:</p>
+<h3 id="each---traverse-all-elements"><a class="header" href="#each---traverse-all-elements"><code>.each()</code> - Traverse All Elements</a></h3>
+<p>Converts a collection field to a traversal over its elements:</p>
+<pre><code class="language-java">// List&lt;Department&gt; -&gt; traversal over Department
+TraversalPath&lt;Company, Department&gt; allDepts = CompanyFocus.departments();
+
+// Equivalent to calling .each() on a FocusPath to List&lt;T&gt;
+</code></pre>
+<h3 id="atindex---access-by-index"><a class="header" href="#atindex---access-by-index"><code>.at(index)</code> - Access by Index</a></h3>
+<p>Focuses on a single element at a specific index:</p>
+<pre><code class="language-java">// Focus on first department
+AffinePath&lt;Company, Department&gt; firstDept = CompanyFocus.department(0);
+
+// Focus on third employee in second department
+AffinePath&lt;Company, Employee&gt; specificEmployee =
+    CompanyFocus.department(1).employee(2);
+
+// Returns empty if index out of bounds
+Optional&lt;Department&gt; maybe = firstDept.getOptional(emptyCompany);
+</code></pre>
+<h3 id="atkeykey---access-map-values"><a class="header" href="#atkeykey---access-map-values"><code>.atKey(key)</code> - Access Map Values</a></h3>
+<p>For <code>Map&lt;K, V&gt;</code> fields, access values by key:</p>
+<pre><code class="language-java">@GenerateLenses
+@GenerateFocus
+record Config(Map&lt;String, Setting&gt; settings) {}
+
+// Focus on specific setting
+AffinePath&lt;Config, Setting&gt; dbSetting = ConfigFocus.setting("database");
+
+Optional&lt;Setting&gt; setting = dbSetting.getOptional(config);
+</code></pre>
+<h3 id="some---unwrap-optional"><a class="header" href="#some---unwrap-optional"><code>.some()</code> - Unwrap Optional</a></h3>
+<p>For <code>Optional&lt;T&gt;</code> fields, unwrap to the inner value:</p>
+<pre><code class="language-java">// Email is Optional&lt;String&gt;
+AffinePath&lt;Employee, String&gt; emailPath = EmployeeFocus.email();
+
+// Internally uses .some() to unwrap the Optional
+Optional&lt;String&gt; email = emailPath.getOptional(employee);
+</code></pre>
+<hr />
+<h2 id="composition-with-existing-optics"><a class="header" href="#composition-with-existing-optics">Composition with Existing Optics</a></h2>
+<p>Focus paths compose seamlessly with existing optics using <code>.via()</code>:</p>
+<h3 id="path--lens--path-or-affine"><a class="header" href="#path--lens--path-or-affine">Path + Lens = Path (or Affine)</a></h3>
+<pre><code class="language-java">// Existing lens for a computed property
+Lens&lt;Employee, String&gt; fullNameLens = Lens.of(
+    e -&gt; e.firstName() + " " + e.lastName(),
+    (e, name) -&gt; { /* setter logic */ }
+);
+
+// Compose Focus path with existing lens
+FocusPath&lt;Department, String&gt; employeeFullName =
+    DepartmentFocus.manager().via(fullNameLens);
+</code></pre>
+<h3 id="path--prism--affinepath"><a class="header" href="#path--prism--affinepath">Path + Prism = AffinePath</a></h3>
+<pre><code class="language-java">// Prism for sealed interface variant
+Prism&lt;Shape, Circle&gt; circlePrism = ShapePrisms.circle();
+
+// Compose to get AffinePath
+AffinePath&lt;Drawing, Circle&gt; firstCircle =
+    DrawingFocus.shape(0).via(circlePrism);
+</code></pre>
+<h3 id="path--traversal--traversalpath"><a class="header" href="#path--traversal--traversalpath">Path + Traversal = TraversalPath</a></h3>
+<pre><code class="language-java">// Custom traversal
+Traversal&lt;String, Character&gt; charsTraversal = StringTraversals.chars();
+
+// Compose for character-level access
+TraversalPath&lt;Employee, Character&gt; nameChars =
+    EmployeeFocus.name().via(charsTraversal);
+</code></pre>
+<hr />
+<h2 id="fluent-navigation-with-generated-navigators"><a class="header" href="#fluent-navigation-with-generated-navigators">Fluent Navigation with Generated Navigators</a></h2>
+<div id="admonition-zero-boilerplate-cross-type-navigation" class="admonition admonish-tip" role="note" aria-labelledby="admonition-zero-boilerplate-cross-type-navigation-title">
+<div class="admonition-title">
+<div id="admonition-zero-boilerplate-cross-type-navigation-title">
+<p>Zero-Boilerplate Cross-Type Navigation</p>
+</div>
+<a class="admonition-anchor-link" href="optics/focus_dsl.html#admonition-zero-boilerplate-cross-type-navigation"></a>
+</div>
+<div>
+<p>When navigating across multiple record types, the standard approach requires explicit <code>.via()</code> calls at each boundary. Generated navigators eliminate this boilerplate, enabling chains like <code>CompanyFocus.headquarters().city()</code> directly.</p>
+</div>
+</div>
+<h3 id="the-problem-explicit-composition"><a class="header" href="#the-problem-explicit-composition">The Problem: Explicit Composition</a></h3>
+<p>Without navigators, cross-type navigation requires <code>.via()</code> at each type boundary:</p>
+<pre><code class="language-java">// Without navigators - explicit .via() at each step
+String city = CompanyFocus.headquarters()
+    .via(AddressFocus.city().toLens())
+    .get(company);
+
+// Deep navigation becomes verbose
+String managerCity = CompanyFocus.departments()
+    .each()
+    .via(DepartmentFocus.manager().toLens())
+    .via(PersonFocus.address().toLens())
+    .via(AddressFocus.city().toLens())
+    .get(company);
+</code></pre>
+<h3 id="the-solution-generated-navigators"><a class="header" href="#the-solution-generated-navigators">The Solution: Generated Navigators</a></h3>
+<p>Enable navigator generation with <code>generateNavigators = true</code>:</p>
+<pre><code class="language-java">@GenerateFocus(generateNavigators = true)
+record Company(String name, Address headquarters) {}
+
+@GenerateFocus(generateNavigators = true)
+record Address(String street, String city) {}
+
+// With navigators - fluent chaining
+String city = CompanyFocus.headquarters().city().get(company);
+
+// Navigators chain naturally
+Company updated = CompanyFocus.headquarters().city()
+    .modify(String::toUpperCase, company);
+</code></pre>
+<h3 id="how-navigators-work"><a class="header" href="#how-navigators-work">How Navigators Work</a></h3>
+<p>When <code>generateNavigators = true</code>, the processor generates navigator wrapper classes for fields whose types are also annotated with <code>@GenerateFocus</code>. The generated code looks like:</p>
+<pre><code class="language-java">// Generated in CompanyFocus.java
+public static HeadquartersNavigator&lt;Company&gt; headquarters() {
+    return new HeadquartersNavigator&lt;&gt;(
+        FocusPath.of(Lens.of(Company::headquarters, ...))
+    );
+}
+
+// Generated inner class
+public static final class HeadquartersNavigator&lt;S&gt; {
+    private final FocusPath&lt;S, Address&gt; delegate;
+
+    // Delegate methods - same as FocusPath
+    public Address get(S source) { return delegate.get(source); }
+    public S set(Address value, S source) { return delegate.set(value, source); }
+    public S modify(Function&lt;Address, Address&gt; f, S source) { ... }
+
+    // Navigation methods for Address fields
+    public FocusPath&lt;S, String&gt; street() {
+        return delegate.via(AddressFocus.street().toLens());
+    }
+
+    public FocusPath&lt;S, String&gt; city() {
+        return delegate.via(AddressFocus.city().toLens());
+    }
+
+    // Access underlying path
+    public FocusPath&lt;S, Address&gt; toPath() { return delegate; }
+}
+</code></pre>
+<h3 id="path-type-widening"><a class="header" href="#path-type-widening">Path Type Widening</a></h3>
+<p>Navigators automatically widen path types when navigating through optional or collection fields:</p>
+<div class="table-wrapper"><table><thead><tr><th>Source Field Type</th><th>Navigator Returns</th></tr></thead><tbody>
+<tr><td>Regular field (<code>Address address</code>)</td><td><code>FocusPath</code> methods</td></tr>
+<tr><td>Optional field (<code>Optional&lt;Address&gt;</code>)</td><td><code>AffinePath</code> methods</td></tr>
+<tr><td>Collection field (<code>List&lt;Address&gt;</code>)</td><td><code>TraversalPath</code> methods</td></tr>
+</tbody></table>
+</div>
+<pre><code class="language-java">@GenerateFocus(generateNavigators = true)
+record User(String name, Optional&lt;Address&gt; homeAddress, List&lt;Address&gt; workAddresses) {}
+
+// homeAddress navigator methods return AffinePath
+Optional&lt;String&gt; homeCity = UserFocus.homeAddress().city().getOptional(user);
+
+// workAddresses navigator methods return TraversalPath
+List&lt;String&gt; workCities = UserFocus.workAddresses().city().getAll(user);
+</code></pre>
+<h3 id="controlling-navigator-generation"><a class="header" href="#controlling-navigator-generation">Controlling Navigator Generation</a></h3>
+<h4 id="depth-limiting"><a class="header" href="#depth-limiting">Depth Limiting</a></h4>
+<p>Prevent excessive code generation for deeply nested structures:</p>
+<pre><code class="language-java">@GenerateFocus(generateNavigators = true, maxNavigatorDepth = 2)
+record Root(Level1 child) {}
+
+// Depth 1: child() returns Level1Navigator
+// Depth 2: child().nested() returns FocusPath (not a navigator)
+// Beyond depth 2: use .via() for further navigation
+
+FocusPath&lt;Root, String&gt; deepPath = RootFocus.child().nested()
+    .via(Level3Focus.value().toLens());
+</code></pre>
+<h4 id="field-filtering"><a class="header" href="#field-filtering">Field Filtering</a></h4>
+<p>Include only specific fields in navigator generation:</p>
+<pre><code class="language-java">@GenerateFocus(generateNavigators = true, includeFields = {"primary"})
+record MultiAddress(Address primary, Address secondary, Address backup) {}
+
+// primary() returns navigator with navigation methods
+// secondary() and backup() return standard FocusPath&lt;MultiAddress, Address&gt;
+</code></pre>
+<p>Or exclude specific fields:</p>
+<pre><code class="language-java">@GenerateFocus(generateNavigators = true, excludeFields = {"internal"})
+record Config(Settings user, Settings internal) {}
+
+// user() returns navigator
+// internal() returns standard FocusPath (no nested navigation)
+</code></pre>
+<h3 id="when-to-use-navigators"><a class="header" href="#when-to-use-navigators">When to Use Navigators</a></h3>
+<p><strong>Enable navigators when:</strong></p>
+<ul>
+<li>Navigating across multiple record types frequently</li>
+<li>Deep navigation is common in your codebase</li>
+<li>You want IDE autocomplete for nested fields</li>
+<li>Teaching or onboarding developers</li>
+</ul>
+<p><strong>Keep navigators disabled when:</strong></p>
+<ul>
+<li>Fields reference third-party types (not annotated with <code>@GenerateFocus</code>)</li>
+<li>You need minimal generated code footprint</li>
+<li>The project has shallow data structures</li>
+</ul>
+<h3 id="combining-navigators-with-other-features"><a class="header" href="#combining-navigators-with-other-features">Combining Navigators with Other Features</a></h3>
+<p>Navigators work seamlessly with all Focus DSL features:</p>
+<pre><code class="language-java">// With type class operations
+Company validated = CompanyFocus.headquarters().city()
+    .modifyF(this::validateCity, company, EitherMonad.INSTANCE);
+
+// With conditional modification
+Company updated = CompanyFocus.departments()
+    .each()
+    .modifyWhen(d -&gt; d.name().equals("Engineering"), this::promote, company);
+
+// With tracing for debugging
+FocusPath&lt;Company, String&gt; traced = CompanyFocus.headquarters().city()
+    .traced((company, city) -&gt; System.out.println("City: " + city));
+</code></pre>
+<hr />
+<h2 id="type-class-integration"><a class="header" href="#type-class-integration">Type Class Integration</a></h2>
+<p>The Focus DSL integrates deeply with higher-kinded-j type classes, enabling effectful operations, monoid-based aggregation, and generic collection traversal.</p>
+<h3 id="effectful-modification-with-modifyf"><a class="header" href="#effectful-modification-with-modifyf">Effectful Modification with <code>modifyF()</code></a></h3>
+<p>All path types support <code>modifyF()</code> for effectful transformations:</p>
+<pre><code class="language-java">// Validation - accumulate all errors
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, User&gt; result = userPath.modifyF(
+    email -&gt; EmailValidator.validate(email),
+    user,
+    ValidatedApplicative.instance()
+);
+
+// Async updates with CompletableFuture
+Kind&lt;CompletableFutureKind.Witness, Config&gt; asyncResult = configPath.modifyF(
+    key -&gt; fetchNewApiKey(key),  // Returns CompletableFuture
+    config,
+    CompletableFutureApplicative.INSTANCE
+);
+
+// IO operations
+Kind&lt;IOKind.Witness, User&gt; ioResult = userPath.modifyF(
+    name -&gt; IO.of(() -&gt; readFromDatabase(name)),
+    user,
+    IOMonad.INSTANCE
+);
+</code></pre>
+<h3 id="monoid-based-aggregation-with-foldmap"><a class="header" href="#monoid-based-aggregation-with-foldmap">Monoid-Based Aggregation with <code>foldMap()</code></a></h3>
+<p><code>TraversalPath</code> supports <code>foldMap()</code> for aggregating values:</p>
+<pre><code class="language-java">// Sum all salaries using integer addition monoid
+int totalSalary = employeesPath.foldMap(
+    Monoids.integerAddition(),
+    Employee::salary,
+    company
+);
+
+// Concatenate all names
+String allNames = employeesPath.foldMap(
+    Monoids.string(),
+    Employee::name,
+    company
+);
+
+// Custom monoid for set union
+Set&lt;String&gt; allSkills = employeesPath.foldMap(
+    Monoids.set(),
+    e -&gt; e.skills(),
+    company
+);
+</code></pre>
+<h3 id="generic-collection-traversal-with-traverseover"><a class="header" href="#generic-collection-traversal-with-traverseover">Generic Collection Traversal with <code>traverseOver()</code></a></h3>
+<p>When working with collections wrapped in <code>Kind&lt;F, A&gt;</code>, use <code>traverseOver()</code> with a <code>Traverse</code> instance:</p>
+<pre><code class="language-java">// Given a field with Kind&lt;ListKind.Witness, Role&gt; type
+FocusPath&lt;User, Kind&lt;ListKind.Witness, Role&gt;&gt; rolesPath = UserFocus.roles();
+
+// Traverse into the collection
+TraversalPath&lt;User, Role&gt; allRoles =
+    rolesPath.&lt;ListKind.Witness, Role&gt;traverseOver(ListTraverse.INSTANCE);
+
+// Now operate on individual roles
+List&lt;Role&gt; roles = allRoles.getAll(user);
+User updated = allRoles.modifyAll(Role::promote, user);
+</code></pre>
+<p><strong>When to use <code>traverseOver()</code> vs <code>each()</code>:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Use Case</th></tr></thead><tbody>
+<tr><td><code>each()</code></td><td>Standard <code>List&lt;T&gt;</code> or <code>Set&lt;T&gt;</code> fields</td></tr>
+<tr><td><code>traverseOver()</code></td><td><code>Kind&lt;F, T&gt;</code> fields with custom Traverse</td></tr>
+</tbody></table>
+</div>
+<pre><code class="language-java">// For List&lt;T&gt; - use each()
+TraversalPath&lt;Team, User&gt; members = TeamFocus.membersList().each();
+
+// For Kind&lt;ListKind.Witness, T&gt; - use traverseOver()
+TraversalPath&lt;Team, User&gt; members = TeamFocus.membersKind()
+    .&lt;ListKind.Witness, User&gt;traverseOver(ListTraverse.INSTANCE);
+</code></pre>
+<h3 id="conditional-modification-with-modifywhen"><a class="header" href="#conditional-modification-with-modifywhen">Conditional Modification with <code>modifyWhen()</code></a></h3>
+<p>Modify only elements that match a predicate:</p>
+<pre><code class="language-java">// Give raises only to senior employees
+Company updated = CompanyFocus.employees()
+    .modifyWhen(
+        e -&gt; e.yearsOfService() &gt; 5,
+        e -&gt; e.withSalary(e.salary().multiply(1.10)),
+        company
+    );
+
+// Enable only premium features
+Config updated = ConfigFocus.features()
+    .modifyWhen(
+        f -&gt; f.tier() == Tier.PREMIUM,
+        Feature::enable,
+        config
+    );
+</code></pre>
+<h3 id="working-with-sum-types-using-instanceof"><a class="header" href="#working-with-sum-types-using-instanceof">Working with Sum Types using <code>instanceOf()</code></a></h3>
+<p>Focus on specific variants of sealed interfaces:</p>
+<pre><code class="language-java">sealed interface Shape permits Circle, Rectangle, Triangle {}
+
+// Focus on circles only
+AffinePath&lt;Shape, Circle&gt; circlePath = AffinePath.instanceOf(Circle.class);
+
+// Compose with other paths
+TraversalPath&lt;Drawing, Double&gt; circleRadii =
+    DrawingFocus.shapes()
+        .via(AffinePath.instanceOf(Circle.class))
+        .via(CircleFocus.radius());
+
+// Modify only circles
+Drawing updated = DrawingFocus.shapes()
+    .via(AffinePath.instanceOf(Circle.class))
+    .modifyAll(c -&gt; c.withRadius(c.radius() * 2), drawing);
+</code></pre>
+<h3 id="path-debugging-with-traced"><a class="header" href="#path-debugging-with-traced">Path Debugging with <code>traced()</code></a></h3>
+<p>Debug complex path navigation by observing values:</p>
+<pre><code class="language-java">// Add tracing to see what values are accessed
+FocusPath&lt;Company, String&gt; debugPath = CompanyFocus.ceo().name()
+    .traced((company, name) -&gt;
+        System.out.println("Accessing CEO name: " + name + " from " + company.name()));
+
+// Every get() call now logs the accessed value
+String name = debugPath.get(company);
+
+// For TraversalPath, observe all values
+TraversalPath&lt;Company, Employee&gt; tracedEmployees = CompanyFocus.employees()
+    .traced((company, employees) -&gt;
+        System.out.println("Found " + employees.size() + " employees"));
+</code></pre>
+<hr />
+<h2 id="generated-class-structure"><a class="header" href="#generated-class-structure">Generated Class Structure</a></h2>
+<p>For a record like:</p>
+<pre><code class="language-java">@GenerateLenses
+@GenerateFocus
+record Employee(String name, int age, Optional&lt;String&gt; email, List&lt;Skill&gt; skills) {}
+</code></pre>
+<p>The processor generates:</p>
+<pre><code class="language-java">@Generated
+public final class EmployeeFocus {
+    private EmployeeFocus() {}
+
+    // Required fields -&gt; FocusPath
+    public static FocusPath&lt;Employee, String&gt; name() {
+        return FocusPath.of(EmployeeLenses.name());
+    }
+
+    public static FocusPath&lt;Employee, Integer&gt; age() {
+        return FocusPath.of(EmployeeLenses.age());
+    }
+
+    // Optional&lt;T&gt; field -&gt; AffinePath (automatically unwraps)
+    public static AffinePath&lt;Employee, String&gt; email() {
+        return FocusPath.of(EmployeeLenses.email()).some();
+    }
+
+    // List&lt;T&gt; field -&gt; TraversalPath (traverses elements)
+    public static TraversalPath&lt;Employee, Skill&gt; skills() {
+        return FocusPath.of(EmployeeLenses.skills()).each();
+    }
+
+    // Indexed access to List&lt;T&gt; -&gt; AffinePath
+    public static AffinePath&lt;Employee, Skill&gt; skill(int index) {
+        return FocusPath.of(EmployeeLenses.skills()).at(index);
+    }
+}
+</code></pre>
+<hr />
+<h2 id="integration-with-free-monad-dsl"><a class="header" href="#integration-with-free-monad-dsl">Integration with Free Monad DSL</a></h2>
+<p>Focus paths integrate with <code>OpticPrograms</code> for complex workflows:</p>
+<pre><code class="language-java">// Build a program using Focus paths
+Free&lt;OpticOpKind.Witness, Company&gt; program = OpticPrograms
+    .get(company, CompanyFocus.name().toLens())
+    .flatMap(name -&gt; {
+        if (name.startsWith("Acme")) {
+            return OpticPrograms.modifyAll(
+                company,
+                CompanyFocus.departments().employees().age().toTraversal(),
+                age -&gt; age + 1
+            );
+        } else {
+            return OpticPrograms.pure(company);
+        }
+    });
+
+// Execute with interpreter
+Company result = OpticInterpreters.direct().run(program);
+</code></pre>
+<hr />
+<h2 id="when-to-use-focus-dsl-vs-manual-composition"><a class="header" href="#when-to-use-focus-dsl-vs-manual-composition">When to Use Focus DSL vs Manual Composition</a></h2>
+<h3 id="use-focus-dsl-when"><a class="header" href="#use-focus-dsl-when">Use Focus DSL When:</a></h3>
+<ul>
+<li><strong>Navigating deeply nested structures</strong> with many levels</li>
+<li><strong>IDE autocomplete is important</strong> for discoverability</li>
+<li><strong>Teaching or onboarding</strong> developers new to optics</li>
+<li><strong>Prototyping</strong> before optimising for performance</li>
+</ul>
+<pre><code class="language-java">// Focus DSL - clear intent, discoverable
+List&lt;String&gt; emails = CompanyFocus
+    .departments()
+    .employees()
+    .email()
+    .getAll(company);
+</code></pre>
+<h3 id="use-manual-composition-when"><a class="header" href="#use-manual-composition-when">Use Manual Composition When:</a></h3>
+<ul>
+<li><strong>Custom optics</strong> (computed properties, validated updates)</li>
+<li><strong>Performance-critical code</strong> (avoid intermediate allocations)</li>
+<li><strong>Reusable optic libraries</strong> (compose once, use everywhere)</li>
+<li><strong>Complex conditional logic</strong> in the optic itself</li>
+</ul>
+<pre><code class="language-java">// Manual composition - more control, reusable
+public static final Lens&lt;Company, String&gt; CEO_NAME =
+    CompanyLenses.ceo()
+        .andThen(ExecutiveLenses.person())
+        .andThen(PersonLenses.fullName());
+</code></pre>
+<h3 id="hybrid-approach-recommended"><a class="header" href="#hybrid-approach-recommended">Hybrid Approach (Recommended)</a></h3>
+<p>Use Focus DSL for navigation, then extract for reuse:</p>
+<pre><code class="language-java">// Use Focus for exploration
+var path = CompanyFocus.departments().employees().email();
+
+// Extract and store the composed optic
+public static final Traversal&lt;Company, String&gt; ALL_EMAILS =
+    path.toTraversal();
+
+// Reuse the extracted optic
+List&lt;String&gt; emails = Traversals.getAll(ALL_EMAILS, company);
+</code></pre>
+<hr />
+<h2 id="common-patterns-4"><a class="header" href="#common-patterns-4">Common Patterns</a></h2>
+<h3 id="pattern-1-batch-updates"><a class="header" href="#pattern-1-batch-updates">Pattern 1: Batch Updates</a></h3>
+<pre><code class="language-java">// Give all employees in Engineering a raise
+Company updated = CompanyFocus
+    .departments()
+    .filter(d -&gt; d.name().equals("Engineering"))
+    .employees()
+    .salary()
+    .modifyAll(s -&gt; s.multiply(new BigDecimal("1.10")), company);
+</code></pre>
+<h3 id="pattern-2-safe-deep-access"><a class="header" href="#pattern-2-safe-deep-access">Pattern 2: Safe Deep Access</a></h3>
+<pre><code class="language-java">// Safely access deeply nested optional
+Optional&lt;String&gt; managerEmail = CompanyFocus
+    .department(0)
+    .manager()
+    .email()
+    .getOptional(company);
+
+// Handle absence gracefully
+String email = managerEmail.orElse("no-manager@company.com");
+</code></pre>
+<h3 id="pattern-3-validation-with-focus"><a class="header" href="#pattern-3-validation-with-focus">Pattern 3: Validation with Focus</a></h3>
+<pre><code class="language-java">// Validate all employee ages
+Validated&lt;List&lt;String&gt;, Company&gt; result = OpticOps.modifyAllValidated(
+    company,
+    CompanyFocus.departments().employees().age().toTraversal(),
+    age -&gt; age &gt;= 18 &amp;&amp; age &lt;= 100
+        ? Validated.valid(age)
+        : Validated.invalid("Invalid age: " + age)
+);
+</code></pre>
+<hr />
+<h2 id="performance-considerations-9"><a class="header" href="#performance-considerations-9">Performance Considerations</a></h2>
+<p>Focus paths add a thin abstraction layer over raw optics:</p>
+<ul>
+<li><strong>Path creation</strong>: Minimal overhead (simple wrapper objects)</li>
+<li><strong>Traversal</strong>: Identical to underlying optic performance</li>
+<li><strong>Memory</strong>: One additional object per path segment</li>
+</ul>
+<p><strong>Best Practice</strong>: For hot paths, extract the underlying optic:</p>
+<pre><code class="language-java">// Cold path - Focus DSL is fine
+var result = CompanyFocus.departments().name().getAll(company);
+
+// Hot path - extract and cache the optic
+private static final Traversal&lt;Company, String&gt; DEPT_NAMES =
+    CompanyFocus.departments().name().toTraversal();
+
+for (Company c : manyCompanies) {
+    var names = Traversals.getAll(DEPT_NAMES, c);  // Faster
+}
+</code></pre>
+<hr />
+<h2 id="customising-generated-code"><a class="header" href="#customising-generated-code">Customising Generated Code</a></h2>
+<h3 id="target-package"><a class="header" href="#target-package">Target Package</a></h3>
+<pre><code class="language-java">@GenerateFocus(targetPackage = "com.myapp.optics.focus")
+record User(String name) {}
+// Generates: com.myapp.optics.focus.UserFocus
+</code></pre>
+<h3 id="navigator-generation"><a class="header" href="#navigator-generation">Navigator Generation</a></h3>
+<p>Enable fluent cross-type navigation with generated navigator classes:</p>
+<pre><code class="language-java">@GenerateFocus(generateNavigators = true)
+record Company(String name, Address headquarters) {}
+
+@GenerateFocus(generateNavigators = true)
+record Address(String street, String city) {}
+
+// Now navigate fluently without .via():
+String city = CompanyFocus.headquarters().city().get(company);
+</code></pre>
+<h3 id="navigator-depth-limiting"><a class="header" href="#navigator-depth-limiting">Navigator Depth Limiting</a></h3>
+<p>Control how deep navigator generation goes with <code>maxNavigatorDepth</code>:</p>
+<pre><code class="language-java">@GenerateFocus(generateNavigators = true, maxNavigatorDepth = 2)
+record Organisation(Division division) {}
+
+// Depth 1: Returns DivisionNavigator
+// Depth 2: Returns FocusPath (not a navigator)
+// Beyond: Use .via() for further navigation
+</code></pre>
+<h3 id="field-filtering-1"><a class="header" href="#field-filtering-1">Field Filtering</a></h3>
+<p>Control which fields get navigator generation:</p>
+<pre><code class="language-java">// Only generate navigators for specific fields
+@GenerateFocus(generateNavigators = true, includeFields = {"homeAddress"})
+record Person(String name, Address homeAddress, Address workAddress) {}
+
+// Or exclude specific fields
+@GenerateFocus(generateNavigators = true, excludeFields = {"backup"})
+record Config(Settings main, Settings backup) {}
+</code></pre>
+<hr />
+<h2 id="lens-fallback-for-non-annotated-types"><a class="header" href="#lens-fallback-for-non-annotated-types">Lens Fallback for Non-Annotated Types</a></h2>
+<p>When navigating to a type without <code>@GenerateFocus</code>, you can continue with <code>.via()</code>:</p>
+<pre><code class="language-java">// ThirdPartyRecord doesn't have @GenerateFocus
+@GenerateLenses
+@GenerateFocus
+record MyRecord(ThirdPartyRecord external) {}
+
+// Navigate as far as Focus allows, then use .via() with existing lens
+FocusPath&lt;MyRecord, ThirdPartyRecord&gt; externalPath = MyRecordFocus.external();
+FocusPath&lt;MyRecord, String&gt; deepPath = externalPath.via(ThirdPartyLenses.someField());
+</code></pre>
+<hr />
+<h2 id="common-pitfalls-19"><a class="header" href="#common-pitfalls-19">Common Pitfalls</a></h2>
+<h3 id="dont-recreate-paths-in-loops"><a class="header" href="#dont-recreate-paths-in-loops">Don't: Recreate paths in loops</a></h3>
+<pre><code class="language-java">// Bad - creates new path objects each iteration
+for (Company c : companies) {
+    var names = CompanyFocus.departments().name().getAll(c);
+}
+</code></pre>
+<h3 id="do-extract-and-reuse"><a class="header" href="#do-extract-and-reuse">Do: Extract and reuse</a></h3>
+<pre><code class="language-java">// Good - create path once
+var deptNames = CompanyFocus.departments().name();
+for (Company c : companies) {
+    var names = deptNames.getAll(c);
+}
+</code></pre>
+<h3 id="dont-ignore-the-path-type"><a class="header" href="#dont-ignore-the-path-type">Don't: Ignore the path type</a></h3>
+<pre><code class="language-java">// Confusing - what does this return?
+var result = somePath.get(source);  // Might fail if AffinePath!
+</code></pre>
+<h3 id="do-use-the-appropriate-method"><a class="header" href="#do-use-the-appropriate-method">Do: Use the appropriate method</a></h3>
+<pre><code class="language-java">// Clear - FocusPath always has a value
+String name = namePath.get(employee);
+
+// Clear - AffinePath might be empty
+Optional&lt;String&gt; email = emailPath.getOptional(employee);
+
+// Clear - TraversalPath has multiple values
+List&lt;String&gt; names = namesPath.getAll(department);
+</code></pre>
+<hr />
+<h2 id="troubleshooting-and-faq"><a class="header" href="#troubleshooting-and-faq">Troubleshooting and FAQ</a></h2>
+<h3 id="compilation-errors"><a class="header" href="#compilation-errors">Compilation Errors</a></h3>
+<h4 id="cannot-infer-type-arguments-for-traverseover"><a class="header" href="#cannot-infer-type-arguments-for-traverseover">"Cannot infer type arguments for traverseOver"</a></h4>
+<p><strong>Problem:</strong></p>
+<pre><code class="language-java">// This fails to compile
+TraversalPath&lt;User, Role&gt; allRoles = rolesPath.traverseOver(ListTraverse.INSTANCE);
+</code></pre>
+<p><strong>Solution:</strong> Provide explicit type parameters:</p>
+<pre><code class="language-java">// Add explicit type witnesses
+TraversalPath&lt;User, Role&gt; allRoles =
+    rolesPath.&lt;ListKind.Witness, Role&gt;traverseOver(ListTraverse.INSTANCE);
+</code></pre>
+<p>Java's type inference struggles with higher-kinded types. Explicit type parameters help the compiler.</p>
+<h4 id="incompatible-types-when-chaining-eachvia"><a class="header" href="#incompatible-types-when-chaining-eachvia">"Incompatible types when chaining .each().via()"</a></h4>
+<p><strong>Problem:</strong></p>
+<pre><code class="language-java">// Type inference fails on long chains
+TraversalPath&lt;Company, Integer&gt; salaries =
+    FocusPath.of(companyDeptLens).each().via(deptEmployeesLens).each().via(salaryLens);
+</code></pre>
+<p><strong>Solution:</strong> Break the chain into intermediate variables:</p>
+<pre><code class="language-java">// Use intermediate variables
+TraversalPath&lt;Company, Department&gt; depts = FocusPath.of(companyDeptLens).each();
+TraversalPath&lt;Company, Employee&gt; employees = depts.via(deptEmployeesLens).each();
+TraversalPath&lt;Company, Integer&gt; salaries = employees.via(salaryLens);
+</code></pre>
+<h4 id="sealed-or-non-sealed-local-classes-are-not-allowed"><a class="header" href="#sealed-or-non-sealed-local-classes-are-not-allowed">"Sealed or non-sealed local classes are not allowed"</a></h4>
+<p><strong>Problem:</strong> Defining sealed interfaces inside test methods fails:</p>
+<pre><code class="language-java">@Test void myTest() {
+    sealed interface Wrapper permits A, B {}  // Compilation error!
+    record A() implements Wrapper {}
+}
+</code></pre>
+<p><strong>Solution:</strong> Move sealed interfaces to class level:</p>
+<pre><code class="language-java">class MyTest {
+    sealed interface Wrapper permits A, B {}
+    record A() implements Wrapper {}
+
+    @Test void myTest() {
+        // Use Wrapper here
+    }
+}
+</code></pre>
+<h4 id="method-reference-new-doesnt-work-with-single-field-records-as-bifunction"><a class="header" href="#method-reference-new-doesnt-work-with-single-field-records-as-bifunction">"Method reference ::new doesn't work with single-field records as BiFunction"</a></h4>
+<p><strong>Problem:</strong></p>
+<pre><code class="language-java">// This fails for single-field records
+Lens&lt;Outer, Inner&gt; lens = Lens.of(Outer::inner, Outer::new);  // Error!
+</code></pre>
+<p><strong>Solution:</strong> Use explicit lambda:</p>
+<pre><code class="language-java">Lens&lt;Outer, Inner&gt; lens = Lens.of(Outer::inner, (o, i) -&gt; new Outer(i));
+</code></pre>
+<h3 id="runtime-issues-1"><a class="header" href="#runtime-issues-1">Runtime Issues</a></h3>
+<h4 id="getall-returns-empty-unexpectedly"><a class="header" href="#getall-returns-empty-unexpectedly">"getAll() returns empty unexpectedly"</a></h4>
+<p><strong>Checklist:</strong></p>
+<ol>
+<li>Check if the AffinePath in the chain has focus (use <code>matches()</code> to verify)</li>
+<li>Verify <code>instanceOf()</code> matches the actual runtime type</li>
+<li>Ensure the source data actually contains elements</li>
+</ol>
+<pre><code class="language-java">// Debug with traced()
+TraversalPath&lt;User, Role&gt; traced = rolesPath.traced(
+    (user, roles) -&gt; System.out.println("Found " + roles.size() + " roles")
+);
+List&lt;Role&gt; roles = traced.getAll(user);
+</code></pre>
+<h4 id="modifyall-doesnt-change-anything"><a class="header" href="#modifyall-doesnt-change-anything">"modifyAll() doesn't change anything"</a></h4>
+<p><strong>Causes:</strong></p>
+<ul>
+<li>The traversal has no focus (AffinePath didn't match)</li>
+<li>The predicate in <code>modifyWhen()</code> never matches</li>
+<li>The source collection is empty</li>
+</ul>
+<pre><code class="language-java">// Check focus exists
+int count = path.count(source);
+System.out.println("Path focuses on " + count + " elements");
+</code></pre>
+<h3 id="faq"><a class="header" href="#faq">FAQ</a></h3>
+<h4 id="q-when-should-i-use-each-vs-traverseover"><a class="header" href="#q-when-should-i-use-each-vs-traverseover">Q: When should I use <code>each()</code> vs <code>traverseOver()</code>?</a></h4>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Use</th></tr></thead><tbody>
+<tr><td>Field is <code>List&lt;T&gt;</code></td><td><code>each()</code></td></tr>
+<tr><td>Field is <code>Set&lt;T&gt;</code></td><td><code>each()</code></td></tr>
+<tr><td>Field is <code>Kind&lt;ListKind.Witness, T&gt;</code></td><td><code>traverseOver(ListTraverse.INSTANCE)</code></td></tr>
+<tr><td>Field is <code>Kind&lt;MaybeKind.Witness, T&gt;</code></td><td><code>traverseOver(MaybeTraverse.INSTANCE)</code></td></tr>
+<tr><td>Custom traversable type</td><td><code>traverseOver(YourTraverse.INSTANCE)</code></td></tr>
+</tbody></table>
+</div>
+<h4 id="q-why-use-maybemonadinstance-for-modifyf-instead-of-a-dedicated-applicative"><a class="header" href="#q-why-use-maybemonadinstance-for-modifyf-instead-of-a-dedicated-applicative">Q: Why use <code>MaybeMonad.INSTANCE</code> for <code>modifyF()</code> instead of a dedicated Applicative?</a></h4>
+<p><code>MaybeMonad</code> extends <code>Applicative</code>, so it works for <code>modifyF()</code>. Higher-Kinded-J doesn't provide a separate <code>MaybeApplicative</code> because:</p>
+<ul>
+<li>Monad already provides all Applicative operations</li>
+<li>Having one instance simplifies the API</li>
+<li>Most effects you'll use with <code>modifyF()</code> are monadic anyway</li>
+</ul>
+<pre><code class="language-java">// Use MaybeMonad for Maybe-based validation
+Kind&lt;MaybeKind.Witness, Config&gt; result =
+    keyPath.modifyF(validateKey, config, MaybeMonad.INSTANCE);
+</code></pre>
+<h4 id="q-can-i-use-focus-dsl-with-third-party-types"><a class="header" href="#q-can-i-use-focus-dsl-with-third-party-types">Q: Can I use Focus DSL with third-party types?</a></h4>
+<p>Yes, use <code>.via()</code> to compose with manually created optics:</p>
+<pre><code class="language-java">// Create lens for third-party type
+Lens&lt;ThirdPartyType, String&gt; fieldLens = Lens.of(
+    ThirdPartyType::getField,
+    (obj, value) -&gt; obj.toBuilder().field(value).build()
+);
+
+// Compose with Focus path
+FocusPath&lt;MyRecord, String&gt; path = MyRecordFocus.external().via(fieldLens);
+</code></pre>
+<h4 id="q-how-do-i-handle-nullable-fields"><a class="header" href="#q-how-do-i-handle-nullable-fields">Q: How do I handle nullable fields?</a></h4>
+<p>Wrap nullable fields in <code>Optional</code> and use <code>some()</code>:</p>
+<pre><code class="language-java">// If email can be null, model as Optional&lt;String&gt;
+record User(String name, Optional&lt;String&gt; email) {}
+
+// Focus DSL handles it naturally
+AffinePath&lt;User, String&gt; emailPath = UserFocus.email();  // Uses .some() internally
+</code></pre>
+<p>If you must work with raw nullable fields:</p>
+<pre><code class="language-java">// Create a nullable-aware affine manually
+Affine&lt;User, String&gt; nullableEmail = Affine.of(
+    u -&gt; Optional.ofNullable(u.email()),
+    (u, email) -&gt; new User(u.name(), email)
+);
+
+AffinePath&lt;User, String&gt; emailPath = AffinePath.of(nullableEmail);
+</code></pre>
+<h4 id="q-whats-the-performance-overhead-of-focus-dsl"><a class="header" href="#q-whats-the-performance-overhead-of-focus-dsl">Q: What's the performance overhead of Focus DSL?</a></h4>
+<ul>
+<li><strong>Path creation</strong>: Negligible (thin wrapper objects)</li>
+<li><strong>Operations</strong>: Same as underlying optics</li>
+<li><strong>Hot paths</strong>: Extract and cache the optic</li>
+</ul>
+<pre><code class="language-java">// For performance-critical code, cache the extracted optic
+private static final Traversal&lt;Company, String&gt; EMPLOYEE_NAMES =
+    CompanyFocus.departments().employees().name().toTraversal();
+
+// Use the cached optic in hot loops
+for (Company c : companies) {
+    List&lt;String&gt; names = Traversals.getAll(EMPLOYEE_NAMES, c);
+}
+</code></pre>
+<h4 id="q-can-i-create-focus-paths-programmatically-at-runtime"><a class="header" href="#q-can-i-create-focus-paths-programmatically-at-runtime">Q: Can I create Focus paths programmatically (at runtime)?</a></h4>
+<p>Focus paths are designed for compile-time type safety. For runtime-dynamic paths, use the underlying optics directly:</p>
+<pre><code class="language-java">// Build optics dynamically
+Traversal&lt;JsonNode, String&gt; dynamicPath = buildTraversalFromJsonPath(jsonPathString);
+
+// Wrap in a path if needed
+TraversalPath&lt;JsonNode, String&gt; path = TraversalPath.of(dynamicPath);
+</code></pre>
+<hr />
+<h2 id="further-reading-11"><a class="header" href="#further-reading-11">Further Reading</a></h2>
+<ul>
+<li><a href="https://www.optics.dev/Monocle/docs/focus">Monocle Focus</a> - Scala's equivalent, inspiration for this design</li>
+<li><a href="optics/lenses.html">Lenses: Composable Getters and Setters</a> - Foundation concepts</li>
+<li><a href="optics/fluent_api.html">Fluent API</a> - Alternative fluent patterns</li>
+<li><a href="optics/free_monad_dsl.html">Free Monad DSL</a> - Composable optic programs</li>
+</ul>
+<hr />
+<p><strong>Previous:</strong> <a href="optics/fluent_api.html">Fluent API</a>
+<strong>Next:</strong> <a href="optics/free_monad_dsl.html">Free Monad DSL</a></p>
+<div style="break-before: page; page-break-before: always;"></div><style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
 <h1 id="free-monad-dsl-composable-optic-programs"><a class="header" href="#free-monad-dsl-composable-optic-programs">Free Monad DSL: Composable Optic Programs</a></h1>
 <p><img src="optics/../images/lens2.jpg" alt="free_monad.jpg" /></p>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
@@ -36149,7 +37123,7 @@ MockOpticInterpreter mock = new MockOpticInterpreter();
 Person mockResult = mock.run(program);
 </code></pre>
 <hr />
-<h2 id="common-pitfalls-19"><a class="header" href="#common-pitfalls-19">Common Pitfalls</a></h2>
+<h2 id="common-pitfalls-20"><a class="header" href="#common-pitfalls-20">Common Pitfalls</a></h2>
 <h3 id="dont-forget-that-programs-are-immutable"><a class="header" href="#dont-forget-that-programs-are-immutable">Don't: Forget that programs are immutable</a></h3>
 <pre><code class="language-java">// Wrong - trying to "modify" a program
 Free&lt;OpticOpKind.Witness, Person&gt; program = OpticPrograms.get(person, PersonLenses.age());
@@ -36185,7 +37159,7 @@ Person result = logger.run(program);
 logger.getLog().forEach(System.out::println);  // Side effect here is fine
 </code></pre>
 <hr />
-<h2 id="further-reading-11"><a class="header" href="#further-reading-11">Further Reading</a></h2>
+<h2 id="further-reading-12"><a class="header" href="#further-reading-12">Further Reading</a></h2>
 <ul>
 <li><strong>Free Monads Explained</strong>: <a href="http://www.haskellforall.com/2012/06/you-could-have-invented-free-monads.html">Why Free Monads Matter</a> by Gabriel Gonzalez</li>
 <li><strong>Interpreter Pattern</strong>: <a href="https://en.wikipedia.org/wiki/Interpreter_pattern">Design Patterns: Elements of Reusable Object-Oriented Software</a></li>
@@ -36942,7 +37916,7 @@ try {
 }
 </code></pre>
 <hr />
-<h2 id="further-reading-12"><a class="header" href="#further-reading-12">Further Reading</a></h2>
+<h2 id="further-reading-13"><a class="header" href="#further-reading-13">Further Reading</a></h2>
 <ul>
 <li><strong>Interpreter Pattern</strong>: <a href="https://en.wikipedia.org/wiki/Interpreter_pattern">Design Patterns: Elements of Reusable Object-Oriented Software</a> - Gang of Four</li>
 <li><strong>Natural Transformations</strong>: <a href="https://bartoszmilewski.com/2014/10/28/category-theory-for-programmers-the-preface/">Category Theory for Programmers</a> by Bartosz Milewski</li>
@@ -37388,7 +38362,7 @@ Map&lt;String, Long&gt; permissionCounts = forms.stream()
     .collect(groupingBy(Permission::name, counting()));
 </code></pre>
 <hr />
-<h2 id="common-pitfalls-20"><a class="header" href="#common-pitfalls-20">Common Pitfalls</a></h2>
+<h2 id="common-pitfalls-21"><a class="header" href="#common-pitfalls-21">Common Pitfalls</a></h2>
 <h3 id="dont-do-this-13"><a class="header" href="#dont-do-this-13">Don't Do This:</a></h3>
 <pre><code class="language-java">// Over-composing simple cases
 Traversal&lt;Form, Integer&gt; formIdTraversal = FormLenses.formId().asTraversal();
@@ -37930,7 +38904,7 @@ public class SimplifiedValidation {
 <p>See <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/fluent/FluentValidationExample.java">FluentValidationExample.java</a> for comprehensive demonstrations of all validation-aware methods, including complex real-world scenarios like order validation and bulk data import.</p>
 </div>
 </div>
-<h3 id="further-reading-13"><a class="header" href="#further-reading-13">Further Reading</a></h3>
+<h3 id="further-reading-14"><a class="header" href="#further-reading-14">Further Reading</a></h3>
 <p>For a complete guide to validation-aware modifications including:</p>
 <ul>
 <li>Fluent builder API with method chaining</li>
@@ -38322,7 +39296,7 @@ dbResults.stream()
 </div>
 </div>
 <hr />
-<h2 id="common-pitfalls-21"><a class="header" href="#common-pitfalls-21">Common Pitfalls</a></h2>
+<h2 id="common-pitfalls-22"><a class="header" href="#common-pitfalls-22">Common Pitfalls</a></h2>
 <div id="admonition-dont-mix-effect-types-carelessly" class="admonition admonish-warning" role="note" aria-labelledby="admonition-dont-mix-effect-types-carelessly-title">
 <div class="admonition-title">
 <div id="admonition-dont-mix-effect-types-carelessly-title">
@@ -39382,6 +40356,224 @@ Traversal&lt;User, String&gt; optionalNickname = /* ... */;
 List&lt;String&gt; nicknames = Traversals.getAll(optionalNickname, user);
 </code></pre>
 <hr />
+<h2 id="focus-dsl-recipes"><a class="header" href="#focus-dsl-recipes">Focus DSL Recipes</a></h2>
+<p>The following recipes demonstrate the Focus DSL for more ergonomic optic usage.</p>
+<h3 id="recipe-11-nested-record-updates-with-focus-dsl"><a class="header" href="#recipe-11-nested-record-updates-with-focus-dsl">Recipe 11: Nested Record Updates with Focus DSL</a></h3>
+<h4 id="problem-10"><a class="header" href="#problem-10">Problem</a></h4>
+<p>You have deeply nested records and want to update values without verbose composition.</p>
+<h4 id="solution-10"><a class="header" href="#solution-10">Solution</a></h4>
+<pre><code class="language-java">record Company(String name, List&lt;Department&gt; departments) {}
+record Department(String name, List&lt;Employee&gt; employees) {}
+record Employee(String name, int salary) {}
+
+// Using Focus DSL instead of manual lens composition
+FocusPath&lt;Company, List&lt;Department&gt;&gt; deptPath = FocusPath.of(companyDeptsLens);
+TraversalPath&lt;Company, Employee&gt; allEmployees = deptPath.each().via(deptEmployeesLens).each();
+TraversalPath&lt;Company, Integer&gt; allSalaries = allEmployees.via(employeeSalaryLens);
+
+// Give everyone a 5% raise
+Company updated = allSalaries.modifyAll(s -&gt; (int) (s * 1.05), company);
+
+// Or use generated Focus classes (with @GenerateFocus)
+Company updated = CompanyFocus.departments().employees().salary()
+    .modifyAll(s -&gt; (int) (s * 1.05), company);
+</code></pre>
+<h4 id="why-it-works-1"><a class="header" href="#why-it-works-1">Why It Works</a></h4>
+<p>The Focus DSL tracks path type transitions automatically—from <code>FocusPath</code> through collections to <code>TraversalPath</code>—whilst maintaining full type safety.</p>
+<hr />
+<h3 id="recipe-12-sum-type-handling-with-instanceof"><a class="header" href="#recipe-12-sum-type-handling-with-instanceof">Recipe 12: Sum Type Handling with instanceOf()</a></h3>
+<h4 id="problem-11"><a class="header" href="#problem-11">Problem</a></h4>
+<p>You have a sealed interface and want to work with specific variants using the Focus DSL.</p>
+<h4 id="solution-11"><a class="header" href="#solution-11">Solution</a></h4>
+<pre><code class="language-java">sealed interface Notification permits Email, SMS, Push {}
+record Email(String address, String subject, String body) implements Notification {}
+record SMS(String phone, String message) implements Notification {}
+record Push(String token, String title) implements Notification {}
+
+record User(String name, List&lt;Notification&gt; notifications) {}
+
+// Focus on Email notifications only
+TraversalPath&lt;User, Notification&gt; allNotifications =
+    FocusPath.of(userNotificationsLens).each();
+
+TraversalPath&lt;User, Email&gt; emailsOnly =
+    allNotifications.via(AffinePath.instanceOf(Email.class));
+
+// Get all email addresses
+List&lt;String&gt; emailAddresses = emailsOnly
+    .via(emailAddressLens)
+    .getAll(user);
+
+// Update all email subjects
+User updated = emailsOnly
+    .via(emailSubjectLens)
+    .modifyAll(subject -&gt; "[URGENT] " + subject, user);
+</code></pre>
+<hr />
+<h3 id="recipe-13-generic-collection-traversal-with-traverseover"><a class="header" href="#recipe-13-generic-collection-traversal-with-traverseover">Recipe 13: Generic Collection Traversal with traverseOver()</a></h3>
+<h4 id="problem-12"><a class="header" href="#problem-12">Problem</a></h4>
+<p>Your data contains Kind-wrapped collections (e.g., <code>Kind&lt;ListKind.Witness, T&gt;</code>) rather than raw <code>List&lt;T&gt;</code>.</p>
+<h4 id="solution-12"><a class="header" href="#solution-12">Solution</a></h4>
+<pre><code class="language-java">record Team(String name, Kind&lt;ListKind.Witness, Member&gt; members) {}
+record Member(String name, Kind&lt;ListKind.Witness, Role&gt; roles) {}
+record Role(String name, int level) {}
+
+// Path to all roles across all members
+FocusPath&lt;Team, Kind&lt;ListKind.Witness, Member&gt;&gt; membersPath =
+    FocusPath.of(teamMembersLens);
+
+TraversalPath&lt;Team, Member&gt; allMembers =
+    membersPath.&lt;ListKind.Witness, Member&gt;traverseOver(ListTraverse.INSTANCE);
+
+TraversalPath&lt;Team, Kind&lt;ListKind.Witness, Role&gt;&gt; memberRoles =
+    allMembers.via(memberRolesLens);
+
+TraversalPath&lt;Team, Role&gt; allRoles =
+    memberRoles.&lt;ListKind.Witness, Role&gt;traverseOver(ListTraverse.INSTANCE);
+
+// Promote all high-level roles
+Team updated = allRoles.modifyWhen(
+    r -&gt; r.level() &gt;= 5,
+    r -&gt; new Role(r.name(), r.level() + 1),
+    team
+);
+</code></pre>
+<hr />
+<h3 id="recipe-14-validation-pipelines-with-modifyf"><a class="header" href="#recipe-14-validation-pipelines-with-modifyf">Recipe 14: Validation Pipelines with modifyF()</a></h3>
+<h4 id="problem-13"><a class="header" href="#problem-13">Problem</a></h4>
+<p>You need to validate and transform data, accumulating errors or short-circuiting on failure.</p>
+<h4 id="solution-13"><a class="header" href="#solution-13">Solution</a></h4>
+<pre><code class="language-java">record Config(String apiKey, String dbUrl, int timeout) {}
+
+FocusPath&lt;Config, String&gt; apiKeyPath = FocusPath.of(configApiKeyLens);
+FocusPath&lt;Config, String&gt; dbUrlPath = FocusPath.of(configDbUrlLens);
+
+// Validation function returning Maybe (short-circuits on Nothing)
+Function&lt;String, Kind&lt;MaybeKind.Witness, String&gt;&gt; validateApiKey = key -&gt; {
+    if (key != null &amp;&amp; key.length() &gt;= 10) {
+        return MaybeKindHelper.MAYBE.widen(Maybe.just(key.toUpperCase()));
+    }
+    return MaybeKindHelper.MAYBE.widen(Maybe.nothing());
+};
+
+// Apply validation (MaybeMonad extends Applicative)
+Kind&lt;MaybeKind.Witness, Config&gt; result =
+    apiKeyPath.modifyF(validateApiKey, config, MaybeMonad.INSTANCE);
+
+Maybe&lt;Config&gt; validated = MaybeKindHelper.MAYBE.narrow(result);
+if (validated.isJust()) {
+    Config validConfig = validated.get();
+    // Proceed with valid config
+} else {
+    // Handle validation failure
+}
+</code></pre>
+<hr />
+<h3 id="recipe-15-aggregation-with-foldmap"><a class="header" href="#recipe-15-aggregation-with-foldmap">Recipe 15: Aggregation with foldMap()</a></h3>
+<h4 id="problem-14"><a class="header" href="#problem-14">Problem</a></h4>
+<p>You need to aggregate values across a traversal (sum, max, concatenate, etc.).</p>
+<h4 id="solution-14"><a class="header" href="#solution-14">Solution</a></h4>
+<pre><code class="language-java">record Order(List&lt;LineItem&gt; items) {}
+record LineItem(String name, int quantity, BigDecimal price) {}
+
+TraversalPath&lt;Order, LineItem&gt; allItems = FocusPath.of(orderItemsLens).each();
+
+// Sum quantities using integer addition monoid
+Monoid&lt;Integer&gt; intSum = new Monoid&lt;&gt;() {
+    @Override public Integer empty() { return 0; }
+    @Override public Integer combine(Integer a, Integer b) { return a + b; }
+};
+
+int totalQuantity = allItems
+    .via(lineItemQuantityLens)
+    .foldMap(intSum, q -&gt; q, order);
+
+// Sum prices using BigDecimal monoid
+Monoid&lt;BigDecimal&gt; decimalSum = new Monoid&lt;&gt;() {
+    @Override public BigDecimal empty() { return BigDecimal.ZERO; }
+    @Override public BigDecimal combine(BigDecimal a, BigDecimal b) { return a.add(b); }
+};
+
+BigDecimal totalPrice = allItems
+    .via(lineItemPriceLens)
+    .foldMap(decimalSum, p -&gt; p, order);
+
+// Collect all item names
+Monoid&lt;List&lt;String&gt;&gt; listConcat = new Monoid&lt;&gt;() {
+    @Override public List&lt;String&gt; empty() { return List.of(); }
+    @Override public List&lt;String&gt; combine(List&lt;String&gt; a, List&lt;String&gt; b) {
+        var result = new ArrayList&lt;&gt;(a);
+        result.addAll(b);
+        return result;
+    }
+};
+
+List&lt;String&gt; allNames = allItems.foldMap(
+    listConcat,
+    item -&gt; List.of(item.name()),
+    order
+);
+</code></pre>
+<hr />
+<h3 id="recipe-16-debugging-complex-paths-with-traced"><a class="header" href="#recipe-16-debugging-complex-paths-with-traced">Recipe 16: Debugging Complex Paths with traced()</a></h3>
+<h4 id="problem-15"><a class="header" href="#problem-15">Problem</a></h4>
+<p>You have a complex path composition and need to understand what values are being accessed.</p>
+<h4 id="solution-15"><a class="header" href="#solution-15">Solution</a></h4>
+<pre><code class="language-java">record System(List&lt;Server&gt; servers) {}
+record Server(String hostname, List&lt;Service&gt; services) {}
+record Service(String name, Status status) {}
+
+TraversalPath&lt;System, Service&gt; allServices =
+    FocusPath.of(systemServersLens).each().via(serverServicesLens).each();
+
+// Add tracing to observe navigation
+TraversalPath&lt;System, Service&gt; tracedServices = allServices.traced(
+    (system, services) -&gt; {
+        System.out.println("Accessing " + services.size() + " services");
+        for (Service s : services) {
+            System.out.println("  - " + s.name() + ": " + s.status());
+        }
+    }
+);
+
+// Every getAll() now logs
+List&lt;Service&gt; services = tracedServices.getAll(system);
+// Output:
+// Accessing 5 services
+//   - api: RUNNING
+//   - db: RUNNING
+//   - cache: STOPPED
+//   - ...
+
+// Note: traced() only observes getAll(), not modifyAll()
+</code></pre>
+<hr />
+<h3 id="recipe-17-conditional-updates-with-modifywhen"><a class="header" href="#recipe-17-conditional-updates-with-modifywhen">Recipe 17: Conditional Updates with modifyWhen()</a></h3>
+<h4 id="problem-16"><a class="header" href="#problem-16">Problem</a></h4>
+<p>You need to update only elements that match a predicate, leaving others unchanged.</p>
+<h4 id="solution-16"><a class="header" href="#solution-16">Solution</a></h4>
+<pre><code class="language-java">record Inventory(List&lt;Product&gt; products) {}
+record Product(String name, int stock, BigDecimal price, Category category) {}
+enum Category { ELECTRONICS, CLOTHING, FOOD }
+
+TraversalPath&lt;Inventory, Product&gt; allProducts =
+    FocusPath.of(inventoryProductsLens).each();
+
+// Apply 20% discount to electronics with low stock
+Inventory updated = allProducts.modifyWhen(
+    p -&gt; p.category() == Category.ELECTRONICS &amp;&amp; p.stock() &lt; 10,
+    p -&gt; new Product(p.name(), p.stock(), p.price().multiply(new BigDecimal("0.80")), p.category()),
+    inventory
+);
+
+// Clear stock only for food items
+Inventory cleared = allProducts.modifyWhen(
+    p -&gt; p.category() == Category.FOOD,
+    p -&gt; new Product(p.name(), 0, p.price(), p.category()),
+    inventory
+);
+</code></pre>
+<hr />
 <p><strong>Previous:</strong> <a href="optics/composition_rules.html">Composition Rules</a>
 <strong>Next:</strong> <a href="optics/optics_examples.html">Practical Examples</a></p>
 <div style="break-before: page; page-break-before: always;"></div><style>
@@ -39567,7 +40759,7 @@ List&lt;String&gt; nicknames = Traversals.getAll(optionalNickname, user);
 
 </code></pre>
 <hr />
-<h2 id="common-pitfalls-22"><a class="header" href="#common-pitfalls-22">Common Pitfalls</a></h2>
+<h2 id="common-pitfalls-23"><a class="header" href="#common-pitfalls-23">Common Pitfalls</a></h2>
 <h3 id="dont-do-this-14"><a class="header" href="#dont-do-this-14">Don't Do This:</a></h3>
 <pre><code class="language-java">
 // Over-engineering simple cases Traversal&lt;String, String&gt; stringIdentity = Iso.of(s -&gt; s, s -&gt; s).asTraversal(); // Just use the string directly!
@@ -41622,7 +42814,7 @@ void shouldReturnLeftWhenUserNotFound() {
 </code></pre>
 <p><strong>Much cleaner:</strong> No need to set up exception expectations or catch blocks.</p>
 <hr />
-<h2 id="performance-considerations-9"><a class="header" href="#performance-considerations-9">Performance Considerations</a></h2>
+<h2 id="performance-considerations-10"><a class="header" href="#performance-considerations-10">Performance Considerations</a></h2>
 <p>Functional error handling is typically <strong>as fast or faster</strong> than exception-throwing:</p>
 <p><strong>Exception Throwing:</strong></p>
 <ul>

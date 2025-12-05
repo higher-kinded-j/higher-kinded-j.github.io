@@ -648,6 +648,224 @@ Traversal&lt;User, String&gt; optionalNickname = /* ... */;
 List&lt;String&gt; nicknames = Traversals.getAll(optionalNickname, user);
 </code></pre>
 <hr />
+<h2 id="focus-dsl-recipes"><a class="header" href="#focus-dsl-recipes">Focus DSL Recipes</a></h2>
+<p>The following recipes demonstrate the Focus DSL for more ergonomic optic usage.</p>
+<h3 id="recipe-11-nested-record-updates-with-focus-dsl"><a class="header" href="#recipe-11-nested-record-updates-with-focus-dsl">Recipe 11: Nested Record Updates with Focus DSL</a></h3>
+<h4 id="problem-10"><a class="header" href="#problem-10">Problem</a></h4>
+<p>You have deeply nested records and want to update values without verbose composition.</p>
+<h4 id="solution-10"><a class="header" href="#solution-10">Solution</a></h4>
+<pre><code class="language-java">record Company(String name, List&lt;Department&gt; departments) {}
+record Department(String name, List&lt;Employee&gt; employees) {}
+record Employee(String name, int salary) {}
+
+// Using Focus DSL instead of manual lens composition
+FocusPath&lt;Company, List&lt;Department&gt;&gt; deptPath = FocusPath.of(companyDeptsLens);
+TraversalPath&lt;Company, Employee&gt; allEmployees = deptPath.each().via(deptEmployeesLens).each();
+TraversalPath&lt;Company, Integer&gt; allSalaries = allEmployees.via(employeeSalaryLens);
+
+// Give everyone a 5% raise
+Company updated = allSalaries.modifyAll(s -&gt; (int) (s * 1.05), company);
+
+// Or use generated Focus classes (with @GenerateFocus)
+Company updated = CompanyFocus.departments().employees().salary()
+    .modifyAll(s -&gt; (int) (s * 1.05), company);
+</code></pre>
+<h4 id="why-it-works-1"><a class="header" href="#why-it-works-1">Why It Works</a></h4>
+<p>The Focus DSL tracks path type transitions automatically—from <code>FocusPath</code> through collections to <code>TraversalPath</code>—whilst maintaining full type safety.</p>
+<hr />
+<h3 id="recipe-12-sum-type-handling-with-instanceof"><a class="header" href="#recipe-12-sum-type-handling-with-instanceof">Recipe 12: Sum Type Handling with instanceOf()</a></h3>
+<h4 id="problem-11"><a class="header" href="#problem-11">Problem</a></h4>
+<p>You have a sealed interface and want to work with specific variants using the Focus DSL.</p>
+<h4 id="solution-11"><a class="header" href="#solution-11">Solution</a></h4>
+<pre><code class="language-java">sealed interface Notification permits Email, SMS, Push {}
+record Email(String address, String subject, String body) implements Notification {}
+record SMS(String phone, String message) implements Notification {}
+record Push(String token, String title) implements Notification {}
+
+record User(String name, List&lt;Notification&gt; notifications) {}
+
+// Focus on Email notifications only
+TraversalPath&lt;User, Notification&gt; allNotifications =
+    FocusPath.of(userNotificationsLens).each();
+
+TraversalPath&lt;User, Email&gt; emailsOnly =
+    allNotifications.via(AffinePath.instanceOf(Email.class));
+
+// Get all email addresses
+List&lt;String&gt; emailAddresses = emailsOnly
+    .via(emailAddressLens)
+    .getAll(user);
+
+// Update all email subjects
+User updated = emailsOnly
+    .via(emailSubjectLens)
+    .modifyAll(subject -&gt; "[URGENT] " + subject, user);
+</code></pre>
+<hr />
+<h3 id="recipe-13-generic-collection-traversal-with-traverseover"><a class="header" href="#recipe-13-generic-collection-traversal-with-traverseover">Recipe 13: Generic Collection Traversal with traverseOver()</a></h3>
+<h4 id="problem-12"><a class="header" href="#problem-12">Problem</a></h4>
+<p>Your data contains Kind-wrapped collections (e.g., <code>Kind&lt;ListKind.Witness, T&gt;</code>) rather than raw <code>List&lt;T&gt;</code>.</p>
+<h4 id="solution-12"><a class="header" href="#solution-12">Solution</a></h4>
+<pre><code class="language-java">record Team(String name, Kind&lt;ListKind.Witness, Member&gt; members) {}
+record Member(String name, Kind&lt;ListKind.Witness, Role&gt; roles) {}
+record Role(String name, int level) {}
+
+// Path to all roles across all members
+FocusPath&lt;Team, Kind&lt;ListKind.Witness, Member&gt;&gt; membersPath =
+    FocusPath.of(teamMembersLens);
+
+TraversalPath&lt;Team, Member&gt; allMembers =
+    membersPath.&lt;ListKind.Witness, Member&gt;traverseOver(ListTraverse.INSTANCE);
+
+TraversalPath&lt;Team, Kind&lt;ListKind.Witness, Role&gt;&gt; memberRoles =
+    allMembers.via(memberRolesLens);
+
+TraversalPath&lt;Team, Role&gt; allRoles =
+    memberRoles.&lt;ListKind.Witness, Role&gt;traverseOver(ListTraverse.INSTANCE);
+
+// Promote all high-level roles
+Team updated = allRoles.modifyWhen(
+    r -&gt; r.level() &gt;= 5,
+    r -&gt; new Role(r.name(), r.level() + 1),
+    team
+);
+</code></pre>
+<hr />
+<h3 id="recipe-14-validation-pipelines-with-modifyf"><a class="header" href="#recipe-14-validation-pipelines-with-modifyf">Recipe 14: Validation Pipelines with modifyF()</a></h3>
+<h4 id="problem-13"><a class="header" href="#problem-13">Problem</a></h4>
+<p>You need to validate and transform data, accumulating errors or short-circuiting on failure.</p>
+<h4 id="solution-13"><a class="header" href="#solution-13">Solution</a></h4>
+<pre><code class="language-java">record Config(String apiKey, String dbUrl, int timeout) {}
+
+FocusPath&lt;Config, String&gt; apiKeyPath = FocusPath.of(configApiKeyLens);
+FocusPath&lt;Config, String&gt; dbUrlPath = FocusPath.of(configDbUrlLens);
+
+// Validation function returning Maybe (short-circuits on Nothing)
+Function&lt;String, Kind&lt;MaybeKind.Witness, String&gt;&gt; validateApiKey = key -&gt; {
+    if (key != null &amp;&amp; key.length() &gt;= 10) {
+        return MaybeKindHelper.MAYBE.widen(Maybe.just(key.toUpperCase()));
+    }
+    return MaybeKindHelper.MAYBE.widen(Maybe.nothing());
+};
+
+// Apply validation (MaybeMonad extends Applicative)
+Kind&lt;MaybeKind.Witness, Config&gt; result =
+    apiKeyPath.modifyF(validateApiKey, config, MaybeMonad.INSTANCE);
+
+Maybe&lt;Config&gt; validated = MaybeKindHelper.MAYBE.narrow(result);
+if (validated.isJust()) {
+    Config validConfig = validated.get();
+    // Proceed with valid config
+} else {
+    // Handle validation failure
+}
+</code></pre>
+<hr />
+<h3 id="recipe-15-aggregation-with-foldmap"><a class="header" href="#recipe-15-aggregation-with-foldmap">Recipe 15: Aggregation with foldMap()</a></h3>
+<h4 id="problem-14"><a class="header" href="#problem-14">Problem</a></h4>
+<p>You need to aggregate values across a traversal (sum, max, concatenate, etc.).</p>
+<h4 id="solution-14"><a class="header" href="#solution-14">Solution</a></h4>
+<pre><code class="language-java">record Order(List&lt;LineItem&gt; items) {}
+record LineItem(String name, int quantity, BigDecimal price) {}
+
+TraversalPath&lt;Order, LineItem&gt; allItems = FocusPath.of(orderItemsLens).each();
+
+// Sum quantities using integer addition monoid
+Monoid&lt;Integer&gt; intSum = new Monoid&lt;&gt;() {
+    @Override public Integer empty() { return 0; }
+    @Override public Integer combine(Integer a, Integer b) { return a + b; }
+};
+
+int totalQuantity = allItems
+    .via(lineItemQuantityLens)
+    .foldMap(intSum, q -&gt; q, order);
+
+// Sum prices using BigDecimal monoid
+Monoid&lt;BigDecimal&gt; decimalSum = new Monoid&lt;&gt;() {
+    @Override public BigDecimal empty() { return BigDecimal.ZERO; }
+    @Override public BigDecimal combine(BigDecimal a, BigDecimal b) { return a.add(b); }
+};
+
+BigDecimal totalPrice = allItems
+    .via(lineItemPriceLens)
+    .foldMap(decimalSum, p -&gt; p, order);
+
+// Collect all item names
+Monoid&lt;List&lt;String&gt;&gt; listConcat = new Monoid&lt;&gt;() {
+    @Override public List&lt;String&gt; empty() { return List.of(); }
+    @Override public List&lt;String&gt; combine(List&lt;String&gt; a, List&lt;String&gt; b) {
+        var result = new ArrayList&lt;&gt;(a);
+        result.addAll(b);
+        return result;
+    }
+};
+
+List&lt;String&gt; allNames = allItems.foldMap(
+    listConcat,
+    item -&gt; List.of(item.name()),
+    order
+);
+</code></pre>
+<hr />
+<h3 id="recipe-16-debugging-complex-paths-with-traced"><a class="header" href="#recipe-16-debugging-complex-paths-with-traced">Recipe 16: Debugging Complex Paths with traced()</a></h3>
+<h4 id="problem-15"><a class="header" href="#problem-15">Problem</a></h4>
+<p>You have a complex path composition and need to understand what values are being accessed.</p>
+<h4 id="solution-15"><a class="header" href="#solution-15">Solution</a></h4>
+<pre><code class="language-java">record System(List&lt;Server&gt; servers) {}
+record Server(String hostname, List&lt;Service&gt; services) {}
+record Service(String name, Status status) {}
+
+TraversalPath&lt;System, Service&gt; allServices =
+    FocusPath.of(systemServersLens).each().via(serverServicesLens).each();
+
+// Add tracing to observe navigation
+TraversalPath&lt;System, Service&gt; tracedServices = allServices.traced(
+    (system, services) -&gt; {
+        System.out.println("Accessing " + services.size() + " services");
+        for (Service s : services) {
+            System.out.println("  - " + s.name() + ": " + s.status());
+        }
+    }
+);
+
+// Every getAll() now logs
+List&lt;Service&gt; services = tracedServices.getAll(system);
+// Output:
+// Accessing 5 services
+//   - api: RUNNING
+//   - db: RUNNING
+//   - cache: STOPPED
+//   - ...
+
+// Note: traced() only observes getAll(), not modifyAll()
+</code></pre>
+<hr />
+<h3 id="recipe-17-conditional-updates-with-modifywhen"><a class="header" href="#recipe-17-conditional-updates-with-modifywhen">Recipe 17: Conditional Updates with modifyWhen()</a></h3>
+<h4 id="problem-16"><a class="header" href="#problem-16">Problem</a></h4>
+<p>You need to update only elements that match a predicate, leaving others unchanged.</p>
+<h4 id="solution-16"><a class="header" href="#solution-16">Solution</a></h4>
+<pre><code class="language-java">record Inventory(List&lt;Product&gt; products) {}
+record Product(String name, int stock, BigDecimal price, Category category) {}
+enum Category { ELECTRONICS, CLOTHING, FOOD }
+
+TraversalPath&lt;Inventory, Product&gt; allProducts =
+    FocusPath.of(inventoryProductsLens).each();
+
+// Apply 20% discount to electronics with low stock
+Inventory updated = allProducts.modifyWhen(
+    p -&gt; p.category() == Category.ELECTRONICS &amp;&amp; p.stock() &lt; 10,
+    p -&gt; new Product(p.name(), p.stock(), p.price().multiply(new BigDecimal("0.80")), p.category()),
+    inventory
+);
+
+// Clear stock only for food items
+Inventory cleared = allProducts.modifyWhen(
+    p -&gt; p.category() == Category.FOOD,
+    p -&gt; new Product(p.name(), 0, p.price(), p.category()),
+    inventory
+);
+</code></pre>
+<hr />
 <p><strong>Previous:</strong> <a href="composition_rules.html">Composition Rules</a>
 <strong>Next:</strong> <a href="optics_examples.html">Practical Examples</a></p>
 
