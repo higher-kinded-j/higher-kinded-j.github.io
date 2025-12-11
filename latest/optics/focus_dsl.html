@@ -269,7 +269,8 @@
 <li>Using <code>@GenerateFocus</code> to generate path builders automatically</li>
 <li><strong>Fluent cross-type navigation</strong> with generated navigators (no <code>.via()</code> needed)</li>
 <li>The difference between <code>FocusPath</code>, <code>AffinePath</code>, and <code>TraversalPath</code></li>
-<li>Collection navigation with <code>.each()</code>, <code>.at()</code>, <code>.some()</code>, and <code>.traverseOver()</code></li>
+<li>Collection navigation with <code>.each()</code>, <code>.at()</code>, <code>.some()</code>, <code>.nullable()</code>, and <code>.traverseOver()</code></li>
+<li><strong>Seamless nullable field handling</strong> with <code>@Nullable</code> annotation detection</li>
 <li>Type class integration: effectful operations, monoid aggregation, and Traverse support</li>
 <li>Working with sum types using <code>instanceOf()</code> and conditional modification with <code>modifyWhen()</code></li>
 <li>Composing Focus paths with existing optics</li>
@@ -469,6 +470,34 @@ AffinePath&lt;Employee, String&gt; emailPath = EmployeeFocus.email();
 // Internally uses .some() to unwrap the Optional
 Optional&lt;String&gt; email = emailPath.getOptional(employee);
 </code></pre>
+<h3 id="nullable---handle-null-values"><a class="header" href="#nullable---handle-null-values"><code>.nullable()</code> - Handle Null Values</a></h3>
+<p>For fields that may be null, use <code>.nullable()</code> to treat null as absent:</p>
+<pre><code class="language-java">record LegacyUser(String name, @Nullable String nickname) {}
+
+// If @Nullable is detected, the processor generates this automatically
+// Otherwise, chain with .nullable() manually:
+FocusPath&lt;LegacyUser, String&gt; rawPath = LegacyUserFocus.nickname();
+AffinePath&lt;LegacyUser, String&gt; safePath = rawPath.nullable();
+
+// Null is treated as absent (empty Optional)
+LegacyUser user = new LegacyUser("Alice", null);
+Optional&lt;String&gt; result = safePath.getOptional(user);  // Optional.empty()
+
+// Non-null values work normally
+LegacyUser withNick = new LegacyUser("Bob", "Bobby");
+Optional&lt;String&gt; present = safePath.getOptional(withNick);  // Optional.of("Bobby")
+</code></pre>
+<div id="admonition-automatic-nullable-detection" class="admonition admonish-tip" role="note" aria-labelledby="admonition-automatic-nullable-detection-title">
+<div class="admonition-title">
+<div id="admonition-automatic-nullable-detection-title">
+<p>Automatic @Nullable Detection</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-automatic-nullable-detection"></a>
+</div>
+<div>
+<p>When a field is annotated with <code>@Nullable</code> (from JSpecify, JSR-305, JetBrains, etc.), the <code>@GenerateFocus</code> processor automatically generates an <code>AffinePath</code> with <code>.nullable()</code> applied. No manual chaining required.</p>
+</div>
+</div>
 <hr />
 <h2 id="composition-with-existing-optics"><a class="header" href="#composition-with-existing-optics">Composition with Existing Optics</a></h2>
 <p>Focus paths compose seamlessly with existing optics using <code>.via()</code>:</p>
@@ -778,7 +807,13 @@ TraversalPath&lt;Company, Employee&gt; tracedEmployees = CompanyFocus.employees(
 <p>For a record like:</p>
 <pre><code class="language-java">@GenerateLenses
 @GenerateFocus
-record Employee(String name, int age, Optional&lt;String&gt; email, List&lt;Skill&gt; skills) {}
+record Employee(
+    String name,
+    int age,
+    Optional&lt;String&gt; email,
+    @Nullable String nickname,
+    List&lt;Skill&gt; skills
+) {}
 </code></pre>
 <p>The processor generates:</p>
 <pre><code class="language-java">@Generated
@@ -794,9 +829,14 @@ public final class EmployeeFocus {
         return FocusPath.of(EmployeeLenses.age());
     }
 
-    // Optional&lt;T&gt; field -&gt; AffinePath (automatically unwraps)
+    // Optional&lt;T&gt; field -&gt; AffinePath (automatically unwraps with .some())
     public static AffinePath&lt;Employee, String&gt; email() {
         return FocusPath.of(EmployeeLenses.email()).some();
+    }
+
+    // @Nullable field -&gt; AffinePath (automatically handles null with .nullable())
+    public static AffinePath&lt;Employee, String&gt; nickname() {
+        return FocusPath.of(EmployeeLenses.nickname()).nullable();
     }
 
     // List&lt;T&gt; field -&gt; TraversalPath (traverses elements)
@@ -1111,21 +1151,57 @@ Lens&lt;ThirdPartyType, String&gt; fieldLens = Lens.of(
 FocusPath&lt;MyRecord, String&gt; path = MyRecordFocus.external().via(fieldLens);
 </code></pre>
 <h4 id="q-how-do-i-handle-nullable-fields"><a class="header" href="#q-how-do-i-handle-nullable-fields">Q: How do I handle nullable fields?</a></h4>
-<p>Wrap nullable fields in <code>Optional</code> and use <code>some()</code>:</p>
-<pre><code class="language-java">// If email can be null, model as Optional&lt;String&gt;
+<p>The Focus DSL provides four approaches for handling nullable fields, from most to least automated:</p>
+<p><strong>Option 1: Use <code>@Nullable</code> annotation (Recommended)</strong></p>
+<p>Annotate nullable fields with <code>@Nullable</code> from JSpecify, JSR-305, or similar. The processor automatically generates <code>AffinePath</code> with null-safe access:</p>
+<pre><code class="language-java">import org.jspecify.annotations.Nullable;
+
+@GenerateFocus
+record User(String name, @Nullable String nickname) {}
+
+// Generated: AffinePath that handles null automatically
+AffinePath&lt;User, String&gt; nicknamePath = UserFocus.nickname();
+
+User user = new User("Alice", null);
+Optional&lt;String&gt; result = nicknamePath.getOptional(user);  // Optional.empty()
+
+User withNick = new User("Bob", "Bobby");
+Optional&lt;String&gt; present = nicknamePath.getOptional(withNick);  // Optional.of("Bobby")
+</code></pre>
+<p>Supported nullable annotations:</p>
+<ul>
+<li><code>org.jspecify.annotations.Nullable</code></li>
+<li><code>javax.annotation.Nullable</code></li>
+<li><code>jakarta.annotation.Nullable</code></li>
+<li><code>org.jetbrains.annotations.Nullable</code></li>
+<li><code>androidx.annotation.Nullable</code></li>
+<li><code>edu.umd.cs.findbugs.annotations.Nullable</code></li>
+</ul>
+<p><strong>Option 2: Use <code>.nullable()</code> method</strong></p>
+<p>For existing <code>FocusPath</code> instances, chain with <code>.nullable()</code> to handle nulls:</p>
+<pre><code class="language-java">// If you have a FocusPath to a nullable field
+FocusPath&lt;LegacyUser, String&gt; rawPath = LegacyUserFocus.nickname();
+
+// Chain with nullable() for null-safe access
+AffinePath&lt;LegacyUser, String&gt; safePath = rawPath.nullable();
+
+Optional&lt;String&gt; result = safePath.getOptional(user);  // Empty if null
+</code></pre>
+<p><strong>Option 3: Use <code>AffinePath.ofNullable()</code> factory</strong></p>
+<p>For manual creation without code generation:</p>
+<pre><code class="language-java">// Create a nullable-aware AffinePath directly
+AffinePath&lt;User, String&gt; nicknamePath = AffinePath.ofNullable(
+    User::nickname,
+    (user, nickname) -&gt; new User(user.name(), nickname)
+);
+</code></pre>
+<p><strong>Option 4: Wrap in <code>Optional</code> (Alternative design)</strong></p>
+<p>If you control the data model, consider using <code>Optional&lt;T&gt;</code> instead of nullable fields:</p>
+<pre><code class="language-java">// Model absence explicitly with Optional
 record User(String name, Optional&lt;String&gt; email) {}
 
-// Focus DSL handles it naturally
+// Focus DSL handles it naturally with .some()
 AffinePath&lt;User, String&gt; emailPath = UserFocus.email();  // Uses .some() internally
-</code></pre>
-<p>If you must work with raw nullable fields:</p>
-<pre><code class="language-java">// Create a nullable-aware affine manually
-Affine&lt;User, String&gt; nullableEmail = Affine.of(
-    u -&gt; Optional.ofNullable(u.email()),
-    (u, email) -&gt; new User(u.name(), email)
-);
-
-AffinePath&lt;User, String&gt; emailPath = AffinePath.of(nullableEmail);
 </code></pre>
 <h4 id="q-whats-the-performance-overhead-of-focus-dsl"><a class="header" href="#q-whats-the-performance-overhead-of-focus-dsl">Q: What's the performance overhead of Focus DSL?</a></h4>
 <ul>
