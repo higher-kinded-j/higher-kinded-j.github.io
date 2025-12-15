@@ -265,9 +265,10 @@
 </div>
 <div>
 <ul>
-<li>Detailed API for <code>MaybePath</code>, <code>EitherPath</code>, <code>TryPath</code>, and <code>IOPath</code></li>
+<li>Detailed API for <code>MaybePath</code>, <code>EitherPath</code>, <code>TryPath</code>, <code>IOPath</code>, <code>ValidationPath</code>, <code>IdPath</code>, <code>OptionalPath</code>, and <code>GenericPath</code></li>
 <li>Creation methods, core operations, and extraction patterns for each type</li>
 <li>Recovery and error handling specific to each Path type</li>
+<li>Error accumulation with <code>ValidationPath</code></li>
 <li>Guidelines for choosing the right Path type for your use case</li>
 </ul>
 </div>
@@ -548,13 +549,227 @@ Integer length = transformed.unsafeRun();  // Prints "Side effect!"
 <li>You want referential transparency</li>
 </ul>
 <hr />
+<h2 id="validationpath"><a class="header" href="#validationpath">ValidationPath</a></h2>
+<p><code>ValidationPath&lt;E, A&gt;</code> wraps <code>Validated&lt;E, A&gt;</code> for computations that accumulate errors instead of short-circuiting on the first failure.</p>
+<h3 id="creation-4"><a class="header" href="#creation-4">Creation</a></h3>
+<pre><code class="language-java">// Valid value
+ValidationPath&lt;List&lt;String&gt;, Integer&gt; valid = Path.valid(42, Semigroups.list());
+
+// Invalid value with errors
+ValidationPath&lt;List&lt;String&gt;, Integer&gt; invalid =
+    Path.invalid(List.of("Error 1", "Error 2"), Semigroups.list());
+
+// From existing Validated
+ValidationPath&lt;String, User&gt; userPath =
+    Path.validation(validatedUser, Semigroups.first());
+</code></pre>
+<p>The <code>Semigroup&lt;E&gt;</code> parameter defines how errors combine when multiple validations fail.</p>
+<h3 id="core-operations-4"><a class="header" href="#core-operations-4">Core Operations</a></h3>
+<pre><code class="language-java">ValidationPath&lt;List&lt;String&gt;, String&gt; name = Path.valid("Alice", Semigroups.list());
+
+// Transform (same as other paths)
+ValidationPath&lt;List&lt;String&gt;, Integer&gt; length = name.map(String::length);
+
+// Chain with via (short-circuits on first error)
+ValidationPath&lt;List&lt;String&gt;, String&gt; upper =
+    name.via(s -&gt; Path.valid(s.toUpperCase(), Semigroups.list()));
+</code></pre>
+<h3 id="error-accumulation"><a class="header" href="#error-accumulation">Error Accumulation</a></h3>
+<p>The key feature of <code>ValidationPath</code> is error accumulation with <code>zipWithAccum</code>:</p>
+<pre><code class="language-java">ValidationPath&lt;List&lt;String&gt;, String&gt; nameV = validateName(input.name());
+ValidationPath&lt;List&lt;String&gt;, String&gt; emailV = validateEmail(input.email());
+ValidationPath&lt;List&lt;String&gt;, Integer&gt; ageV = validateAge(input.age());
+
+// Accumulate ALL errors (does not short-circuit)
+ValidationPath&lt;List&lt;String&gt;, User&gt; userV = nameV.zipWithAccum(
+    emailV,
+    ageV,
+    User::new
+);
+
+// If name and email both fail, you get BOTH errors
+</code></pre>
+<p>Compare with <code>zipWith</code> which short-circuits:</p>
+<pre><code class="language-java">// Short-circuits: only first error returned
+ValidationPath&lt;List&lt;String&gt;, User&gt; userShortCircuit =
+    nameV.zipWith(emailV, ageV, User::new);
+</code></pre>
+<h3 id="combining-validations"><a class="header" href="#combining-validations">Combining Validations</a></h3>
+<pre><code class="language-java">// andAlso combines two validations, accumulating errors
+ValidationPath&lt;List&lt;String&gt;, Unit&gt; combined =
+    checkNotEmpty(name)
+        .andAlso(checkMaxLength(name, 100))
+        .andAlso(checkNoSpecialChars(name));
+
+// All three checks run; all errors collected
+</code></pre>
+<h3 id="extraction-3"><a class="header" href="#extraction-3">Extraction</a></h3>
+<pre><code class="language-java">ValidationPath&lt;List&lt;String&gt;, User&gt; path = validateUser(input);
+Validated&lt;List&lt;String&gt;, User&gt; validated = path.run();
+
+// Pattern match
+String result = validated.fold(
+    errors -&gt; "Errors: " + String.join(", ", errors),
+    user -&gt; "Valid user: " + user.name()
+);
+</code></pre>
+<h3 id="when-to-use-4"><a class="header" href="#when-to-use-4">When to Use</a></h3>
+<p>Use <code>ValidationPath</code> when:</p>
+<ul>
+<li>You need to collect all validation errors, not just the first</li>
+<li>Building form validation or input processing</li>
+<li>Multiple independent checks must all run</li>
+<li>Error messages should be comprehensive</li>
+</ul>
+<hr />
+<h2 id="idpath"><a class="header" href="#idpath">IdPath</a></h2>
+<p><code>IdPath&lt;A&gt;</code> wraps <code>Id&lt;A&gt;</code>, the identity monad. It always contains a value and never fails.</p>
+<h3 id="creation-5"><a class="header" href="#creation-5">Creation</a></h3>
+<pre><code class="language-java">// From a value
+IdPath&lt;String&gt; id = Path.id("hello");
+
+// From existing Id
+IdPath&lt;User&gt; userPath = Path.idOf(idUser);
+</code></pre>
+<h3 id="core-operations-5"><a class="header" href="#core-operations-5">Core Operations</a></h3>
+<pre><code class="language-java">IdPath&lt;String&gt; name = Path.id("Alice");
+
+// Transform
+IdPath&lt;Integer&gt; length = name.map(String::length);  // Id(5)
+
+// Chain (always succeeds)
+IdPath&lt;String&gt; upper = name.via(s -&gt; Path.id(s.toUpperCase()));
+
+// Combine
+IdPath&lt;Integer&gt; age = Path.id(25);
+IdPath&lt;String&gt; combined = name.zipWith(age, (n, a) -&gt; n + " is " + a);
+</code></pre>
+<h3 id="extraction-4"><a class="header" href="#extraction-4">Extraction</a></h3>
+<pre><code class="language-java">IdPath&lt;String&gt; path = Path.id("hello");
+
+// Get the value directly
+String value = path.run().value();  // "hello"
+
+// Or use get()
+String value = path.get();  // "hello"
+</code></pre>
+<h3 id="when-to-use-5"><a class="header" href="#when-to-use-5">When to Use</a></h3>
+<p>Use <code>IdPath</code> when:</p>
+<ul>
+<li>You need a trivial path for testing or placeholder purposes</li>
+<li>Writing generic code that works with any path type</li>
+<li>The computation always succeeds with a value</li>
+</ul>
+<hr />
+<h2 id="optionalpath"><a class="header" href="#optionalpath">OptionalPath</a></h2>
+<p><code>OptionalPath&lt;A&gt;</code> wraps Java's <code>java.util.Optional&lt;A&gt;</code>, providing a bridge to the standard library.</p>
+<h3 id="creation-6"><a class="header" href="#creation-6">Creation</a></h3>
+<pre><code class="language-java">// From a value
+OptionalPath&lt;String&gt; present = Path.present("hello");
+
+// Empty
+OptionalPath&lt;String&gt; absent = Path.absent();
+
+// From Java Optional
+Optional&lt;User&gt; javaOptional = findUser(id);
+OptionalPath&lt;User&gt; userPath = Path.optional(javaOptional);
+</code></pre>
+<h3 id="core-operations-6"><a class="header" href="#core-operations-6">Core Operations</a></h3>
+<pre><code class="language-java">OptionalPath&lt;String&gt; name = Path.present("Alice");
+
+// Transform
+OptionalPath&lt;Integer&gt; length = name.map(String::length);  // Optional[5]
+
+// Chain
+OptionalPath&lt;String&gt; upper = name.via(s -&gt; Path.present(s.toUpperCase()));
+
+// Combine
+OptionalPath&lt;Integer&gt; age = Path.present(25);
+OptionalPath&lt;String&gt; combined = name.zipWith(age, (n, a) -&gt; n + " is " + a);
+</code></pre>
+<h3 id="extraction-5"><a class="header" href="#extraction-5">Extraction</a></h3>
+<pre><code class="language-java">OptionalPath&lt;String&gt; path = Path.present("hello");
+
+// Get underlying Optional
+Optional&lt;String&gt; optional = path.run();
+
+// Get with default
+String value = path.getOrElse("default");
+
+// Check presence
+boolean hasValue = path.isPresent();
+</code></pre>
+<h3 id="conversion-to-maybepath"><a class="header" href="#conversion-to-maybepath">Conversion to MaybePath</a></h3>
+<pre><code class="language-java">OptionalPath&lt;User&gt; optPath = Path.optional(findUser(id));
+
+// Convert to MaybePath for richer operations
+MaybePath&lt;User&gt; maybePath = optPath.toMaybePath();
+</code></pre>
+<h3 id="when-to-use-6"><a class="header" href="#when-to-use-6">When to Use</a></h3>
+<p>Use <code>OptionalPath</code> when:</p>
+<ul>
+<li>Integrating with Java APIs that return <code>Optional</code></li>
+<li>You prefer <code>Optional</code> semantics over <code>Maybe</code></li>
+<li>Bridging between Higher-Kinded-J and standard library code</li>
+</ul>
+<hr />
+<h2 id="genericpath"><a class="header" href="#genericpath">GenericPath</a></h2>
+<p><code>GenericPath&lt;F, A&gt;</code> represents one of higher-kinded-j's distinctive capabilities: the ability to work with <em>any</em> monad through a unified API. Where other Java libraries force you to choose between specific effect types, <code>GenericPath</code> lets you write code that operates over any monadic structure.</p>
+<h3 id="creation-7"><a class="header" href="#creation-7">Creation</a></h3>
+<pre><code class="language-java">// Create with a Kind and its Monad instance
+Monad&lt;ListKind.Witness&gt; listMonad = ListMonad.INSTANCE;
+Kind&lt;ListKind.Witness, Integer&gt; listKind = ListKindHelper.LIST.widen(List.of(1, 2, 3));
+
+GenericPath&lt;ListKind.Witness, Integer&gt; listPath = Path.generic(listKind, listMonad);
+</code></pre>
+<h3 id="core-operations-7"><a class="header" href="#core-operations-7">Core Operations</a></h3>
+<pre><code class="language-java">GenericPath&lt;ListKind.Witness, Integer&gt; numbers = Path.generic(listKind, listMonad);
+
+// Transform
+GenericPath&lt;ListKind.Witness, String&gt; strings = numbers.map(n -&gt; "n" + n);
+
+// Chain
+GenericPath&lt;ListKind.Witness, Integer&gt; doubled = numbers.via(n -&gt;
+    Path.generic(ListKindHelper.LIST.widen(List.of(n, n * 2)), listMonad));
+</code></pre>
+<h3 id="extraction-6"><a class="header" href="#extraction-6">Extraction</a></h3>
+<pre><code class="language-java">GenericPath&lt;ListKind.Witness, Integer&gt; path = ...;
+
+// Get the underlying Kind
+Kind&lt;ListKind.Witness, Integer&gt; kind = path.run();
+
+// Narrow to concrete type
+List&lt;Integer&gt; list = ListKindHelper.LIST.narrow(kind);
+</code></pre>
+<h3 id="when-to-use-7"><a class="header" href="#when-to-use-7">When to Use</a></h3>
+<p>Use <code>GenericPath</code> when:</p>
+<ul>
+<li>You have a custom monad not covered by the built-in path types</li>
+<li>Writing highly generic code that works across multiple monad types</li>
+<li>Experimenting with new effect types</li>
+</ul>
+<div id="admonition-extensibility-by-design" class="admonition admonish-tip" role="note" aria-labelledby="admonition-extensibility-by-design-title">
+<div class="admonition-title">
+<div id="admonition-extensibility-by-design-title">
+<p>Extensibility by Design</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-extensibility-by-design"></a>
+</div>
+<div>
+<p><code>GenericPath</code> demonstrates the power of higher-kinded types in Java: write your algorithm once, and it works with <code>Maybe</code>, <code>Either</code>, <code>List</code>, <code>IO</code>, or any custom monad you create. This is the same abstraction power that makes libraries like Cats and ZIO so flexible in Scala, now available in Java through higher-kinded-j.</p>
+</div>
+</div>
+<hr />
 <h2 id="choosing-the-right-path-type"><a class="header" href="#choosing-the-right-path-type">Choosing the Right Path Type</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Path Type</th><th>Reason</th></tr></thead><tbody>
 <tr><td>Optional value, absence OK</td><td><code>MaybePath</code></td><td>Simple, no error info needed</td></tr>
-<tr><td>Validation with error messages</td><td><code>EitherPath</code></td><td>Typed errors</td></tr>
+<tr><td>Validation with error messages</td><td><code>EitherPath</code></td><td>Typed errors, short-circuits</td></tr>
+<tr><td>Collect ALL validation errors</td><td><code>ValidationPath</code></td><td>Error accumulation</td></tr>
 <tr><td>Exception-throwing APIs</td><td><code>TryPath</code></td><td>Captures exceptions</td></tr>
 <tr><td>Side effects (I/O, network)</td><td><code>IOPath</code></td><td>Deferred execution</td></tr>
-<tr><td>Need error info</td><td><code>EitherPath</code> or <code>TryPath</code></td><td>Both preserve error details</td></tr>
+<tr><td>Java Optional integration</td><td><code>OptionalPath</code></td><td>Standard library bridge</td></tr>
+<tr><td>Always succeeds, no errors</td><td><code>IdPath</code></td><td>Trivial monad</td></tr>
+<tr><td>Custom monad types</td><td><code>GenericPath</code></td><td>Escape hatch</td></tr>
 <tr><td>Need referential transparency</td><td><code>IOPath</code></td><td>Effects are values</td></tr>
 </tbody></table>
 </div>
@@ -565,6 +780,10 @@ Integer length = transformed.unsafeRun();  // Prints "Side effect!"
 <tr><td><code>EitherPath&lt;E, A&gt;</code></td><td><code>Either&lt;E, A&gt;</code></td><td><code>E</code> (typed)</td><td>Immediate</td></tr>
 <tr><td><code>TryPath&lt;A&gt;</code></td><td><code>Try&lt;A&gt;</code></td><td><code>Throwable</code></td><td>Immediate</td></tr>
 <tr><td><code>IOPath&lt;A&gt;</code></td><td><code>IO&lt;A&gt;</code></td><td><code>Throwable</code></td><td>Deferred</td></tr>
+<tr><td><code>ValidationPath&lt;E, A&gt;</code></td><td><code>Validated&lt;E, A&gt;</code></td><td><code>E</code> (accumulated)</td><td>Immediate</td></tr>
+<tr><td><code>IdPath&lt;A&gt;</code></td><td><code>Id&lt;A&gt;</code></td><td>None (always succeeds)</td><td>Immediate</td></tr>
+<tr><td><code>OptionalPath&lt;A&gt;</code></td><td><code>Optional&lt;A&gt;</code></td><td>None (absence)</td><td>Immediate</td></tr>
+<tr><td><code>GenericPath&lt;F, A&gt;</code></td><td><code>Kind&lt;F, A&gt;</code></td><td>Depends on monad</td><td>Depends on monad</td></tr>
 </tbody></table>
 </div>
 <p>Continue to <a href="composition.html">Composition Patterns</a> for advanced composition techniques.</p>
@@ -581,6 +800,9 @@ Integer length = transformed.unsafeRun();  // Prints "Side effect!"
 <li><a href="../monads/either_monad.html">Either Monad</a> - The underlying type for EitherPath</li>
 <li><a href="../monads/try_monad.html">Try Monad</a> - The underlying type for TryPath</li>
 <li><a href="../monads/io_monad.html">IO Monad</a> - The underlying type for IOPath</li>
+<li><a href="../monads/validated_monad.html">Validated</a> - The underlying type for ValidationPath</li>
+<li><a href="../monads/identity.html">Identity</a> - The underlying type for IdPath</li>
+<li><a href="../monads/optional_monad.html">Optional</a> - The underlying type for OptionalPath</li>
 </ul>
 </div>
 </div>
