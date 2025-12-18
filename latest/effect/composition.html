@@ -255,7 +255,18 @@
 
 </style>
 <h1 id="composition-patterns"><a class="header" href="#composition-patterns">Composition Patterns</a></h1>
-<p>This chapter covers patterns for composing Effect Paths: sequential composition, independent combination, debugging, and error handling strategies.</p>
+<blockquote>
+<p><em>"The world, that understandable and lawful world, was slipping away."</em></p>
+<p>— William Golding, <em>Lord of the Flies</em></p>
+</blockquote>
+<p>Golding's boys lost their grip on order gradually, one compromised rule at a
+time. Code works the same way. A null check here, an uncaught exception there,
+a boolean flag that means three different things depending on context, and
+suddenly your "understandable and lawful" service layer has become something
+you approach with trepidation.</p>
+<p>Composition is how you hold the line. Each pattern in this chapter is a way
+of connecting operations so that failures propagate predictably, successes
+build on each other, and the logic remains visible even as complexity grows.</p>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -269,244 +280,273 @@
 <li>Independent combination with <code>zipWith</code> for parallel-style composition</li>
 <li>Debugging techniques using <code>peek</code> and logging patterns</li>
 <li>Error handling strategies: recovery, transformation, and fallback chains</li>
+<li>When to mix composition styles, and how to do it cleanly</li>
 </ul>
 </div>
 </div>
-<h2 id="sequential-composition-with-via"><a class="header" href="#sequential-composition-with-via">Sequential Composition with <code>via</code></a></h2>
-<p>The <code>via</code> method chains computations where each step depends on the previous result:</p>
-<pre><code class="language-java">// User → Cart → Total → Invoice
-EitherPath&lt;Error, Invoice&gt; pipeline =
+<hr />
+<h2 id="sequential-composition-one-thing-after-another"><a class="header" href="#sequential-composition-one-thing-after-another">Sequential Composition: One Thing After Another</a></h2>
+<p>The <code>via</code> method chains computations where each step depends on the previous
+result. It's the workhorse of effect composition.</p>
+<pre><code class="language-java">EitherPath&lt;Error, Invoice&gt; pipeline =
     Path.either(findUser(userId))
         .via(user -&gt; Path.either(getCart(user)))
         .via(cart -&gt; Path.either(calculateTotal(cart)))
         .via(total -&gt; Path.either(createInvoice(total)));
 </code></pre>
-<h3 id="error-short-circuiting"><a class="header" href="#error-short-circuiting">Error Short-Circuiting</a></h3>
-<p>When using <code>via</code>, the first error stops the chain:</p>
+<p>Each <code>via</code> receives the success value and returns a new Path. The railway
+model applies: travel along the success track until something fails, then
+skip to the end.</p>
+<h3 id="short-circuiting"><a class="header" href="#short-circuiting">Short-Circuiting</a></h3>
+<p>When a step fails, subsequent steps don't execute:</p>
 <pre><code class="language-java">EitherPath&lt;String, String&gt; result =
     Path.right("start")
-        .via(s -&gt; Path.left("error here"))    // Fails
-        .via(s -&gt; Path.right(s + " never"))   // Never executes
-        .via(s -&gt; Path.right(s + " reached")); // Never executes
+        .via(s -&gt; Path.left("failed here"))     // Fails
+        .via(s -&gt; Path.right(s + " never"))     // Skipped
+        .via(s -&gt; Path.right(s + " reached"));  // Skipped
 
-// result.run() → Left("error here")
+// result.run() → Left("failed here")
 </code></pre>
-<h3 id="the-then-method"><a class="header" href="#the-then-method">The <code>then</code> Method</a></h3>
-<p>Use <code>then</code> when you need sequencing but don't need the previous value:</p>
+<p>This isn't just convenient; it's essential. Without short-circuiting, you'd
+need defensive checks at every step. The Path handles it structurally.</p>
+<h3 id="then-sequencing-without-the-value"><a class="header" href="#then-sequencing-without-the-value"><code>then</code>: Sequencing Without the Value</a></h3>
+<p>Sometimes you need sequencing but don't care about the previous result:</p>
 <pre><code class="language-java">IOPath&lt;Result&gt; workflow =
-    Path.io(() -&gt; log("Starting"))
-        .then(() -&gt; Path.io(() -&gt; initialize()))
+    Path.io(() -&gt; log.info("Starting"))
+        .then(() -&gt; Path.io(() -&gt; initialise()))
         .then(() -&gt; Path.io(() -&gt; process()))
-        .then(() -&gt; Path.io(() -&gt; log("Done")));
+        .then(() -&gt; Path.io(() -&gt; log.info("Done")));
 </code></pre>
+<p><code>then</code> discards the previous value and runs the next computation. Use it for
+side effects that must happen in order but don't pass data forward.</p>
 <hr />
-<h2 id="independent-combination-with-zipwith"><a class="header" href="#independent-combination-with-zipwith">Independent Combination with <code>zipWith</code></a></h2>
-<p>Use <code>zipWith</code> when computations are independent (neither needs the other's result):</p>
-<pre><code class="language-java">// These validations don't depend on each other
-EitherPath&lt;String, String&gt; name = validateName(input.name());
+<h2 id="independent-combination-all-together-now"><a class="header" href="#independent-combination-all-together-now">Independent Combination: All Together Now</a></h2>
+<p><code>zipWith</code> combines computations that don't depend on each other. Neither
+needs the other's result to proceed.</p>
+<pre><code class="language-java">EitherPath&lt;String, String&gt; name = validateName(input.name());
 EitherPath&lt;String, String&gt; email = validateEmail(input.email());
 EitherPath&lt;String, Integer&gt; age = validateAge(input.age());
 
-// Combine all three
 EitherPath&lt;String, User&gt; user = name.zipWith3(email, age, User::new);
 </code></pre>
-<h3 id="fail-fast-behavior"><a class="header" href="#fail-fast-behavior">Fail-Fast Behavior</a></h3>
-<p>With EitherPath and standard zipWith, the first error is returned:</p>
-<pre><code class="language-java">EitherPath&lt;String, String&gt; invalid1 = Path.left("Error 1");
-EitherPath&lt;String, String&gt; invalid2 = Path.left("Error 2");
-EitherPath&lt;String, String&gt; valid = Path.right("ok");
+<p>If all three succeed, <code>User::new</code> receives the values. If any fails, the
+first failure propagates.</p>
+<h3 id="the-difference-matters"><a class="header" href="#the-difference-matters">The Difference Matters</a></h3>
+<p>This distinction trips people up, so let's be explicit:</p>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>What It Expresses</th></tr></thead><tbody>
+<tr><td><code>via</code></td><td>"Do this, <strong>then</strong> use the result to decide what's next"</td></tr>
+<tr><td><code>zipWith</code></td><td>"Do these <strong>independently</strong>, then combine the results"</td></tr>
+</tbody></table>
+</div>
+<pre><code class="language-java">// WRONG: using via when computations are independent
+Path.right(validateName(input))
+    .via(name -&gt; Path.right(validateEmail(input)))  // Doesn't use name!
+    .via(email -&gt; Path.right(validateAge(input)));  // Doesn't use email!
 
-EitherPath&lt;String, String&gt; result = invalid1.zipWith(invalid2, (a, b) -&gt; a + b);
-// result.run() → Left("Error 1")
+// RIGHT: using zipWith for independent computations
+validateName(input).zipWith3(
+    validateEmail(input),
+    validateAge(input),
+    User::new
+);
 </code></pre>
-<div id="admonition-accumulating-all-errors" class="admonition admonish-tip" role="note" aria-labelledby="admonition-accumulating-all-errors-title">
-<div class="admonition-title">
-<div id="admonition-accumulating-all-errors-title">
-<p>Accumulating All Errors</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-accumulating-all-errors"></a>
-</div>
-<div>
-<p>Need to collect <em>all</em> validation errors rather than stopping at the first? Use <code>ValidationPath</code> with <code>zipWithAccum</code>:</p>
-<pre><code class="language-java">ValidationPath&lt;List&lt;String&gt;, User&gt; user = nameV.zipWith3Accum(emailV, ageV, User::new);
-// Returns ALL errors: ["Name too short", "Invalid email", "Age negative"]
-</code></pre>
-<p>See <a href="path_types.html#validationpath">ValidationPath</a> for the complete error accumulation API.</p>
-</div>
-</div>
-<h3 id="zipwith-variants"><a class="header" href="#zipwith-variants">zipWith Variants</a></h3>
-<pre><code class="language-java">// Combine 2 values
+<p>The first version works but misleads readers into thinking there's a
+dependency. The second says what it means.</p>
+<h3 id="variants"><a class="header" href="#variants">Variants</a></h3>
+<pre><code class="language-java">// Two values
 pathA.zipWith(pathB, (a, b) -&gt; combine(a, b))
 
-// Combine 3 values
+// Three values
 pathA.zipWith3(pathB, pathC, (a, b, c) -&gt; combine(a, b, c))
 
-// Combine 4 values
+// Four values
 pathA.zipWith4(pathB, pathC, pathD, (a, b, c, d) -&gt; combine(a, b, c, d))
 </code></pre>
+<p>Beyond four, consider whether your design is asking too much of a single
+expression.</p>
 <hr />
-<h2 id="mixed-composition"><a class="header" href="#mixed-composition">Mixed Composition</a></h2>
-<p>Real-world code often mixes sequential and parallel composition:</p>
+<h2 id="mixed-composition-the-real-world"><a class="header" href="#mixed-composition-the-real-world">Mixed Composition: The Real World</a></h2>
+<p>Production code rarely uses just one pattern. You validate independently,
+then sequence dependent operations, then combine more independent work.
+The key is clarity about which pattern you're using where.</p>
 <pre><code class="language-java">EitherPath&lt;Error, Order&gt; createOrder(OrderInput input) {
-    // Step 1: Validate all fields independently (parallel)
+    // Phase 1: Independent validation
     EitherPath&lt;Error, String&gt; name = validateName(input.name());
     EitherPath&lt;Error, String&gt; email = validateEmail(input.email());
     EitherPath&lt;Error, Address&gt; address = validateAddress(input.address());
 
-    EitherPath&lt;Error, CustomerInfo&gt; customerInfo =
+    EitherPath&lt;Error, CustomerInfo&gt; customer =
         name.zipWith3(email, address, CustomerInfo::new);
 
-    // Step 2: Sequential - need customer to check inventory
-    return customerInfo
+    // Phase 2: Sequential operations that depend on customer
+    return customer
         .via(info -&gt; Path.either(checkInventory(input.items())))
-        .via(items -&gt; Path.either(calculatePricing(items)))
-        .via(pricing -&gt; Path.either(createOrder(customerInfo.run().getRight(), pricing)));
+        .via(inventory -&gt; Path.either(calculatePricing(inventory)))
+        .via(pricing -&gt; Path.either(createOrder(customer, pricing)));
 }
 </code></pre>
+<p>The phases are distinct: independent validation first, then a sequential
+pipeline that threads through the validated data. Readers can see the
+structure at a glance.</p>
 <hr />
 <h2 id="debugging-with-peek"><a class="header" href="#debugging-with-peek">Debugging with <code>peek</code></a></h2>
-<p>Effect chains can be frustrating to debug. When something fails partway through a pipeline, the error propagates silently to the end. You know <em>that</em> it failed, but not <em>where</em>. Traditional debugging techniques like print statements would break the chain, and debugger breakpoints can be awkward with lambdas.</p>
-<p>The <code>peek</code> method solves this by letting you observe values as they flow through the pipeline without disrupting the computation.</p>
-<h3 id="the-peek-method"><a class="header" href="#the-peek-method">The <code>peek</code> Method</a></h3>
-<p><code>peek</code> executes a side effect without changing the value:</p>
+<p>Effect chains can frustrate debugging. When something fails mid-pipeline,
+you know <em>that</em> it failed but not <em>where</em>. Traditional print debugging
+would break the chain. Debugger breakpoints are awkward with lambdas.</p>
+<p><code>peek</code> solves this by letting you observe values without disrupting the flow:</p>
 <pre><code class="language-java">EitherPath&lt;Error, User&gt; result =
     Path.either(validateInput(input))
-        .peek(valid -&gt; log.debug("Input validated: {}", valid))
+        .peek(valid -&gt; log.debug("Validated: {}", valid))
         .via(valid -&gt; Path.either(createUser(valid)))
-        .peek(user -&gt; log.info("User created: {}", user.getId()))
+        .peek(user -&gt; log.info("Created user: {}", user.getId()))
         .via(user -&gt; Path.either(sendWelcomeEmail(user)))
-        .peek(email -&gt; log.debug("Welcome email sent"));
+        .peek(email -&gt; log.debug("Email sent"));
 </code></pre>
-<p>For error paths, <code>peek</code> only executes on success:</p>
-<pre><code class="language-java">Path.left("error")
-    .peek(v -&gt; log.info("Value: {}", v))  // Never executes
-    .map(String::toUpperCase);
-</code></pre>
-<h3 id="debugging-pipelines"><a class="header" href="#debugging-pipelines">Debugging Pipelines</a></h3>
-<p>Create a helper for detailed logging:</p>
-<pre><code class="language-java">&lt;A&gt; EitherPath&lt;Error, A&gt; debug(EitherPath&lt;Error, A&gt; path, String step) {
-    return path.peek(v -&gt; log.debug("[{}] Success: {}", step, v));
+<p><code>peek</code> only executes on the success track. Failures pass through silently,
+which is usually what you want when tracing the happy path.</p>
+<h3 id="a-debugging-helper"><a class="header" href="#a-debugging-helper">A Debugging Helper</a></h3>
+<p>For detailed tracing, wrap the pattern:</p>
+<pre><code class="language-java">&lt;A&gt; EitherPath&lt;Error, A&gt; traced(EitherPath&lt;Error, A&gt; path, String step) {
+    return path.peek(v -&gt; log.debug("[{}] → {}", step, v));
 }
 
 EitherPath&lt;Error, Invoice&gt; pipeline =
-    debug(Path.either(findUser(id)), "findUser")
-        .via(user -&gt; debug(Path.either(getCart(user)), "getCart"))
-        .via(cart -&gt; debug(Path.either(checkout(cart)), "checkout"));
+    traced(Path.either(findUser(id)), "findUser")
+        .via(user -&gt; traced(Path.either(getCart(user)), "getCart"))
+        .via(cart -&gt; traced(Path.either(checkout(cart)), "checkout"));
 </code></pre>
+<p>When something goes wrong, the logs show exactly how far you got.</p>
 <hr />
-<h2 id="error-handling-patterns"><a class="header" href="#error-handling-patterns">Error Handling Patterns</a></h2>
-<p>Not every error should halt processing. Sometimes a failure is expected and you have a sensible fallback. Sometimes you want to transform the error into something more meaningful for the caller. Sometimes you want to try several approaches before giving up.</p>
-<p>The Path API provides a toolkit for these scenarios. Each pattern addresses a different question: "What should happen when this operation fails?"</p>
-<h3 id="pattern-1-recover-with-default"><a class="header" href="#pattern-1-recover-with-default">Pattern 1: Recover with Default</a></h3>
-<p><strong>The problem:</strong> An operation might fail, but you have a reasonable fallback value that lets processing continue.</p>
-<p><strong>The solution:</strong></p>
+<h2 id="error-handling-strategies"><a class="header" href="#error-handling-strategies">Error Handling Strategies</a></h2>
+<p>Not every error should halt processing. Sometimes you have a sensible
+fallback. Sometimes you need to transform the error for the next layer.
+Sometimes you want to try several approaches before giving up.</p>
+<h3 id="strategy-1-recover-with-a-default"><a class="header" href="#strategy-1-recover-with-a-default">Strategy 1: Recover with a Default</a></h3>
+<p>The operation might fail, but you have a reasonable fallback:</p>
 <pre><code class="language-java">MaybePath&lt;Config&gt; config = Path.maybe(loadConfig())
     .orElse(() -&gt; Path.just(Config.defaults()));
 
 EitherPath&lt;Error, User&gt; user = Path.either(findUser(id))
     .recover(error -&gt; User.guest());
 </code></pre>
-<h3 id="pattern-2-transform-and-rethrow"><a class="header" href="#pattern-2-transform-and-rethrow">Pattern 2: Transform and Rethrow</a></h3>
-<p><strong>The problem:</strong> Low-level errors (API failures, database exceptions) leak implementation details to callers. You need errors that make sense at your abstraction level.</p>
-<p><strong>The solution:</strong></p>
+<p>Use this when the fallback is genuinely acceptable, not when you're
+papering over problems you should be handling properly.</p>
+<h3 id="strategy-2-transform-the-error"><a class="header" href="#strategy-2-transform-the-error">Strategy 2: Transform the Error</a></h3>
+<p>Low-level errors leak implementation details. Transform them at layer
+boundaries:</p>
 <pre><code class="language-java">EitherPath&lt;ServiceError, Data&gt; result =
     Path.either(externalApi.fetch())
-        .mapError(apiError -&gt; new ServiceError("API failed", apiError));
+        .mapError(apiError -&gt; new ServiceError("API unavailable", apiError));
 </code></pre>
-<p>This wraps the raw API error in a domain-appropriate type while preserving the original cause for debugging.</p>
-<h3 id="pattern-3-retry-logic"><a class="header" href="#pattern-3-retry-logic">Pattern 3: Retry Logic</a></h3>
-<p><strong>The problem:</strong> Network calls and external services fail transiently. A single failure should not necessarily mean permanent failure.</p>
-<p><strong>The solution:</strong></p>
-<pre><code class="language-java">EitherPath&lt;Error, Data&gt; withRetry(Supplier&lt;Either&lt;Error, Data&gt;&gt; operation, int maxRetries) {
-    EitherPath&lt;Error, Data&gt; result = Path.either(operation.get());
-
-    for (int i = 0; i &lt; maxRetries &amp;&amp; result.run().isLeft(); i++) {
-        result = Path.either(operation.get());
-    }
-
-    return result;
-}
-</code></pre>
-<h3 id="pattern-4-fallback-chain"><a class="header" href="#pattern-4-fallback-chain">Pattern 4: Fallback Chain</a></h3>
-<p><strong>The problem:</strong> You have multiple sources for the same data, each with different trade-offs. Try the preferred source first, then fall back to alternatives.</p>
-<p><strong>The solution:</strong></p>
+<p>The original error is preserved as the cause; callers see a domain-appropriate
+type.</p>
+<h3 id="strategy-3-fallback-chain"><a class="header" href="#strategy-3-fallback-chain">Strategy 3: Fallback Chain</a></h3>
+<p>Multiple sources for the same data, each with trade-offs:</p>
 <pre><code class="language-java">EitherPath&lt;Error, Config&gt; config =
     Path.either(loadFromFile())
-        .recoverWith(e1 -&gt; Path.either(loadFromEnv()))
-        .recoverWith(e2 -&gt; Path.either(loadFromDefaults()));
+        .recoverWith(e1 -&gt; {
+            log.warn("File config failed: {}", e1);
+            return Path.either(loadFromEnvironment());
+        })
+        .recoverWith(e2 -&gt; {
+            log.warn("Env config failed: {}", e2);
+            return Path.right(Config.defaults());
+        });
 </code></pre>
-<p>Each <code>recoverWith</code> only triggers if the previous step failed. The first successful result short-circuits the chain.</p>
-<h3 id="pattern-5-error-accumulation"><a class="header" href="#pattern-5-error-accumulation">Pattern 5: Error Accumulation</a></h3>
-<p><strong>The problem:</strong> Standard short-circuit behaviour means users only see one error at a time. For form validation, you want to show <em>all</em> problems at once.</p>
-<p><strong>The solution:</strong> Use <code>ValidationPath</code> with <code>zipWithAccum</code>:</p>
-<pre><code class="language-java">ValidationPath&lt;List&lt;String&gt;, User&gt; validateUser(Input input) {
-    return validateName(input.name())
+<p>Each <code>recoverWith</code> only triggers if the previous step failed. The first
+success short-circuits the chain.</p>
+<h3 id="strategy-4-accumulate-all-errors"><a class="header" href="#strategy-4-accumulate-all-errors">Strategy 4: Accumulate All Errors</a></h3>
+<p>For validation where users should see everything wrong at once:</p>
+<pre><code class="language-java">ValidationPath&lt;List&lt;String&gt;, User&gt; user =
+    validateName(input.name())
         .zipWith3Accum(
             validateEmail(input.email()),
             validateAge(input.age()),
             User::new
         );
-}
-// If name, email, and age all fail, returns ALL THREE errors
+
+// All three validations run; all errors collected
 </code></pre>
-<p>See <a href="path_types.html#validationpath">ValidationPath</a> for the complete error accumulation API.</p>
-<div id="admonition-manual-accumulation" class="admonition admonish-note" role="note" aria-labelledby="admonition-manual-accumulation-title">
-<div class="admonition-title">
-<div id="admonition-manual-accumulation-title">
-<p>Manual Accumulation</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-manual-accumulation"></a>
-</div>
-<div>
-<p>Before <code>ValidationPath</code>, you would need to manually collect errors into a list and check at the end. This works but loses the compositional benefits of the Path API. Prefer <code>ValidationPath.zipWithAccum</code> for new code.</p>
-</div>
-</div>
+<p>See <a href="path_types.html#validationpath">ValidationPath</a> for the full API.</p>
+<h3 id="strategy-5-error-enrichment"><a class="header" href="#strategy-5-error-enrichment">Strategy 5: Error Enrichment</a></h3>
+<p>Add context as errors propagate:</p>
+<pre><code class="language-java">EitherPath&lt;DetailedError, Data&gt; enriched =
+    path.mapError(error -&gt; new DetailedError(
+        error,
+        "During user lookup",
+        Map.of("userId", userId, "timestamp", Instant.now())
+    ));
+</code></pre>
+<p>When the error surfaces, you know not just <em>what</em> failed but <em>where</em> and
+<em>with what context</em>.</p>
 <hr />
 <h2 id="conversion-between-paths"><a class="header" href="#conversion-between-paths">Conversion Between Paths</a></h2>
-<p>Convert between path types as your needs change:</p>
+<p>As requirements evolve, you may need to switch Path types:</p>
 <h3 id="maybepath--eitherpath"><a class="header" href="#maybepath--eitherpath">MaybePath → EitherPath</a></h3>
-<pre><code class="language-java">MaybePath&lt;User&gt; maybeUser = Path.maybe(findUser(id));
-EitherPath&lt;String, User&gt; eitherUser = maybeUser.toEitherPath("User not found");
+<p>Absence becomes a typed error:</p>
+<pre><code class="language-java">MaybePath&lt;User&gt; maybe = Path.maybe(findUser(id));
+EitherPath&lt;String, User&gt; either = maybe.toEitherPath("User not found");
 </code></pre>
 <h3 id="trypath--eitherpath"><a class="header" href="#trypath--eitherpath">TryPath → EitherPath</a></h3>
-<pre><code class="language-java">TryPath&lt;Config&gt; tryConfig = Path.tryOf(() -&gt; loadConfig());
-EitherPath&lt;Throwable, Config&gt; eitherConfig = tryConfig.toEitherPath(ex -&gt; ex);
-
-// With error transformation
-EitherPath&lt;String, Config&gt; withMessage = tryConfig.toEitherPath(Throwable::getMessage);
-</code></pre>
-<h3 id="trypath--maybepath"><a class="header" href="#trypath--maybepath">TryPath → MaybePath</a></h3>
-<pre><code class="language-java">TryPath&lt;Integer&gt; parsed = Path.tryOf(() -&gt; Integer.parseInt(input));
-MaybePath&lt;Integer&gt; maybeInt = parsed.toMaybePath();  // Nothing on failure
+<p>Exception becomes a typed error:</p>
+<pre><code class="language-java">TryPath&lt;Config&gt; tried = Path.tryOf(() -&gt; loadConfig());
+EitherPath&lt;String, Config&gt; either = tried.toEitherPath(Throwable::getMessage);
 </code></pre>
 <h3 id="iopath--trypath"><a class="header" href="#iopath--trypath">IOPath → TryPath</a></h3>
+<p>Execute the deferred effect and capture the result:</p>
 <pre><code class="language-java">IOPath&lt;Data&gt; io = Path.io(() -&gt; fetchData());
-TryPath&lt;Data&gt; tryData = io.toTryPath();  // Executes the IO and captures result
+TryPath&lt;Data&gt; tried = io.toTryPath();  // Executes immediately!
 </code></pre>
+<div id="admonition-io-execution" class="admonition admonish-warning" role="note" aria-labelledby="admonition-io-execution-title">
+<div class="admonition-title">
+<div id="admonition-io-execution-title">
+<p>IO Execution</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-io-execution"></a>
+</div>
+<div>
+<p><code>toTryPath()</code> on an <code>IOPath</code> executes the effect. The result is no longer
+deferred. Be intentional about when you cross this boundary.</p>
+</div>
+</div>
+<h3 id="the-full-conversion-map"><a class="header" href="#the-full-conversion-map">The Full Conversion Map</a></h3>
+<p>See <a href="conversions.html">Type Conversions</a> for comprehensive coverage of all
+conversion paths.</p>
 <hr />
-<h2 id="practical-example-service-layer"><a class="header" href="#practical-example-service-layer">Practical Example: Service Layer</a></h2>
+<h2 id="a-realistic-example"><a class="header" href="#a-realistic-example">A Realistic Example</a></h2>
+<p>Bringing the patterns together:</p>
 <pre><code class="language-java">public class OrderService {
     private final UserRepository users;
     private final InventoryService inventory;
     private final PaymentService payments;
 
     public EitherPath&lt;OrderError, Order&gt; placeOrder(OrderRequest request) {
-        // Validate request
+        // Validate request (fail-fast)
         return validateRequest(request)
+            .peek(v -&gt; log.debug("Request validated"))
+
             // Get user (convert Maybe → Either)
             .via(valid -&gt; Path.maybe(users.findById(valid.userId()))
                 .toEitherPath(() -&gt; new OrderError.UserNotFound(valid.userId())))
+            .peek(user -&gt; log.debug("Found user: {}", user.getId()))
+
             // Check inventory
-            .via(user -&gt; Path.either(inventory.checkAvailability(request.items()))
+            .via(user -&gt; Path.either(inventory.check(request.items()))
                 .mapError(OrderError.InventoryError::new))
+
             // Process payment
-            .via(available -&gt; Path.either(payments.charge(user, available.total()))
-                .mapError(OrderError.PaymentError::new))
+            .via(available -&gt; Path.tryOf(() -&gt;
+                    payments.charge(user, available.total()))
+                .toEitherPath(OrderError.PaymentFailed::new))
+            .peek(payment -&gt; log.info("Payment processed: {}", payment.getId()))
+
             // Create order
-            .via(payment -&gt; Path.either(createOrder(user, request.items(), payment)));
+            .via(payment -&gt; Path.right(
+                createOrder(user, request.items(), payment)));
     }
 
-    private EitherPath&lt;OrderError, ValidatedRequest&gt; validateRequest(OrderRequest request) {
+    private EitherPath&lt;OrderError, ValidatedRequest&gt; validateRequest(
+            OrderRequest request) {
         if (request.items().isEmpty()) {
             return Path.left(new OrderError.EmptyCart());
         }
@@ -514,21 +554,79 @@ TryPath&lt;Data&gt; tryData = io.toTryPath();  // Executes the IO and captures r
     }
 }
 </code></pre>
+<p>The structure is visible: validate, fetch, check, charge, create. Errors
+propagate with appropriate types. Logging traces the happy path. Each
+conversion (<code>toEitherPath</code>, <code>mapError</code>) happens at a deliberate boundary.</p>
+<hr />
+<h2 id="common-mistakes"><a class="header" href="#common-mistakes">Common Mistakes</a></h2>
+<h3 id="mistake-1-using-via-for-independent-operations"><a class="header" href="#mistake-1-using-via-for-independent-operations">Mistake 1: Using <code>via</code> for Independent Operations</a></h3>
+<pre><code class="language-java">// Misleading: suggests email validation depends on name
+validateName(input)
+    .via(name -&gt; validateEmail(input))  // Doesn't use name!
+
+// Clearer: shows independence
+validateName(input).zipWith(validateEmail(input), (n, e) -&gt; ...)
+</code></pre>
+<h3 id="mistake-2-side-effects-in-map"><a class="header" href="#mistake-2-side-effects-in-map">Mistake 2: Side Effects in <code>map</code></a></h3>
+<pre><code class="language-java">// Wrong: side effect hidden in map
+path.map(user -&gt; {
+    database.save(user);  // Side effect!
+    return user;
+});
+
+// Right: use peek for side effects
+path.peek(user -&gt; database.save(user));
+
+// Or be explicit with IOPath
+path.via(user -&gt; Path.io(() -&gt; {
+    database.save(user);
+    return user;
+}));
+</code></pre>
+<h3 id="mistake-3-forgetting-to-run"><a class="header" href="#mistake-3-forgetting-to-run">Mistake 3: Forgetting to Run</a></h3>
+<pre><code class="language-java">// Bug: nothing happens
+void processUser(String id) {
+    Path.maybe(findUser(id))
+        .map(this::process);  // Result discarded!
+}
+
+// Fixed: extract the result
+void processUser(String id) {
+    Path.maybe(findUser(id))
+        .map(this::process)
+        .run();
+}
+</code></pre>
+<h3 id="mistake-4-converting-back-and-forth"><a class="header" href="#mistake-4-converting-back-and-forth">Mistake 4: Converting Back and Forth</a></h3>
+<pre><code class="language-java">// Wasteful: converting repeatedly
+Path.maybe(findUser(id))
+    .toEitherPath(() -&gt; error)
+    .toMaybePath()
+    .toEitherPath(() -&gt; error);  // Why?
+
+// Clean: convert once
+Path.maybe(findUser(id))
+    .toEitherPath(() -&gt; error);
+</code></pre>
 <hr />
 <h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>Pattern</th><th>Method</th><th>Use Case</th></tr></thead><tbody>
-<tr><td>Sequential</td><td><code>via</code></td><td>Each step depends on previous</td></tr>
-<tr><td>Sequential (ignore value)</td><td><code>then</code></td><td>Sequencing, don't need result</td></tr>
-<tr><td>Independent</td><td><code>zipWith</code></td><td>Combine independent computations</td></tr>
-<tr><td>Accumulate errors</td><td><code>zipWithAccum</code></td><td>Collect all validation errors</td></tr>
-<tr><td>Debug</td><td><code>peek</code></td><td>Logging without changing value</td></tr>
-<tr><td>Default value</td><td><code>recover</code></td><td>Provide fallback on error</td></tr>
-<tr><td>Error transform</td><td><code>mapError</code></td><td>Change error type</td></tr>
-<tr><td>Fallback chain</td><td><code>recoverWith</code></td><td>Try alternatives</td></tr>
-<tr><td>Type conversion</td><td><code>toEitherPath</code> etc.</td><td>Change path type</td></tr>
+<div class="table-wrapper"><table><thead><tr><th>Pattern</th><th>Method</th><th>When to Use</th></tr></thead><tbody>
+<tr><td>Sequential</td><td><code>via</code></td><td>Each step depends on the previous</td></tr>
+<tr><td>Sequential (ignore value)</td><td><code>then</code></td><td>Sequencing without data flow</td></tr>
+<tr><td>Independent</td><td><code>zipWith</code></td><td>Combine unrelated computations</td></tr>
+<tr><td>Accumulate errors</td><td><code>zipWithAccum</code></td><td>Collect all validation failures</td></tr>
+<tr><td>Debug</td><td><code>peek</code></td><td>Observe without disrupting</td></tr>
+<tr><td>Default value</td><td><code>recover</code></td><td>Provide fallback on failure</td></tr>
+<tr><td>Transform error</td><td><code>mapError</code></td><td>Change error type at boundaries</td></tr>
+<tr><td>Fallback chain</td><td><code>recoverWith</code></td><td>Try alternatives in order</td></tr>
+<tr><td>Type conversion</td><td><code>toEitherPath</code>, etc.</td><td>Change Path type</td></tr>
 </tbody></table>
 </div>
-<p>Continue to <a href="conversions.html">Type Conversions</a> for detailed conversion patterns.</p>
+<p>The world remains understandable and lawful when each operation has a clear
+purpose and failures propagate predictably. Composition is the discipline
+that makes this possible.</p>
+<p>Continue to <a href="conversions.html">Type Conversions</a> for detailed coverage of
+moving between Path types.</p>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
 <div class="admonition-title">
 <div id="admonition-see-also-title">
@@ -538,7 +636,7 @@ TryPath&lt;Data&gt; tryData = io.toTryPath();  // Executes the IO and captures r
 </div>
 <div>
 <ul>
-<li><a href="../functional/monad.html">Monad</a> - The type class behind <code>via</code> and <code>flatMap</code></li>
+<li><a href="../functional/monad.html">Monad</a> - The type class behind <code>via</code></li>
 <li><a href="../functional/applicative.html">Applicative</a> - The type class behind <code>zipWith</code></li>
 <li><a href="../functional/for_comprehension.html">For Comprehension</a> - Alternative syntax for monadic composition</li>
 </ul>

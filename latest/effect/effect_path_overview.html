@@ -255,7 +255,14 @@
 
 </style>
 <h1 id="effect-path-overview"><a class="header" href="#effect-path-overview">Effect Path Overview</a></h1>
-<p>This chapter covers the fundamental operations of the Effect Path API: creating paths, transforming values, chaining computations, and extracting results.</p>
+<blockquote>
+<p><em>"There is no real direction here, neither lines of power nor cooperation.
+Decisions are never really made; at best they manage to emerge, from a chaos
+of peeves, whims, hallucinations and all-round assholery."</em></p>
+<p>— Thomas Pynchon, <em>Gravity's Rainbow</em></p>
+</blockquote>
+<p>Pynchon was describing wartime bureaucracy, but he might as well have been
+reading a poorly implemented service layer on a Monday morning.</p>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -265,297 +272,214 @@
 </div>
 <div>
 <ul>
-<li>How to create Path types using factory methods (<code>Path.just</code>, <code>Path.right</code>, <code>Path.tryOf</code>, <code>Path.io</code>, <code>Path.valid</code>, <code>Path.id</code>, <code>Path.optional</code>, <code>Path.generic</code>)</li>
-<li>Transforming values inside paths with <code>map</code></li>
-<li>Chaining dependent computations with <code>via</code> and <code>flatMap</code></li>
-<li>Extracting results with <code>run</code>, <code>getOrElse</code>, and other terminal operations</li>
+<li>Why traditional Java error handling creates pyramids of nested chaos</li>
+<li>The railway model: effects as tracks, errors as switching points</li>
+<li>Creating Path types with factory methods</li>
+<li>Transforming values with <code>map</code>, chaining with <code>via</code>, extracting with <code>run</code></li>
 <li>Debugging pipelines with <code>peek</code></li>
 </ul>
 </div>
 </div>
-<h2 id="creating-paths"><a class="header" href="#creating-paths">Creating Paths</a></h2>
-<p>The <code>Path</code> class provides factory methods for creating all path types:</p>
-<h3 id="maybepath"><a class="header" href="#maybepath">MaybePath</a></h3>
-<pre><code class="language-java">// From a value (Just)
-MaybePath&lt;String&gt; greeting = Path.just("Hello");
+<hr />
+<h2 id="the-pyramid-of-doom"><a class="header" href="#the-pyramid-of-doom">The Pyramid of Doom</a></h2>
+<p>You've seen this shape before. You may have even written it, promising yourself to refactor it later:</p>
+<pre><code class="language-java">public OrderResult processOrder(String userId, OrderRequest request) {
+    User user = userRepository.findById(userId);
+    if (user == null) {
+        return OrderResult.error("User not found");
+    }
 
-// Empty (Nothing)
-MaybePath&lt;String&gt; empty = Path.nothing();
+    try {
+        ValidationResult validation = validator.validate(request);
+        if (!validation.isValid()) {
+            return OrderResult.error(validation.getErrors().get(0));
+        }
 
-// From an existing Maybe
-Maybe&lt;User&gt; maybeUser = userRepository.findById(id);
-MaybePath&lt;User&gt; userPath = Path.maybe(maybeUser);
+        InventoryCheck inventory = inventoryService.check(request.getItems());
+        if (!inventory.isAvailable()) {
+            return OrderResult.error("Items unavailable");
+        }
 
-// From a nullable value
-MaybePath&lt;String&gt; fromNullable = Path.fromNullable(possiblyNullValue);
+        try {
+            PaymentResult payment = paymentService.charge(user, inventory.getTotal());
+            if (payment.isFailed()) {
+                return OrderResult.error(payment.getFailureReason());
+            }
+
+            return OrderResult.success(createOrder(user, request, payment));
+        } catch (PaymentException e) {
+            return OrderResult.error("Payment failed: " + e.getMessage());
+        }
+    } catch (ValidationException e) {
+        return OrderResult.error("Validation error: " + e.getMessage());
+    }
+}
 </code></pre>
-<h3 id="eitherpath"><a class="header" href="#eitherpath">EitherPath</a></h3>
-<pre><code class="language-java">// Success value (Right)
-EitherPath&lt;String, Integer&gt; success = Path.right(42);
+<p>Five levels of nesting. Three different error-handling idioms. The actual
+business logic, <em>create an order</em>, buried at the bottom like a punchline
+nobody can find. And this is a simple example. I've witnessed far worse in Production.</p>
+<p>The problem isn't any single technique. Null checks are sometimes appropriate.
+Exceptions have their place. The problem is that they don't <em>compose</em>. Each
+approach speaks its own dialect, demands its own syntax, follows its own rules
+for propagating failure. String enough of them together, and you get Pynchon's
+chaos: decisions that don't so much get made as reluctantly emerge.</p>
+<hr />
+<h2 id="the-railway-model"><a class="header" href="#the-railway-model">The Railway Model</a></h2>
+<p>Functional programmers solved this problem decades ago with a simple model:
+the <strong>railway</strong>.</p>
+<pre><code>                         THE EFFECT RAILWAY
 
-// Error value (Left)
+    Success ═══●═══●═══●═══●═══●═══════════════════▶  Result
+               │   │   │   │   │
+              map via map via run
+                   │       │
+                   ╳       │         error occurs, switch tracks
+                   │       │
+    Failure  ──────●───────┼───────────────────────▶  Error
+                   │       │
+                mapError  recover
+                           │
+                           ╳                         recovery, switch back
+</code></pre>
+<p>Your data travels along the <strong>success track</strong>. Operations like <code>map</code> and <code>via</code>
+transform it as it goes. If something fails, the data switches to the
+<strong>failure track</strong> and subsequent operations are skipped, no explicit checks
+required, no nested conditionals. Recovery operations (<code>recover</code>, <code>recoverWith</code>)
+can switch the data back to the success track if you have a sensible fallback.</p>
+<p>This is what Path types implement. The railway is the model; Paths are the
+rolling stock.</p>
+<hr />
+<h2 id="the-same-logic-flattened"><a class="header" href="#the-same-logic-flattened">The Same Logic, Flattened</a></h2>
+<p>Here's that order processing code rewritten with Effect Paths:</p>
+<pre><code class="language-java">public EitherPath&lt;OrderError, Order&gt; processOrder(String userId, OrderRequest request) {
+    return Path.maybe(userRepository.findById(userId))
+        .toEitherPath(() -&gt; new OrderError.UserNotFound(userId))
+        .via(user -&gt; Path.either(validator.validate(request))
+            .mapError(OrderError.ValidationFailed::new))
+        .via(validated -&gt; Path.either(inventoryService.check(request.getItems()))
+            .mapError(OrderError.InventoryError::new))
+        .via(inventory -&gt; Path.tryOf(() -&gt; paymentService.charge(user, inventory.getTotal()))
+            .toEitherPath(OrderError.PaymentFailed::new))
+        .via(payment -&gt; Path.right(createOrder(user, request, payment)));
+}
+</code></pre>
+<p>The nesting has gone. Each step follows the same pattern: transform or chain,
+handle errors consistently, let failures propagate automatically. The business
+logic reads top-to-bottom instead of outside-in.</p>
+<p>This isn't magic. The underlying complexity hasn't vanished; you still need
+to handle the same failure cases. But the <em>accidental</em> complexity (the
+pyramids, the repeated null checks, the catch blocks that just wrap and
+rethrow) are gone. What remains is the essential shape of your logic.</p>
+<hr />
+<h2 id="path-types-at-a-glance"><a class="header" href="#path-types-at-a-glance">Path Types at a Glance</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Path Type</th><th>Underlying Effect</th><th>When to Reach for It</th></tr></thead><tbody>
+<tr><td><code>MaybePath&lt;A&gt;</code></td><td><code>Maybe&lt;A&gt;</code></td><td>Absence is normal, not an error</td></tr>
+<tr><td><code>EitherPath&lt;E, A&gt;</code></td><td><code>Either&lt;E, A&gt;</code></td><td>Errors carry typed information</td></tr>
+<tr><td><code>TryPath&lt;A&gt;</code></td><td><code>Try&lt;A&gt;</code></td><td>Wrapping code that throws exceptions</td></tr>
+<tr><td><code>IOPath&lt;A&gt;</code></td><td><code>IO&lt;A&gt;</code></td><td>Side effects you want to defer</td></tr>
+<tr><td><code>ValidationPath&lt;E, A&gt;</code></td><td><code>Validated&lt;E, A&gt;</code></td><td>Collecting <em>all</em> errors, not just the first</td></tr>
+<tr><td><code>IdPath&lt;A&gt;</code></td><td><code>Id&lt;A&gt;</code></td><td>The trivial case: always succeeds</td></tr>
+<tr><td><code>OptionalPath&lt;A&gt;</code></td><td><code>Optional&lt;A&gt;</code></td><td>Bridging to Java's standard library</td></tr>
+<tr><td><code>GenericPath&lt;F, A&gt;</code></td><td><code>Kind&lt;F, A&gt;</code></td><td>Custom monads, when nothing else fits</td></tr>
+</tbody></table>
+</div>
+<p>Each Path type wraps its underlying effect and provides:</p>
+<ul>
+<li><code>map(f)</code> - Transform the success value</li>
+<li><code>via(f)</code> - Chain to another Path (monadic bind)</li>
+<li><code>run()</code> - Extract the underlying effect</li>
+<li>Type-specific operations for recovery, error transformation, and more</li>
+</ul>
+<hr />
+<h2 id="creating-paths"><a class="header" href="#creating-paths">Creating Paths</a></h2>
+<p>The <code>Path</code> class provides factory methods for all Path types. A small sampler:</p>
+<pre><code class="language-java">// MaybePath: optional values
+MaybePath&lt;String&gt; greeting = Path.just("Hello");
+MaybePath&lt;String&gt; empty = Path.nothing();
+MaybePath&lt;User&gt; user = Path.maybe(repository.findById(id));
+
+// EitherPath: typed errors
+EitherPath&lt;String, Integer&gt; success = Path.right(42);
 EitherPath&lt;String, Integer&gt; failure = Path.left("Something went wrong");
 
-// From an existing Either
-Either&lt;Error, User&gt; either = validateUser(input);
-EitherPath&lt;Error, User&gt; userPath = Path.either(either);
-</code></pre>
-<h3 id="trypath"><a class="header" href="#trypath">TryPath</a></h3>
-<pre><code class="language-java">// Successful value
-TryPath&lt;Integer&gt; success = Path.success(42);
+// TryPath: exception handling
+TryPath&lt;Config&gt; config = Path.tryOf(() -&gt; loadConfig());
 
-// Failed value
-TryPath&lt;Integer&gt; failure = Path.failure(new RuntimeException("error"));
-
-// From a computation that may throw
-TryPath&lt;Integer&gt; parsed = Path.tryOf(() -&gt; Integer.parseInt(input));
-
-// From an existing Try
-Try&lt;Config&gt; tryConfig = loadConfig();
-TryPath&lt;Config&gt; configPath = Path.of(tryConfig);
-</code></pre>
-<h3 id="iopath"><a class="header" href="#iopath">IOPath</a></h3>
-<pre><code class="language-java">// Pure value (no side effects)
-IOPath&lt;Integer&gt; pure = Path.ioPure(42);
-
-// Deferred computation
+// IOPath: deferred side effects
 IOPath&lt;String&gt; readFile = Path.io(() -&gt; Files.readString(path));
-
-// From an existing IO
-IO&lt;Connection&gt; ioConn = connectToDatabase();
-IOPath&lt;Connection&gt; connPath = Path.ioOf(ioConn);
-</code></pre>
-<h3 id="validationpath"><a class="header" href="#validationpath">ValidationPath</a></h3>
-<pre><code class="language-java">// Valid value
-ValidationPath&lt;String, Integer&gt; valid = Path.valid(42);
-
-// Invalid value (single error)
-ValidationPath&lt;String, Integer&gt; invalid = Path.invalid("Value must be positive");
-
-// Invalid with list of errors
-ValidationPath&lt;List&lt;String&gt;, Integer&gt; multiError = Path.invalid(List.of("Error 1", "Error 2"));
-
-// From an existing Validated
-Validated&lt;String, User&gt; validated = validateUser(input);
-ValidationPath&lt;String, User&gt; validPath = Path.validation(validated);
-</code></pre>
-<h3 id="idpath"><a class="header" href="#idpath">IdPath</a></h3>
-<pre><code class="language-java">// Wrap a pure value (identity monad)
-IdPath&lt;String&gt; id = Path.id("hello");
-
-// From an existing Id
-Id&lt;Integer&gt; idValue = Id.of(42);
-IdPath&lt;Integer&gt; idPath = Path.idOf(idValue);
-</code></pre>
-<h3 id="optionalpath"><a class="header" href="#optionalpath">OptionalPath</a></h3>
-<pre><code class="language-java">// From Java Optional
-Optional&lt;String&gt; opt = Optional.of("hello");
-OptionalPath&lt;String&gt; optPath = Path.optional(opt);
-
-// Empty Optional
-OptionalPath&lt;String&gt; empty = Path.optional(Optional.empty());
-
-// From nullable value
-OptionalPath&lt;String&gt; fromNullable = Path.optionalOfNullable(possiblyNullValue);
-</code></pre>
-<h3 id="genericpath"><a class="header" href="#genericpath">GenericPath</a></h3>
-<pre><code class="language-java">// Wrap any Kind with its Monad instance
-Kind&lt;MaybeKind.Witness, String&gt; maybeKind = MaybeKind.widen(Maybe.just("hello"));
-GenericPath&lt;MaybeKind.Witness, String&gt; generic = Path.generic(maybeKind, MaybeMonad.INSTANCE);
-
-// Works with any monad type
-Kind&lt;ListKind.Witness, Integer&gt; listKind = ListKind.widen(List.of(1, 2, 3));
-GenericPath&lt;ListKind.Witness, Integer&gt; listPath = Path.generic(listKind, ListMonad.INSTANCE);
 </code></pre>
 <hr />
-<h2 id="basic-transformations-with-map"><a class="header" href="#basic-transformations-with-map">Basic Transformations with <code>map</code></a></h2>
-<p>All path types support <code>map</code> for transforming the success value:</p>
-<pre><code class="language-java">// MaybePath
-MaybePath&lt;String&gt; greeting = Path.just("hello");
+<h2 id="transforming-with-map"><a class="header" href="#transforming-with-map">Transforming with <code>map</code></a></h2>
+<p>All Path types support <code>map</code> for transforming the success value:</p>
+<pre><code class="language-java">MaybePath&lt;String&gt; greeting = Path.just("hello");
 MaybePath&lt;String&gt; upper = greeting.map(String::toUpperCase);
 // → Just("HELLO")
 
-MaybePath&lt;Integer&gt; length = greeting.map(String::length);
-// → Just(5)
-
-// Empty paths remain empty
 MaybePath&lt;String&gt; empty = Path.nothing();
-MaybePath&lt;Integer&gt; emptyLength = empty.map(String::length);
-// → Nothing
-
-// EitherPath
-EitherPath&lt;String, Integer&gt; number = Path.right(42);
-EitherPath&lt;String, String&gt; formatted = number.map(n -&gt; "Value: " + n);
-// → Right("Value: 42")
-
-// Errors short-circuit
-EitherPath&lt;String, Integer&gt; error = Path.left("error");
-EitherPath&lt;String, String&gt; mapped = error.map(n -&gt; "Value: " + n);
-// → Left("error")
-
-// TryPath
-TryPath&lt;Integer&gt; parsed = Path.tryOf(() -&gt; Integer.parseInt("42"));
-TryPath&lt;Integer&gt; doubled = parsed.map(n -&gt; n * 2);
-// → Success(84)
-
-// IOPath
-IOPath&lt;Integer&gt; io = Path.ioPure(10);
-IOPath&lt;Integer&gt; computed = io.map(n -&gt; n * n);
-// → IOPath (deferred: 100)
+MaybePath&lt;String&gt; stillEmpty = empty.map(String::toUpperCase);
+// → Nothing (map doesn't run on empty paths)
 </code></pre>
+<p>The function inside <code>map</code> only executes if the Path is on the success track.
+Failures pass through unchanged. No defensive checks required.</p>
 <hr />
-<h2 id="chaining-computations-with-via"><a class="header" href="#chaining-computations-with-via">Chaining Computations with <code>via</code></a></h2>
-<p>The <code>via</code> method chains computations where the next step depends on the previous result:</p>
-<pre><code class="language-java">// MaybePath chaining
-MaybePath&lt;Order&gt; order = Path.maybe(userRepository.findById(userId))
-    .via(user -&gt; Path.maybe(user.getPrimaryAddress()))
-    .via(address -&gt; Path.maybe(orderService.getLastOrder(address.getZipCode())));
-
-// Each step only executes if the previous succeeded
-// Nothing propagates through the chain
-
-// EitherPath chaining
-EitherPath&lt;Error, Invoice&gt; invoice =
-    Path.either(validateOrder(input))
-        .via(order -&gt; Path.either(calculateTotal(order)))
+<h2 id="chaining-with-via"><a class="header" href="#chaining-with-via">Chaining with <code>via</code></a></h2>
+<p>The <code>via</code> method chains computations where each step depends on the previous
+result:</p>
+<pre><code class="language-java">EitherPath&lt;Error, Invoice&gt; invoice =
+    Path.either(findUser(userId))
+        .via(user -&gt; Path.either(getCart(user)))
+        .via(cart -&gt; Path.either(calculateTotal(cart)))
         .via(total -&gt; Path.either(createInvoice(total)));
-
-// Errors short-circuit - first error propagates
-
-// TryPath chaining
-TryPath&lt;Data&gt; result =
-    Path.tryOf(() -&gt; readFile(path))
-        .via(content -&gt; Path.tryOf(() -&gt; parseJson(content)))
-        .via(json -&gt; Path.tryOf(() -&gt; transform(json)));
-
-// Exceptions are captured and propagate
-
-// IOPath chaining
-IOPath&lt;Response&gt; response =
-    Path.io(() -&gt; establishConnection())
-        .via(conn -&gt; Path.io(() -&gt; sendRequest(conn, request)))
-        .via(req -&gt; Path.io(() -&gt; readResponse(req)));
-
-// Effects are deferred until run
 </code></pre>
-<h3 id="via-vs-flatmap"><a class="header" href="#via-vs-flatmap"><code>via</code> vs <code>flatMap</code></a></h3>
-<p><code>via</code> and <code>flatMap</code> are equivalent operations - both perform monadic bind. Use whichever reads better in your context:</p>
-<pre><code class="language-java">// These are equivalent
-path.via(x -&gt; nextPath(x))
-path.flatMap(x -&gt; nextPath(x))
-</code></pre>
-<p>The name <code>via</code> was chosen for consistency with the optics Focus DSL, where <code>via</code> navigates through lenses and prisms.</p>
+<p>Each <code>via</code> receives the success value and returns a new Path. If any step
+fails, subsequent steps are skipped; the failure propagates to the end.</p>
+<p>The name <code>via</code> mirrors the Focus DSL from the optics chapters. Where FocusPath
+uses <code>via</code> to navigate through lenses, EffectPath uses <code>via</code> to navigate through
+effects. Different territory, same verb.</p>
 <hr />
 <h2 id="extracting-results"><a class="header" href="#extracting-results">Extracting Results</a></h2>
-<h3 id="maybepath-1"><a class="header" href="#maybepath-1">MaybePath</a></h3>
-<pre><code class="language-java">MaybePath&lt;String&gt; path = Path.just("hello");
-
-// Get the underlying Maybe
+<p>Eventually you need to leave the railway and extract a result:</p>
+<pre><code class="language-java">// MaybePath
 Maybe&lt;String&gt; maybe = path.run();
-
-// Get with default
 String value = path.getOrElse("default");
-// → "hello"
-
-// Get or throw
 String value = path.getOrThrow(() -&gt; new NoSuchElementException());
-// → "hello"
 
-// Check and handle
-if (path.run().isJust()) {
-    System.out.println("Got: " + path.run().get());
-}
-</code></pre>
-<h3 id="eitherpath-1"><a class="header" href="#eitherpath-1">EitherPath</a></h3>
-<pre><code class="language-java">EitherPath&lt;String, Integer&gt; path = Path.right(42);
-
-// Get the underlying Either
-Either&lt;String, Integer&gt; either = path.run();
-
-// Pattern match with fold
+// EitherPath
+Either&lt;Error, User&gt; either = path.run();
 String result = either.fold(
-    error -&gt; "Error: " + error,
-    value -&gt; "Value: " + value
+    error -&gt; "Failed: " + error,
+    user -&gt; "Found: " + user.name()
 );
-// → "Value: 42"
 
-// Check and extract
-if (either.isRight()) {
-    Integer value = either.getRight();
-}
-</code></pre>
-<h3 id="trypath-1"><a class="header" href="#trypath-1">TryPath</a></h3>
-<pre><code class="language-java">TryPath&lt;Integer&gt; path = Path.success(42);
-
-// Get the underlying Try
-Try&lt;Integer&gt; tryValue = path.run();
-
-// Get with default
-Integer value = path.getOrElse(-1);
-// → 42
-
-// Check result
-if (tryValue.isSuccess()) {
-    System.out.println("Success: " + tryValue.get());
-} else {
-    System.out.println("Failed: " + tryValue.getCause());
-}
-</code></pre>
-<h3 id="iopath-1"><a class="header" href="#iopath-1">IOPath</a></h3>
-<pre><code class="language-java">IOPath&lt;String&gt; path = Path.io(() -&gt; Files.readString(Paths.get("file.txt")));
-
-// Execute and get result (may throw)
-String content = path.unsafeRun();
-
-// Execute safely, capturing exceptions
-Try&lt;String&gt; result = path.runSafe();
-
-// Convert to TryPath for further composition
-TryPath&lt;String&gt; tryPath = path.toTryPath();
+// IOPath: actually runs the effect
+String content = ioPath.unsafeRun();      // may throw
+Try&lt;String&gt; safe = ioPath.runSafe();      // captures exceptions
 </code></pre>
 <hr />
 <h2 id="debugging-with-peek"><a class="header" href="#debugging-with-peek">Debugging with <code>peek</code></a></h2>
-<p>The <code>peek</code> method allows side effects (like logging) without affecting the computation:</p>
+<p>When a pipeline misbehaves, <code>peek</code> lets you observe values mid-flow without
+disrupting the computation:</p>
 <pre><code class="language-java">EitherPath&lt;Error, User&gt; result =
     Path.either(validateInput(input))
-        .peek(valid -&gt; log.debug("Validated input: {}", valid))
+        .peek(valid -&gt; log.debug("Input validated: {}", valid))
         .via(valid -&gt; Path.either(createUser(valid)))
-        .peek(user -&gt; log.info("Created user: {}", user.getId()));
+        .peek(user -&gt; log.info("User created: {}", user.getId()));
 </code></pre>
-<p>For MaybePath, peek only executes for Just values:</p>
-<pre><code class="language-java">Path.maybe(findUser(id))
-    .peek(user -&gt; log.debug("Found user: {}", user))  // Only logs if found
-    .map(User::getEmail);
-</code></pre>
+<p>For failure paths, <code>peek</code> only executes on success. Failures pass through
+silently, which is usually what you want when debugging the happy path.</p>
 <hr />
 <h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
-<h3 id="factory-methods"><a class="header" href="#factory-methods">Factory Methods</a></h3>
-<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Purpose</th><th>Example</th></tr></thead><tbody>
-<tr><td><code>Path.just(x)</code></td><td>Create MaybePath with value</td><td><code>Path.just("hello")</code></td></tr>
-<tr><td><code>Path.nothing()</code></td><td>Create empty MaybePath</td><td><code>Path.nothing()</code></td></tr>
-<tr><td><code>Path.right(x)</code></td><td>Create successful EitherPath</td><td><code>Path.right(42)</code></td></tr>
-<tr><td><code>Path.left(e)</code></td><td>Create failed EitherPath</td><td><code>Path.left("error")</code></td></tr>
-<tr><td><code>Path.success(x)</code></td><td>Create successful TryPath</td><td><code>Path.success(42)</code></td></tr>
-<tr><td><code>Path.tryOf(f)</code></td><td>Create TryPath from computation</td><td><code>Path.tryOf(() -&gt; parse(s))</code></td></tr>
-<tr><td><code>Path.ioPure(x)</code></td><td>Create pure IOPath</td><td><code>Path.ioPure(42)</code></td></tr>
-<tr><td><code>Path.io(f)</code></td><td>Create IOPath from effect</td><td><code>Path.io(() -&gt; readFile())</code></td></tr>
-<tr><td><code>Path.valid(x)</code></td><td>Create valid ValidationPath</td><td><code>Path.valid(user)</code></td></tr>
-<tr><td><code>Path.invalid(e)</code></td><td>Create invalid ValidationPath</td><td><code>Path.invalid("error")</code></td></tr>
-<tr><td><code>Path.id(x)</code></td><td>Create IdPath</td><td><code>Path.id("hello")</code></td></tr>
-<tr><td><code>Path.optional(opt)</code></td><td>Create OptionalPath</td><td><code>Path.optional(Optional.of(x))</code></td></tr>
-<tr><td><code>Path.generic(k, m)</code></td><td>Create GenericPath</td><td><code>Path.generic(kind, monad)</code></td></tr>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>What It Does</th><th>Railway Metaphor</th></tr></thead><tbody>
+<tr><td><code>Path.just(x)</code>, <code>Path.right(x)</code>, etc.</td><td>Create a Path on the success track</td><td>Board the train</td></tr>
+<tr><td><code>map(f)</code></td><td>Transform the value, stay on same track</td><td>Redecorate your carriage</td></tr>
+<tr><td><code>via(f)</code></td><td>Chain to a new Path</td><td>Transfer to connecting service</td></tr>
+<tr><td><code>recover(f)</code></td><td>Switch from failure to success track</td><td>Emergency rescue</td></tr>
+<tr><td><code>mapError(f)</code></td><td>Transform the error, stay on failure track</td><td>Relabel the delay announcement</td></tr>
+<tr><td><code>run()</code></td><td>Exit the railway, extract the result</td><td>Arrive at destination</td></tr>
 </tbody></table>
 </div>
-<h3 id="common-operations"><a class="header" href="#common-operations">Common Operations</a></h3>
-<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Purpose</th><th>Example</th></tr></thead><tbody>
-<tr><td><code>.map(f)</code></td><td>Transform success value</td><td><code>path.map(x -&gt; x * 2)</code></td></tr>
-<tr><td><code>.via(f)</code></td><td>Chain dependent computation</td><td><code>path.via(x -&gt; nextPath(x))</code></td></tr>
-<tr><td><code>.run()</code></td><td>Extract underlying type</td><td><code>path.run()</code></td></tr>
-<tr><td><code>.getOrElse(d)</code></td><td>Get with default</td><td><code>path.getOrElse(0)</code></td></tr>
-<tr><td><code>.peek(f)</code></td><td>Side effect without changing value</td><td><code>path.peek(x -&gt; log(x))</code></td></tr>
-</tbody></table>
-</div>
-<p>Continue to <a href="capabilities.html">Capability Interfaces</a> to understand the interface hierarchy.</p>
+<p>Continue to <a href="capabilities.html">Capability Interfaces</a> to understand the powers
+that make this possible.</p>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
 <div class="admonition-title">
 <div id="admonition-see-also-title">
@@ -565,9 +489,23 @@ TryPath&lt;String&gt; tryPath = path.toTryPath();
 </div>
 <div>
 <ul>
-<li><a href="../monads/io_monad.html">IO Monad</a> - The underlying type for IOPath and deferred effect execution</li>
 <li><a href="../functional/monad.html">Monad</a> - The type class powering <code>via</code> and <code>flatMap</code></li>
 <li><a href="../functional/functor.html">Functor</a> - The type class powering <code>map</code></li>
+<li><a href="../monads/io_monad.html">IO Monad</a> - The underlying type for <code>IOPath</code></li>
+</ul>
+</div>
+</div>
+<div id="admonition-further-reading" class="admonition admonish-tip" role="note" aria-labelledby="admonition-further-reading-title">
+<div class="admonition-title">
+<div id="admonition-further-reading-title">
+<p>Further Reading</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-further-reading"></a>
+</div>
+<div>
+<ul>
+<li><strong>Scott Wlaschin</strong>: <a href="https://vimeo.com/97344498">Railway Oriented Programming -- error handling in functional languages</a> - video</li>
+<li><strong>Scott Wlaschin</strong>: <a href="https://www.slideshare.net/slideshow/railway-oriented-programming/32242318#1">Railway Oriented Programming -- error handling in functional languages</a> - slides)</li>
 </ul>
 </div>
 </div>

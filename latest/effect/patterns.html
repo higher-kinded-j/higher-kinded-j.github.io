@@ -255,8 +255,16 @@
 
 </style>
 <h1 id="patterns-and-recipes"><a class="header" href="#patterns-and-recipes">Patterns and Recipes</a></h1>
-<p>Every application faces the same challenges: validating input, orchestrating services, handling errors gracefully, and testing complex workflows. This chapter shows how the Effect Path API addresses these challenges with reusable patterns.</p>
-<p>The patterns here are not academic exercises. They come from real codebases where tangled error handling was replaced with clear, composable pipelines. Each pattern solves a specific problem that you will recognise from your own projects.</p>
+<blockquote>
+<p><em>"When the going gets weird, the weird turn professional."</em></p>
+<p>— Hunter S. Thompson, <em>Fear and Loathing on the Campaign Trail '72</em></p>
+</blockquote>
+<p>Every codebase eventually gets weird. Edge cases multiply. Requirements
+contradict. Legacy systems refuse to behave. The patterns in this chapter
+are for those moments: tested approaches from production code where the
+weird was met professionally.</p>
+<p>These aren't academic exercises. They're recipes that survived contact with
+reality.</p>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -275,159 +283,217 @@
 </ul>
 </div>
 </div>
+<hr />
 <h2 id="validation-pipelines"><a class="header" href="#validation-pipelines">Validation Pipelines</a></h2>
-<p>User input cannot be trusted. Every field might be missing, malformed, or malicious. Traditional validation scatters null checks and conditionals throughout your code. The Path API lets you build validation as composable pipelines where each rule is a small, testable function.</p>
+<p>User input arrives untrustworthy. Every field might be missing, malformed,
+or actively hostile. Traditional validation scatters null checks and
+conditionals throughout your code. Path types let you build validation as
+composable pipelines where each rule is small, testable, and reusable.</p>
 <h3 id="single-field-validation"><a class="header" href="#single-field-validation">Single Field Validation</a></h3>
-<p><strong>The pattern:</strong> Each field gets its own validation function that returns a Path. Success carries the validated value (possibly transformed); failure carries an error message.</p>
+<p>Each field gets its own validation function returning a Path:</p>
+<pre><code class="language-java">private EitherPath&lt;String, String&gt; validateEmail(String email) {
+    if (email == null || email.isBlank()) {
+        return Path.left("Email is required");
+    }
+    if (!email.contains("@")) {
+        return Path.left("Email must contain @");
+    }
+    if (!email.contains(".")) {
+        return Path.left("Email must contain a domain");
+    }
+    return Path.right(email.toLowerCase().trim());
+}
+</code></pre>
+<p>Or with modern pattern matching:</p>
 <pre><code class="language-java">private EitherPath&lt;String, String&gt; validateEmail(String email) {
     return switch (email) {
         case null -&gt; Path.left("Email is required");
         case String e when e.isBlank() -&gt; Path.left("Email is required");
         case String e when !e.contains("@") -&gt; Path.left("Email must contain @");
-        case String e when !e.contains(".") -&gt; Path.left("Email must contain a domain");
+        case String e when !e.contains(".") -&gt; Path.left("Email must have a domain");
         case String e -&gt; Path.right(e.toLowerCase().trim());
     };
 }
 </code></pre>
-<h3 id="combining-validations"><a class="header" href="#combining-validations">Combining Validations</a></h3>
-<p><strong>The pattern:</strong> When multiple fields must all be valid to construct an object, use <code>zipWith</code> to combine them. The first error stops processing (fail-fast behaviour).</p>
+<p>The validated value may be transformed (lowercase, trimmed); the Path
+carries the clean version forward.</p>
+<h3 id="combining-validations-fail-fast"><a class="header" href="#combining-validations-fail-fast">Combining Validations (Fail-Fast)</a></h3>
+<p>When all fields must be valid to proceed:</p>
 <pre><code class="language-java">record User(String name, String email, int age) {}
 
 EitherPath&lt;String, User&gt; validateUser(UserInput input) {
-    EitherPath&lt;String, String&gt; name = validateName(input.name());
-    EitherPath&lt;String, String&gt; email = validateEmail(input.email());
-    EitherPath&lt;String, Integer&gt; age = validateAge(input.age());
-
-    return name.zipWith3(email, age, User::new);
+    return validateName(input.name())
+        .zipWith3(
+            validateEmail(input.email()),
+            validateAge(input.age()),
+            User::new
+        );
 }
 </code></pre>
-<p><strong>Why this works:</strong> <code>zipWith3</code> only calls <code>User::new</code> if all three validations succeed. If any fails, the error propagates immediately.</p>
+<p>First failure stops processing. For user-facing forms, this is often too
+abrupt; see the next pattern.</p>
+<h3 id="combining-validations-accumulating"><a class="header" href="#combining-validations-accumulating">Combining Validations (Accumulating)</a></h3>
+<p>When users deserve to see all problems at once:</p>
+<pre><code class="language-java">ValidationPath&lt;List&lt;String&gt;, User&gt; validateUser(UserInput input) {
+    return validateNameV(input.name())
+        .zipWith3Accum(
+            validateEmailV(input.email()),
+            validateAgeV(input.age()),
+            User::new
+        );
+}
+
+// Usage
+validateUser(input).run().fold(
+    errors -&gt; showAllErrors(errors),  // ["Name too short", "Invalid email"]
+    user -&gt; proceed(user)
+);
+</code></pre>
+<p>The difference is respect for the user's time.</p>
 <h3 id="nested-validation"><a class="header" href="#nested-validation">Nested Validation</a></h3>
-<pre><code class="language-java">record Registration(User user, Address address) {}
+<p>Complex objects with nested structures:</p>
+<pre><code class="language-java">record Registration(User user, Address address, List&lt;Preference&gt; prefs) {}
 
 EitherPath&lt;String, Registration&gt; validateRegistration(RegistrationInput input) {
-    // Validate user
-    EitherPath&lt;String, User&gt; userValidation = validateUser(input.user());
+    EitherPath&lt;String, User&gt; user = validateUser(input.user());
 
-    // Validate address
-    EitherPath&lt;String, Address&gt; addressValidation =
-        validateStreet(input.street())
-            .zipWith3(
-                validateCity(input.city()),
-                validateZipCode(input.zipCode()),
-                Address::new);
+    EitherPath&lt;String, Address&gt; address = validateStreet(input.street())
+        .zipWith3(
+            validateCity(input.city()),
+            validatePostcode(input.postcode()),
+            Address::new
+        );
 
-    // Combine
-    return userValidation.zipWith(addressValidation, Registration::new);
+    EitherPath&lt;String, List&lt;Preference&gt;&gt; prefs =
+        validatePreferences(input.preferences());
+
+    return user.zipWith3(address, prefs, Registration::new);
 }
 </code></pre>
-<div id="admonition-accumulating-all-errors" class="admonition admonish-tip" role="note" aria-labelledby="admonition-accumulating-all-errors-title">
-<div class="admonition-title">
-<div id="admonition-accumulating-all-errors-title">
-<p>Accumulating All Errors</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-accumulating-all-errors"></a>
-</div>
-<div>
-<p>For user-facing forms where you want to show <em>all</em> validation errors at once, use <code>ValidationPath</code> with <code>zipWithAccum</code> instead of <code>EitherPath</code> with <code>zipWith</code>. See <a href="path_types.html#validationpath">ValidationPath</a> for details.</p>
-</div>
-</div>
+<p>Each sub-validation is independent; they combine at the end.</p>
 <hr />
 <h2 id="service-layer-patterns"><a class="header" href="#service-layer-patterns">Service Layer Patterns</a></h2>
-<p>Service layers orchestrate multiple operations: fetching data, applying business rules, calling external services. Each step might fail, and each failure needs different handling. The Path API makes this orchestration explicit and composable.</p>
+<p>Services orchestrate multiple operations: fetching data, applying business
+rules, calling external systems. Each step might fail differently. Path types
+make the orchestration explicit.</p>
 <h3 id="repository-pattern"><a class="header" href="#repository-pattern">Repository Pattern</a></h3>
-<p><strong>The problem:</strong> Repositories return optional values (user might not exist), but services need to turn "not found" into meaningful errors.</p>
+<p>Repositories return <code>Maybe</code> (absence is expected). Services convert to
+<code>Either</code> (absence becomes an error in context):</p>
 <pre><code class="language-java">public class UserRepository {
-    // Returns Maybe - absence is expected
     public Maybe&lt;User&gt; findById(String id) {
-        return Maybe.fromOptional(jdbcTemplate.queryForOptional(...));
+        return Maybe.fromOptional(
+            jdbcTemplate.queryForOptional("SELECT...", id)
+        );
     }
 
     public Maybe&lt;User&gt; findByEmail(String email) {
-        return Maybe.fromOptional(jdbcTemplate.queryForOptional(...));
+        return Maybe.fromOptional(
+            jdbcTemplate.queryForOptional("SELECT...", email)
+        );
     }
 }
 
 public class UserService {
     private final UserRepository repository;
 
-    // Returns EitherPath - errors are meaningful
-    public EitherPath&lt;UserError, User&gt; getUserById(String id) {
+    public EitherPath&lt;UserError, User&gt; getById(String id) {
         return Path.maybe(repository.findById(id))
             .toEitherPath(() -&gt; new UserError.NotFound(id));
     }
 
-    public EitherPath&lt;UserError, User&gt; getUserByEmail(String email) {
+    public EitherPath&lt;UserError, User&gt; getByEmail(String email) {
         return Path.maybe(repository.findByEmail(email))
             .toEitherPath(() -&gt; new UserError.NotFound(email));
     }
 }
 </code></pre>
+<p>The conversion happens at the layer boundary. Repository callers get <code>Maybe</code>;
+service callers get <code>Either</code> with meaningful errors.</p>
 <h3 id="chained-service-calls"><a class="header" href="#chained-service-calls">Chained Service Calls</a></h3>
+<p>When each step depends on the previous:</p>
 <pre><code class="language-java">public class OrderService {
     private final UserService users;
     private final InventoryService inventory;
     private final PaymentService payments;
 
-    public EitherPath&lt;OrderError, Order&gt; placeOrder(String userId, List&lt;Item&gt; items) {
-        return users.getUserById(userId)
+    public EitherPath&lt;OrderError, Order&gt; placeOrder(
+            String userId, List&lt;Item&gt; items) {
+        return users.getById(userId)
             .mapError(OrderError::fromUserError)
             .via(user -&gt; inventory.reserve(items)
                 .mapError(OrderError::fromInventoryError))
             .via(reservation -&gt; payments.charge(user, reservation.total())
                 .mapError(OrderError::fromPaymentError))
-            .via(payment -&gt; createOrder(user, items, payment));
+            .via(payment -&gt; Path.right(
+                createOrder(user, items, payment)));
     }
 }
 </code></pre>
+<p>Each <code>mapError</code> translates the sub-service error into the order domain.
+The final <code>Order</code> is created only if all steps succeed.</p>
 <h3 id="service-with-fallbacks"><a class="header" href="#service-with-fallbacks">Service with Fallbacks</a></h3>
+<p>When multiple sources can satisfy a request:</p>
 <pre><code class="language-java">public class ConfigService {
     public EitherPath&lt;ConfigError, Config&gt; loadConfig() {
         return Path.either(loadFromFile())
             .recoverWith(e -&gt; {
-                log.warn("File config failed: {}", e.getMessage());
+                log.warn("File config unavailable: {}", e.getMessage());
                 return Path.either(loadFromEnvironment());
             })
             .recoverWith(e -&gt; {
-                log.warn("Env config failed: {}", e.getMessage());
+                log.warn("Env config unavailable: {}", e.getMessage());
                 return Path.right(Config.defaults());
             });
     }
 }
 </code></pre>
+<p>The logs record what was tried; the caller gets a working config or a clear
+failure.</p>
 <hr />
 <h2 id="io-effect-patterns"><a class="header" href="#io-effect-patterns">IO Effect Patterns</a></h2>
 <h3 id="resource-management"><a class="header" href="#resource-management">Resource Management</a></h3>
+<p>Acquire, use, release, regardless of success or failure:</p>
 <pre><code class="language-java">public class FileProcessor {
-    public IOPath&lt;ProcessResult&gt; processFile(Path path) {
-        return Path.io(() -&gt; {
-                var reader = new BufferedReader(new FileReader(path.toFile()));
-                return reader;
-            })
+    public IOPath&lt;ProcessResult&gt; process(Path path) {
+        return Path.io(() -&gt; new BufferedReader(new FileReader(path.toFile())))
             .via(reader -&gt; Path.io(() -&gt; processContent(reader)))
             .ensuring(() -&gt; {
-                // Cleanup runs regardless of success/failure
-                log.debug("Processing complete for: {}", path);
+                // Cleanup runs regardless of outcome
+                log.debug("Processing complete: {}", path);
             });
     }
 }
 </code></pre>
-<h3 id="composing-effects"><a class="header" href="#composing-effects">Composing Effects</a></h3>
-<pre><code class="language-java">public class DataPipeline {
-    public IOPath&lt;Report&gt; generateReport(ReportRequest request) {
-        return Path.io(() -&gt; log.info("Starting report generation"))
-            .then(() -&gt; Path.io(() -&gt; fetchData(request)))
-            .via(data -&gt; Path.io(() -&gt; transformData(data)))
-            .via(transformed -&gt; Path.io(() -&gt; aggregateResults(transformed)))
-            .via(aggregated -&gt; Path.io(() -&gt; formatReport(aggregated)))
-            .peek(report -&gt; log.info("Report generated: {} rows", report.rowCount()));
-    }
+<p>For true resource safety with acquisition and release:</p>
+<pre><code class="language-java">public IOPath&lt;Result&gt; withConnection(Function&lt;Connection, Result&gt; action) {
+    return Path.io(() -&gt; dataSource.getConnection())
+        .via(conn -&gt; Path.io(() -&gt; action.apply(conn))
+            .ensuring(() -&gt; {
+                try { conn.close(); }
+                catch (SQLException e) { log.warn("Close failed", e); }
+            }));
 }
 </code></pre>
-<h3 id="parallel-io-conceptual"><a class="header" href="#parallel-io-conceptual">Parallel IO (Conceptual)</a></h3>
-<pre><code class="language-java">// While IOPath itself doesn't parallelize, you can use zipWith
-// to express independent computations:
-IOPath&lt;CombinedData&gt; fetchAll() {
+<h3 id="composing-effect-pipelines"><a class="header" href="#composing-effect-pipelines">Composing Effect Pipelines</a></h3>
+<p>Build complex pipelines that execute later:</p>
+<pre><code class="language-java">public class DataPipeline {
+    public IOPath&lt;Report&gt; generateReport(ReportRequest request) {
+        return Path.io(() -&gt; log.info("Starting report: {}", request.id()))
+            .then(() -&gt; Path.io(() -&gt; fetchData(request)))
+            .via(data -&gt; Path.io(() -&gt; transform(data)))
+            .via(transformed -&gt; Path.io(() -&gt; aggregate(transformed)))
+            .via(aggregated -&gt; Path.io(() -&gt; format(aggregated)))
+            .peek(report -&gt; log.info("Report ready: {} rows", report.rowCount()));
+    }
+}
+
+// Nothing happens until:
+Report report = pipeline.generateReport(request).unsafeRun();
+</code></pre>
+<h3 id="expressing-parallel-intent"><a class="header" href="#expressing-parallel-intent">Expressing Parallel Intent</a></h3>
+<p>While <code>IOPath</code> doesn't parallelise automatically, <code>zipWith</code> expresses
+independence:</p>
+<pre><code class="language-java">IOPath&lt;CombinedData&gt; fetchAll() {
     IOPath&lt;UserData&gt; users = Path.io(() -&gt; fetchUsers());
     IOPath&lt;ProductData&gt; products = Path.io(() -&gt; fetchProducts());
     IOPath&lt;OrderData&gt; orders = Path.io(() -&gt; fetchOrders());
@@ -435,22 +501,22 @@ IOPath&lt;CombinedData&gt; fetchAll() {
     return users.zipWith3(products, orders, CombinedData::new);
 }
 </code></pre>
+<p>A more sophisticated runtime could parallelise these. For now, they execute
+in sequence, but the structure is clear.</p>
 <hr />
 <h2 id="error-handling-strategies"><a class="header" href="#error-handling-strategies">Error Handling Strategies</a></h2>
 <h3 id="error-enrichment"><a class="header" href="#error-enrichment">Error Enrichment</a></h3>
-<pre><code class="language-java">public class EnrichedErrorHandler {
-    public &lt;A&gt; EitherPath&lt;DetailedError, A&gt; withContext(
-            EitherPath&lt;Error, A&gt; path,
-            String operation,
-            Map&lt;String, Object&gt; context) {
-
-        return path.mapError(error -&gt; new DetailedError(
-            error,
-            operation,
-            context,
-            Instant.now()
-        ));
-    }
+<p>Add context as errors propagate through layers:</p>
+<pre><code class="language-java">public &lt;A&gt; EitherPath&lt;DetailedError, A&gt; withContext(
+        EitherPath&lt;Error, A&gt; path,
+        String operation,
+        Map&lt;String, Object&gt; context) {
+    return path.mapError(error -&gt; new DetailedError(
+        error,
+        operation,
+        context,
+        Instant.now()
+    ));
 }
 
 // Usage
@@ -460,19 +526,22 @@ return withContext(
     Map.of("userId", id, "requestId", requestId)
 );
 </code></pre>
-<h3 id="error-recovery-with-logging"><a class="header" href="#error-recovery-with-logging">Error Recovery with Logging</a></h3>
+<p>When the error surfaces, you know what was happening and with what parameters.</p>
+<h3 id="recovery-with-logging"><a class="header" href="#recovery-with-logging">Recovery with Logging</a></h3>
+<p>Log the failure, provide a fallback:</p>
 <pre><code class="language-java">public &lt;A&gt; EitherPath&lt;Error, A&gt; withRecoveryLogging(
         EitherPath&lt;Error, A&gt; path,
         A fallback,
         String operation) {
-
     return path.recover(error -&gt; {
-        log.warn("Operation {} failed: {}. Using fallback.", operation, error);
+        log.warn("Operation '{}' failed: {}. Using fallback.",
+            operation, error);
         return fallback;
     });
 }
 </code></pre>
-<h3 id="circuit-breaker-pattern"><a class="header" href="#circuit-breaker-pattern">Circuit Breaker Pattern</a></h3>
+<h3 id="circuit-breaker"><a class="header" href="#circuit-breaker">Circuit Breaker</a></h3>
+<p>Stop calling a failing service:</p>
 <pre><code class="language-java">public class CircuitBreaker&lt;E, A&gt; {
     private final AtomicInteger failures = new AtomicInteger(0);
     private final int threshold;
@@ -480,137 +549,80 @@ return withContext(
 
     public EitherPath&lt;E, A&gt; execute(Supplier&lt;EitherPath&lt;E, A&gt;&gt; operation) {
         if (failures.get() &gt;= threshold) {
+            log.debug("Circuit open, using fallback");
             return fallback.get();
         }
 
         return operation.get()
             .peek(success -&gt; failures.set(0))
             .recoverWith(error -&gt; {
-                failures.incrementAndGet();
+                int count = failures.incrementAndGet();
+                log.warn("Failure {} of {}", count, threshold);
                 return Path.left(error);
             });
     }
 }
 </code></pre>
+<p>A proper implementation would include timeouts and half-open states. This
+shows the pattern.</p>
 <hr />
 <h2 id="testing-patterns"><a class="header" href="#testing-patterns">Testing Patterns</a></h2>
-<p>Path-returning methods are inherently testable. The explicit success/failure encoding means you can verify both happy paths and error cases without exception handling in your tests. The lawful behaviour of Path types also enables property-based testing that catches edge cases you might not think to test manually.</p>
-<h3 id="testing-success-and-failure-paths"><a class="header" href="#testing-success-and-failure-paths">Testing Success and Failure Paths</a></h3>
-<p><strong>The pattern:</strong> Call <code>.run()</code> to extract the underlying type, then assert on its state. Test both the success case and relevant failure cases.</p>
+<p>Path-returning methods are straightforward to test. The explicit success/failure
+encoding means you can verify both paths without exception handling gymnastics.</p>
+<h3 id="testing-success-and-failure"><a class="header" href="#testing-success-and-failure">Testing Success and Failure</a></h3>
 <pre><code class="language-java">@Test
 void shouldReturnUserWhenFound() {
-    // Given
     when(repository.findById("123")).thenReturn(Maybe.just(testUser));
 
-    // When
-    EitherPath&lt;UserError, User&gt; result = service.getUserById("123");
+    EitherPath&lt;UserError, User&gt; result = service.getUser("123");
 
-    // Then
     assertThat(result.run().isRight()).isTrue();
     assertThat(result.run().getRight()).isEqualTo(testUser);
 }
 
 @Test
 void shouldReturnErrorWhenNotFound() {
-    // Given
     when(repository.findById("123")).thenReturn(Maybe.nothing());
 
-    // When
-    EitherPath&lt;UserError, User&gt; result = service.getUserById("123");
+    EitherPath&lt;UserError, User&gt; result = service.getUser("123");
 
-    // Then
     assertThat(result.run().isLeft()).isTrue();
     assertThat(result.run().getLeft()).isInstanceOf(UserError.NotFound.class);
 }
 </code></pre>
 <h3 id="testing-error-propagation"><a class="header" href="#testing-error-propagation">Testing Error Propagation</a></h3>
-<p><strong>The problem:</strong> When chaining multiple operations, you need to verify that errors from any step propagate correctly.</p>
-<p><strong>The pattern:</strong> Create inputs that fail at specific steps and verify the error emerges unchanged.</p>
+<p>Verify that errors from nested operations surface correctly:</p>
 <pre><code class="language-java">@Test
-void shouldPropagateFirstError() {
-    // Given validation that fails on name
-    EitherPath&lt;String, String&gt; invalidName = Path.left("Name too short");
-    EitherPath&lt;String, String&gt; validEmail = Path.right("test@example.com");
+void shouldPropagatePaymentError() {
+    when(userService.getUser(any())).thenReturn(Path.right(testUser));
+    when(inventory.check(any())).thenReturn(Path.right(availability));
+    when(payments.charge(any(), any()))
+        .thenReturn(Path.left(new PaymentError("Declined")));
 
-    // When combining
-    EitherPath&lt;String, User&gt; result = invalidName.zipWith(validEmail, User::new);
+    EitherPath&lt;OrderError, Order&gt; result = orderService.placeOrder(request);
 
-    // Then first error is returned (not swallowed or transformed)
-    assertThat(result.run().getLeft()).isEqualTo("Name too short");
-}
-
-@Test
-void shouldPropagateErrorThroughChain() {
-    // Given a chain where the second step fails
-    EitherPath&lt;String, Integer&gt; result =
-        Path.right("hello")
-            .via(s -&gt; Path.left("Error in step 2"))
-            .via(x -&gt; Path.right(42));  // Never reached
-
-    // Then the error from step 2 propagates
-    assertThat(result.run().getLeft()).isEqualTo("Error in step 2");
-}
-</code></pre>
-<h3 id="testing-with-mocked-dependencies"><a class="header" href="#testing-with-mocked-dependencies">Testing with Mocked Dependencies</a></h3>
-<p><strong>The pattern:</strong> Mock repository and service dependencies to return specific Path values, then verify the orchestration logic.</p>
-<pre><code class="language-java">@Test
-void shouldCombineUserAndOrderData() {
-    // Given
-    when(userService.getUser(userId)).thenReturn(Path.right(testUser));
-    when(orderService.getOrders(testUser)).thenReturn(Path.right(testOrders));
-
-    // When
-    EitherPath&lt;Error, UserWithOrders&gt; result =
-        compositeService.getUserWithOrders(userId);
-
-    // Then
-    assertThat(result.run().isRight()).isTrue();
-    UserWithOrders data = result.run().getRight();
-    assertThat(data.user()).isEqualTo(testUser);
-    assertThat(data.orders()).isEqualTo(testOrders);
-}
-
-@Test
-void shouldFailIfUserServiceFails() {
-    // Given
-    when(userService.getUser(userId))
-        .thenReturn(Path.left(new Error.UserNotFound(userId)));
-
-    // When
-    EitherPath&lt;Error, UserWithOrders&gt; result =
-        compositeService.getUserWithOrders(userId);
-
-    // Then - order service should never be called
-    verify(orderService, never()).getOrders(any());
     assertThat(result.run().isLeft()).isTrue();
+    assertThat(result.run().getLeft())
+        .isInstanceOf(OrderError.PaymentFailed.class);
+
+    // Order creation should never be called
+    verify(orderRepository, never()).save(any());
 }
 </code></pre>
 <h3 id="property-based-testing"><a class="header" href="#property-based-testing">Property-Based Testing</a></h3>
-<p><strong>The pattern:</strong> Use property-based testing (with jqwik or similar) to verify that Path types obey their laws across many random inputs. This catches edge cases that example-based tests miss.</p>
+<p>Use jqwik or similar to verify laws across many inputs:</p>
 <pre><code class="language-java">@Property
 void functorIdentityLaw(@ForAll @StringLength(min = 1, max = 100) String value) {
-    // Law: path.map(identity) == path
     MaybePath&lt;String&gt; path = Path.just(value);
-    MaybePath&lt;String&gt; result = path.map(Function.identity());
+    MaybePath&lt;String&gt; mapped = path.map(Function.identity());
 
-    assertThat(result.run()).isEqualTo(path.run());
+    assertThat(mapped.run()).isEqualTo(path.run());
 }
 
 @Property
-void monadLeftIdentity(
-        @ForAll @IntRange(min = -100, max = 100) int value,
-        @ForAll("intToMaybeStringFunctions") Function&lt;Integer, MaybePath&lt;String&gt;&gt; f) {
-
-    // Law: Path.just(a).via(f) == f(a)
-    MaybePath&lt;String&gt; leftSide = Path.just(value).via(f);
-    MaybePath&lt;String&gt; rightSide = f.apply(value);
-
-    assertThat(leftSide.run()).isEqualTo(rightSide.run());
-}
-
-@Property
-void recoverAlwaysSucceeds(@ForAll String errorMessage, @ForAll String fallback) {
-    // Property: recover always produces a success
+void recoverAlwaysSucceeds(
+        @ForAll String errorMessage,
+        @ForAll String fallback) {
     EitherPath&lt;String, String&gt; failed = Path.left(errorMessage);
     EitherPath&lt;String, String&gt; recovered = failed.recover(e -&gt; fallback);
 
@@ -618,21 +630,18 @@ void recoverAlwaysSucceeds(@ForAll String errorMessage, @ForAll String fallback)
     assertThat(recovered.run().getRight()).isEqualTo(fallback);
 }
 </code></pre>
-<h3 id="testing-iopath-effects"><a class="header" href="#testing-iopath-effects">Testing IOPath Effects</a></h3>
-<p><strong>The problem:</strong> IOPath defers execution until <code>run()</code> is called. You need to verify both that the effect is properly deferred and that it executes correctly.</p>
+<h3 id="testing-deferred-effects"><a class="header" href="#testing-deferred-effects">Testing Deferred Effects</a></h3>
+<p>Verify that <code>IOPath</code> defers execution:</p>
 <pre><code class="language-java">@Test
 void shouldDeferExecution() {
     AtomicInteger callCount = new AtomicInteger(0);
     IOPath&lt;Integer&gt; io = Path.io(() -&gt; callCount.incrementAndGet());
 
-    // Effect not yet executed
-    assertThat(callCount.get()).isEqualTo(0);
+    assertThat(callCount.get()).isEqualTo(0);  // Not yet
 
-    // Execute
     int result = io.unsafeRun();
 
-    // Now executed exactly once
-    assertThat(callCount.get()).isEqualTo(1);
+    assertThat(callCount.get()).isEqualTo(1);  // Now
     assertThat(result).isEqualTo(1);
 }
 
@@ -650,15 +659,14 @@ void shouldCaptureExceptionInRunSafe() {
 </code></pre>
 <hr />
 <h2 id="integration-with-existing-code"><a class="header" href="#integration-with-existing-code">Integration with Existing Code</a></h2>
-<p>Real projects do not start with a blank slate. You have existing code that throws exceptions, returns <code>Optional</code>, or uses other patterns. The Path API provides bridges to work with this code without rewriting everything.</p>
+<p>Real projects have legacy code that throws exceptions, returns <code>Optional</code>,
+or uses patterns that predate functional error handling.</p>
 <h3 id="wrapping-exception-throwing-apis"><a class="header" href="#wrapping-exception-throwing-apis">Wrapping Exception-Throwing APIs</a></h3>
-<p><strong>The problem:</strong> Legacy code throws exceptions, but you want to use Path composition.</p>
-<p><strong>The solution:</strong> Use <code>Path.tryOf</code> to capture exceptions as <code>TryPath</code> failures.</p>
 <pre><code class="language-java">public class LegacyWrapper {
     private final LegacyService legacy;
 
     public TryPath&lt;Data&gt; fetchData(String id) {
-        return Path.tryOf(() -&gt; legacy.fetchData(id));  // May throw
+        return Path.tryOf(() -&gt; legacy.fetchData(id));
     }
 
     public EitherPath&lt;ServiceError, Data&gt; fetchDataSafe(String id) {
@@ -667,26 +675,26 @@ void shouldCaptureExceptionInRunSafe() {
     }
 }
 </code></pre>
-<h3 id="wrapping-optional-returning-apis"><a class="header" href="#wrapping-optional-returning-apis">Wrapping Optional-returning APIs</a></h3>
-<pre><code class="language-java">public class OptionalWrapper {
+<h3 id="wrapping-optional-returning-apis"><a class="header" href="#wrapping-optional-returning-apis">Wrapping Optional-Returning APIs</a></h3>
+<pre><code class="language-java">public class ModernWrapper {
     private final ModernService modern;
 
     public MaybePath&lt;User&gt; findUser(String id) {
-        Optional&lt;User&gt; result = modern.findUser(id);
-        return Path.maybe(Maybe.fromOptional(result));
+        return Path.maybe(Maybe.fromOptional(modern.findUser(id)));
     }
 }
 </code></pre>
 <h3 id="exposing-to-non-path-consumers"><a class="header" href="#exposing-to-non-path-consumers">Exposing to Non-Path Consumers</a></h3>
+<p>When callers expect traditional patterns:</p>
 <pre><code class="language-java">public class ServiceAdapter {
     private final PathBasedService service;
 
-    // For consumers that expect Optional
+    // For consumers expecting Optional
     public Optional&lt;User&gt; findUser(String id) {
         return service.findUser(id).run().toOptional();
     }
 
-    // For consumers that expect exceptions
+    // For consumers expecting exceptions
     public User getUser(String id) throws UserNotFoundException {
         Either&lt;UserError, User&gt; result = service.getUser(id).run();
         if (result.isLeft()) {
@@ -698,74 +706,69 @@ void shouldCaptureExceptionInRunSafe() {
 </code></pre>
 <hr />
 <h2 id="common-pitfalls"><a class="header" href="#common-pitfalls">Common Pitfalls</a></h2>
-<p>The Path API is straightforward, but a few patterns can trip up newcomers. These pitfalls come from treating Paths like regular values when they are actually descriptions of computations.</p>
-<h3 id="pitfall-1-unnecessary-conversions"><a class="header" href="#pitfall-1-unnecessary-conversions">Pitfall 1: Unnecessary Conversions</a></h3>
-<p><strong>The issue:</strong> Converting between path types repeatedly wastes effort and obscures intent.</p>
-<pre><code class="language-java">// Bad: Converting back and forth
+<h3 id="pitfall-1-excessive-conversion"><a class="header" href="#pitfall-1-excessive-conversion">Pitfall 1: Excessive Conversion</a></h3>
+<pre><code class="language-java">// Wasteful
 Path.maybe(findUser(id))
     .toEitherPath(() -&gt; error)
-    .toMaybePath()  // Why?
-    .toEitherPath(() -&gt; error);  // Wasteful
+    .toMaybePath()
+    .toEitherPath(() -&gt; error);
 
-// Good: Convert once
+// Clean
 Path.maybe(findUser(id))
     .toEitherPath(() -&gt; error);
 </code></pre>
-<h3 id="pitfall-2-forgetting-to-run"><a class="header" href="#pitfall-2-forgetting-to-run">Pitfall 2: Forgetting to Run</a></h3>
-<p><strong>The issue:</strong> Paths are lazy descriptions. Without calling <code>.run()</code>, nothing actually happens.</p>
-<pre><code class="language-java">// Bug: path is never executed
-void processUser(String id) {
-    Path.maybe(findUser(id))
-        .map(this::processUser);  // Nothing happens!
-}
-
-// Correct: extract the result
-void processUser(String id) {
-    Path.maybe(findUser(id))
-        .map(this::processUser)
-        .run();  // Now it executes
-}
-</code></pre>
-<h3 id="pitfall-3-side-effects-in-map"><a class="header" href="#pitfall-3-side-effects-in-map">Pitfall 3: Side Effects in map</a></h3>
-<p><strong>The issue:</strong> The <code>map</code> function should be pure (no side effects). Side effects in <code>map</code> break referential transparency and can lead to surprising behaviour.</p>
-<pre><code class="language-java">// Bad: Side effect in map
+<h3 id="pitfall-2-side-effects-in-pure-operations"><a class="header" href="#pitfall-2-side-effects-in-pure-operations">Pitfall 2: Side Effects in Pure Operations</a></h3>
+<pre><code class="language-java">// Wrong
 path.map(user -&gt; {
-    database.save(user);  // Side effect!
+    auditLog.record(user);  // Side effect in map!
     return user;
 });
 
-// Good: Use peek for side effects
-path.peek(user -&gt; database.save(user));
+// Right
+path.peek(user -&gt; auditLog.record(user));
+</code></pre>
+<h3 id="pitfall-3-ignoring-the-result"><a class="header" href="#pitfall-3-ignoring-the-result">Pitfall 3: Ignoring the Result</a></h3>
+<pre><code class="language-java">// Bug: result discarded, nothing happens
+void processOrder(OrderRequest request) {
+    validateAndProcess(request);  // Returns EitherPath, ignored
+}
 
-// Or use IOPath for deferred effects
-Path.io(() -&gt; database.save(user));
+// Fixed
+void processOrder(OrderRequest request) {
+    validateAndProcess(request).run();  // Actually execute
+}
+</code></pre>
+<h3 id="pitfall-4-treating-all-errors-the-same"><a class="header" href="#pitfall-4-treating-all-errors-the-same">Pitfall 4: Treating All Errors the Same</a></h3>
+<pre><code class="language-java">// Loses information
+.mapError(e -&gt; "An error occurred")
+
+// Preserves structure
+.mapError(e -&gt; new DomainError(e.code(), e.message(), e))
 </code></pre>
 <hr />
 <h2 id="quick-reference"><a class="header" href="#quick-reference">Quick Reference</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>Pattern</th><th>Use Case</th><th>Example</th></tr></thead><tbody>
-<tr><td>Validation</td><td>Combine validations</td><td><code>name.zipWith(email, User::new)</code></td></tr>
-<tr><td>Service chain</td><td>Dependent calls</td><td><code>path.via(x -&gt; nextService(x))</code></td></tr>
-<tr><td>Fallback</td><td>Default on error</td><td><code>path.recover(e -&gt; default)</code></td></tr>
-<tr><td>Error transform</td><td>Change error type</td><td><code>path.mapError(ApiError::new)</code></td></tr>
-<tr><td>Type conversion</td><td>Change path type</td><td><code>path.toEitherPath(err)</code></td></tr>
-<tr><td>Debug</td><td>Add logging</td><td><code>path.peek(x -&gt; log(x))</code></td></tr>
-<tr><td>Resource</td><td>Cleanup</td><td><code>path.ensuring(() -&gt; cleanup())</code></td></tr>
+<div class="table-wrapper"><table><thead><tr><th>Pattern</th><th>When to Use</th><th>Key Methods</th></tr></thead><tbody>
+<tr><td>Single validation</td><td>Validate one field</td><td><code>Path.right/left</code></td></tr>
+<tr><td>Combined validation</td><td>Multiple independent fields</td><td><code>zipWith</code>, <code>zipWithAccum</code></td></tr>
+<tr><td>Repository wrapping</td><td>Maybe → Either at boundary</td><td><code>toEitherPath</code></td></tr>
+<tr><td>Service chaining</td><td>Sequential dependent calls</td><td><code>via</code>, <code>mapError</code></td></tr>
+<tr><td>Fallback chain</td><td>Multiple sources</td><td><code>recoverWith</code></td></tr>
+<tr><td>Resource management</td><td>Acquire/use/release</td><td><code>ensuring</code></td></tr>
+<tr><td>Effect pipeline</td><td>Deferred composition</td><td><code>via</code>, <code>then</code>, <code>unsafeRun</code></td></tr>
+<tr><td>Error enrichment</td><td>Add context</td><td><code>mapError</code></td></tr>
+<tr><td>Circuit breaker</td><td>Protect failing service</td><td><code>recover</code>, <code>recoverWith</code></td></tr>
 </tbody></table>
 </div>
 <hr />
 <h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
-<p>The Effect Path API provides a consistent vocabulary for working with effectful computations:</p>
-<ul>
-<li><strong>Create</strong> paths with <code>Path.just()</code>, <code>Path.right()</code>, <code>Path.tryOf()</code>, <code>Path.io()</code>, <code>Path.valid()</code></li>
-<li><strong>Transform</strong> with <code>map()</code></li>
-<li><strong>Chain</strong> with <code>via()</code> for dependent computations</li>
-<li><strong>Combine</strong> with <code>zipWith()</code> for independent computations (fail-fast)</li>
-<li><strong>Accumulate</strong> with <code>zipWithAccum()</code> for validation (collect all errors)</li>
-<li><strong>Convert</strong> between types with <code>toEitherPath()</code>, <code>toValidationPath()</code>, etc.</li>
-<li><strong>Handle errors</strong> with <code>recover()</code>, <code>recoverWith()</code>, <code>mapError()</code></li>
-<li><strong>Extract</strong> with <code>run()</code>, <code>getOrElse()</code>, <code>unsafeRun()</code></li>
-</ul>
-<p>The patterns in this chapter demonstrate how these operations compose to solve real-world problems while keeping code clear and maintainable.</p>
+<p>The patterns in this chapter share a common theme: making the implicit explicit.
+Error handling becomes visible in the types. Composition becomes visible in
+the pipeline. Dependencies become visible in the choice of <code>via</code> vs <code>zipWith</code>.</p>
+<p>When the going gets weird (and it will), these patterns are your professional
+toolkit. They won't make the weirdness go away, but they'll help you handle
+it with composure.</p>
+<p>Continue to <a href="advanced_effects.html">Advanced Effects</a> for Reader, State, and
+Writer patterns.</p>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
 <div class="admonition-title">
 <div id="admonition-see-also-title">
@@ -782,7 +785,8 @@ Path.io(() -&gt; database.save(user));
 </div>
 </div>
 <hr />
-<p><strong>Previous:</strong> <a href="conversions.html">Type Conversions</a></p>
+<p><strong>Previous:</strong> <a href="conversions.html">Type Conversions</a>
+<strong>Next:</strong> <a href="advanced_effects.html">Advanced Effects</a></p>
 
                     </main>
 
@@ -792,7 +796,7 @@ Path.io(() -&gt; database.save(user));
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../transformers/ch_intro.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../effect/advanced_effects.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -806,7 +810,7 @@ Path.io(() -&gt; database.save(user));
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../transformers/ch_intro.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../effect/advanced_effects.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
