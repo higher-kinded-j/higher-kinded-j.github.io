@@ -285,7 +285,7 @@ build on each other, and the logic remains visible even as complexity grows.</p>
 </div>
 </div>
 <hr />
-<h2 id="sequential-composition-one-thing-after-another"><a class="header" href="#sequential-composition-one-thing-after-another">Sequential Composition: One Thing After Another</a></h2>
+<h2 id="sequential-composition-one-thing-after-another"><a class="header" href="#sequential-composition-one-thing-after-another">Sequential Composition: <em>One Thing After Another</em></a></h2>
 <p>The <code>via</code> method chains computations where each step depends on the previous
 result. It's the workhorse of effect composition.</p>
 <pre><code class="language-java">EitherPath&lt;Error, Invoice&gt; pipeline =
@@ -320,7 +320,7 @@ need defensive checks at every step. The Path handles it structurally.</p>
 <p><code>then</code> discards the previous value and runs the next computation. Use it for
 side effects that must happen in order but don't pass data forward.</p>
 <hr />
-<h2 id="independent-combination-all-together-now"><a class="header" href="#independent-combination-all-together-now">Independent Combination: All Together Now</a></h2>
+<h2 id="independent-combination-all-together-now"><a class="header" href="#independent-combination-all-together-now">Independent Combination: <em>All Together Now</em></a></h2>
 <p><code>zipWith</code> combines computations that don't depend on each other. Neither
 needs the other's result to proceed.</p>
 <pre><code class="language-java">EitherPath&lt;String, String&gt; name = validateName(input.name());
@@ -389,6 +389,87 @@ The key is clarity about which pattern you're using where.</p>
 pipeline that threads through the validated data. Readers can see the
 structure at a glance.</p>
 <hr />
+<h2 id="parallel-composition"><a class="header" href="#parallel-composition">Parallel Composition</a></h2>
+<blockquote>
+<p><em>"The machine didn't think about one thing at a time. It thought about
+many things, all at once, in parallel streams that only converged when
+they had to."</em></p>
+<p>— Neal Stephenson, <em>Cryptonomicon</em></p>
+</blockquote>
+<p>Sequential composition with <code>via</code> is appropriate when each step depends on
+the previous. But when computations are genuinely independent, running them
+in parallel can dramatically reduce total execution time.</p>
+<h3 id="expressing-parallelism-with-parzipwith"><a class="header" href="#expressing-parallelism-with-parzipwith">Expressing Parallelism with parZipWith</a></h3>
+<p><code>parZipWith</code> is <code>zipWith</code> with explicit parallel execution:</p>
+<pre><code class="language-java">IOPath&lt;User&gt; fetchUser = IOPath.delay(() -&gt; userService.get(id));
+IOPath&lt;Preferences&gt; fetchPrefs = IOPath.delay(() -&gt; prefService.get(id));
+
+// Sequential: ~200ms (100ms + 100ms)
+IOPath&lt;Profile&gt; sequential = fetchUser.zipWith(fetchPrefs, Profile::new);
+
+// Parallel: ~100ms (max of both)
+IOPath&lt;Profile&gt; parallel = fetchUser.parZipWith(fetchPrefs, Profile::new);
+</code></pre>
+<p>The operations are the same; the execution strategy differs. Use <code>parZipWith</code>
+when you want to make the parallel intent explicit.</p>
+<h3 id="n-ary-parallel-composition"><a class="header" href="#n-ary-parallel-composition">N-ary Parallel Composition</a></h3>
+<p>For three or four independent paths, use <code>PathOps</code> utilities:</p>
+<pre><code class="language-java">IOPath&lt;Dashboard&gt; dashboard = PathOps.parZip3(
+    fetchMetrics(),
+    fetchAlerts(),
+    fetchUsers(),
+    Dashboard::new
+);
+
+IOPath&lt;Report&gt; report = PathOps.parZip4(
+    fetchSales(),
+    fetchInventory(),
+    fetchCustomers(),
+    fetchTrends(),
+    Report::new
+);
+</code></pre>
+<h3 id="list-parallelism-with-parsequenceio"><a class="header" href="#list-parallelism-with-parsequenceio">List Parallelism with parSequenceIO</a></h3>
+<p>When you have a dynamic number of independent operations:</p>
+<pre><code class="language-java">List&lt;IOPath&lt;Product&gt;&gt; fetches = productIds.stream()
+    .map(id -&gt; IOPath.delay(() -&gt; productService.get(id)))
+    .toList();
+
+// All fetches run concurrently
+IOPath&lt;List&lt;Product&gt;&gt; products = PathOps.parSequenceIO(fetches);
+</code></pre>
+<h3 id="racing-computations"><a class="header" href="#racing-computations">Racing Computations</a></h3>
+<p>Sometimes you want whichever completes first:</p>
+<pre><code class="language-java">IOPath&lt;Config&gt; primary = IOPath.delay(() -&gt; fetchFromPrimary());
+IOPath&lt;Config&gt; backup = IOPath.delay(() -&gt; fetchFromBackup());
+
+// Returns whichever config arrives first
+IOPath&lt;Config&gt; fastest = primary.race(backup);
+</code></pre>
+<h3 id="sequential-vs-parallel-the-decision"><a class="header" href="#sequential-vs-parallel-the-decision">Sequential vs Parallel: The Decision</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Use</th></tr></thead><tbody>
+<tr><td>B needs A's result</td><td><code>via</code> (sequential)</td></tr>
+<tr><td>A and B independent, need both</td><td><code>parZipWith</code></td></tr>
+<tr><td>3-4 independent operations</td><td><code>parZip3</code>, <code>parZip4</code></td></tr>
+<tr><td>List of independent operations</td><td><code>parSequenceIO</code></td></tr>
+<tr><td>Want fastest of alternatives</td><td><code>race</code></td></tr>
+</tbody></table>
+</div>
+<p>The wrong choice doesn't break correctness—just performance. When in doubt,
+prefer sequential; parallelise when profiling shows it matters.</p>
+<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+</div>
+<div>
+<p>See <a href="advanced_topics.html">Advanced Effect Topics</a> for comprehensive coverage of
+parallel execution patterns including <code>parSequenceFuture</code> and <code>raceIO</code>.</p>
+</div>
+</div>
+<hr />
 <h2 id="debugging-with-peek"><a class="header" href="#debugging-with-peek">Debugging with <code>peek</code></a></h2>
 <p>Effect chains can frustrate debugging. When something fails mid-pipeline,
 you know <em>that</em> it failed but not <em>where</em>. Traditional print debugging
@@ -421,7 +502,7 @@ EitherPath&lt;Error, Invoice&gt; pipeline =
 <p>Not every error should halt processing. Sometimes you have a sensible
 fallback. Sometimes you need to transform the error for the next layer.
 Sometimes you want to try several approaches before giving up.</p>
-<h3 id="strategy-1-recover-with-a-default"><a class="header" href="#strategy-1-recover-with-a-default">Strategy 1: Recover with a Default</a></h3>
+<h3 id="strategy-1-recover-with-a-default"><a class="header" href="#strategy-1-recover-with-a-default">Strategy 1: <em>Recover with a Default</em></a></h3>
 <p>The operation might fail, but you have a reasonable fallback:</p>
 <pre><code class="language-java">MaybePath&lt;Config&gt; config = Path.maybe(loadConfig())
     .orElse(() -&gt; Path.just(Config.defaults()));
@@ -431,7 +512,7 @@ EitherPath&lt;Error, User&gt; user = Path.either(findUser(id))
 </code></pre>
 <p>Use this when the fallback is genuinely acceptable, not when you're
 papering over problems you should be handling properly.</p>
-<h3 id="strategy-2-transform-the-error"><a class="header" href="#strategy-2-transform-the-error">Strategy 2: Transform the Error</a></h3>
+<h3 id="strategy-2-transform-the-error"><a class="header" href="#strategy-2-transform-the-error">Strategy 2: <em>Transform the Error</em></a></h3>
 <p>Low-level errors leak implementation details. Transform them at layer
 boundaries:</p>
 <pre><code class="language-java">EitherPath&lt;ServiceError, Data&gt; result =
@@ -440,7 +521,7 @@ boundaries:</p>
 </code></pre>
 <p>The original error is preserved as the cause; callers see a domain-appropriate
 type.</p>
-<h3 id="strategy-3-fallback-chain"><a class="header" href="#strategy-3-fallback-chain">Strategy 3: Fallback Chain</a></h3>
+<h3 id="strategy-3-fallback-chain"><a class="header" href="#strategy-3-fallback-chain">Strategy 3: <em>Fallback Chain</em></a></h3>
 <p>Multiple sources for the same data, each with trade-offs:</p>
 <pre><code class="language-java">EitherPath&lt;Error, Config&gt; config =
     Path.either(loadFromFile())
@@ -455,7 +536,7 @@ type.</p>
 </code></pre>
 <p>Each <code>recoverWith</code> only triggers if the previous step failed. The first
 success short-circuits the chain.</p>
-<h3 id="strategy-4-accumulate-all-errors"><a class="header" href="#strategy-4-accumulate-all-errors">Strategy 4: Accumulate All Errors</a></h3>
+<h3 id="strategy-4-accumulate-all-errors"><a class="header" href="#strategy-4-accumulate-all-errors">Strategy 4: <em>Accumulate All Errors</em></a></h3>
 <p>For validation where users should see everything wrong at once:</p>
 <pre><code class="language-java">ValidationPath&lt;List&lt;String&gt;, User&gt; user =
     validateName(input.name())
@@ -468,7 +549,7 @@ success short-circuits the chain.</p>
 // All three validations run; all errors collected
 </code></pre>
 <p>See <a href="path_types.html#validationpath">ValidationPath</a> for the full API.</p>
-<h3 id="strategy-5-error-enrichment"><a class="header" href="#strategy-5-error-enrichment">Strategy 5: Error Enrichment</a></h3>
+<h3 id="strategy-5-error-enrichment"><a class="header" href="#strategy-5-error-enrichment">Strategy 5: <em>Error Enrichment</em></a></h3>
 <p>Add context as errors propagate:</p>
 <pre><code class="language-java">EitherPath&lt;DetailedError, Data&gt; enriched =
     path.mapError(error -&gt; new DetailedError(
@@ -559,7 +640,7 @@ propagate with appropriate types. Logging traces the happy path. Each
 conversion (<code>toEitherPath</code>, <code>mapError</code>) happens at a deliberate boundary.</p>
 <hr />
 <h2 id="common-mistakes"><a class="header" href="#common-mistakes">Common Mistakes</a></h2>
-<h3 id="mistake-1-using-via-for-independent-operations"><a class="header" href="#mistake-1-using-via-for-independent-operations">Mistake 1: Using <code>via</code> for Independent Operations</a></h3>
+<h3 id="mistake-1-using-via-for-independent-operations"><a class="header" href="#mistake-1-using-via-for-independent-operations">Mistake 1: <em>Using <code>via</code> for Independent Operations</em></a></h3>
 <pre><code class="language-java">// Misleading: suggests email validation depends on name
 validateName(input)
     .via(name -&gt; validateEmail(input))  // Doesn't use name!
@@ -567,7 +648,7 @@ validateName(input)
 // Clearer: shows independence
 validateName(input).zipWith(validateEmail(input), (n, e) -&gt; ...)
 </code></pre>
-<h3 id="mistake-2-side-effects-in-map"><a class="header" href="#mistake-2-side-effects-in-map">Mistake 2: Side Effects in <code>map</code></a></h3>
+<h3 id="mistake-2-side-effects-in-map"><a class="header" href="#mistake-2-side-effects-in-map">Mistake 2: <em>Side Effects in <code>map</code></em></a></h3>
 <pre><code class="language-java">// Wrong: side effect hidden in map
 path.map(user -&gt; {
     database.save(user);  // Side effect!
@@ -583,7 +664,7 @@ path.via(user -&gt; Path.io(() -&gt; {
     return user;
 }));
 </code></pre>
-<h3 id="mistake-3-forgetting-to-run"><a class="header" href="#mistake-3-forgetting-to-run">Mistake 3: Forgetting to Run</a></h3>
+<h3 id="mistake-3-forgetting-to-run"><a class="header" href="#mistake-3-forgetting-to-run">Mistake 3: <em>Forgetting to Run</em></a></h3>
 <pre><code class="language-java">// Bug: nothing happens
 void processUser(String id) {
     Path.maybe(findUser(id))
@@ -597,7 +678,7 @@ void processUser(String id) {
         .run();
 }
 </code></pre>
-<h3 id="mistake-4-converting-back-and-forth"><a class="header" href="#mistake-4-converting-back-and-forth">Mistake 4: Converting Back and Forth</a></h3>
+<h3 id="mistake-4-converting-back-and-forth"><a class="header" href="#mistake-4-converting-back-and-forth">Mistake 4: <em>Converting Back and Forth</em></a></h3>
 <pre><code class="language-java">// Wasteful: converting repeatedly
 Path.maybe(findUser(id))
     .toEitherPath(() -&gt; error)
@@ -614,6 +695,10 @@ Path.maybe(findUser(id))
 <tr><td>Sequential</td><td><code>via</code></td><td>Each step depends on the previous</td></tr>
 <tr><td>Sequential (ignore value)</td><td><code>then</code></td><td>Sequencing without data flow</td></tr>
 <tr><td>Independent</td><td><code>zipWith</code></td><td>Combine unrelated computations</td></tr>
+<tr><td>Parallel binary</td><td><code>parZipWith</code></td><td>Two independent computations</td></tr>
+<tr><td>Parallel n-ary</td><td><code>parZip3</code>, <code>parZip4</code></td><td>3-4 independent computations</td></tr>
+<tr><td>Parallel list</td><td><code>parSequenceIO</code></td><td>Dynamic number of computations</td></tr>
+<tr><td>First-to-finish</td><td><code>race</code></td><td>Redundant sources, timeouts</td></tr>
 <tr><td>Accumulate errors</td><td><code>zipWithAccum</code></td><td>Collect all validation failures</td></tr>
 <tr><td>Debug</td><td><code>peek</code></td><td>Observe without disrupting</td></tr>
 <tr><td>Default value</td><td><code>recover</code></td><td>Provide fallback on failure</td></tr>
@@ -627,12 +712,12 @@ purpose and failures propagate predictably. Composition is the discipline
 that makes this possible.</p>
 <p>Continue to <a href="conversions.html">Type Conversions</a> for detailed coverage of
 moving between Path types.</p>
-<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div id="admonition-see-also-1" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-1-title">
 <div class="admonition-title">
-<div id="admonition-see-also-title">
+<div id="admonition-see-also-1-title">
 <p>See Also</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+<a class="admonition-anchor-link" href="#admonition-see-also-1"></a>
 </div>
 <div>
 <ul>
@@ -650,7 +735,7 @@ moving between Path types.</p>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../effect/path_types.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../effect/path_freeap.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -664,7 +749,7 @@ moving between Path types.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../effect/path_types.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../effect/path_freeap.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 

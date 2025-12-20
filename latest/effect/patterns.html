@@ -566,6 +566,91 @@ return withContext(
 <p>A proper implementation would include timeouts and half-open states. This
 shows the pattern.</p>
 <hr />
+<h2 id="resilience-retry-with-backoff"><a class="header" href="#resilience-retry-with-backoff">Resilience: Retry with Backoff</a></h2>
+<blockquote>
+<p><em>"The protocol specified exponential backoff: wait one second, try again;
+wait two seconds, try again; wait four seconds..."</em></p>
+<p>— Neal Stephenson, <em>Cryptonomicon</em></p>
+</blockquote>
+<p>Transient failures—network blips, brief overloads—often succeed on retry.
+But retrying immediately can worsen the problem. The <code>RetryPolicy</code> API
+provides configurable backoff strategies.</p>
+<h3 id="creating-retry-policies"><a class="header" href="#creating-retry-policies">Creating Retry Policies</a></h3>
+<pre><code class="language-java">// Fixed delay: 100ms between each of 3 attempts
+RetryPolicy fixed = RetryPolicy.fixed(3, Duration.ofMillis(100));
+
+// Exponential backoff: 1s, 2s, 4s, 8s...
+RetryPolicy exponential = RetryPolicy.exponentialBackoff(5, Duration.ofSeconds(1));
+
+// With jitter to prevent thundering herd
+RetryPolicy jittered = RetryPolicy.exponentialBackoffWithJitter(5, Duration.ofSeconds(1));
+</code></pre>
+<h3 id="applying-retry-to-paths"><a class="header" href="#applying-retry-to-paths">Applying Retry to Paths</a></h3>
+<pre><code class="language-java">IOPath&lt;Response&gt; resilient = IOPath.delay(() -&gt; httpClient.get(url))
+    .withRetry(RetryPolicy.exponentialBackoff(3, Duration.ofSeconds(1)));
+
+// Convenience method for simple cases
+IOPath&lt;Response&gt; simple = IOPath.delay(() -&gt; httpClient.get(url))
+    .retry(3);  // Uses default exponential backoff
+</code></pre>
+<h3 id="configuring-retry-behaviour"><a class="header" href="#configuring-retry-behaviour">Configuring Retry Behaviour</a></h3>
+<p>Policies are immutable but configurable:</p>
+<pre><code class="language-java">RetryPolicy policy = RetryPolicy.exponentialBackoff(5, Duration.ofMillis(100))
+    .withMaxDelay(Duration.ofSeconds(30))   // Cap maximum wait
+    .retryOn(IOException.class);             // Only retry I/O errors
+</code></pre>
+<h3 id="selective-retry"><a class="header" href="#selective-retry">Selective Retry</a></h3>
+<p>Not all errors should trigger retry:</p>
+<pre><code class="language-java">RetryPolicy selective = RetryPolicy.fixed(3, Duration.ofMillis(100))
+    .retryIf(ex -&gt;
+        ex instanceof IOException ||
+        ex instanceof TimeoutException ||
+        (ex instanceof HttpException http &amp;&amp; http.statusCode() &gt;= 500));
+</code></pre>
+<h3 id="combining-retry-with-fallback"><a class="header" href="#combining-retry-with-fallback">Combining Retry with Fallback</a></h3>
+<pre><code class="language-java">IOPath&lt;Data&gt; robust = fetchFromPrimary()
+    .withRetry(RetryPolicy.exponentialBackoff(3, Duration.ofSeconds(1)))
+    .handleErrorWith(e -&gt; {
+        log.warn("Primary exhausted, trying backup");
+        return fetchFromBackup()
+            .withRetry(RetryPolicy.fixed(2, Duration.ofMillis(100)));
+    })
+    .recover(e -&gt; {
+        log.error("All sources failed", e);
+        return Data.empty();
+    });
+</code></pre>
+<h3 id="handling-exhausted-retries"><a class="header" href="#handling-exhausted-retries">Handling Exhausted Retries</a></h3>
+<p>When all attempts fail, <code>RetryExhaustedException</code> is thrown:</p>
+<pre><code class="language-java">try {
+    resilient.unsafeRun();
+} catch (RetryExhaustedException e) {
+    log.error("All retries failed: {}", e.getMessage());
+    Throwable lastFailure = e.getCause();
+    return fallbackValue;
+}
+</code></pre>
+<h3 id="retry-pattern-quick-reference"><a class="header" href="#retry-pattern-quick-reference">Retry Pattern Quick Reference</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Strategy</th><th>Use Case</th></tr></thead><tbody>
+<tr><td><code>fixed(n, delay)</code></td><td>Known recovery time</td></tr>
+<tr><td><code>exponentialBackoff(n, initial)</code></td><td>Unknown recovery time</td></tr>
+<tr><td><code>exponentialBackoffWithJitter(n, initial)</code></td><td>Multiple clients retrying</td></tr>
+<tr><td><code>.retryOn(ExceptionType.class)</code></td><td>Selective retry</td></tr>
+<tr><td><code>.withMaxDelay(duration)</code></td><td>Cap exponential growth</td></tr>
+</tbody></table>
+</div><div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+</div>
+<div>
+<p>See <a href="advanced_topics.html">Advanced Effect Topics</a> for comprehensive coverage of
+resilience patterns including resource management with <code>bracket</code> and <code>guarantee</code>.</p>
+</div>
+</div>
+<hr />
 <h2 id="testing-patterns"><a class="header" href="#testing-patterns">Testing Patterns</a></h2>
 <p>Path-returning methods are straightforward to test. The explicit success/failure
 encoding means you can verify both paths without exception handling gymnastics.</p>
@@ -753,10 +838,13 @@ void processOrder(OrderRequest request) {
 <tr><td>Repository wrapping</td><td>Maybe → Either at boundary</td><td><code>toEitherPath</code></td></tr>
 <tr><td>Service chaining</td><td>Sequential dependent calls</td><td><code>via</code>, <code>mapError</code></td></tr>
 <tr><td>Fallback chain</td><td>Multiple sources</td><td><code>recoverWith</code></td></tr>
-<tr><td>Resource management</td><td>Acquire/use/release</td><td><code>ensuring</code></td></tr>
+<tr><td>Resource management</td><td>Acquire/use/release</td><td><code>bracket</code>, <code>withResource</code></td></tr>
+<tr><td>Cleanup guarantee</td><td>Ensure finalizer runs</td><td><code>guarantee</code></td></tr>
 <tr><td>Effect pipeline</td><td>Deferred composition</td><td><code>via</code>, <code>then</code>, <code>unsafeRun</code></td></tr>
 <tr><td>Error enrichment</td><td>Add context</td><td><code>mapError</code></td></tr>
 <tr><td>Circuit breaker</td><td>Protect failing service</td><td><code>recover</code>, <code>recoverWith</code></td></tr>
+<tr><td>Retry with backoff</td><td>Transient failures</td><td><code>withRetry</code>, <code>RetryPolicy</code></td></tr>
+<tr><td>Selective retry</td><td>Specific exception types</td><td><code>.retryOn()</code>, <code>.retryIf()</code></td></tr>
 </tbody></table>
 </div>
 <hr />
@@ -769,12 +857,12 @@ toolkit. They won't make the weirdness go away, but they'll help you handle
 it with composure.</p>
 <p>Continue to <a href="advanced_effects.html">Advanced Effects</a> for Reader, State, and
 Writer patterns.</p>
-<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div id="admonition-see-also-1" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-1-title">
 <div class="admonition-title">
-<div id="admonition-see-also-title">
+<div id="admonition-see-also-1-title">
 <p>See Also</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+<a class="admonition-anchor-link" href="#admonition-see-also-1"></a>
 </div>
 <div>
 <ul>
@@ -785,14 +873,14 @@ Writer patterns.</p>
 </div>
 </div>
 <hr />
-<p><strong>Previous:</strong> <a href="conversions.html">Type Conversions</a>
+<p><strong>Previous:</strong> <a href="focus_integration.html">Focus-Effect Integration</a>
 <strong>Next:</strong> <a href="advanced_effects.html">Advanced Effects</a></p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../effect/conversions.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../effect/focus_integration.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -806,7 +894,7 @@ Writer patterns.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../effect/conversions.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../effect/focus_integration.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 

@@ -803,6 +803,168 @@ TraversalPath&lt;Company, Employee&gt; tracedEmployees = CompanyFocus.employees(
         System.out.println("Found " + employees.size() + " employees"));
 </code></pre>
 <hr />
+<h2 id="bridging-to-effect-paths"><a class="header" href="#bridging-to-effect-paths">Bridging to Effect Paths</a></h2>
+<p>Focus paths and Effect paths share the same <code>via</code> composition operator but navigate different
+domains. The bridge API enables seamless transitions between them.</p>
+<pre><code>                    FOCUS-EFFECT BRIDGE
+
+    ┌─────────────────────────────────────────────────────┐
+    │                   Optics Domain                      │
+    │  FocusPath&lt;S, A&gt; ──────────────────────────────────  │
+    │  AffinePath&lt;S, A&gt; ──────────────────────────────────│
+    │  TraversalPath&lt;S, A&gt; ───────────────────────────────│
+    └──────────────────────────┬──────────────────────────┘
+                               │
+                               │ toMaybePath(source)
+                               │ toEitherPath(source, error)
+                               │ toTryPath(source, supplier)
+                               ▼
+    ┌─────────────────────────────────────────────────────┐
+    │                   Effects Domain                     │
+    │  MaybePath&lt;A&gt; ──────────────────────────────────────│
+    │  EitherPath&lt;E, A&gt; ──────────────────────────────────│
+    │  TryPath&lt;A&gt; ────────────────────────────────────────│
+    │  IOPath&lt;A&gt; ─────────────────────────────────────────│
+    │  ValidationPath&lt;E, A&gt; ──────────────────────────────│
+    └──────────────────────────┬──────────────────────────┘
+                               │
+                               │ focus(FocusPath)
+                               │ focus(AffinePath, error)
+                               ▼
+    ┌─────────────────────────────────────────────────────┐
+    │           Back to Optics (within effect)             │
+    │  EffectPath&lt;B&gt; ─────────────────────────────────────│
+    └─────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="direction-1-focuspath--effectpath"><a class="header" href="#direction-1-focuspath--effectpath">Direction 1: FocusPath → EffectPath</a></h3>
+<p>Extract a value using optics and wrap it in an effect for further processing:</p>
+<pre><code class="language-java">// FocusPath always has a value, so these always succeed
+FocusPath&lt;User, String&gt; namePath = UserFocus.name();
+MaybePath&lt;String&gt; maybeName = namePath.toMaybePath(user);          // → Just(name)
+EitherPath&lt;E, String&gt; eitherName = namePath.toEitherPath(user);    // → Right(name)
+TryPath&lt;String&gt; tryName = namePath.toTryPath(user);                // → Success(name)
+
+// AffinePath may not have a value
+AffinePath&lt;User, String&gt; emailPath = UserFocus.email();  // Optional&lt;String&gt; → String
+MaybePath&lt;String&gt; maybeEmail = emailPath.toMaybePath(user);        // → Just or Nothing
+EitherPath&lt;String, String&gt; eitherEmail =
+    emailPath.toEitherPath(user, "Email not configured");          // → Right or Left
+</code></pre>
+<p><strong>Bridge Methods on FocusPath:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Return Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>toMaybePath(S)</code></td><td><code>MaybePath&lt;A&gt;</code></td><td>Always <code>Just(value)</code></td></tr>
+<tr><td><code>toEitherPath(S)</code></td><td><code>EitherPath&lt;E, A&gt;</code></td><td>Always <code>Right(value)</code></td></tr>
+<tr><td><code>toTryPath(S)</code></td><td><code>TryPath&lt;A&gt;</code></td><td>Always <code>Success(value)</code></td></tr>
+<tr><td><code>toIdPath(S)</code></td><td><code>IdPath&lt;A&gt;</code></td><td>Trivial effect wrapper</td></tr>
+</tbody></table>
+</div>
+<p><strong>Bridge Methods on AffinePath:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Return Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>toMaybePath(S)</code></td><td><code>MaybePath&lt;A&gt;</code></td><td><code>Just</code> if present, <code>Nothing</code> otherwise</td></tr>
+<tr><td><code>toEitherPath(S, E)</code></td><td><code>EitherPath&lt;E, A&gt;</code></td><td><code>Right</code> if present, <code>Left(error)</code> otherwise</td></tr>
+<tr><td><code>toTryPath(S, Supplier&lt;Throwable&gt;)</code></td><td><code>TryPath&lt;A&gt;</code></td><td><code>Success</code> or <code>Failure</code></td></tr>
+<tr><td><code>toOptionalPath(S)</code></td><td><code>OptionalPath&lt;A&gt;</code></td><td>Wraps in Java <code>Optional</code> effect</td></tr>
+</tbody></table>
+</div>
+<p><strong>Bridge Methods on TraversalPath:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Return Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>toListPath(S)</code></td><td><code>ListPath&lt;A&gt;</code></td><td>All focused values as list</td></tr>
+<tr><td><code>toStreamPath(S)</code></td><td><code>StreamPath&lt;A&gt;</code></td><td>Lazy stream of values</td></tr>
+<tr><td><code>toMaybePath(S)</code></td><td><code>MaybePath&lt;A&gt;</code></td><td>First value if any</td></tr>
+</tbody></table>
+</div>
+<h3 id="direction-2-effectpathfocus"><a class="header" href="#direction-2-effectpathfocus">Direction 2: EffectPath.focus()</a></h3>
+<p>Apply structural navigation inside an effect context:</p>
+<pre><code class="language-java">// Start with an effect containing a complex structure
+EitherPath&lt;Error, User&gt; userPath = Path.right(user);
+
+// Navigate within the effect using optics
+EitherPath&lt;Error, String&gt; namePath = userPath.focus(UserFocus.name());
+
+// AffinePath requires an error for the absent case
+EitherPath&lt;Error, String&gt; emailPath =
+    userPath.focus(UserFocus.email(), new Error("Email required"));
+</code></pre>
+<p><strong>focus() Method Signatures:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Effect Type</th><th>FocusPath Signature</th><th>AffinePath Signature</th></tr></thead><tbody>
+<tr><td><code>MaybePath&lt;A&gt;</code></td><td><code>focus(FocusPath&lt;A, B&gt;)</code> → <code>MaybePath&lt;B&gt;</code></td><td><code>focus(AffinePath&lt;A, B&gt;)</code> → <code>MaybePath&lt;B&gt;</code></td></tr>
+<tr><td><code>EitherPath&lt;E, A&gt;</code></td><td><code>focus(FocusPath&lt;A, B&gt;)</code> → <code>EitherPath&lt;E, B&gt;</code></td><td><code>focus(AffinePath&lt;A, B&gt;, E)</code> → <code>EitherPath&lt;E, B&gt;</code></td></tr>
+<tr><td><code>TryPath&lt;A&gt;</code></td><td><code>focus(FocusPath&lt;A, B&gt;)</code> → <code>TryPath&lt;B&gt;</code></td><td><code>focus(AffinePath&lt;A, B&gt;, Supplier&lt;Throwable&gt;)</code> → <code>TryPath&lt;B&gt;</code></td></tr>
+<tr><td><code>IOPath&lt;A&gt;</code></td><td><code>focus(FocusPath&lt;A, B&gt;)</code> → <code>IOPath&lt;B&gt;</code></td><td><code>focus(AffinePath&lt;A, B&gt;, Supplier&lt;RuntimeException&gt;)</code> → <code>IOPath&lt;B&gt;</code></td></tr>
+<tr><td><code>ValidationPath&lt;E, A&gt;</code></td><td><code>focus(FocusPath&lt;A, B&gt;)</code> → <code>ValidationPath&lt;E, B&gt;</code></td><td><code>focus(AffinePath&lt;A, B&gt;, E)</code> → <code>ValidationPath&lt;E, B&gt;</code></td></tr>
+<tr><td><code>IdPath&lt;A&gt;</code></td><td><code>focus(FocusPath&lt;A, B&gt;)</code> → <code>IdPath&lt;B&gt;</code></td><td><code>focus(AffinePath&lt;A, B&gt;)</code> → <code>MaybePath&lt;B&gt;</code></td></tr>
+</tbody></table>
+</div>
+<h3 id="when-to-use-each-direction"><a class="header" href="#when-to-use-each-direction">When to Use Each Direction</a></h3>
+<p><strong>Use FocusPath → EffectPath when:</strong></p>
+<ul>
+<li>You have data and want to start an effect pipeline</li>
+<li>Extracting values that need validation or async processing</li>
+<li>Converting optic results into monadic workflows</li>
+</ul>
+<pre><code class="language-java">// Extract and validate
+EitherPath&lt;ValidationError, String&gt; validated =
+    UserFocus.email()
+        .toEitherPath(user, new ValidationError("Email required"))
+        .via(email -&gt; validateEmailFormat(email));
+</code></pre>
+<p><strong>Use EffectPath.focus() when:</strong></p>
+<ul>
+<li>You're already in an effect context (e.g., after a service call)</li>
+<li>Drilling down into effect results</li>
+<li>Building validation pipelines that extract and check nested fields</li>
+</ul>
+<pre><code class="language-java">// Service returns effect, then navigate
+EitherPath&lt;Error, Order&gt; orderResult = orderService.findById(orderId);
+EitherPath&lt;Error, String&gt; customerName =
+    orderResult
+        .focus(OrderFocus.customer())
+        .focus(CustomerFocus.name());
+</code></pre>
+<h3 id="practical-example-validation-pipeline"><a class="header" href="#practical-example-validation-pipeline">Practical Example: Validation Pipeline</a></h3>
+<p>Combining both directions for a complete validation workflow:</p>
+<pre><code class="language-java">// Domain model
+record RegistrationForm(String username, Optional&lt;String&gt; email, Address address) {}
+record Address(String street, Optional&lt;String&gt; postcode) {}
+
+// Validation using Focus-Effect bridge
+EitherPath&lt;List&lt;String&gt;, RegistrationForm&gt; validateForm(RegistrationForm form) {
+    var formPath = Path.&lt;List&lt;String&gt;, RegistrationForm&gt;right(form);
+
+    // Validate username (always present)
+    var usernameValid = formPath
+        .focus(FormFocus.username())
+        .via(name -&gt; name.length() &gt;= 3
+            ? Path.right(name)
+            : Path.left(List.of("Username too short")));
+
+    // Validate email if present
+    var emailValid = formPath
+        .focus(FormFocus.email(), List.of("Email required for notifications"))
+        .via(email -&gt; email.contains("@")
+            ? Path.right(email)
+            : Path.left(List.of("Invalid email format")));
+
+    // Combine validations
+    return usernameValid.via(u -&gt; emailValid.map(e -&gt; form));
+}
+</code></pre>
+<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+</div>
+<div>
+<ul>
+<li><a href="../effect/effect_path_overview.html">Effect Path Overview</a> - Railway model and effect composition</li>
+<li><a href="../effect/focus_integration.html">Focus-Effect Integration</a> - Complete bridging guide</li>
+<li><a href="../effect/capabilities.html">Capability Interfaces</a> - Powers behind effect operations</li>
+</ul>
+</div>
+</div>
+<hr />
 <h2 id="generated-class-structure"><a class="header" href="#generated-class-structure">Generated Class Structure</a></h2>
 <p>For a record like:</p>
 <pre><code class="language-java">@GenerateLenses
@@ -1240,12 +1402,12 @@ TraversalPath&lt;JsonNode, String&gt; path = TraversalPath.of(dynamicPath);
 </ul>
 </div>
 </div>
-<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div id="admonition-see-also-1" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-1-title">
 <div class="admonition-title">
-<div id="admonition-see-also-title">
+<div id="admonition-see-also-1-title">
 <p>See Also</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+<a class="admonition-anchor-link" href="#admonition-see-also-1"></a>
 </div>
 <div>
 <ul>
