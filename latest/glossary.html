@@ -751,6 +751,69 @@ Kind&lt;EitherKind.Witness&lt;String&gt;, Double&gt; result =
 <p><strong>When To Use:</strong> Workflows that need explicit error handling and recovery (validation, I/O operations, API calls).</p>
 <p><strong>Related:</strong> <a href="functional/monad_error.html">MonadError Documentation</a></p>
 <hr />
+<h3 id="monad-transformer"><a class="header" href="#monad-transformer">Monad Transformer</a></h3>
+<p><strong>Definition:</strong> A type constructor that adds capabilities to an existing monad, allowing multiple effects to be combined in a single computation. Transformers "stack" effects, enabling you to work with combinations like "async computation that may fail" or "IO that produces optional values".</p>
+<p><strong>Common Transformers in Higher-Kinded-J:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Transformer</th><th>Adds</th><th>Example Stack</th></tr></thead><tbody>
+<tr><td><code>EitherT&lt;F, E, A&gt;</code></td><td>Error handling</td><td><code>EitherT&lt;IO, Error, A&gt;</code> - IO that may fail</td></tr>
+<tr><td><code>MaybeT&lt;F, A&gt;</code></td><td>Optionality</td><td><code>MaybeT&lt;CompletableFuture, A&gt;</code> - async optional</td></tr>
+<tr><td><code>StateT&lt;F, S, A&gt;</code></td><td>State threading</td><td><code>StateT&lt;Either, State, A&gt;</code> - stateful with errors</td></tr>
+</tbody></table>
+</div>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Problem: combining async + error handling manually is verbose
+CompletableFuture&lt;Either&lt;Error, User&gt;&gt; fetchUser(String id);
+CompletableFuture&lt;Either&lt;Error, Profile&gt;&gt; fetchProfile(User user);
+
+// Without transformer: nested flatMaps
+CompletableFuture&lt;Either&lt;Error, Profile&gt;&gt; result =
+    fetchUser(id).thenCompose(eitherUser -&gt;
+        eitherUser.fold(
+            error -&gt; CompletableFuture.completedFuture(Either.left(error)),
+            user -&gt; fetchProfile(user)
+        )
+    );
+
+// With EitherT: flat composition
+EitherT&lt;CompletableFutureKind.Witness, Error, Profile&gt; result =
+    EitherT.fromKind(CF.widen(fetchUser(id)), cfMonad)
+        .flatMap(user -&gt; EitherT.fromKind(CF.widen(fetchProfile(user)), cfMonad));
+
+// Run to get the nested type back
+CompletableFuture&lt;Either&lt;Error, Profile&gt;&gt; unwrapped =
+    CF.narrow(result.value());
+</code></pre>
+<p><strong>How It Works:</strong></p>
+<ol>
+<li>Wrap your nested type in the transformer: <code>EitherT.fromKind(...)</code></li>
+<li>Use standard monad operations (<code>map</code>, <code>flatMap</code>) on the transformer</li>
+<li>The transformer handles the effect interleaving automatically</li>
+<li>Unwrap when done using <code>.value()</code> or <code>.run()</code></li>
+</ol>
+<p><strong>Lift Operations:</strong></p>
+<pre><code class="language-java">// Lift the outer monad into the transformer
+EitherT&lt;IOKind.Witness, Error, String&gt; lifted =
+    EitherT.liftF(IO.delay(() -&gt; "hello"), ioMonad);
+
+// Lift an Either into the transformer
+EitherT&lt;IOKind.Witness, Error, Integer&gt; fromEither =
+    EitherT.fromEither(Either.right(42), ioMonad);
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Combining async operations with error handling</li>
+<li>Threading state through effectful computations</li>
+<li>When you need multiple effects but want flat composition</li>
+<li>Building effect stacks for complex workflows</li>
+</ul>
+<p><strong>Trade-offs:</strong></p>
+<ul>
+<li>Adds complexity and potential performance overhead</li>
+<li>Stack order matters: <code>EitherT&lt;IO, E, A&gt;</code> ≠ <code>IOT&lt;Either&lt;E, _&gt;, A&gt;</code></li>
+<li>Consider <a href="#effect-path">Effect Paths</a> for simpler use cases</li>
+</ul>
+<p><strong>Related:</strong> <a href="#monad">Monad</a>, <a href="#monaderror">MonadError</a>, <a href="monads/eithert_monad.html">EitherT Documentation</a></p>
+<hr />
 <h3 id="profunctor"><a class="header" href="#profunctor">Profunctor</a></h3>
 <p><strong>Definition:</strong> A type class for types that are contravariant in their first parameter (input) and covariant in their second parameter (output). The canonical example is <code>Function&lt;A, B&gt;</code>.</p>
 <p><strong>Core Operations:</strong></p>
@@ -958,7 +1021,477 @@ System.out.println(intConst.value()); // 5
 </ul>
 <p><strong>Related:</strong> <a href="#phantom-type">Phantom Type</a>, <a href="#bifunctor">Bifunctor</a>, <a href="monads/const_type.html">Const Type Documentation</a></p>
 <hr />
+<h2 id="core-effect-types"><a class="header" href="#core-effect-types">Core Effect Types</a></h2>
+<h3 id="either"><a class="header" href="#either">Either</a></h3>
+<p><strong>Definition:</strong> A sum type representing one of two possible values: <code>Left&lt;L&gt;</code> (typically an error or alternative) or <code>Right&lt;R&gt;</code> (typically the success value). Either is right-biased, meaning operations like <code>map</code> and <code>flatMap</code> work on the <code>Right</code> value.</p>
+<p><strong>Structure:</strong> <code>Either&lt;L, R&gt;</code> where <code>L</code> is the left type (often error) and <code>R</code> is the right type (often success).</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Creating Either values
+Either&lt;String, Integer&gt; success = Either.right(42);
+Either&lt;String, Integer&gt; failure = Either.left("Not found");
+
+// Pattern matching with fold
+String message = success.fold(
+    error -&gt; "Error: " + error,
+    value -&gt; "Got: " + value
+);  // "Got: 42"
+
+// Chaining operations (right-biased)
+Either&lt;String, String&gt; result = success
+    .map(n -&gt; n * 2)           // Right(84)
+    .map(Object::toString);    // Right("84")
+
+// Error recovery
+Either&lt;String, Integer&gt; recovered = failure
+    .orElse(Either.right(0));  // Right(0)
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Operations that can fail with typed, structured error information</li>
+<li>Domain errors that need to be handled explicitly</li>
+<li>When you need to preserve error details for later handling</li>
+</ul>
+<p><strong>Effect Path Equivalent:</strong> Use <a href="#effect-path">EitherPath</a> for fluent composition.</p>
+<p><strong>Related:</strong> <a href="monads/either_monad.html">Either Documentation</a>, <a href="effect/path_either.html">EitherPath</a></p>
+<hr />
+<h3 id="maybe"><a class="header" href="#maybe">Maybe</a></h3>
+<p><strong>Definition:</strong> A type representing an optional value that may or may not be present. Unlike Java's <code>Optional</code>, <code>Maybe</code> is designed for functional composition and integrates with Higher-Kinded-J's type class hierarchy.</p>
+<p><strong>Structure:</strong> <code>Maybe&lt;A&gt;</code> is either <code>Just&lt;A&gt;</code> (contains a value) or <code>Nothing</code> (empty).</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Creating Maybe values
+Maybe&lt;String&gt; present = Maybe.just("hello");
+Maybe&lt;String&gt; absent = Maybe.nothing();
+
+// Safe operations
+String upper = present
+    .map(String::toUpperCase)
+    .orElse("default");  // "HELLO"
+
+// Chaining with flatMap
+Maybe&lt;Integer&gt; result = Maybe.just("42")
+    .flatMap(s -&gt; {
+        try {
+            return Maybe.just(Integer.parseInt(s));
+        } catch (NumberFormatException e) {
+            return Maybe.nothing();
+        }
+    });  // Just(42)
+
+// Pattern matching
+String output = absent.fold(
+    () -&gt; "Nothing here",
+    value -&gt; "Found: " + value
+);  // "Nothing here"
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Values that may legitimately be absent (no error, just missing)</li>
+<li>Null-safe programming without null checks</li>
+<li>When absence is a normal case, not an error</li>
+</ul>
+<p><strong>Effect Path Equivalent:</strong> Use <a href="#effect-path">MaybePath</a> for fluent composition.</p>
+<p><strong>Related:</strong> <a href="monads/maybe_monad.html">Maybe Documentation</a>, <a href="effect/path_maybe.html">MaybePath</a></p>
+<hr />
+<h3 id="try"><a class="header" href="#try">Try</a></h3>
+<p><strong>Definition:</strong> A type that captures the result of a computation that may throw an exception. Converts exception-based code into value-based error handling, making exceptions composable.</p>
+<p><strong>Structure:</strong> <code>Try&lt;A&gt;</code> is either <code>Success&lt;A&gt;</code> (computation succeeded) or <code>Failure</code> (exception was thrown).</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Wrapping exception-throwing code
+Try&lt;Integer&gt; parsed = Try.of(() -&gt; Integer.parseInt("42"));     // Success(42)
+Try&lt;Integer&gt; failed = Try.of(() -&gt; Integer.parseInt("abc"));    // Failure(NumberFormatException)
+
+// Safe chaining - exceptions don't propagate
+Try&lt;String&gt; result = parsed
+    .map(n -&gt; n * 2)
+    .map(Object::toString);  // Success("84")
+
+// Recovery from failure
+Integer value = failed
+    .recover(ex -&gt; 0)        // Provide default on any exception
+    .get();                  // 0
+
+// Conditional recovery
+Try&lt;Integer&gt; recovered = failed.recoverWith(ex -&gt; {
+    if (ex instanceof NumberFormatException) {
+        return Try.success(0);
+    }
+    return Try.failure(ex);  // Re-throw other exceptions
+});
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Wrapping legacy code that throws exceptions</li>
+<li>Making exception-based APIs composable</li>
+<li>When you want to defer exception handling</li>
+</ul>
+<p><strong>Effect Path Equivalent:</strong> Use <a href="#effect-path">TryPath</a> for fluent composition.</p>
+<p><strong>Related:</strong> <a href="monads/try_monad.html">Try Documentation</a>, <a href="effect/path_try.html">TryPath</a></p>
+<hr />
+<h3 id="io"><a class="header" href="#io">IO</a></h3>
+<p><strong>Definition:</strong> A type representing a deferred side-effecting computation. The computation is described but not executed until explicitly run, enabling referential transparency and controlled effect execution.</p>
+<p><strong>Structure:</strong> <code>IO&lt;A&gt;</code> wraps a <code>Supplier&lt;A&gt;</code> that produces the side effect when executed.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Describing side effects (nothing executes yet)
+IO&lt;String&gt; readLine = IO.delay(() -&gt; scanner.nextLine());
+IO&lt;Unit&gt; printHello = IO.fromRunnable(() -&gt; System.out.println("Hello"));
+
+// Composing effects
+IO&lt;String&gt; program = printHello
+    .flatMap(_ -&gt; readLine)
+    .map(String::toUpperCase);
+
+// Nothing has happened yet! Execute when ready:
+String result = program.run();  // NOW side effects occur
+
+// Sequencing multiple effects
+IO&lt;List&lt;String&gt;&gt; readThreeLines = IO.sequence(List.of(
+    readLine, readLine, readLine
+));
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Deferring side effects for controlled execution</li>
+<li>Building pure descriptions of effectful programs</li>
+<li>Testing side-effecting code (run different interpreters)</li>
+<li>Ensuring effects happen in a specific order</li>
+</ul>
+<p><strong>Effect Path Equivalent:</strong> Use <a href="#effect-path">IOPath</a> for fluent composition.</p>
+<p><strong>Related:</strong> <a href="monads/io_monad.html">IO Documentation</a>, <a href="effect/path_io.html">IOPath</a></p>
+<hr />
+<h3 id="validated"><a class="header" href="#validated">Validated</a></h3>
+<p><strong>Definition:</strong> A type for accumulating multiple errors instead of failing fast on the first error. Unlike <code>Either</code>, which short-circuits on the first <code>Left</code>, <code>Validated</code> collects all errors using a <code>Semigroup</code>.</p>
+<p><strong>Structure:</strong> <code>Validated&lt;E, A&gt;</code> is either <code>Valid&lt;A&gt;</code> (success) or <code>Invalid&lt;E&gt;</code> (accumulated errors).</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Individual validations
+Validated&lt;List&lt;String&gt;, String&gt; validName = Validated.valid("Alice");
+Validated&lt;List&lt;String&gt;, Integer&gt; invalidAge = Validated.invalid(List.of("Age must be positive"));
+Validated&lt;List&lt;String&gt;, String&gt; invalidEmail = Validated.invalid(List.of("Invalid email format"));
+
+// Combine with Applicative - ALL errors accumulated
+Semigroup&lt;List&lt;String&gt;&gt; listSemigroup = Semigroups.list();
+Applicative&lt;Validated.Witness&lt;List&lt;String&gt;&gt;&gt; app = ValidatedApplicative.instance(listSemigroup);
+
+Validated&lt;List&lt;String&gt;, User&gt; result = app.map3(
+    validName,
+    invalidAge,
+    invalidEmail,
+    User::new
+);
+// Invalid(["Age must be positive", "Invalid email format"])
+
+// Convert from Either for fail-fast then accumulate pattern
+Either&lt;String, Integer&gt; eitherResult = Either.left("First error");
+Validated&lt;String, Integer&gt; validated = Validated.fromEither(eitherResult);
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Form validation where all errors should be shown</li>
+<li>Batch processing where you want all failures reported</li>
+<li>Configuration validation</li>
+<li>Any scenario where fail-fast behaviour loses important information</li>
+</ul>
+<p><strong>Effect Path Equivalent:</strong> Use <a href="#effect-path">ValidationPath</a> for fluent composition.</p>
+<p><strong>Related:</strong> <a href="monads/validated_monad.html">Validated Documentation</a>, <a href="effect/path_validation.html">ValidationPath</a></p>
+<hr />
+<h2 id="effect-path-api"><a class="header" href="#effect-path-api">Effect Path API</a></h2>
+<h3 id="effect"><a class="header" href="#effect">Effect</a></h3>
+<p><strong>Definition:</strong> A computational context that represents a value alongside some additional behaviour or outcome. Effects model computations that may fail, produce optional results, perform side effects, or require asynchronous execution. Rather than throwing exceptions or returning null, effects make these behaviours explicit in the type system.</p>
+<p><strong>Common Effect Types in Higher-Kinded-J:</strong></p>
+<ul>
+<li><strong>Maybe</strong> - Computation that may produce no result</li>
+<li><strong>Either</strong> - Computation that may fail with typed error information</li>
+<li><strong>Try</strong> - Computation that may throw an exception</li>
+<li><strong>IO</strong> - Computation that performs side effects</li>
+<li><strong>Validated</strong> - Computation that accumulates multiple errors</li>
+</ul>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Without effects: hidden failure modes
+User getUser(String id) {
+    // Might return null? Throw exception? Which exceptions?
+}
+
+// With effects: explicit about what can happen
+Either&lt;UserError, User&gt; getUser(String id) {
+    // Returns Right(user) on success, Left(error) on failure
+}
+
+Maybe&lt;User&gt; findUser(String id) {
+    // Returns Just(user) if found, Nothing if not found
+}
+
+IO&lt;User&gt; loadUser(String id) {
+    // Describes a side effect that will load the user when run
+}
+</code></pre>
+<p><strong>Why Effects Matter:</strong></p>
+<ul>
+<li>Make failure modes visible in type signatures</li>
+<li>Enable composition of operations that may fail</li>
+<li>Replace scattered try-catch blocks with unified error handling</li>
+<li>Allow reasoning about code behaviour from types alone</li>
+</ul>
+<p><strong>Related:</strong> <a href="#effect-path">Effect Path</a>, <a href="#railway-oriented-programming">Railway-Oriented Programming</a></p>
+<hr />
+<h3 id="railway-oriented-programming"><a class="header" href="#railway-oriented-programming">Railway-Oriented Programming</a></h3>
+<p><strong>Definition:</strong> A programming model where computations flow along two parallel tracks: a success track and a failure track. Operations automatically route values to the appropriate track, and failures propagate without manual checking at each step.</p>
+<p><strong>The Railway Metaphor:</strong></p>
+<pre><code>SUCCESS TRACK  ═══════╦═══════╦═══════╦═══════► Result
+                      ║       ║       ║
+                   step 1  step 2  step 3
+                      ║       ║       ║
+FAILURE TRACK  ───────╨───────╨───────╨───────► Error
+</code></pre>
+<p>When a step succeeds, the value continues on the success track. When a step fails, execution switches to the failure track and subsequent steps are bypassed.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Traditional approach: manual error checking at each step
+User user = findUser(id);
+if (user == null) return error("User not found");
+Account account = getAccount(user);
+if (account == null) return error("Account not found");
+if (!account.isActive()) return error("Account inactive");
+return success(account.getBalance());
+
+// Railway-oriented: automatic track switching
+EitherPath&lt;Error, BigDecimal&gt; balance =
+    Path.of(findUser(id))
+        .via(user -&gt; getAccount(user))
+        .via(account -&gt; validateActive(account))
+        .map(account -&gt; account.getBalance());
+// Failures propagate automatically; no manual checks needed
+</code></pre>
+<p><strong>Key Operations:</strong></p>
+<ul>
+<li><code>map</code> - Transform value on success track (stays on same track)</li>
+<li><code>via</code> (flatMap) - Chain to next operation that may switch tracks</li>
+<li><code>recover</code> - Switch from failure track back to success track</li>
+</ul>
+<p><strong>Benefits:</strong></p>
+<ul>
+<li>Eliminates nested if-else and try-catch pyramids</li>
+<li>Business logic reads top-to-bottom</li>
+<li>Error handling is consistent and composable</li>
+<li>Type system ensures all failure cases are addressed</li>
+</ul>
+<p><strong>Related:</strong> <a href="#effect-path">Effect Path</a>, <a href="#via">via</a>, <a href="#recover">recover</a></p>
+<hr />
+<h3 id="effect-path"><a class="header" href="#effect-path">Effect Path</a></h3>
+<p><strong>Definition:</strong> The primary API in Higher-Kinded-J for working with effects. Effect Paths wrap core effect types (Either, Maybe, Try, IO, Validated) and provide a fluent, railway-oriented interface for composition. Each Path type offers consistent operations (<code>map</code>, <code>via</code>, <code>recover</code>, <code>run</code>) regardless of the underlying effect.</p>
+<p><strong>Available Path Types:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Path Type</th><th>Underlying Effect</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>EitherPath&lt;E, A&gt;</code></td><td><code>Either&lt;E, A&gt;</code></td><td>Typed error handling</td></tr>
+<tr><td><code>MaybePath&lt;A&gt;</code></td><td><code>Maybe&lt;A&gt;</code></td><td>Optional values</td></tr>
+<tr><td><code>TryPath&lt;A&gt;</code></td><td><code>Try&lt;A&gt;</code></td><td>Exception handling</td></tr>
+<tr><td><code>IOPath&lt;A&gt;</code></td><td><code>IO&lt;A&gt;</code></td><td>Deferred side effects</td></tr>
+<tr><td><code>ValidationPath&lt;E, A&gt;</code></td><td><code>Validated&lt;E, A&gt;</code></td><td>Error accumulation</td></tr>
+<tr><td><code>TrampolinePath&lt;A&gt;</code></td><td><code>Trampoline&lt;A&gt;</code></td><td>Stack-safe recursion</td></tr>
+<tr><td><code>CompletableFuturePath&lt;A&gt;</code></td><td><code>CompletableFuture&lt;A&gt;</code></td><td>Async operations</td></tr>
+</tbody></table>
+</div>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Create paths using the Path factory
+EitherPath&lt;Error, User&gt; userPath = Path.either(findUser(id));
+MaybePath&lt;Config&gt; configPath = Path.maybe(loadConfig());
+TryPath&lt;Data&gt; dataPath = Path.tryOf(() -&gt; parseJson(input));
+IOPath&lt;String&gt; ioPath = Path.io(() -&gt; readFile(path));
+
+// All paths share the same fluent API
+EitherPath&lt;Error, String&gt; result = userPath
+    .map(User::name)                    // Transform success value
+    .via(name -&gt; validateName(name))    // Chain dependent operation
+    .recover(err -&gt; "Anonymous");       // Handle errors
+
+// Execute and get result
+String name = result.run().orElse("Unknown");
+</code></pre>
+<p><strong>Related:</strong> <a href="#path">Path</a>, <a href="#via">via</a>, <a href="#recover">recover</a>, <a href="effect/ch_intro.html">Effect Path Documentation</a></p>
+<hr />
+<h3 id="path"><a class="header" href="#path">Path</a></h3>
+<p><strong>Definition:</strong> The unified factory class for creating Effect Paths. Provides static methods to wrap values and computations in the appropriate Path type, serving as the main entry point to the Effect Path API.</p>
+<p><strong>Factory Methods:</strong></p>
+<pre><code class="language-java">// Maybe paths
+Path.maybe(nullableValue)           // Wrap nullable, null becomes Nothing
+Path.just(nonNullValue)             // Wrap known-present value
+Path.nothing()                      // Empty MaybePath
+
+// Either paths
+Path.either(eitherValue)            // Wrap existing Either
+Path.right(value)                   // Success EitherPath
+Path.left(error)                    // Failure EitherPath
+Path.of(nullableValue)              // Wrap nullable as EitherPath
+
+// Try paths
+Path.tryOf(() -&gt; riskyOperation())  // Wrap exception-throwing code
+Path.success(value)                 // Successful TryPath
+Path.failure(exception)             // Failed TryPath
+
+// IO paths
+Path.io(() -&gt; sideEffect())         // Wrap side-effecting code
+Path.ioOf(value)                    // Pure value in IO context
+
+// Validation paths
+Path.valid(value)                   // Valid result
+Path.invalid(error)                 // Invalid with error
+</code></pre>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Building a complete workflow using Path factory
+public EitherPath&lt;OrderError, Receipt&gt; processOrder(OrderRequest request) {
+    return Path.maybe(customerRepository.find(request.customerId()))
+        .toEitherPath(() -&gt; new OrderError.CustomerNotFound())
+        .via(customer -&gt; Path.either(validateOrder(request, customer)))
+        .via(validated -&gt; Path.tryOf(() -&gt; paymentService.charge(validated))
+            .toEitherPath(OrderError.PaymentFailed::new))
+        .map(payment -&gt; createReceipt(request, payment));
+}
+</code></pre>
+<p><strong>Related:</strong> <a href="#effect-path">Effect Path</a>, <a href="#via">via</a>, <a href="#recover">recover</a>, <a href="effect/ch_intro.html">Effect Path Documentation</a></p>
+<hr />
+<h3 id="via"><a class="header" href="#via">via</a></h3>
+<p><strong>Definition:</strong> The chaining operation on Effect Paths, equivalent to <code>flatMap</code> on monads. Applies a function that returns a new Path, allowing dependent operations to be sequenced. If the current Path is on the failure track, <code>via</code> is bypassed and the failure propagates.</p>
+<p><strong>Signature:</strong> <code>Path&lt;E, A&gt;.via(Function&lt;A, Path&lt;E, B&gt;&gt; f) → Path&lt;E, B&gt;</code></p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Each step depends on the previous result
+EitherPath&lt;Error, Order&gt; orderPath =
+    Path.of(userId)
+        .via(id -&gt; findUser(id))           // Returns EitherPath&lt;Error, User&gt;
+        .via(user -&gt; getCart(user))        // Returns EitherPath&lt;Error, Cart&gt;
+        .via(cart -&gt; validateCart(cart))   // Returns EitherPath&lt;Error, ValidatedCart&gt;
+        .via(valid -&gt; createOrder(valid)); // Returns EitherPath&lt;Error, Order&gt;
+
+// Compare to map (which doesn't chain Paths):
+EitherPath&lt;Error, String&gt; mapped = userPath.map(user -&gt; user.name());
+// map: A -&gt; B (simple transformation)
+// via: A -&gt; Path&lt;E, B&gt; (operation that may fail)
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Chaining operations where each step may fail</li>
+<li>Sequencing dependent computations</li>
+<li>Building pipelines of effectful operations</li>
+</ul>
+<p><strong>Contrast with map:</strong></p>
+<ul>
+<li><code>map(A -&gt; B)</code> - Transform the value, stay on same track</li>
+<li><code>via(A -&gt; Path&lt;E, B&gt;)</code> - Chain to operation that may switch tracks</li>
+</ul>
+<p><strong>Related:</strong> <a href="#effect-path">Effect Path</a>, <a href="#railway-oriented-programming">Railway-Oriented Programming</a>, <a href="#recover">recover</a></p>
+<hr />
+<h3 id="recover"><a class="header" href="#recover">recover</a></h3>
+<p><strong>Definition:</strong> The error recovery operation on Effect Paths, equivalent to <code>handleErrorWith</code> on MonadError. Allows switching from the failure track back to the success track by providing an alternative value or computation.</p>
+<p><strong>Signature:</strong> <code>Path&lt;E, A&gt;.recover(Function&lt;E, A&gt; handler) → Path&lt;E, A&gt;</code></p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Simple recovery with default value
+EitherPath&lt;Error, Config&gt; config = loadConfig()
+    .recover(error -&gt; Config.defaults());
+
+// Recovery that inspects the error
+EitherPath&lt;ApiError, User&gt; user = fetchUser(id)
+    .recover(error -&gt; switch (error) {
+        case NotFound _ -&gt; User.guest();
+        case RateLimited _ -&gt; User.cached(id);
+        default -&gt; throw new RuntimeException(error);  // Re-throw unrecoverable
+    });
+
+// Recovery with a new Path (recoverWith)
+EitherPath&lt;Error, Data&gt; data = primarySource()
+    .recoverWith(error -&gt; fallbackSource());  // Try alternative on failure
+
+// Partial recovery - only handle specific errors
+EitherPath&lt;Error, Value&gt; result = operation()
+    .recover(error -&gt; {
+        if (error instanceof Retryable) {
+            return retryOperation();
+        }
+        throw error;  // Propagate non-retryable errors
+    });
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Providing default values when operations fail</li>
+<li>Implementing fallback strategies</li>
+<li>Converting errors to success values</li>
+<li>Selective error recovery based on error type</li>
+</ul>
+<p><strong>Related:</strong> <a href="#effect-path">Effect Path</a>, <a href="#railway-oriented-programming">Railway-Oriented Programming</a>, <a href="#via">via</a></p>
+<hr />
+<h3 id="effect-optics-bridge"><a class="header" href="#effect-optics-bridge">Effect-Optics Bridge</a></h3>
+<p><strong>Definition:</strong> The integration layer that connects Effect Paths with the Focus DSL, allowing seamless composition of effectful computations and immutable data navigation. The bridge enables focusing into data structures retrieved from effects and lifting optic operations into effectful contexts.</p>
+<p><strong>How It Works:</strong></p>
+<pre><code>EFFECTS DOMAIN                    OPTICS DOMAIN
+══════════════                    ═════════════
+EitherPath&lt;E, User&gt;  ──┐    ┌──  FocusPath&lt;User, Address&gt;
+TryPath&lt;Config&gt;      ──┤    ├──  Lens&lt;Config, Settings&gt;
+IOPath&lt;Data&gt;         ──┘    └──  Traversal&lt;Data, Item&gt;
+                        │  │
+                        ▼  ▼
+                   .focus(optic)
+                        │
+                        ▼
+              UNIFIED COMPOSITION
+</code></pre>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Fetch user (effect) then navigate to nested data (optics)
+EitherPath&lt;Error, String&gt; city = userService.findById(userId)  // Effect: fetch
+    .focus(UserFocus.address())                                 // Optics: navigate
+    .focus(AddressFocus.city())                                 // Optics: deeper
+    .map(String::toUpperCase);                                  // Transform
+
+// Modify nested data within an effectful context
+EitherPath&lt;Error, User&gt; updated = userService.findById(userId)
+    .focusAndModify(
+        UserFocus.address().andThen(AddressFocus.postcode()),
+        postcode -&gt; postcode.toUpperCase()
+    );
+
+// Combine multiple effect sources with optic navigation
+EitherPath&lt;Error, Report&gt; report =
+    Path.of(loadCompany(id))
+        .focus(CompanyFocus.departments())     // Traverse to departments
+        .via(dept -&gt; loadMetrics(dept.id()))   // Effect for each
+        .map(metrics -&gt; generateReport(metrics));
+</code></pre>
+<p><strong>Benefits:</strong></p>
+<ul>
+<li>No boilerplate for null checks during navigation</li>
+<li>Optic failures (missing optional values) integrate with effect failures</li>
+<li>Single vocabulary (<code>map</code>, <code>via</code>, <code>focus</code>) for both domains</li>
+<li>Type-safe composition across effect and structure boundaries</li>
+</ul>
+<p><strong>Related:</strong> <a href="#effect-path">Effect Path</a>, <a href="#focus-dsl">Focus DSL</a>, <a href="#focuspath">FocusPath</a></p>
+<hr />
 <h2 id="optics-terminology"><a class="header" href="#optics-terminology">Optics Terminology</a></h2>
+<h3 id="affine"><a class="header" href="#affine">Affine</a></h3>
+<p><strong>Definition:</strong> An optic that focuses on zero or one values within a structure. Affine sits between Lens (exactly one) and Prism (zero or one for sum types) in the optic hierarchy. It combines the "might not be there" aspect of Prism with the "focus on part of a product" aspect of Lens.</p>
+<p><strong>Core Operations:</strong></p>
+<ul>
+<li><code>preview(S source)</code> - Try to extract the value (returns Optional)</li>
+<li><code>set(A value, S source)</code> - Set the value if the focus exists</li>
+</ul>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Affine for the first element of a list (might be empty)
+Affine&lt;List&lt;String&gt;, String&gt; firstElement = Affine.affine(
+    list -&gt; list.isEmpty() ? Optional.empty() : Optional.of(list.get(0)),
+    (newFirst, list) -&gt; list.isEmpty() ? list :
+        Stream.concat(Stream.of(newFirst), list.stream().skip(1)).toList()
+);
+
+List&lt;String&gt; items = List.of("a", "b", "c");
+Optional&lt;String&gt; first = firstElement.preview(items);  // Optional["a"]
+List&lt;String&gt; updated = firstElement.set("X", items);   // ["X", "b", "c"]
+
+List&lt;String&gt; empty = List.of();
+Optional&lt;String&gt; noFirst = firstElement.preview(empty);  // Optional.empty()
+List&lt;String&gt; stillEmpty = firstElement.set("X", empty);  // [] (unchanged)
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Accessing elements that may not exist (first element, element at index)</li>
+<li>Optional fields in product types</li>
+<li>Composing Lens with Prism (result is Affine)</li>
+</ul>
+<p><strong>Hierarchy Position:</strong> <code>Iso → Lens → Affine → Traversal</code>
+<code>Iso → Prism → Affine → Traversal</code></p>
+<p><strong>Related:</strong> <a href="#lens">Lens</a>, <a href="#prism">Prism</a>, <a href="optics/affine.html">Affine Documentation</a></p>
+<hr />
 <h3 id="at"><a class="header" href="#at">At</a></h3>
 <p><strong>Definition:</strong> A type class for structures that support indexed access with insertion and deletion semantics. Provides a <code>Lens&lt;S, Optional&lt;A&gt;&gt;</code> where setting to <code>Optional.empty()</code> deletes the entry and setting to <code>Optional.of(value)</code> inserts or updates it.</p>
 <p><strong>Core Operations:</strong></p>
@@ -1085,6 +1618,158 @@ Order discounted = orderItems.modify(
 );
 </code></pre>
 <p><strong>Related:</strong> <a href="optics/traversals.html">Traversals Documentation</a></p>
+<hr />
+<h3 id="fold"><a class="header" href="#fold">Fold</a></h3>
+<p><strong>Definition:</strong> A read-only optic that extracts zero or more values from a structure. Folds are like Traversals but without the ability to modify. They generalise the concept of "folding" or "reducing" over a structure.</p>
+<p><strong>Core Operations:</strong></p>
+<ul>
+<li><code>foldMap(Monoid&lt;M&gt; monoid, Function&lt;A, M&gt; f, S source)</code> - Map and combine all values</li>
+<li><code>toList(S source)</code> - Extract all focused values as a list</li>
+<li><code>headOption(S source)</code> - Get the first value if any</li>
+<li><code>exists(Predicate&lt;A&gt; p, S source)</code> - Check if any value satisfies predicate</li>
+<li><code>all(Predicate&lt;A&gt; p, S source)</code> - Check if all values satisfy predicate</li>
+</ul>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Fold over all players in a league
+Fold&lt;League, Player&gt; allPlayers = LeagueFolds.teams()
+    .andThen(TeamFolds.players());
+
+// Extract all players
+List&lt;Player&gt; players = allPlayers.toList(league);
+
+// Sum all scores using a Monoid
+Integer totalScore = allPlayers.foldMap(
+    Monoids.integerAddition(),
+    Player::score,
+    league
+);
+
+// Check conditions across all values
+boolean anyInactive = allPlayers.exists(p -&gt; !p.isActive(), league);
+boolean allQualified = allPlayers.all(p -&gt; p.score() &gt;= 100, league);
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Extracting multiple values without modification</li>
+<li>Aggregating data from nested structures</li>
+<li>Querying collections within complex types</li>
+<li>When you need read-only access to multiple elements</li>
+</ul>
+<p><strong>Related:</strong> <a href="#traversal">Traversal</a>, <a href="#lens">Getter (Fold of one)</a></p>
+<hr />
+<h3 id="setter"><a class="header" href="#setter">Setter</a></h3>
+<p><strong>Definition:</strong> A write-only optic that can modify zero or more values within a structure. Setters are the dual of Folds: where Folds can only read, Setters can only write. They cannot extract values, only transform them.</p>
+<p><strong>Core Operations:</strong></p>
+<ul>
+<li><code>modify(Function&lt;A, A&gt; f, S source)</code> - Apply function to all focused values</li>
+<li><code>set(A value, S source)</code> - Set all focused values to same value</li>
+</ul>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Setter for all prices in an order
+Setter&lt;Order, BigDecimal&gt; allPrices = OrderSetters.items()
+    .andThen(LineItemSetters.price());
+
+// Apply discount to all prices
+Order discounted = allPrices.modify(
+    price -&gt; price.multiply(new BigDecimal("0.9")),
+    order
+);
+
+// Set all prices to zero (for testing)
+Order zeroed = allPrices.set(BigDecimal.ZERO, order);
+
+// Compose with other optics
+Setter&lt;Company, String&gt; allEmployeeEmails =
+    CompanySetters.departments()
+        .andThen(DepartmentSetters.employees())
+        .andThen(EmployeeSetters.email());
+
+Company normalised = allEmployeeEmails.modify(String::toLowerCase, company);
+</code></pre>
+<p><strong>When To Use:</strong></p>
+<ul>
+<li>Bulk modifications without needing to read values</li>
+<li>Applying transformations across nested structures</li>
+<li>When modification logic doesn't depend on current values</li>
+<li>Composing write-only operations</li>
+</ul>
+<p><strong>Related:</strong> <a href="#traversal">Traversal</a>, <a href="#fold">Fold</a></p>
+<hr />
+<h3 id="focus-dsl"><a class="header" href="#focus-dsl">Focus DSL</a></h3>
+<p><strong>Definition:</strong> A domain-specific language for fluent, type-safe navigation and manipulation of immutable data structures. The Focus DSL provides a composable way to build paths through nested records without manual lens composition.</p>
+<p><strong>Core Concept:</strong> Instead of composing optics manually, the Focus DSL lets you chain <code>.focus()</code> calls to navigate through data structures, with the optic types inferred automatically.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Without Focus DSL: manual lens composition
+Lens&lt;Employee, String&gt; streetLens =
+    EmployeeLenses.company()
+        .andThen(CompanyLenses.address())
+        .andThen(AddressLenses.street());
+String street = streetLens.get(employee);
+
+// With Focus DSL: fluent navigation
+String street = Focus.on(employee)
+    .focus(EmployeeFocus.company())
+    .focus(CompanyFocus.address())
+    .focus(AddressFocus.street())
+    .get();
+
+// Modification is equally fluent
+Employee updated = Focus.on(employee)
+    .focus(EmployeeFocus.company())
+    .focus(CompanyFocus.address())
+    .focus(AddressFocus.city())
+    .modify(String::toUpperCase);
+
+// Mix with Effect Paths for effectful navigation
+EitherPath&lt;Error, String&gt; city = userService.findById(id)
+    .focus(UserFocus.address())
+    .focus(AddressFocus.city());
+</code></pre>
+<p><strong>Key Features:</strong></p>
+<ul>
+<li>Type-safe: Compiler catches invalid paths</li>
+<li>Composable: Chain any optic types together</li>
+<li>Generated: <code>@GenerateLenses</code> creates Focus helpers automatically</li>
+<li>Effect integration: Seamlessly works with Effect Paths</li>
+</ul>
+<p><strong>Related:</strong> <a href="#focuspath">FocusPath</a>, <a href="#lens">Lens</a>, <a href="#effect-optics-bridge">Effect-Optics Bridge</a>, <a href="optics/focus_dsl.html">Focus DSL Documentation</a></p>
+<hr />
+<h3 id="focuspath"><a class="header" href="#focuspath">FocusPath</a></h3>
+<p><strong>Definition:</strong> A generated helper class that provides pre-composed optic paths for navigating into record types. The annotation processor creates FocusPath classes for each annotated record, offering a fluent API for accessing fields and nested structures.</p>
+<p><strong>Generation:</strong> Add <code>@GenerateLenses</code> to your record to generate the corresponding Focus class.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">@GenerateLenses
+public record User(String name, Address address, List&lt;Order&gt; orders) {}
+
+@GenerateLenses
+public record Address(String street, String city, String postcode) {}
+
+// Generated: UserFocus class with methods:
+// - UserFocus.name()     → Lens&lt;User, String&gt;
+// - UserFocus.address()  → Lens&lt;User, Address&gt;
+// - UserFocus.orders()   → Lens&lt;User, List&lt;Order&gt;&gt;
+
+// Use in Focus DSL
+String city = Focus.on(user)
+    .focus(UserFocus.address())
+    .focus(AddressFocus.city())
+    .get();
+
+// Compose for reusable paths
+Lens&lt;User, String&gt; userCity = UserFocus.address()
+    .andThen(AddressFocus.city());
+
+// Use with Effect Paths
+EitherPath&lt;Error, String&gt; cityPath = loadUser(id)
+    .focus(UserFocus.address())
+    .focus(AddressFocus.city());
+</code></pre>
+<p><strong>Naming Convention:</strong></p>
+<ul>
+<li>Record <code>Foo</code> generates <code>FooFocus</code> class</li>
+<li>Each field <code>bar</code> generates static method <code>FooFocus.bar()</code></li>
+</ul>
+<p><strong>Related:</strong> <a href="#focus-dsl">Focus DSL</a>, <a href="#lens">Lens</a>, <a href="optics/code_generation.html">Code Generation</a></p>
 <hr />
 
                     </main>
