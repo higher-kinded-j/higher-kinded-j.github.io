@@ -282,6 +282,7 @@ operations.</p>
 <li>Error handling and recovery strategies</li>
 <li>Timeout management for long-running operations</li>
 <li>Parallel execution with the <code>Par</code> utilities</li>
+<li>Advanced structured concurrency with <code>Scope</code> and <code>Resource</code></li>
 <li>When to choose VTaskPath over IOPath</li>
 </ul>
 </div>
@@ -495,6 +496,50 @@ leaks and ensures clean shutdown semantics.</p>
 </div>
 </div>
 <hr />
+<h2 id="scope-and-resource"><a class="header" href="#scope-and-resource">Scope and Resource</a></h2>
+<p>For advanced structured concurrency patterns, use <code>Scope</code> and <code>Resource</code> directly with VTask:</p>
+<pre><code class="language-java">import org.higherkindedj.hkt.vtask.Scope;
+import org.higherkindedj.hkt.vtask.Resource;
+
+// Scope: fluent builder for structured concurrency
+VTask&lt;List&lt;String&gt;&gt; results = Scope.&lt;String&gt;allSucceed()
+    .fork(VTask.of(() -&gt; fetchUserData(id)))
+    .fork(VTask.of(() -&gt; fetchUserProfile(id)))
+    .timeout(Duration.ofSeconds(5))
+    .join();
+
+// Error accumulation with Validated
+VTask&lt;Validated&lt;List&lt;Error&gt;, List&lt;String&gt;&gt;&gt; validation =
+    Scope.&lt;String&gt;accumulating(Error::from)
+        .fork(validateField1())
+        .fork(validateField2())
+        .join();
+
+// Resource: bracket pattern for safe resource management
+Resource&lt;Connection&gt; conn = Resource.fromAutoCloseable(
+    () -&gt; dataSource.getConnection()
+);
+
+VTask&lt;List&lt;User&gt;&gt; users = conn.use(c -&gt;
+    VTask.of(() -&gt; userDao.findAll(c))
+);
+</code></pre>
+<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+</div>
+<div>
+<p>For comprehensive documentation on Scope, ScopeJoiner, and Resource, see:</p>
+<ul>
+<li><a href="../monads/vtask_scope.html">Structured Concurrency</a> - Scope and ScopeJoiner</li>
+<li><a href="../monads/vtask_resource.html">Resource Management</a> - Bracket pattern</li>
+</ul>
+</div>
+</div>
+<hr />
 <h2 id="converting-between-path-types"><a class="header" href="#converting-between-path-types">Converting Between Path Types</a></h2>
 <pre><code class="language-java">// VTaskPath to TryPath (executes immediately)
 VTaskPath&lt;String&gt; vtask = Path.vtask(() -&gt; fetchData());
@@ -511,9 +556,9 @@ VTaskPath&lt;String&gt; backToPath = Path.vtaskPath(VTask.succeed("restored"));
 <h2 id="vtaskpath-vs-iopath"><a class="header" href="#vtaskpath-vs-iopath">VTaskPath vs IOPath</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Aspect</th><th>VTaskPath</th><th>IOPath</th></tr></thead><tbody>
 <tr><td><strong>Thread Model</strong></td><td>Virtual threads</td><td>Caller's thread</td></tr>
-<tr><td><strong>Parallelism</strong></td><td>Built-in via <code>Par</code></td><td>Manual composition</td></tr>
+<tr><td><strong>Parallelism</strong></td><td>Built-in via <code>Par</code>, <code>Scope</code></td><td>Manual composition</td></tr>
 <tr><td><strong><code>zipWith</code> Behavior</strong></td><td>Parallel (uses <code>Par.map2</code>)</td><td>Sequential</td></tr>
-<tr><td><strong>Java Version</strong></td><td>Requires Java 21+</td><td>Any Java 8+</td></tr>
+<tr><td><strong>Structured Concurrency</strong></td><td>Yes, with <code>Scope</code> and <code>Resource</code></td><td>No</td></tr>
 <tr><td><strong>Async Support</strong></td><td><code>runAsync()</code> returns <code>CompletableFuture</code></td><td>No built-in async</td></tr>
 <tr><td><strong>Resource Usage</strong></td><td>Kilobytes per task</td><td>N/A (single-threaded)</td></tr>
 </tbody></table>
@@ -521,14 +566,13 @@ VTaskPath&lt;String&gt; backToPath = Path.vtaskPath(VTask.succeed("restored"));
 <p><strong>Choose VTaskPath when:</strong></p>
 <ul>
 <li>You need lightweight concurrency at scale</li>
-<li>Your application targets Java 21+</li>
 <li>You want structured concurrency with proper cancellation</li>
 <li>Simple blocking code is preferable to reactive complexity</li>
 </ul>
 <p><strong>Choose IOPath when:</strong></p>
 <ul>
-<li>You need broad Java version compatibility</li>
 <li>Single-threaded execution is sufficient</li>
+<li>You want explicit control over which thread runs the computation</li>
 <li>You're building a library that shouldn't impose thread choices</li>
 </ul>
 <hr />
@@ -567,6 +611,8 @@ Try&lt;Dashboard&gt; dashboard = loadDashboard(userId).runSafe();
 <li><strong>Virtual Threads:</strong> VTaskPath executes on lightweight JVM-managed threads, enabling millions of concurrent tasks</li>
 <li><strong>Laziness:</strong> Nothing runs until you call <code>run()</code>, <code>runSafe()</code>, or <code>runAsync()</code></li>
 <li><strong>Composition:</strong> Use <code>map</code> for transformations, <code>via</code> for dependent chains, and <code>Par</code> combinators for parallel execution</li>
+<li><strong>Scope:</strong> Use <code>Scope</code> for flexible structured concurrency with <code>allSucceed</code>, <code>anySucceed</code>, <code>firstComplete</code>, or <code>accumulating</code> joiners</li>
+<li><strong>Resource:</strong> Use <code>Resource</code> for bracket-pattern resource management with guaranteed cleanup</li>
 <li><strong>Error Handling:</strong> Prefer <code>runSafe()</code> to capture failures in <code>Try</code>; use <code>handleError</code> and <code>handleErrorWith</code> for graceful fallbacks</li>
 <li><strong>Pragmatism:</strong> Write simple blocking code that composes naturally; let virtual threads handle the scalability</li>
 </ul>
@@ -583,17 +629,19 @@ Try&lt;Dashboard&gt; dashboard = loadDashboard(userId).runSafe();
 <p>Practice VTaskPath composition in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/concurrency/TutorialVTaskPath.java">TutorialVTaskPath.java</a> (8 exercises, ~20 minutes).</p>
 </div>
 </div>
-<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div id="admonition-see-also-1" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-1-title">
 <div class="admonition-title">
-<div id="admonition-see-also-title">
+<div id="admonition-see-also-1-title">
 <p>See Also</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+<a class="admonition-anchor-link" href="#admonition-see-also-1"></a>
 </div>
 <div>
 <ul>
 <li><a href="../monads/vtask_monad.html">VTask Monad</a> - Underlying type with full API details</li>
-<li><a href="path_io.html">IOPath</a> - Platform thread-based effect path for broader Java compatibility</li>
+<li><a href="../monads/vtask_scope.html">Structured Concurrency</a> - Scope and ScopeJoiner for task coordination</li>
+<li><a href="../monads/vtask_resource.html">Resource Management</a> - Bracket pattern for safe resource handling</li>
+<li><a href="path_io.html">IOPath</a> - Platform thread-based effect path for single-threaded scenarios</li>
 <li><a href="composition.html">Composition Patterns</a> - More composition techniques applicable to all Path types</li>
 <li><a href="patterns.html">Patterns and Recipes</a> - Resilience and resource patterns</li>
 </ul>
