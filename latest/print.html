@@ -1078,6 +1078,9 @@ structure to the territory, which accounts for its usefulness."</em></p>
 <p><strong><a href="effect/focus_integration.html">Focus-Effect Integration</a></strong> – Bridging optics and effects. Converting FocusPath to EffectPath for validation pipelines, using <code>focus()</code> to navigate within effect contexts, and patterns that combine both domains.</p>
 </li>
 <li>
+<p><strong><a href="effect/capstone_focus_effect.html">Capstone: Effects Meet Optics</a></strong> – A complete before/after example combining effects and optics in a single pipeline. Uses a company directory scenario to demonstrate how <code>focus()</code>, <code>AffinePath</code>, and <code>EitherPath</code> replace 30 lines of defensive code with 6 lines of railway pipeline.</p>
+</li>
+<li>
 <p><strong><a href="effect/patterns.html">Patterns and Recipes</a></strong> – Real-world patterns distilled from production code: validation pipelines, service orchestration, fallback chains, resilience with retry, and the pitfalls that await the unwary.</p>
 </li>
 <li>
@@ -1138,6 +1141,7 @@ structure to the territory, which accounts for its usefulness."</em></p>
 <li><a href="effect/composition.html">Composition Patterns</a> - Chaining, combining, parallel execution, and debugging</li>
 <li><a href="effect/conversions.html">Type Conversions</a> - Moving between different Path types</li>
 <li><a href="effect/focus_integration.html">Focus-Effect Integration</a> - Bridging optics and effects</li>
+<li><a href="effect/capstone_focus_effect.html">Capstone: Effects Meet Optics</a> - Complete before/after example</li>
 <li><a href="effect/patterns.html">Patterns and Recipes</a> - Real-world patterns, resilience, and hard-won wisdom</li>
 <li><a href="effect/migration_cookbook.html">Migration Cookbook</a> - Imperative Java to Effect Path, recipe by recipe</li>
 <li><a href="effect/compiler_errors.html">Common Compiler Errors</a> - Fixing type inference and Path type mismatches</li>
@@ -1322,6 +1326,97 @@ rolling stock.</p>
 <tr><td><code>focus(lens)</code></td><td><span style="color:#4CAF50"><strong>Green track</strong></span> wormhole</td><td>Navigates into nested data without leaving the track</td></tr>
 </tbody></table>
 </div>
+<h3 id="visualising-each-operator"><a class="header" href="#visualising-each-operator">Visualising Each Operator</a></h3>
+<p>The table above gives you the vocabulary; these diagrams show you the geometry.
+Each one illustrates what happens to data on the success and failure tracks when
+the operator executes.</p>
+<h4 id="mapfn"><a class="header" href="#mapfn">map(fn)</a></h4>
+<p>Transforms the value on the success track. Failures pass through untouched.</p>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Success</b> ═══●═══ map(fn) ═══●═══▶  transformed value</span>
+    <span style="color:#4CAF50">           A              f(A)</span>
+
+    <span style="color:#F44336"><b>Failure</b> ═══●══════════════●═══▶  unchanged error</span>
+    <span style="color:#F44336">           E              E          (skipped)</span>
+</pre>
+<h4 id="maperrorfn"><a class="header" href="#maperrorfn">mapError(fn)</a></h4>
+<p>The mirror of <code>map</code>: transforms the value on the failure track. Successes pass through untouched.</p>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Success</b> ═══●══════════════●═══▶  unchanged value</span>
+    <span style="color:#4CAF50">           A              A          (skipped)</span>
+
+    <span style="color:#F44336"><b>Failure</b> ═══●═══ mapError(fn) ═══●═══▶  transformed error</span>
+    <span style="color:#F44336">           E                  f(E)</span>
+</pre>
+<h4 id="viafn--flatmapfn"><a class="header" href="#viafn--flatmapfn">via(fn) / flatMap(fn)</a></h4>
+<p>Chains an operation that may itself fail. The function receives the success value and returns
+a new Path; if that Path fails, the data switches to the failure track.</p>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Success</b> ═══●═══ via(fn) ═══●═══▶  continues on success</span>
+    <span style="color:#4CAF50">           A           fn(A)</span>  ╲
+                                   ╲
+                                    <span style="color:#F44336">╲═══▶  diverts to failure (fn returned Left/Nothing)</span>
+
+    <span style="color:#F44336"><b>Failure</b> ═══●════════════════●═══▶  unchanged error (skipped)</span>
+</pre>
+<h4 id="recoverfn"><a class="header" href="#recoverfn">recover(fn)</a></h4>
+<p>Switches from the failure track back to the success track by converting the error into a value.</p>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Success</b> ═══●══════════════════●═══▶  unchanged value (skipped)</span>
+
+    <span style="color:#F44336"><b>Failure</b> ═══●═══ recover(fn) </span><span style="color:#4CAF50">═══●═══▶  recovered value</span>
+    <span style="color:#F44336">           E             </span><span style="color:#4CAF50">   fn(E)</span>
+</pre>
+<h4 id="recoverwithfn"><a class="header" href="#recoverwithfn">recoverWith(fn)</a></h4>
+<p>Like <code>recover</code>, but the function returns a new Path rather than a raw value. The recovery
+itself may fail, keeping the data on the failure track.</p>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Success</b> ═══●══════════════════════●═══▶  unchanged value (skipped)</span>
+
+    <span style="color:#F44336"><b>Failure</b> ═══●═══ recoverWith(fn) </span><span style="color:#4CAF50">═══●═══▶  recovered value</span>
+    <span style="color:#F44336">           E                fn(E)</span>  ╲
+                                        ╲
+                                         <span style="color:#F44336">╲═══▶  still failed (fn returned Left/Nothing)</span>
+</pre>
+<h4 id="orelsesupplier"><a class="header" href="#orelsesupplier">orElse(supplier)</a></h4>
+<p>A fallback junction: if the first path failed, try a completely different path.</p>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Success</b> ═══●══════════════════════════▶  original value</span>
+
+    <span style="color:#F44336"><b>Failure</b> ═══●═══ orElse(supplier)</span>
+    <span style="color:#F44336">           E         │</span>
+                       ▼
+              <span style="color:#4CAF50">supplier.get() ═══●═══▶  alternative value</span>
+                                    ╲
+                                     <span style="color:#F44336">╲═══▶  alternative also failed</span>
+</pre>
+<h4 id="peekfn"><a class="header" href="#peekfn">peek(fn)</a></h4>
+<p>A siding: the function observes the success value but does not change it or the track.
+Commonly used for logging and debugging.</p>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Success</b> ═══●═══ peek(fn) ═══●═══▶  same value, same track</span>
+    <span style="color:#4CAF50">           A      │         A</span>
+                    ▼
+              <i>side effect</i>       (e.g. log, metric, debug)
+
+    <span style="color:#F44336"><b>Failure</b> ═══●════════════════●═══▶  unchanged error (skipped)</span>
+</pre>
+<h4 id="focuslens"><a class="header" href="#focuslens">focus(lens)</a></h4>
+<p>A wormhole into nested structure: the lens extracts a field from the success value,
+and the result stays on the same track. If the optic is an <code>AffinePath</code> and the
+field is absent, the data switches to the failure track.</p>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Success</b> ═══●═══ focus(lens) ═══●═══▶  focused field</span>
+    <span style="color:#4CAF50">        Order              Address       (lens extracted nested value)</span>
+
+    <span style="color:#F44336"><b>Failure</b> ═══●════════════════════●═══▶  unchanged error (skipped)</span>
+
+    <i>With AffinePath (optional field):</i>
+    <span style="color:#4CAF50"><b>Success</b> ═══●═══ focus(affine) </span>
+    <span style="color:#4CAF50">        Order</span>         ╲
+                          ╲  field absent
+                           <span style="color:#F44336">╲═══▶  Left(providedError) / Nothing</span>
+</pre>
 <hr />
 <h2 id="the-same-logic-flattened"><a class="header" href="#the-same-logic-flattened">The Same Logic, Flattened</a></h2>
 <p>Here's that order processing code rewritten with Effect Paths:</p>
@@ -6780,6 +6875,7 @@ EitherPath&lt;Error, SaveResult&gt; processUserUpdate(UserId userId, UpdateReque
 </div>
 <div>
 <ul>
+<li><a href="effect/capstone_focus_effect.html">Capstone: Effects Meet Optics</a> - Complete before/after example combining both domains</li>
 <li><a href="effect/../optics/focus_dsl.html">Focus DSL</a> - Complete guide to Focus paths</li>
 <li><a href="effect/effect_path_overview.html">Effect Path Overview</a> - Railway model and effect basics</li>
 <li><a href="effect/capabilities.html">Capability Interfaces</a> - Type class foundations</li>
@@ -6788,6 +6884,312 @@ EitherPath&lt;Error, SaveResult&gt; processUserUpdate(UserId userId, UpdateReque
 </div>
 <hr />
 <p><strong>Previous:</strong> <a href="effect/conversions.html">Type Conversions</a>
+<strong>Next:</strong> <a href="effect/capstone_focus_effect.html">Capstone: Effects Meet Optics</a></p>
+<div style="break-before: page; page-break-before: always;"></div><style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
+<h1 id="capstone-effects-meet-optics"><a class="header" href="#capstone-effects-meet-optics">Capstone: Effects Meet Optics</a></h1>
+<blockquote>
+<p><em>"The greatest value of a picture is when it forces us to notice what we never expected to see."</em></p>
+<p>— John Tukey, <em>Exploratory Data Analysis</em></p>
+</blockquote>
+<div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
+<div class="admonition-title">
+<div id="admonition-what-youll-learn-title">
+<p>What You'll Learn</p>
+</div>
+<a class="admonition-anchor-link" href="effect/capstone_focus_effect.html#admonition-what-youll-learn"></a>
+</div>
+<div>
+<ul>
+<li>How Effect paths and Focus paths combine in a single, realistic pipeline</li>
+<li>A complete before/after comparison: imperative Java vs HKJ</li>
+<li>When to use <code>focus()</code> inside an effect pipeline vs <code>toEitherPath()</code> to enter one</li>
+<li>The pattern for navigating optional nested fields with <code>AffinePath</code> under effects</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="the-scenario"><a class="header" href="#the-scenario">The Scenario</a></h2>
+<p>You maintain an internal company directory. The domain model is a set of nested immutable records:</p>
+<pre><code class="language-java">@GenerateLenses @GenerateFocus
+record Company(String name, List&lt;Department&gt; departments) {}
+
+@GenerateLenses @GenerateFocus
+record Department(String name, Optional&lt;Employee&gt; manager, List&lt;Employee&gt; staff) {}
+
+@GenerateLenses @GenerateFocus
+record Employee(String name, ContactInfo contact) {}
+
+@GenerateLenses @GenerateFocus
+record ContactInfo(String phone, Optional&lt;String&gt; email) {}
+</code></pre>
+<p>The generated Focus classes give you:</p>
+<ul>
+<li><code>CompanyFocus.departments()</code> — <code>TraversalPath&lt;Company, Department&gt;</code></li>
+<li><code>DepartmentFocus.manager()</code> — <code>AffinePath&lt;Department, Employee&gt;</code> (manager is optional)</li>
+<li><code>DepartmentFocus.name()</code> — <code>FocusPath&lt;Department, String&gt;</code></li>
+<li><code>EmployeeFocus.contact()</code> — <code>FocusPath&lt;Employee, ContactInfo&gt;</code></li>
+<li><code>ContactInfoFocus.email()</code> — <code>AffinePath&lt;ContactInfo, String&gt;</code> (email is optional)</li>
+<li><code>ContactInfoFocus.phone()</code> — <code>FocusPath&lt;ContactInfo, String&gt;</code></li>
+</ul>
+<p><strong>The task:</strong> Given a department name, look up that department's manager and update their email address. The operation must:</p>
+<ol>
+<li>Find the department by name (it may not exist)</li>
+<li>Get the manager (the department may have no manager)</li>
+<li>Validate the new email format</li>
+<li>Return the updated company, or a typed error explaining what went wrong</li>
+</ol>
+<hr />
+<h2 id="the-imperative-approach"><a class="header" href="#the-imperative-approach">The Imperative Approach</a></h2>
+<p>Here is the standard Java solution. It works, but notice how the business logic (validate and update an email) drowns in defensive checks:</p>
+<pre><code class="language-java">sealed interface DirectoryError {
+    record DepartmentNotFound(String name) implements DirectoryError {}
+    record NoManager(String department) implements DirectoryError {}
+    record InvalidEmail(String email, String reason) implements DirectoryError {}
+}
+
+Either&lt;DirectoryError, Company&gt; updateManagerEmail(
+        Company company, String deptName, String newEmail) {
+
+    // 1. Find the department
+    Department dept = null;
+    for (Department d : company.departments()) {
+        if (d.name().equals(deptName)) {
+            dept = d;
+            break;
+        }
+    }
+    if (dept == null) {
+        return Either.left(new DirectoryError.DepartmentNotFound(deptName));
+    }
+
+    // 2. Get the manager
+    if (dept.manager().isEmpty()) {
+        return Either.left(new DirectoryError.NoManager(deptName));
+    }
+    Employee manager = dept.manager().get();
+
+    // 3. Validate the new email
+    if (!newEmail.contains("@") || newEmail.length() &lt; 5) {
+        return Either.left(
+            new DirectoryError.InvalidEmail(newEmail, "Must contain @ and be at least 5 characters"));
+    }
+
+    // 4. Rebuild the entire structure (the painful part)
+    ContactInfo updatedContact = new ContactInfo(manager.contact().phone(), Optional.of(newEmail));
+    Employee updatedManager = new Employee(manager.name(), updatedContact);
+    Department updatedDept = new Department(dept.name(), Optional.of(updatedManager), dept.staff());
+
+    List&lt;Department&gt; updatedDepts = company.departments().stream()
+        .map(d -&gt; d.name().equals(deptName) ? updatedDept : d)
+        .toList();
+
+    return Either.right(new Company(company.name(), updatedDepts));
+}
+</code></pre>
+<p><strong>30 lines.</strong> Five levels of concern tangled together: searching, null-checking, validating, reconstructing, and error-wrapping. The actual business logic ("validate the email, then set it") is two lines buried in the middle.</p>
+<hr />
+<h2 id="the-hkj-approach"><a class="header" href="#the-hkj-approach">The HKJ Approach</a></h2>
+<p>The same operation, using Effect paths for error handling and Focus paths for structural navigation:</p>
+<pre><code class="language-java">EitherPath&lt;DirectoryError, Company&gt; updateManagerEmail(
+        Company company, String deptName, String newEmail) {
+
+    // Optics path for the update: company → matching dept → manager → contact
+    TraversalPath&lt;Company, ContactInfo&gt; contactInDept =
+        CompanyFocus.departments()
+            .filter(d -&gt; d.name().equals(deptName))
+            .via(DepartmentFocus.manager())
+            .via(EmployeeFocus.contact());
+
+    return findDepartment(company, deptName)                              // EitherPath: find dept
+        .focus(DepartmentFocus.manager(),                                 // AffinePath: get manager
+               new DirectoryError.NoManager(deptName))
+        .focus(EmployeeFocus.contact())                                   // FocusPath: navigate to contact
+        .via(contact -&gt; validateEmail(newEmail)                           // EitherPath: validate
+            .map(valid -&gt; new ContactInfo(contact.phone(), Optional.of(valid))))
+        .map(updatedContact -&gt;                                            // Reconstruct via optics
+            contactInDept.setAll(updatedContact, company));
+}
+</code></pre>
+<p><strong>Six lines of pipeline.</strong> Each line has one job. The error handling is implicit in the railway; if any step fails, subsequent steps are skipped and the error propagates to the caller.</p>
+<p>The helper methods are equally clean:</p>
+<pre><code class="language-java">EitherPath&lt;DirectoryError, Department&gt; findDepartment(Company company, String name) {
+    return company.departments().stream()
+        .filter(d -&gt; d.name().equals(name))
+        .findFirst()
+        .map(d -&gt; Path.&lt;DirectoryError, Department&gt;right(d))
+        .orElse(Path.left(new DirectoryError.DepartmentNotFound(name)));
+}
+
+EitherPath&lt;DirectoryError, String&gt; validateEmail(String email) {
+    if (email.contains("@") &amp;&amp; email.length() &gt;= 5) {
+        return Path.right(email);
+    }
+    return Path.left(
+        new DirectoryError.InvalidEmail(email, "Must contain @ and be at least 5 characters"));
+}
+</code></pre>
+<div id="admonition-alternative-traversal-based-lookup" class="admonition admonish-note" role="note" aria-labelledby="admonition-alternative-traversal-based-lookup-title">
+<div class="admonition-title">
+<div id="admonition-alternative-traversal-based-lookup-title">
+<p>Alternative: Traversal-Based Lookup</p>
+</div>
+<a class="admonition-anchor-link" href="effect/capstone_focus_effect.html#admonition-alternative-traversal-based-lookup"></a>
+</div>
+<div>
+<p>The <code>findDepartment</code> helper uses a plain Java stream to search by name. You could also express
+this with a filtered traversal:</p>
+<pre><code class="language-java">EitherPath&lt;DirectoryError, Department&gt; findDepartment(Company company, String name) {
+    return CompanyFocus.departments()
+        .filter(d -&gt; d.name().equals(name))
+        .toMaybePath(company)
+        .toEitherPath(new DirectoryError.DepartmentNotFound(name));
+}
+</code></pre>
+<p>Both approaches produce the same result. The choice comes down to what you are navigating:</p>
+<div class="table-wrapper"><table><thead><tr><th>Approach</th><th>Favour when</th></tr></thead><tbody>
+<tr><td><strong>Stream lookup</strong></td><td>The search is value-based (matching on a name, ID, or other runtime data). The stream idiom makes the "find first" intent obvious and is familiar to all Java developers.</td></tr>
+<tr><td><strong>Filtered traversal</strong></td><td>The access pattern is structural and reusable. If <code>departments().filter(...)</code> is a path you compose with other optics (e.g., further navigating into the matched department's staff list), a traversal keeps the entire chain in the optics domain.</td></tr>
+</tbody></table>
+</div>
+<p>As a rule of thumb: use optics for <em>where</em> the data lives (structure), and streams or effects for <em>which</em> data you want (queries).</p>
+</div>
+</div>
+<hr />
+<h2 id="what-happened"><a class="header" href="#what-happened">What Happened</a></h2>
+<p>The railway diagram for this pipeline:</p>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Success</b> ═══●══════════════●════════════════●══════════●══════════●═══▶  Company</span>
+    <span style="color:#4CAF50">       findDept    focus(manager)  focus(contact)  via       map</span>
+    <span style="color:#4CAF50">                                                (validate) (setAll)</span>
+                         ╲
+                          ╲  absent: NoManager
+                           ╲
+    <span style="color:#F44336"><b>Failure</b> ──●───────────────●────────────────────────────●──────────────▶  DirectoryError</span>
+    <span style="color:#F44336">    DeptNotFound    NoManager                   InvalidEmail</span>
+</pre>
+<p>Let's trace what the pipeline does, step by step:</p>
+<div class="table-wrapper"><table><thead><tr><th>Step</th><th>Operator</th><th>What Happens</th></tr></thead><tbody>
+<tr><td><code>findDepartment(...)</code></td><td>Entry point</td><td>Returns <code>Right(dept)</code> or <code>Left(DepartmentNotFound)</code></td></tr>
+<tr><td><code>.focus(DepartmentFocus.manager(), ...)</code></td><td>AffinePath focus</td><td>Extracts the manager from the department. If <code>Optional.empty()</code>, switches to failure track with <code>NoManager</code></td></tr>
+<tr><td><code>.focus(EmployeeFocus.contact())</code></td><td>FocusPath focus</td><td>Extracts the <code>ContactInfo</code> from the manager. Always succeeds (the field is required)</td></tr>
+<tr><td><code>.via(contact -&gt; validateEmail(...).map(...))</code></td><td>Effect chain</td><td>Validates the new email. If invalid, switches to failure. If valid, builds an updated <code>ContactInfo</code></td></tr>
+<tr><td><code>.map(updatedContact -&gt; contactInDept.setAll(...))</code></td><td>Green track transform</td><td>Reconstructs the <code>Company</code> using the composed optics path</td></tr>
+</tbody></table>
+</div>
+<p>Three different optic types (<code>AffinePath</code>, <code>FocusPath</code>, and plain <code>map</code>) combine seamlessly within the same effect pipeline. The types guide you: <code>focus()</code> with an <code>AffinePath</code> requires an error argument; <code>focus()</code> with a <code>FocusPath</code> does not.</p>
+<hr />
+<h2 id="the-two-directions"><a class="header" href="#the-two-directions">The Two Directions</a></h2>
+<p>This capstone uses both bridging directions described in <a href="effect/focus_integration.html">Focus-Effect Integration</a>:</p>
+<p><strong>Effects → Optics</strong> (the <code>focus()</code> calls): You are already in an <code>EitherPath</code> pipeline and need to navigate into the contained value's structure. The <code>focus()</code> method applies an optic to the success track value.</p>
+<pre><code class="language-java">// Already in an effect; drill into the contained Department
+eitherPath.focus(DepartmentFocus.manager(), errorIfAbsent)
+</code></pre>
+<p><strong>Optics → Effects</strong> (the entry point): You start with concrete data and need to enter the effect domain. The <code>findDepartment</code> helper uses <code>Path.right(...)</code> and <code>Path.left(...)</code> to lift values into <code>EitherPath</code>.</p>
+<pre><code class="language-java">// Start with a raw value; lift into the effect domain
+Path.&lt;DirectoryError, Department&gt;right(department)
+</code></pre>
+<hr />
+<h2 id="key-takeaways"><a class="header" href="#key-takeaways">Key Takeaways</a></h2>
+<div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
+<div class="admonition-title">
+<div id="admonition-key-takeaways-title">
+<p>Key Takeaways</p>
+</div>
+<a class="admonition-anchor-link" href="effect/capstone_focus_effect.html#admonition-key-takeaways"></a>
+</div>
+<div>
+<ul>
+<li><strong>Effects and optics solve different problems.</strong> Effects handle "what might go wrong" (absence, failure, validation). Optics handle "where is the data" (nested fields, optional values). Together, they cover both dimensions in a single pipeline.</li>
+<li><strong><code>focus()</code> with <code>AffinePath</code> requires an error.</strong> When the optic might not find a value (optional fields, sum type variants), you must supply the error that goes on the failure track. This makes the absent case explicit rather than hidden.</li>
+<li><strong><code>focus()</code> with <code>FocusPath</code> always succeeds.</strong> When the field is guaranteed to exist (a required record component), no error is needed. The type system enforces this distinction.</li>
+<li><strong>The before/after difference is structural, not cosmetic.</strong> The imperative version mixes searching, checking, validating, and rebuilding in one block. The HKJ version gives each concern its own pipeline step, connected by the railway's automatic error propagation.</li>
+</ul>
+</div>
+</div>
+<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="effect/capstone_focus_effect.html#admonition-see-also"></a>
+</div>
+<div>
+<ul>
+<li><a href="effect/focus_integration.html">Focus-Effect Integration</a> - Complete bridging guide between optics and effects</li>
+<li><a href="effect/effect_path_overview.html">Effect Path Overview</a> - The railway model and operator diagrams</li>
+<li><a href="effect/../optics/focus_dsl.html">Focus DSL</a> - Full guide to Focus paths and navigation</li>
+<li><a href="effect/../transformers/archetypes.html">Stack Archetypes</a> - Named patterns for common effect stacks</li>
+</ul>
+</div>
+</div>
+<hr />
+<p><strong>Previous:</strong> <a href="effect/focus_integration.html">Focus-Effect Integration</a>
 <strong>Next:</strong> <a href="effect/patterns.html">Patterns and Recipes</a></p>
 <div style="break-before: page; page-break-before: always;"></div><style>
 .mdbook-alerts {
@@ -11618,6 +12020,7 @@ Integer result = countdown(1_000_000).run();  // completes without overflow
 <li><strong>ReaderT</strong> – Threads environment dependencies through effectful computations. Combine dependency injection with async operations or error handling.</li>
 <li><strong>StateT</strong> – Manages state within effectful computations. Track state changes across async boundaries or error-handling paths.</li>
 </ul>
+<p>See also <a href="transformers/../effect/capstone_focus_effect.html">Capstone: Effects Meet Optics</a> for a complete example combining effect paths with optics in a single pipeline.</p>
 </div>
 </div>
 <hr />
@@ -31649,16 +32052,16 @@ Budget items (≤£100): 4 items
   │                                                             │
   └─────────────────────────────────────────────────────────────┘
 
-                    ┌─────────────────────┐
-                    │   Pair&lt;Index, A&gt;    │
-                    │  ┌───────┬────────┐ │
-                    │  │ Index │ Value  │ │
-                    │  ├───────┼────────┤ │
-                    │  │   0   │ Laptop │ │
-                    │  │   1   │ Mouse  │ │
-|  │   2   │ Keyboard │ │
-                    │  └───────┴────────┘ │
-                    └─────────────────────┘
+                    ┌───────────────────────┐
+                    │   Pair&lt;Index, A&gt;      │
+                    │  ┌───────┬──────────┐ │
+                    │  │ Index │ Value    │ │
+                    │  ├───────┼──────────┤ │
+                    │  │   0   │ Laptop   │ │
+                    │  │   1   │ Mouse    │ │
+                    │  │   2   │ Keyboard │ │
+                    │  └───────┴──────────┘ │
+                    └───────────────────────┘
 </code></pre>
 <p>Archimedes understood that position is power. With the right fulcrum point, a lever can move the world. Similarly, with the right index, an optic can transform data in ways that value-only access cannot. Position-based discounts, numbered lists, audit trails showing <em>which</em> field changed: all require knowing <em>where</em> you are, not just <em>what</em> you have.</p>
 <hr />
@@ -40170,7 +40573,7 @@ record Data(Kind&lt;UnknownKind.Witness, String&gt; value) {}
 </code></pre>
 <p>To enable automatic traversal for unknown types, add <code>@TraverseField</code> with the appropriate configuration.</p>
 <hr />
-<h2 id="key-takeaways"><a class="header" href="#key-takeaways">Key Takeaways</a></h2>
+<h2 id="key-takeaways-1"><a class="header" href="#key-takeaways-1">Key Takeaways</a></h2>
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
 <div id="admonition-key-takeaways-title">
@@ -42870,6 +43273,7 @@ try {
 <li><strong>Cookbook</strong> – Copy-paste solutions for frequent problems. Updating nested optionals, modifying specific sum type variants, bulk collection operations, configuration management.</li>
 <li><strong>Auditing Complex Data</strong> – A production-ready example generating audit trails. Track every change to a complex nested structure with full before/after comparisons.</li>
 </ul>
+<p>See also <a href="optics/../effect/capstone_focus_effect.html">Capstone: Effects Meet Optics</a> for a complete example combining optics with effect paths in a single pipeline.</p>
 </div>
 </div>
 <hr />
