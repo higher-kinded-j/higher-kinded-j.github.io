@@ -406,6 +406,73 @@ is unaffected.</p>
 <li>You need to accumulate results: use <code>WriterPath</code></li>
 <li>The environment is only needed in one place: just pass it directly</li>
 </ul>
+<h3 id="readerpath-vs-spring-dependency-injection"><a class="header" href="#readerpath-vs-spring-dependency-injection">ReaderPath vs Spring Dependency Injection</a></h3>
+<p>If you use Spring Boot, you already have a dependency injection mechanism.
+<code>ReaderPath</code> solves a similar problem in a different way. Understanding
+where each approach shines helps you choose the right tool.</p>
+<div class="table-wrapper"><table><thead><tr><th>Aspect</th><th>Spring DI (<code>@Autowired</code> / constructor)</th><th><code>ReaderPath&lt;R, A&gt;</code></th></tr></thead><tbody>
+<tr><td><strong>Provide a dependency</strong></td><td>Container wires it at startup</td><td><code>.run(environment)</code> at the call-site edge</td></tr>
+<tr><td><strong>Access a dependency</strong></td><td>Field or constructor parameter</td><td><code>ReaderPath.ask()</code> / <code>ReaderPath.asks(R::field)</code></td></tr>
+<tr><td><strong>Scope</strong></td><td>Container-managed (singleton, request, etc.)</td><td>Explicit; the caller decides what to pass</td></tr>
+<tr><td><strong>Swapping for tests</strong></td><td><code>@MockBean</code>, <code>@TestConfiguration</code>, or a test profile</td><td>Pass a different environment value</td></tr>
+<tr><td><strong>Composition</strong></td><td>Inject service A into service B</td><td><code>readerA.via(a -&gt; readerB)</code> chains readers</td></tr>
+<tr><td><strong>Runtime variation</strong></td><td>Profiles, <code>@ConditionalOnProperty</code></td><td><code>reader.local(env -&gt; env.withFeatureFlag(true))</code></td></tr>
+</tbody></table>
+</div>
+<p><strong>When Spring DI is the better fit:</strong></p>
+<ul>
+<li>Application-scoped singletons (database pools, HTTP clients, caches)</li>
+<li>Framework-managed lifecycle (startup, shutdown hooks)</li>
+<li>Wiring that is fixed for the lifetime of the application</li>
+</ul>
+<p><strong>When ReaderPath adds value:</strong></p>
+<ul>
+<li>Per-request or per-tenant context that varies at runtime (tenant ID,
+correlation ID, feature flags, auth principal)</li>
+<li>Pure computation pipelines where you want to defer the environment
+until the last moment</li>
+<li>Testing without a Spring context; just pass a record</li>
+</ul>
+<p><strong>Example: per-request context</strong></p>
+<p>With Spring DI alone, per-request context typically requires a
+<code>@RequestScope</code> bean or <code>ThreadLocal</code>. With <code>ReaderPath</code>, the context
+flows through the computation explicitly:</p>
+<pre><code class="language-java">// Define the request-scoped environment
+record RequestEnv(String tenantId, String correlationId, DataSource ds) {}
+
+// Service method: no framework annotations needed
+public ReaderPath&lt;RequestEnv, List&lt;Order&gt;&gt; ordersForTenant() {
+    return ReaderPath.asks(RequestEnv::tenantId)
+        .zipWith(ReaderPath.asks(RequestEnv::ds), (tenantId, ds) -&gt; queryOrders(ds, tenantId));
+}
+
+// At the controller edge, provide the environment once
+@GetMapping("/orders")
+public List&lt;Order&gt; getOrders(HttpServletRequest request) {
+    RequestEnv env = new RequestEnv(
+        request.getHeader("X-Tenant-Id"),
+        request.getHeader("X-Correlation-Id"),
+        dataSource
+    );
+    return ordersForTenant().run(env);
+}
+</code></pre>
+<p>The computation is pure and testable; the environment is assembled once
+at the boundary.</p>
+<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+</div>
+<div>
+<ul>
+<li><a href="../spring/spring_boot_integration.html">Spring Boot Integration</a> - Using Effect Path types as controller return values</li>
+<li><a href="../transformers/readert_transformer.html">ReaderT Transformer</a> - The raw transformer behind ReaderPath</li>
+</ul>
+</div>
+</div>
 <hr />
 <h2 id="statepath-computation-with-memory"><a class="header" href="#statepath-computation-with-memory">StatePath: Computation with Memory</a></h2>
 <p><code>StatePath&lt;S, A&gt;</code> wraps <code>State&lt;S, A&gt;</code>, representing a computation that
@@ -672,12 +739,12 @@ logs that accumulate. By making them explicit in the type system, you
 gain the same composability and predictability that the core Path types
 provide for error handling.</p>
 <p>The systems remain subtle and pervasive, but no longer tyrannical.</p>
-<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div id="admonition-see-also-1" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-1-title">
 <div class="admonition-title">
-<div id="admonition-see-also-title">
+<div id="admonition-see-also-1-title">
 <p>See Also</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+<a class="admonition-anchor-link" href="#admonition-see-also-1"></a>
 </div>
 <div>
 <ul>
