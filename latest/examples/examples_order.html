@@ -293,19 +293,22 @@
 }
 </code></pre>
 <h3 id="forpath-comprehensions"><a class="header" href="#forpath-comprehensions">ForPath Comprehensions</a></h3>
-<p>Clean, readable workflow composition with <code>ForPath</code>:</p>
-<pre><code class="language-java">public EitherPath&lt;OrderError, OrderResult&gt; processOrder(OrderRequest request) {
-    return ForPath.forPath(validateRequest(request))
-        .bind(validated -&gt; lookupCustomer(validated.customerId()))
-        .bind((validated, customer) -&gt; reserveInventory(validated.lines()))
-        .bind((validated, customer, reservation) -&gt;
-            applyDiscounts(validated, customer))
-        .bind((validated, customer, reservation, discount) -&gt;
-            processPayment(customer, discount.finalAmount()))
-        .bind((validated, customer, reservation, discount, payment) -&gt;
-            createShipment(validated, reservation))
-        .map((validated, customer, reservation, discount, payment, shipment) -&gt;
-            new OrderResult(validated.orderId(), shipment, payment));
+<p>The entire workflow composes into a single flat <code>ForPath</code> comprehension (8 steps, well within the arity-12 limit):</p>
+<pre><code class="language-java">public EitherPath&lt;OrderError, OrderResult&gt; process(OrderRequest request) {
+    var orderId = OrderId.generate();
+    var customerId = new CustomerId(request.customerId());
+
+    return ForPath.from(validateShippingAddress(request.shippingAddress()))  // 1. address
+        .from(validAddress -&gt; lookupAndValidateCustomer(customerId))         // 2. customer
+        .from(t -&gt; buildValidatedOrder(orderId, request, t._2(), t._1()))    // 3. order
+        .from(t -&gt; reserveInventory(t._3().orderId(), t._3().lines()))       // 4. reservation
+        .from(t -&gt; applyDiscounts(t._3(), t._2()))                           // 5. discount
+        .from(t -&gt; processPayment(t._3(), t._5()))                           // 6. payment
+        .from(t -&gt; createShipment(t._3(), t._1()))                           // 7. shipment
+        .from(t -&gt; sendNotifications(t._3(), t._2(), t._5()))                // 8. notification
+        .yield((validAddress, customer, order, reservation, discount,
+                payment, shipment, notification) -&gt;
+            buildOrderResult(order, discount, payment, shipment, notification));
 }
 </code></pre>
 <h3 id="resilience-patterns"><a class="header" href="#resilience-patterns">Resilience Patterns</a></h3>

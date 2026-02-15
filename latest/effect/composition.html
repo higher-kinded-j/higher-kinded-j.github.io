@@ -598,35 +598,35 @@ deferred. Be intentional about when you cross this boundary.</p>
 conversion paths.</p>
 <hr />
 <h2 id="a-realistic-example"><a class="header" href="#a-realistic-example">A Realistic Example</a></h2>
-<p>Bringing the patterns together:</p>
+<p>Bringing the patterns together with a <code>ForPath</code> comprehension, where every
+intermediate value stays in scope through the accumulated tuple:</p>
 <pre><code class="language-java">public class OrderService {
     private final UserRepository users;
     private final InventoryService inventory;
     private final PaymentService payments;
 
     public EitherPath&lt;OrderError, Order&gt; placeOrder(OrderRequest request) {
-        // Validate request (fail-fast)
-        return validateRequest(request)
-            .peek(v -&gt; log.debug("Request validated"))
+        return ForPath.from(validateRequest(request)
+                .peek(v -&gt; log.debug("Request validated")))
 
             // Get user (convert Maybe → Either)
-            .via(valid -&gt; Path.maybe(users.findById(valid.userId()))
-                .toEitherPath(() -&gt; new OrderError.UserNotFound(valid.userId())))
-            .peek(user -&gt; log.debug("Found user: {}", user.getId()))
+            .from(valid -&gt; Path.maybe(users.findById(valid.userId()))
+                .toEitherPath(() -&gt; new OrderError.UserNotFound(valid.userId()))
+                .peek(user -&gt; log.debug("Found user: {}", user.getId())))
 
             // Check inventory
-            .via(user -&gt; Path.either(inventory.check(request.items()))
+            .from(t -&gt; Path.either(inventory.check(request.items()))
                 .mapError(OrderError.InventoryError::new))
 
-            // Process payment
-            .via(available -&gt; Path.tryOf(() -&gt;
-                    payments.charge(user, available.total()))
-                .toEitherPath(OrderError.PaymentFailed::new))
-            .peek(payment -&gt; log.info("Payment processed: {}", payment.getId()))
+            // Process payment (user = t._2(), available = t._3())
+            .from(t -&gt; Path.tryOf(() -&gt;
+                    payments.charge(t._2(), t._3().total()))
+                .toEitherPath(OrderError.PaymentFailed::new)
+                .peek(payment -&gt; log.info("Payment processed: {}", payment.getId())))
 
             // Create order
-            .via(payment -&gt; Path.right(
-                createOrder(user, request.items(), payment)));
+            .yield((valid, user, available, payment) -&gt;
+                createOrder(user, request.items(), payment));
     }
 
     private EitherPath&lt;OrderError, ValidatedRequest&gt; validateRequest(
@@ -638,9 +638,10 @@ conversion paths.</p>
     }
 }
 </code></pre>
-<p>The structure is visible: validate, fetch, check, charge, create. Errors
-propagate with appropriate types. Logging traces the happy path. Each
-conversion (<code>toEitherPath</code>, <code>mapError</code>) happens at a deliberate boundary.</p>
+<p>The structure is visible: validate, fetch, check, charge, create. All
+intermediate values are available in the <code>yield</code> by name. Errors propagate
+with appropriate types. Each conversion (<code>toEitherPath</code>, <code>mapError</code>)
+happens at a deliberate boundary.</p>
 <hr />
 <h2 id="common-mistakes"><a class="header" href="#common-mistakes">Common Mistakes</a></h2>
 <h3 id="mistake-1-using-via-for-independent-operations"><a class="header" href="#mistake-1-using-via-for-independent-operations">Mistake 1: <em>Using <code>via</code> for Independent Operations</em></a></h3>
@@ -695,7 +696,8 @@ Path.maybe(findUser(id))
 <hr />
 <h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Pattern</th><th>Method</th><th>When to Use</th></tr></thead><tbody>
-<tr><td>Sequential</td><td><code>via</code></td><td>Each step depends on the previous</td></tr>
+<tr><td>Sequential (flat)</td><td><code>ForPath</code></td><td>Multi-step pipelines needing previous values (up to 12 steps)</td></tr>
+<tr><td>Sequential</td><td><code>via</code></td><td>One-off chaining, conditional branching</td></tr>
 <tr><td>Sequential (ignore value)</td><td><code>then</code></td><td>Sequencing without data flow</td></tr>
 <tr><td>Independent</td><td><code>zipWith</code></td><td>Combine unrelated computations</td></tr>
 <tr><td>Parallel binary</td><td><code>parZipWith</code></td><td>Two independent computations</td></tr>

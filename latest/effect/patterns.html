@@ -413,7 +413,8 @@ public class UserService {
 <p>The conversion happens at the layer boundary. Repository callers get <code>Maybe</code>;
 service callers get <code>Either</code> with meaningful errors.</p>
 <h3 id="chained-service-calls"><a class="header" href="#chained-service-calls">Chained Service Calls</a></h3>
-<p>When each step depends on the previous:</p>
+<p>When each step depends on previous results, use <code>ForPath</code> to keep all
+intermediate values in scope via the accumulated tuple:</p>
 <pre><code class="language-java">public class OrderService {
     private final UserService users;
     private final InventoryService inventory;
@@ -421,19 +422,20 @@ service callers get <code>Either</code> with meaningful errors.</p>
 
     public EitherPath&lt;OrderError, Order&gt; placeOrder(
             String userId, List&lt;Item&gt; items) {
-        return users.getById(userId)
-            .mapError(OrderError::fromUserError)
-            .via(user -&gt; inventory.reserve(items)
+        return ForPath.from(users.getById(userId)
+                .mapError(OrderError::fromUserError))
+            .from(user -&gt; inventory.reserve(items)
                 .mapError(OrderError::fromInventoryError))
-            .via(reservation -&gt; payments.charge(user, reservation.total())
+            .from(t -&gt; payments.charge(t._1(), t._2().total())  // user, reservation
                 .mapError(OrderError::fromPaymentError))
-            .via(payment -&gt; Path.right(
-                createOrder(user, items, payment)));
+            .yield((user, reservation, payment) -&gt;
+                createOrder(user, items, payment));
     }
 }
 </code></pre>
 <p>Each <code>mapError</code> translates the sub-service error into the order domain.
-The final <code>Order</code> is created only if all steps succeed.</p>
+The <code>yield</code> destructures all three values by name, and the <code>Order</code> is
+created only if all steps succeed.</p>
 <h3 id="service-with-fallbacks"><a class="header" href="#service-with-fallbacks">Service with Fallbacks</a></h3>
 <p>When multiple sources can satisfy a request:</p>
 <pre><code class="language-java">public class ConfigService {
