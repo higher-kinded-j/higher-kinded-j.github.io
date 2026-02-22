@@ -350,6 +350,24 @@ Kind&lt;IdKind.Witness, String&gt; result =
 <p>At higher arities, the tuple-style <code>yield</code> is especially convenient for accessing accumulated values by position:</p>
 <pre><code class="language-java">.yield(t -&gt; t._6() + " (score: " + t._4() + ")")
 </code></pre>
+<div id="admonition-consider-forstate-for-complex-workflows" class="admonition admonish-tip" role="note" aria-labelledby="admonition-consider-forstate-for-complex-workflows-title">
+<div class="admonition-title">
+<div id="admonition-consider-forstate-for-complex-workflows-title">
+<p>Consider ForState for complex workflows</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-consider-forstate-for-complex-workflows"></a>
+</div>
+<div>
+<p>As the number of bindings grows, tuple positions like <code>t._3()</code> and <code>t._4()</code> become hard to track. For workflows with more than two or three steps, <strong><a href="forstate_comprehension.html">ForState</a></strong> provides named field access through records and lenses, eliminating positional errors entirely:</p>
+<pre><code class="language-java">// ForState: every value has a name
+ForState.withState(monad, monad.of(ctx))
+    .fromThen(ctx -&gt; lookupAddress(ctx.user()),   addressLens)
+    .fromThen(ctx -&gt; calculateShipping(ctx.address()), shippingLens)
+    .yield(ctx -&gt; buildReceipt(ctx.user(), ctx.address(), ctx.shippingCents()));
+</code></pre>
+<p>See <a href="forstate_comprehension.html">ForState: Named State Comprehensions</a> for a full comparison and API reference.</p>
+</div>
+</div>
 <h2 id="core-operations-of-the-for-builder"><a class="header" href="#core-operations-of-the-for-builder">Core Operations of the <code>For</code> Builder</a></h2>
 <p>A for-comprehension is built by chaining four types of operations:</p>
 <h3 id="1-generators-from"><a class="header" href="#1-generators-from">1. Generators: <code>.from()</code></a></h3>
@@ -563,48 +581,79 @@ List&lt;Player&gt; updated = IdKindHelper.ID.unwrap(result);
         .toList();
 </code></pre>
 <hr />
-<h2 id="stateful-updates-with-forstate"><a class="header" href="#stateful-updates-with-forstate">Stateful Updates with ForState</a></h2>
-<p><code>ForState</code> provides a fluent API for threading state updates through a workflow using lenses. This is particularly useful for building up complex state transformations step by step.</p>
-<pre><code class="language-java">record WorkflowContext(
-    String orderId,
-    boolean validated,
-    boolean inventoryChecked,
-    String confirmationId
-) {}
+<h2 id="bridging-to-forstate-with-tostate"><a class="header" href="#bridging-to-forstate-with-tostate">Bridging to ForState with <code>toState()</code></a></h2>
+<p>When a workflow starts with a few monadic steps (fetching data, computing values) and then needs to thread named state through a series of updates, <code>toState()</code> lets you transition seamlessly from <code>For</code> into <code>ForState</code> mid-comprehension. The accumulated values become the constructor arguments for your state record, and from that point on you work with named fields and lenses instead of tuple positions.</p>
+<pre><code class="language-java">record Dashboard(String user, int count, boolean ready) {}
 
-Lens&lt;WorkflowContext, Boolean&gt; validatedLens = Lens.of(
-    WorkflowContext::validated,
-    (ctx, v) -&gt; new WorkflowContext(ctx.orderId(), v, ctx.inventoryChecked(), ctx.confirmationId())
-);
+Lens&lt;Dashboard, Boolean&gt; readyLens = Lens.of(
+    Dashboard::ready, (d, v) -&gt; new Dashboard(d.user(), d.count(), v));
+Lens&lt;Dashboard, Integer&gt; countLens = Lens.of(
+    Dashboard::count, (d, v) -&gt; new Dashboard(d.user(), v, d.ready()));
 
-Lens&lt;WorkflowContext, Boolean&gt; inventoryLens = Lens.of(
-    WorkflowContext::inventoryChecked,
-    (ctx, c) -&gt; new WorkflowContext(ctx.orderId(), ctx.validated(), c, ctx.confirmationId())
-);
-
-Lens&lt;WorkflowContext, String&gt; confirmationLens = Lens.of(
-    WorkflowContext::confirmationId,
-    (ctx, id) -&gt; new WorkflowContext(ctx.orderId(), ctx.validated(), ctx.inventoryChecked(), id)
-);
-
-var initialContext = new WorkflowContext("ORD-123", false, false, null);
-
-Kind&lt;IdKind.Witness, WorkflowContext&gt; result =
-    ForState.withState(idMonad, Id.of(initialContext))
-        .update(validatedLens, true)
-        .update(inventoryLens, true)
-        .update(confirmationLens, "CONF-456")
+// Start with For (value accumulation), then switch to ForState (named state)
+Kind&lt;IdKind.Witness, Dashboard&gt; result =
+    For.from(idMonad, Id.of("Alice"))               // a = "Alice"
+        .from(name -&gt; Id.of(name.length()))          // b = 5
+        .toState((name, count) -&gt;                    // bridge: construct record
+            new Dashboard(name, count, false))
+        .modify(countLens, c -&gt; c * 10)              // named lens operation
+        .update(readyLens, true)
         .yield();
 
-WorkflowContext finalCtx = IdKindHelper.ID.unwrap(result);
-// finalCtx: validated=true, inventoryChecked=true, confirmationId="CONF-456"
+// Dashboard("Alice", 50, true)
 </code></pre>
-<h3 id="modifying-state-based-on-current-values"><a class="header" href="#modifying-state-based-on-current-values">Modifying State Based on Current Values</a></h3>
-<p>Use <code>modify()</code> to update state based on the current value:</p>
-<pre><code class="language-java">ForState.withState(idMonad, Id.of(context))
-    .modify(scoreLens, score -&gt; score + bonus)
-    .yield();
+<p>The <code>toState()</code> method is available at every arity (1 through 12) in both <strong>spread-style</strong> and <strong>tuple-style</strong>:</p>
+<pre><code class="language-java">// Spread-style: arguments unpacked
+.toState((name, count) -&gt; new Dashboard(name, count, false))
+
+// Tuple-style: single tuple argument
+.toState(t -&gt; new Dashboard(t._1(), t._2(), false))
 </code></pre>
+<p>When the comprehension uses a <code>MonadZero</code> (like <code>Maybe</code> or <code>List</code>), the returned builder is a <code>ForState.FilterableSteps</code>, preserving access to <code>when()</code> and <code>matchThen()</code> guards:</p>
+<pre><code class="language-java">Kind&lt;MaybeKind.Witness, Dashboard&gt; result =
+    For.from(maybeMonad, MAYBE.just("Alice"))
+        .toState(name -&gt; new Dashboard(name, 0, false))
+        .when(d -&gt; d.user().length() &gt; 3)   // guard still available
+        .update(readyLens, true)
+        .yield();
+
+// Just(Dashboard("Alice", 0, true))
+</code></pre>
+<div id="admonition-when-to-use-tostate" class="admonition admonish-tip" role="note" aria-labelledby="admonition-when-to-use-tostate-title">
+<div class="admonition-title">
+<div id="admonition-when-to-use-tostate-title">
+<p>When to use toState()</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-when-to-use-tostate"></a>
+</div>
+<div>
+<p>Use <code>toState()</code> when your workflow has a natural two-phase shape: <strong>gather</strong> values with <code>For</code> (fetching, computing, filtering), then <strong>build and refine</strong> a structured record with <code>ForState</code> (lens updates, zooming, traversals). This gives you the best of both worlds: concise tuple-based accumulation for the first few steps, and named field access for the rest.</p>
+</div>
+</div>
+<h2 id="stateful-updates-with-forstate"><a class="header" href="#stateful-updates-with-forstate">Stateful Updates with ForState</a></h2>
+<p>For workflows with more than a few steps, tuple-based access becomes fragile. <code>ForState</code> solves this by threading a <strong>named record</strong> through each step, with <a href="../optics/lenses.html">lenses</a> providing type-safe field access. Every intermediate value has a name, not a position.</p>
+<pre><code class="language-java">// ForState: named fields instead of tuple positions
+ForState.withState(monad, monad.of(initialContext))
+    .fromThen(ctx -&gt; validateOrder(ctx.orderId()),   validatedLens)
+    .fromThen(ctx -&gt; processPayment(ctx),            confirmationLens)
+    .when(ctx -&gt; ctx.totalCents() &gt; 0)               // guard (MonadZero)
+    .zoom(addressLens)                                // narrow scope
+        .update(cityLens, "SPRINGFIELD")
+    .endZoom()
+    .yield(ctx -&gt; buildReceipt(ctx.user(), ctx.confirmationId()));
+</code></pre>
+<p>ForState supports the full range of comprehension operations: pure updates (<code>update</code>, <code>modify</code>), effectful operations (<code>from</code>, <code>fromThen</code>), guards (<code>when</code>), pattern matching (<code>matchThen</code>), bulk traversal (<code>traverse</code>), and scope narrowing (<code>zoom</code>/<code>endZoom</code>).</p>
+<div id="admonition-dedicated-chapter" class="admonition admonish-info" role="note" aria-labelledby="admonition-dedicated-chapter-title">
+<div class="admonition-title">
+<div id="admonition-dedicated-chapter-title">
+<p>Dedicated Chapter</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-dedicated-chapter"></a>
+</div>
+<div>
+<p>For a complete API reference, side-by-side comparison with <code>For</code>, and guidance on when to use each comprehension style, see <strong><a href="forstate_comprehension.html">ForState: Named State Comprehensions</a></strong>.</p>
+</div>
+</div>
 <hr />
 <h2 id="position-aware-traversals-with-forindexed"><a class="header" href="#position-aware-traversals-with-forindexed">Position-Aware Traversals with ForIndexed</a></h2>
 <p><code>ForIndexed</code> extends traversal comprehensions to include index/position awareness, enabling transformations that depend on element position within the structure.</p>
@@ -670,7 +719,8 @@ ForIndexed.overIndexed(indexedPlayers, players, idApplicative)
 </div>
 <div>
 <ul>
-<li><a href="../effect/forpath_comprehension.html">ForPath Comprehension</a> - For-comprehensions that work directly with Effect Path types</li>
+<li><a href="forstate_comprehension.html">ForState: Named State Comprehensions</a> -- The recommended pattern for complex workflows with named field access</li>
+<li><a href="../effect/forpath_comprehension.html">ForPath Comprehension</a> -- For-comprehensions that work directly with Effect Path types</li>
 </ul>
 </div>
 </div>
@@ -689,7 +739,7 @@ ForIndexed.overIndexed(indexedPlayers, players, idApplicative)
 </div>
 </div>
 <hr />
-<p><strong>Previous:</strong> <a href="natural_transformation.html">Natural Transformation</a> | <strong>Next:</strong> <a href="abstraction_levels.html">Choosing Your Abstraction Level</a></p>
+<p><strong>Previous:</strong> <a href="natural_transformation.html">Natural Transformation</a> | <strong>Next:</strong> <a href="forstate_comprehension.html">ForState: Named State Comprehensions</a></p>
 
                     </main>
 
@@ -699,7 +749,7 @@ ForIndexed.overIndexed(indexedPlayers, players, idApplicative)
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../functional/abstraction_levels.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../functional/forstate_comprehension.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -713,7 +763,7 @@ ForIndexed.overIndexed(indexedPlayers, players, idApplicative)
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../functional/abstraction_levels.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../functional/forstate_comprehension.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

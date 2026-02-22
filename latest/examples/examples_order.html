@@ -292,25 +292,36 @@
     record ShipmentFailed(String carrier, String reason) implements OrderError {}
 }
 </code></pre>
-<h3 id="forpath-comprehensions"><a class="header" href="#forpath-comprehensions">ForPath Comprehensions</a></h3>
-<p>The entire workflow composes into a single flat <code>ForPath</code> comprehension (8 steps, well within the arity-12 limit):</p>
+<h3 id="for--tostate--forstate-comprehension"><a class="header" href="#for--tostate--forstate-comprehension">For → toState → ForState Comprehension</a></h3>
+<p>The workflow uses <code>For</code> to gather initial values, then bridges to <code>ForState</code> via <code>toState()</code> for named field access through the remaining steps:</p>
 <pre><code class="language-java">public EitherPath&lt;OrderError, OrderResult&gt; process(OrderRequest request) {
     var orderId = OrderId.generate();
     var customerId = new CustomerId(request.customerId());
+    EitherMonad&lt;OrderError&gt; monad = EitherMonad.instance();
 
-    return ForPath.from(validateShippingAddress(request.shippingAddress()))  // 1. address
-        .from(validAddress -&gt; lookupAndValidateCustomer(customerId))         // 2. customer
-        .from(t -&gt; buildValidatedOrder(orderId, request, t._2(), t._1()))    // 3. order
-        .from(t -&gt; reserveInventory(t._3().orderId(), t._3().lines()))       // 4. reservation
-        .from(t -&gt; applyDiscounts(t._3(), t._2()))                           // 5. discount
-        .from(t -&gt; processPayment(t._3(), t._5()))                           // 6. payment
-        .from(t -&gt; createShipment(t._3(), t._1()))                           // 7. shipment
-        .from(t -&gt; sendNotifications(t._3(), t._2(), t._5()))                // 8. notification
-        .yield((validAddress, customer, order, reservation, discount,
-                payment, shipment, notification) -&gt;
-            buildOrderResult(order, discount, payment, shipment, notification));
+    Kind&lt;EitherKind.Witness&lt;OrderError&gt;, OrderResult&gt; result =
+        // Phase 1 (Gather): accumulate address, customer, order via For
+        For.from(monad, lift(validateShippingAddress(request.shippingAddress())))
+            .from(addr -&gt; lift(lookupAndValidateCustomer(customerId)))
+            .from(t -&gt; lift(buildValidatedOrder(orderId, request, t._2(), t._1())))
+
+            // Bridge: construct named state from gathered values
+            .toState((address, customer, order) -&gt;
+                ProcessingState.initial(address, customer, order))
+
+            // Phase 2 (Enrich): named field access via ForState + lenses
+            .fromThen(s -&gt; lift(reserveInventory(s.order())),        reservationLens)
+            .fromThen(s -&gt; lift(applyDiscounts(s.order(), s.customer())), discountLens)
+            .fromThen(s -&gt; lift(processPayment(s.order(), s.discount())), paymentLens)
+            .fromThen(s -&gt; lift(createShipment(s.order(), s.address())), shipmentLens)
+            .fromThen(s -&gt; lift(sendNotifications(s.order(), s.customer(), s.discount())),
+                notificationLens)
+            .yield(OrderWorkflow::toOrderResult);
+
+    return Path.either(EITHER.narrow(result));
 }
 </code></pre>
+<p>After <code>toState()</code>, every value is accessed by name (<code>s.order()</code>, <code>s.customer()</code>, <code>s.discount()</code>) rather than by tuple position (<code>t._3()</code>, <code>t._2()</code>, <code>t._5()</code>).</p>
 <h3 id="resilience-patterns"><a class="header" href="#resilience-patterns">Resilience Patterns</a></h3>
 <p>Built-in retry policies and timeouts for external service calls:</p>
 <pre><code class="language-java">private EitherPath&lt;OrderError, PaymentConfirmation&gt; processPaymentWithRetry(
