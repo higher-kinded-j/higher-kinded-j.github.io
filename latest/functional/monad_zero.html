@@ -257,7 +257,7 @@
 }
 
 </style>
-<h1 id="monadzero"><a class="header" href="#monadzero">MonadZero</a></h1>
+<h1 id="monadzero-filtering-in-monadic-chains"><a class="header" href="#monadzero-filtering-in-monadic-chains">MonadZero: Filtering in Monadic Chains</a></h1>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -275,8 +275,41 @@
 </ul>
 </div>
 </div>
-<p>The <code>MonadZero</code> is a more advanced type class that extends both <code>Monad</code> and <code>Alternative</code> to combine the power of monadic bind with choice operations. It includes the concept of a "zero" or "empty" element and is designed for monads that can represent failure, absence, or emptiness, allowing them to be used in filtering operations and alternative chains.</p>
-<p>The interface for MonadZero in hkj-api extends Monad and Alternative:</p>
+<h2 id="the-problem-no-way-to-filter-mid-chain"><a class="header" href="#the-problem-no-way-to-filter-mid-chain">The Problem: No Way to Filter Mid-Chain</a></h2>
+<p>You're building a for-comprehension that iterates over combinations of values, but you need to discard certain results mid-chain. With a plain <code>Monad</code>, there is no way to say "skip this iteration":</p>
+<pre><code class="language-java">// Without MonadZero: you must push filtering to the end and wrap in a conditional
+var result = For.from(monad, list1)
+    .from(a -&gt; list2)
+    .yield((a, b) -&gt; {
+        if ((a + b) % 2 != 0) {        // awkward: filtering inside yield
+            return a + " + " + b;
+        }
+        return null;                     // no clean way to discard
+    });
+</code></pre>
+<p>What you really want is a guard clause that eliminates unwanted paths <em>before</em> they reach the final projection.</p>
+<hr />
+<h2 id="the-solution-zero-and-when"><a class="header" href="#the-solution-zero-and-when">The Solution: <code>zero()</code> and <code>when()</code></a></h2>
+<p><strong><code>MonadZero</code></strong> extends both <code>Monad</code> and <code>Alternative</code>, adding a <code>zero()</code> element that acts as an absorbing value. When a computation produces <code>zero</code>, subsequent operations in the chain are skipped, exactly like multiplying by zero.</p>
+<pre><code>  For-comprehension with MonadZero:
+
+  list1: [1, 2, 3]  x  list2: [10, 20]
+
+  (1,10)  sum=11 odd? YES --&gt; yield "1 + 10 = Sum: 11"
+  (1,20)  sum=21 odd? YES --&gt; yield "1 + 20 = Sum: 21"
+  (2,10)  sum=12 odd? NO  --&gt; zero() (discarded)
+  (2,20)  sum=22 odd? NO  --&gt; zero() (discarded)
+  (3,10)  sum=13 odd? YES --&gt; yield "3 + 10 = Sum: 13"
+  (3,20)  sum=23 odd? YES --&gt; yield "3 + 20 = Sum: 23"
+</code></pre>
+<div id="admonition-interface-signature" class="admonition admonish-note" role="note" aria-labelledby="admonition-interface-signature-title">
+<div class="admonition-title">
+<div id="admonition-interface-signature-title">
+<p>Interface Signature</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-interface-signature"></a>
+</div>
+<div>
 <pre><code class="language-java">public interface MonadZero&lt;F&gt; extends Monad&lt;F&gt;, Alternative&lt;F&gt; {
     &lt;A&gt; Kind&lt;F, A&gt; zero();
 
@@ -286,34 +319,16 @@
     }
 }
 </code></pre>
-<h3 id="why-is-it-useful"><a class="header" href="#why-is-it-useful">Why is it useful?</a></h3>
-<p>A <code>Monad</code> provides a way to sequence computations within a context (<code>flatMap</code>, <code>map</code>, <code>of</code>). An <code>Alternative</code> provides choice and failure operations (<code>empty()</code>, <code>orElse()</code>). A <code>MonadZero</code> combines both:</p>
+</div>
+</div>
+<hr />
+<h2 id="filtering-in-for-comprehensions"><a class="header" href="#filtering-in-for-comprehensions">Filtering in For-Comprehensions</a></h2>
+<p>The most powerful application of <code>MonadZero</code> is the <code>.when()</code> clause in the <code>For</code> comprehension builder. The builder has two entry points:</p>
 <ul>
-<li><code>zero()</code>: Returns the "empty" or "zero" element for the monad (implements <code>empty()</code> from Alternative).</li>
-<li><code>orElse()</code>: Combines two alternatives (inherited from Alternative).</li>
-<li><code>guard()</code>: Conditional success helper (inherited from Alternative).</li>
+<li><code>For.from(monad, ...)</code> -- For any standard <code>Monad</code>.</li>
+<li><code>For.from(monadZero, ...)</code> -- An overloaded version that unlocks <code>.when(predicate)</code>.</li>
 </ul>
-<p>This <code>zero</code> element acts as an absorbing element in a monadic sequence, similar to how multiplying by zero results in zero. If a computation results in a <code>zero</code>, subsequent operations in the chain are typically skipped.</p>
-<p><code>MonadZero</code> is particularly useful for making for-comprehensions more powerful. When you are working with a monad that has a <code>MonadZero</code> instance, you can use a <code>when()</code> clause to filter results within the comprehension.</p>
-<p><strong>Key Implementations in this Project:</strong></p>
-<ul>
-<li>For <strong>List</strong>, <code>zero()</code> returns an empty list <code>[]</code>.</li>
-<li>For <strong>Maybe</strong>, <code>zero()</code> returns <code>Nothing</code>.</li>
-<li>For <strong>Optional</strong>, <code>zero()</code> returns <code>Optional.empty()</code>.</li>
-</ul>
-<h3 id="primary-uses"><a class="header" href="#primary-uses">Primary Uses</a></h3>
-<p>The main purpose of <code>MonadZero</code> is to enable filtering within monadic comprehensions. It allows you to discard results that don't meet a certain criterion.</p>
-<h4 id="1-filtering-in-for-comprehensions"><a class="header" href="#1-filtering-in-for-comprehensions">1. Filtering in For-Comprehensions</a></h4>
-<p>As already mentioned the most powerful application in this codebase is within the <strong><code>For</code> comprehension builder</strong>. The builder has two entry points:</p>
-<ul>
-<li><code>For.from(monad, ...)</code>: For any standard <code>Monad</code>.</li>
-<li><code>For.from(monadZero, ...)</code>: An overloaded version specifically for a <code>MonadZero</code>.</li>
-</ul>
-<p>Only the version that accepts a <code>MonadZero</code> provides the <code>.when(predicate)</code> filtering step. When the predicate in a <code>.when()</code> clause evaluates to <code>false</code>, the builder internally calls <code>monad.zero()</code> to terminate that specific computational path.</p>
-<h4 id="2-generic-functions"><a class="header" href="#2-generic-functions">2. Generic Functions</a></h4>
-<p>It allows you to write generic functions that can operate over any monad that has a concept of "failure" or "emptiness," such as <code>List</code>, <code>Maybe</code>, or <code>Optional</code>.</p>
-<h3 id="code-example-for-comprehension-with-listmonad"><a class="header" href="#code-example-for-comprehension-with-listmonad">Code Example: <code>For</code> Comprehension with <code>ListMonad</code></a></h3>
-<p>The following example demonstrates how <code>MonadZero</code> enables filtering.</p>
+<p>When the predicate evaluates to <code>false</code>, the builder internally calls <code>monad.zero()</code> to terminate that specific computational path.</p>
 <pre><code class="language-java">import org.higherkindedj.hkt.Kind;
 import org.higherkindedj.hkt.expression.For;
 import org.higherkindedj.hkt.list.ListKind;
@@ -323,35 +338,61 @@ import java.util.List;
 
 import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
 
-// 1. Get the MonadZero instance for List
 final ListMonad listMonad = ListMonad.INSTANCE;
 
-// 2. Define the initial data sources
 final Kind&lt;ListKind.Witness, Integer&gt; list1 = LIST.widen(Arrays.asList(1, 2, 3));
 final Kind&lt;ListKind.Witness, Integer&gt; list2 = LIST.widen(Arrays.asList(10, 20));
 
-// 3. Build the comprehension using the filterable 'For'
 final Kind&lt;ListKind.Witness, String&gt; result =
-    For.from(listMonad, list1)                       // Start with a MonadZero
-        .from(a -&gt; list2)                            // Generator (flatMap)
-        .when(t -&gt; (t._1() + t._2()) % 2 != 0)        // Filter: if the sum is odd
-        .let(t -&gt; "Sum: " + (t._1() + t._2()))        // Binding (map)
-        .yield((a, b, c) -&gt; a + " + " + b + " = " + c); // Final projection
+    For.from(listMonad, list1)
+        .from(a -&gt; list2)
+        .when(t -&gt; (t._1() + t._2()) % 2 != 0)        // Guard: keep only odd sums
+        .let(t -&gt; "Sum: " + (t._1() + t._2()))
+        .yield((a, b, c) -&gt; a + " + " + b + " = " + c);
 
-// 4. Unwrap the result
 final List&lt;String&gt; narrow = LIST.narrow(result);
-System.out.println("Result of List comprehension: " + narrow);
+System.out.println("Result: " + narrow);
+// [1 + 10 = Sum: 11, 1 + 20 = Sum: 21, 3 + 10 = Sum: 13, 3 + 20 = Sum: 23]
 </code></pre>
-<p><strong>Explanation:</strong></p>
-<ul>
-<li>The comprehension iterates through all pairs of <code>(a, b)</code> from <code>list1</code> and <code>list2</code>.</li>
-<li>The <code>.when(...)</code> clause checks if the sum <code>a + b</code> is odd.</li>
-<li>If the sum is even, the <code>monad.zero()</code> method (which returns an empty list) is invoked for that path, effectively discarding it.</li>
-<li>If the sum is odd, the computation continues to the <code>.let()</code> and <code>.yield()</code> steps.</li>
-</ul>
-<p><strong>Output:</strong></p>
-<p><code>Result of List comprehension: [1 + 10 = Sum: 11, 1 + 20 = Sum: 21, 3 + 10 = Sum: 13, 3 + 20 = Sum: 23]</code></p>
 <hr />
+<h2 id="key-implementations"><a class="header" href="#key-implementations">Key Implementations</a></h2>
+<p>For different types, <code>zero()</code> has the natural "empty" semantics:</p>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th><code>zero()</code> returns</th><th>Effect of filtering</th></tr></thead><tbody>
+<tr><td><strong>List</strong></td><td><code>[]</code> (empty list)</td><td>Discards that combination from the result list</td></tr>
+<tr><td><strong>Maybe</strong></td><td><code>Nothing</code></td><td>Short-circuits to <code>Nothing</code></td></tr>
+<tr><td><strong>Optional</strong></td><td><code>Optional.empty()</code></td><td>Short-circuits to empty</td></tr>
+<tr><td><strong>Stream</strong></td><td>Empty stream</td><td>Skips that element lazily</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="writing-generic-functions"><a class="header" href="#writing-generic-functions">Writing Generic Functions</a></h2>
+<p><code>MonadZero</code> allows you to write generic functions that work over any monad with a concept of "emptiness":</p>
+<pre><code class="language-java">// A generic "filter" that works with List, Maybe, Optional, or Stream
+public static &lt;F, A&gt; Kind&lt;F, A&gt; filterM(
+    MonadZero&lt;F&gt; mz, Kind&lt;F, A&gt; fa, Predicate&lt;A&gt; predicate) {
+    return mz.flatMap(
+        a -&gt; predicate.test(a) ? mz.of(a) : mz.zero(),
+        fa
+    );
+}
+</code></pre>
+<hr />
+<div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
+<div class="admonition-title">
+<div id="admonition-key-takeaways-title">
+<p>Key Takeaways</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-key-takeaways"></a>
+</div>
+<div>
+<ul>
+<li><strong><code>zero()</code> is the absorbing element</strong> that terminates a computational path, like multiplying by zero</li>
+<li><strong><code>.when()</code> in for-comprehensions</strong> is the primary use case, enabling mid-chain filtering</li>
+<li><strong>Requires <code>MonadZero</code></strong>, not just <code>Monad</code>; use <code>For.from(monadZero, ...)</code> to unlock filtering</li>
+<li><strong>Works uniformly</strong> across List, Maybe, Optional, and Stream</li>
+</ul>
+</div>
+</div>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
 <div class="admonition-title">
 <div id="admonition-see-also-title">
