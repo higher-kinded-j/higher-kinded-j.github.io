@@ -258,7 +258,7 @@
 
 </style>
 <h1 id="the-validatedmonad"><a class="header" href="#the-validatedmonad">The ValidatedMonad:</a></h1>
-<h2 id="handling-valid-or-invalid-operations"><a class="header" href="#handling-valid-or-invalid-operations"><em>Handling Valid or Invalid Operations</em></a></h2>
+<h2 id="accumulating-errors-with-validated"><a class="header" href="#accumulating-errors-with-validated"><em>Accumulating Errors with <code>Validated</code></em></a></h2>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -268,11 +268,11 @@
 </div>
 <div>
 <ul>
-<li>How to distinguish between valid and invalid data with explicit types</li>
-<li>Using Validated as a MonadError for fail-fast error handling</li>
-<li>Understanding when to use monadic operations (fail-fast) vs applicative operations (error accumulation)</li>
-<li>The difference between fail-fast validation (Monad/MonadError) and error-accumulating validation (Applicative with Semigroup)</li>
-<li>Real-world input validation scenarios with detailed error reporting</li>
+<li>Why fail-fast validation frustrates your users (and how to fix it)</li>
+<li>The difference between <code>flatMap</code> (fail-fast) and <code>ap</code> with <code>Semigroup</code> (error-accumulating)</li>
+<li>Building a complete form validator that reports ALL errors in one pass</li>
+<li>Using <code>ValidatedMonad</code> as a <code>MonadError</code> for recovery and error transformation</li>
+<li>When to reach for <code>Validated</code> vs <code>Either</code> vs <code>ValidationPath</code></li>
 </ul>
 </div>
 </div>
@@ -287,338 +287,258 @@
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/validated/ValidatedMonadExample.java">ValidatedMonadExample.java</a></p>
 </div>
 </div>
-<h2 id="purpose"><a class="header" href="#purpose">Purpose</a></h2>
-<p>The <code>Validated&lt;E, A&gt;</code> type in <code>Higher-Kinded-J</code> represents a value that can either be <code>Valid&lt;A&gt;</code> (correct) or <code>Invalid&lt;E&gt;</code> (erroneous). It is commonly used in scenarios like input validation where you want to clearly distinguish between a successful result and an error. Unlike types like <code>Either</code> which are often used for general-purpose sum types, <code>Validated</code> is specifically focused on the valid/invalid dichotomy. Operations like <code>map</code>, <code>flatMap</code>, and <code>ap</code> are right-biased, meaning they operate on the <code>Valid</code> value and propagate <code>Invalid</code> values unchanged.</p>
-<p>The <code>ValidatedMonad&lt;E&gt;</code> provides a monadic interface for <code>Validated&lt;E, A&gt;</code> (where the error type <code>E</code> is fixed for the monad instance), allowing for functional composition and integration with the Higher-Kinded-J framework. This facilitates chaining operations that can result in either a valid outcome or an error.</p>
-<div id="admonition-key-benefits-include" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-benefits-include-title">
+<h2 id="the-problem-death-by-a-thousand-submits"><a class="header" href="#the-problem-death-by-a-thousand-submits">The Problem: Death by a Thousand Submits</a></h2>
+<p>A user fills out your registration form. They make three mistakes — empty name, malformed email, and age below 18. They hit Submit.</p>
+<p>Your validation reports: <strong>"Name is required."</strong></p>
+<p>They fix the name, hit Submit again. Now they see: <strong>"Invalid email format."</strong></p>
+<p>They fix the email, hit Submit a third time. Finally: <strong>"Must be at least 18."</strong></p>
+<p>Three round-trips. Three frustrations. Three errors that were all knowable from the very first submission.</p>
+<p>This is fail-fast validation. With a monadic chain (<code>flatMap</code>), each step depends on the previous one succeeding, so the first failure stops everything:</p>
+<pre><code class="language-java">// flatMap chain — validation stops at the FIRST error
+validateName("")         // Invalid(["Name is required"])   &lt;-- STOPS HERE
+  .flatMap(name -&gt;
+    validateEmail("x@@")   // never reached
+      .flatMap(email -&gt;
+        validateAge(15)));   // never reached
+</code></pre>
+<p>What you actually want is to run ALL validations independently and collect every error in one pass. That is exactly what <code>Validated</code> with applicative operations gives you.</p>
+<div id="admonition-fail-fast-vs-error-accumulation" class="admonition admonish-note" role="note" aria-labelledby="admonition-fail-fast-vs-error-accumulation-title">
 <div class="admonition-title">
-<div id="admonition-key-benefits-include-title">
-<p>Key benefits include:</p>
+<div id="admonition-fail-fast-vs-error-accumulation-title">
+<p>Fail-Fast vs Error Accumulation</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-key-benefits-include"></a>
+<a class="admonition-anchor-link" href="#admonition-fail-fast-vs-error-accumulation"></a>
 </div>
 <div>
+<pre><code>FAIL-FAST (flatMap):                  ACCUMULATE (ap + Semigroup):
+
+validateName("")  --&gt; Invalid         validateName("")  --&gt; Invalid("Name is required")
+       |                              validateEmail("x@@") --&gt; Invalid("Invalid email")
+    STOP HERE                         validateAge(15)   --&gt; Invalid("Must be 18+")
+                                           |
+                                      combine all errors
+                                           |
+                                      Invalid(["Name is required",
+                                               "Invalid email",
+                                               "Must be 18+"])
+</code></pre>
 <ul>
-<li><strong>Explicit Validation Outcome:</strong> The type signature <code>Validated&lt;E, A&gt;</code> makes it clear that a computation can result in either a success (<code>Valid&lt;A&gt;</code>) or an error (<code>Invalid&lt;E&gt;</code>).</li>
-<li><strong>Functional Composition:</strong> Enables chaining of operations using <code>map</code>, <code>flatMap</code>, and <code>ap</code>. If an operation results in an <code>Invalid</code>, subsequent operations in the chain are typically short-circuited, propagating the <code>Invalid</code> state.</li>
-<li><strong>HKT Integration:</strong> <code>ValidatedKind&lt;E, A&gt;</code> (the HKT wrapper for <code>Validated&lt;E, A&gt;</code>) and <code>ValidatedMonad&lt;E&gt;</code> allow <code>Validated</code> to be used with generic functions and type classes that expect <code>Kind&lt;F, A&gt;</code> where <code>F extends WitnessArity&lt;?&gt;</code>, along with type classes like <code>Functor&lt;F&gt;</code>, <code>Applicative&lt;F&gt;</code>, or <code>Monad&lt;M&gt;</code> where <code>F extends WitnessArity&lt;TypeArity.Unary&gt;</code>.</li>
-<li><strong>Clear Error Handling:</strong> Provides methods like <code>fold</code>, <code>ifValid</code>, <code>ifInvalid</code> to handle both <code>Valid</code> and <code>Invalid</code> cases explicitly.</li>
-<li><strong>Standardized Error Handling:</strong> As a <code>MonadError&lt;ValidatedKind.Witness&lt;E&gt;, E&gt;</code>, it offers <code>raiseError</code> to construct error states and <code>handleErrorWith</code> for recovery, integrating with generic error-handling combinators.</li>
+<li><strong>flatMap</strong>: Each step depends on the previous result. If step 1 fails, steps 2 and 3 never run. Use this when validations are <strong>dependent</strong>.</li>
+<li><strong>ap + Semigroup</strong>: All steps run independently. Errors are combined using a <code>Semigroup&lt;E&gt;</code>. Use this when validations are <strong>independent</strong>.</li>
 </ul>
 </div>
 </div>
-<p><code>ValidatedMonad&lt;E&gt;</code> implements <code>MonadError&lt;ValidatedKind.Witness&lt;E&gt;, E&gt;</code>, which transitively includes <code>Monad&lt;ValidatedKind.Witness&lt;E&gt;&gt;</code>, <code>Applicative&lt;ValidatedKind.Witness&lt;E&gt;&gt;</code>, and <code>Functor&lt;ValidatedKind.Witness&lt;E&gt;&gt;</code>.</p>
-<h2 id="structure"><a class="header" href="#structure">Structure</a></h2>
-<p><strong>Validated Type</strong> Conceptually, <code>Validated&lt;E, A&gt;</code> has two sub-types:</p>
+<h2 id="core-components"><a class="header" href="#core-components">Core Components</a></h2>
+<p><strong>Validated Type</strong> — <code>Valid(value)</code> or <code>Invalid(error)</code>:</p>
+<p><img src="../images/puml/validated_type.svg" alt="validated_type.svg" /></p>
+<p><strong>Monadic Structure</strong> — <code>ValidatedMonad&lt;E&gt;</code> enables monadic operations on <code>ValidatedKind.Witness&lt;E&gt;</code>:</p>
+<p><img src="../images/puml/validated_monad.svg" alt="validated_monad.svg" /></p>
+<div class="table-wrapper"><table><thead><tr><th>Component</th><th>Role</th></tr></thead><tbody>
+<tr><td><code>Validated&lt;E, A&gt;</code></td><td><code>Valid(value)</code> or <code>Invalid(error)</code> — like Either but validation-focused</td></tr>
+<tr><td><code>ValidatedKind&lt;E, A&gt;</code> / <code>ValidatedKindHelper</code></td><td>HKT bridge: <code>widen()</code>, <code>narrow()</code>, <code>valid()</code>, <code>invalid()</code></td></tr>
+<tr><td><code>ValidatedMonad&lt;E&gt;</code></td><td><code>MonadError&lt;ValidatedKind.Witness&lt;E&gt;, E&gt;</code> — fail-fast <code>map</code>/<code>flatMap</code>, plus <code>raiseError</code>/<code>handleErrorWith</code></td></tr>
+</tbody></table>
+</div><div id="admonition-validated-vs-either" class="admonition admonish-note" role="note" aria-labelledby="admonition-validated-vs-either-title">
+<div class="admonition-title">
+<div id="admonition-validated-vs-either-title">
+<p>Validated vs Either</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-validated-vs-either"></a>
+</div>
+<div>
+<p>Both represent success or failure. The difference is in <strong>applicative</strong> behaviour:</p>
 <ul>
-<li><code>Valid&lt;A&gt;</code>: Contains a valid value of type <code>A</code>.</li>
-<li><code>Invalid&lt;E&gt;</code>: Contains an error value of type <code>E</code>.
-<img src="../images/puml/validated_type.svg" alt="validated_type.svg" /></li>
+<li><code>Either</code>: Always fail-fast in both Monad and Applicative contexts.</li>
+<li><code>Validated</code>: Fail-fast as a Monad (<code>flatMap</code>), but can <strong>accumulate errors</strong> as an Applicative (<code>ap</code> with <code>Semigroup</code>).</li>
 </ul>
-<p><strong>Monadic Structure</strong> The <code>ValidatedMonad&lt;E&gt;</code> enables monadic operations on <code>ValidatedKind.Witness&lt;E&gt;</code>.
-<img src="../images/puml/validated_monad.svg" alt="validated_monad.svg" /></p>
-<div id="admonition-related-types" class="admonition admonish-note" role="note" aria-labelledby="admonition-related-types-title">
-<div class="admonition-title">
-<div id="admonition-related-types-title">
-<p>Related Types</p>
+<p>If you only ever need fail-fast semantics, use <a href="./either_monad.html">Either</a>.</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-related-types"></a>
+</div>
+<h2 id="building-a-complete-form-validator"><a class="header" href="#building-a-complete-form-validator">Building a Complete Form Validator</a></h2>
+<p>Let's build a registration validator that validates username, email, and age — reporting ALL errors in one pass.</p>
+<div id="admonition-step-1-define-individual-validators" class="admonition admonish-example" role="note" aria-labelledby="admonition-step-1-define-individual-validators-title">
+<div class="admonition-title">
+<div id="admonition-step-1-define-individual-validators-title">
+<p>Step 1: Define Individual Validators</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-step-1-define-individual-validators"></a>
 </div>
 <div>
-<p>Unlike <a href="./either_monad.html">Either Monad</a> which is fail-fast in both Monad and Applicative contexts, <code>Validated</code> can be used with <code>Applicative</code> operations for error accumulation (when <code>E</code> has a <code>Semigroup</code> instance). When used as a Monad via <code>ValidatedMonad</code>, it behaves fail-fast like Either.</p>
-</div>
-</div>
-<h2 id="how-to-use-validatedmonade-and-validatede-a"><a class="header" href="#how-to-use-validatedmonade-and-validatede-a">How to Use <code>ValidatedMonad&lt;E&gt;</code> and <code>Validated&lt;E, A&gt;</code></a></h2>
-<ul>
-<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/validated/ValidatedMonadExample.java">ValidatedMonadExample.java</a></li>
-</ul>
-<h3 id="creating-instances"><a class="header" href="#creating-instances">Creating Instances</a></h3>
-<p><code>Validated&lt;E, A&gt;</code> instances can be created directly using static factory methods on <code>Validated</code>. For HKT integration, <code>ValidatedKindHelper</code> and <code>ValidatedMonad</code> are used. <code>ValidatedKind&lt;E, A&gt;</code> is the HKT wrapper.</p>
-<p><strong>Direct <code>Validated</code> Creation &amp; HKT Helpers:</strong> Refer to <code>ValidatedMonadExample.java</code> (Section 1) for runnable examples.</p>
-<div id="admonition-creating-_valid_-_invalid_-and-hkt-wrappers" class="admonition admonish-note" role="note" aria-labelledby="admonition-creating-_valid_-_invalid_-and-hkt-wrappers-title">
-<div class="admonition-title">
-<div id="admonition-creating-_valid_-_invalid_-and-hkt-wrappers-title">
-<p>Creating <em>Valid</em>, <em>Invalid</em> and HKT Wrappers</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-creating-_valid_-_invalid_-and-hkt-wrappers"></a>
-</div>
-<div>
-<p>Creates a <code>Valid</code> instance holding a <strong>non-null</strong> value.</p>
-<pre><code class="language-java">Validated&lt;List&lt;String&gt;, String&gt; validInstance = Validated.valid("Success!"); // Valid("Success!")
-</code></pre>
-<p>Creates an <code>Invalid</code> instance holding a <strong>non-null</strong> error.</p>
-<pre><code class="language-java">Validated&lt;List&lt;String&gt;, String&gt; invalidInstance = Validated.invalid(Collections.singletonList("Error: Something went wrong.")); // Invalid([Error: Something went wrong.])
-</code></pre>
-<p>Converts a <code>Validated&lt;E, A&gt;</code> to <code>Kind&lt;ValidatedKind.Witness&lt;E&gt;, A&gt;</code> using <code>VALIDATED.widen()</code>.</p>
-<pre><code class="language-java">Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; kindValid = VALIDATED.widen(Validated.valid("Wrapped"));
-</code></pre>
-<p>Converts a <code>Kind&lt;ValidatedKind.Witness&lt;E&gt;, A&gt;</code> back to <code>Validated&lt;E, A&gt;</code> using <code>VALIDATED.narrow()</code>.</p>
-<pre><code class="language-java">Validated&lt;List&lt;String&gt;, String&gt; narrowedValidated = VALIDATED.narrow(kindValid);
-</code></pre>
-<p>Convenience for <code>widen(Validated.valid(value))</code>using <code>VALIDATED.valid()</code>.</p>
-<pre><code class="language-java">Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; kindValidInt = VALIDATED.valid(123);
-</code></pre>
-<p>Convenience for <code>widen(Validated.invalid(error))</code> using <code>VALIDATED.invalid()</code>.</p>
-<pre><code class="language-java">Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; kindInvalidInt = VALIDATED.invalid(Collections.singletonList("Bad number"));
-</code></pre>
-</div>
-</div>
-<h3 id="validatedmonade-instance-methods"><a class="header" href="#validatedmonade-instance-methods"><code>ValidatedMonad&lt;E&gt;</code> Instance Methods:</a></h3>
-<p>Refer to <code>ValidatedMonadExample.java</code> (Sections 1 &amp; 6) for runnable examples.</p>
-<div id="admonition-_validatedmonadofa-value_" class="admonition admonish-note" role="note" aria-labelledby="admonition-_validatedmonadofa-value_-title">
-<div class="admonition-title">
-<div id="admonition-_validatedmonadofa-value_-title">
-<p><em>validatedMonad.of(A value)</em></p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-_validatedmonadofa-value_"></a>
-</div>
-<div>
-<p>Lifts a value into <code>ValidatedKind.Witness&lt;E&gt;</code>, creating a <code>Valid(value)</code>. This is part of the <code>Applicative</code> interface.</p>
+<p>Each validator is an independent function that returns <code>Validated&lt;List&lt;String&gt;, T&gt;</code>:</p>
 <pre><code class="language-java">ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = ValidatedMonad.instance();
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; kindFromMonadOf = validatedMonad.of("Monadic Valid"); // Valid("Monadic Valid")
-System.out.println("From monad.of(): " + VALIDATED.narrow(kindFromMonadOf));
-</code></pre>
-<p>Lifts an error <code>E</code> into the <code>ValidatedKind</code> context, creating an <code>Invalid(error)</code>. This is part of the <code>MonadError</code> interface.</p>
-<pre><code class="language-java">ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = ValidatedMonad.instance();
-List&lt;String&gt; errorPayload = Collections.singletonList("Raised error condition");
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; raisedError =
-    validatedMonad.raiseError(errorPayload); // Invalid(["Raised error condition"])
-System.out.println("From monad.raiseError(): " + VALIDATED.narrow(raisedError));
-</code></pre>
-</div>
-</div>
-<h3 id="interacting-with-validatede-a-values"><a class="header" href="#interacting-with-validatede-a-values">Interacting with <code>Validated&lt;E, A&gt;</code> values</a></h3>
-<p>The <code>Validated&lt;E, A&gt;</code> interface itself provides useful methods: Refer to <code>ValidatedMonadExample.java</code> (Section 5) for runnable examples of <code>fold</code>, <code>ifValid</code>, <code>ifInvalid</code>.</p>
-<ul>
-<li><code>isValid()</code>: Returns <code>true</code> if it's a <code>Valid</code>.</li>
-<li><code>isInvalid()</code>: Returns <code>true</code> if it's an <code>Invalid</code>.</li>
-<li><code>get()</code>: Returns the value if <code>Valid</code>, otherwise throws <code>NoSuchElementException</code>. <em>Use with caution.</em></li>
-<li><code>getError()</code>: Returns the error if <code>Invalid</code>, otherwise throws <code>NoSuchElementException</code>. <em>Use with caution.</em></li>
-<li><code>orElse(@NonNull A other)</code>: Returns the value if <code>Valid</code>, otherwise returns <code>other</code>.</li>
-<li><code>orElseGet(@NonNull Supplier&lt;? extends @NonNull A&gt; otherSupplier)</code>: Returns the value if <code>Valid</code>, otherwise invokes <code>otherSupplier.get()</code>.</li>
-<li><code>orElseThrow(@NonNull Supplier&lt;? extends X&gt; exceptionSupplier)</code>: Returns the value if <code>Valid</code>, otherwise throws the exception from the supplier.</li>
-<li><code>ifValid(@NonNull Consumer&lt;? super A&gt; consumer)</code>: Performs action if <code>Valid</code>.</li>
-<li><code>ifInvalid(@NonNull Consumer&lt;? super E&gt; consumer)</code>: Performs action if <code>Invalid</code>.</li>
-<li><code>fold(@NonNull Function&lt;? super E, ? extends T&gt; invalidMapper, @NonNull Function&lt;? super A, ? extends T&gt; validMapper)</code>: Applies one of two functions depending on the state.</li>
-<li><code>Validated</code> also has its own <code>map</code>, <code>flatMap</code>, and <code>ap</code> methods that operate directly on <code>Validated</code> instances.</li>
-</ul>
-<h3 id="key-operations-via-validatedmonade"><a class="header" href="#key-operations-via-validatedmonade">Key Operations (via <code>ValidatedMonad&lt;E&gt;</code>)</a></h3>
-<p>These operations are performed on the HKT wrapper <code>Kind&lt;ValidatedKind.Witness&lt;E&gt;, A&gt;</code>. Refer to <code>ValidatedMonadExample.java</code> (Sections 2, 3, 4) for runnable examples of <code>map</code>, <code>flatMap</code>, and <code>ap</code>.</p>
-<p>Applies <code>f</code> to the value inside <code>kind</code> if it's <code>Valid</code>. If <code>kind</code> is <code>Invalid</code>, or if <code>f</code> throws an exception (The behaviour depends on <code>Validated.map</code> internal error handling, typically an <code>Invalid</code> from <code>Validated.map</code> would be a new <code>Invalid</code>), the result is <code>Invalid</code>.</p>
-<div id="admonition-transforming-values-_map_" class="admonition admonish-note" role="note" aria-labelledby="admonition-transforming-values-_map_-title">
-<div class="admonition-title">
-<div id="admonition-transforming-values-_map_-title">
-<p>Transforming Values (<em>map</em>)</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-transforming-values-_map_"></a>
-</div>
-<div>
-<pre><code class="language-java">// From ValidatedMonadExample.java (Section 2)
-ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = ValidatedMonad.instance();
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; validKindFromOf = validatedMonad.of(42);
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; invalidIntKind =
-    VALIDATED.invalid(Collections.singletonList("Initial error for map"));
 
-Function&lt;Integer, String&gt; intToString = i -&gt; "Value: " + i;
+static Validated&lt;List&lt;String&gt;, String&gt; validateName(String name) {
+    return (name == null || name.isBlank())
+        ? Validated.invalid(List.of("Name is required"))
+        : Validated.valid(name.trim());
+}
 
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; mappedValid =
-    validatedMonad.map(intToString, validKindFromOf); // Valid("Value: 42")
-System.out.println("Map (Valid input): " + VALIDATED.narrow(mappedValid));
+static Validated&lt;List&lt;String&gt;, String&gt; validateEmail(String email) {
+    return (email == null || !email.matches("^[^@]+@[^@]+\\.[^@]+$"))
+        ? Validated.invalid(List.of("Invalid email format"))
+        : Validated.valid(email.trim());
+}
 
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; mappedInvalid =
-    validatedMonad.map(intToString, invalidIntKind); // Invalid(["Initial error for map"])
-System.out.println("Map (Invalid input): " + VALIDATED.narrow(mappedInvalid));
-</code></pre>
-</div>
-</div>
-<div id="admonition-transforming-values-_flatmap_" class="admonition admonish-note" role="note" aria-labelledby="admonition-transforming-values-_flatmap_-title">
-<div class="admonition-title">
-<div id="admonition-transforming-values-_flatmap_-title">
-<p>Transforming Values (<em>flatMap</em>)</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-transforming-values-_flatmap_"></a>
-</div>
-<div>
-<p>If <code>kind</code> is <code>Valid(a)</code>, applies <code>f</code> to <code>a</code>. <code>f</code> must return a <code>Kind&lt;ValidatedKind.Witness&lt;E&gt;, B&gt;</code>. If <code>kind</code> is <code>Invalid</code>, or <code>f</code> returns an <code>Invalid Kind</code>, the result is <code>Invalid</code>.</p>
-<pre><code class="language-java">// From ValidatedMonadExample.java (Section 3)
-ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = ValidatedMonad.instance();
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; positiveNumKind = validatedMonad.of(10);
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; nonPositiveNumKind = validatedMonad.of(-5);
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; invalidIntKind =
-        VALIDATED.invalid(Collections.singletonList("Initial error for flatMap"));
-
-
-Function&lt;Integer, Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt;&gt; intToValidatedStringKind =
-    i -&gt; {
-      if (i &gt; 0) {
-        return VALIDATED.valid("Positive: " + i);
-      } else {
-        return VALIDATED.invalid(Collections.singletonList("Number not positive: " + i));
-      }
-    };
-
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; flatMappedToValid =
-    validatedMonad.flatMap(intToValidatedStringKind, positiveNumKind); // Valid("Positive: 10")
-System.out.println("FlatMap (Valid to Valid): " + VALIDATED.narrow(flatMappedToValid));
-
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; flatMappedToInvalid =
-    validatedMonad.flatMap(intToValidatedStringKind, nonPositiveNumKind); // Invalid(["Number not positive: -5"])
-System.out.println("FlatMap (Valid to Invalid): " + VALIDATED.narrow(flatMappedToInvalid));
-
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; flatMappedFromInvalid =
-    validatedMonad.flatMap(intToValidatedStringKind, invalidIntKind); // Invalid(["Initial error for flatMap"])
-System.out.println("FlatMap (Invalid input): " + VALIDATED.narrow(flatMappedFromInvalid));
-</code></pre>
-</div>
-</div>
-<div id="admonition-applicative-operation-ap" class="admonition admonish-note" role="note" aria-labelledby="admonition-applicative-operation-ap-title">
-<div class="admonition-title">
-<div id="admonition-applicative-operation-ap-title">
-<p>Applicative Operation (ap)</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-applicative-operation-ap"></a>
-</div>
-<div>
-<ul>
-<li>If <code>ff</code> is <code>Valid(f)</code> and <code>fa</code> is <code>Valid(a)</code>, applies <code>f</code> to <code>a</code>, resulting in <code>Valid(f(a))</code>.</li>
-<li>If either <code>ff</code> or <code>fa</code> is <code>Invalid</code>, the result is <code>Invalid</code>. Specifically, if <code>ff</code> is <code>Invalid</code>, its error is returned.</li>
-<li>If <code>ff</code> is <code>Valid</code> but <code>fa</code> is <code>Invalid</code>, then <code>fa</code>'s error is returned. If both are <code>Invalid</code>, <code>ff</code>'s error takes precedence.</li>
-</ul>
-<p>Note: This <code>ap</code> behaviour is right-biased and does not accumulate errors in the way some applicative validations might; it propagates the first encountered <code>Invalid</code> or the <code>Invalid</code> function.</p>
-<pre><code class="language-java">// From ValidatedMonadExample.java (Section 4)
-ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = ValidatedMonad.instance();
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Function&lt;Integer, String&gt;&gt; validFnKind =
-    VALIDATED.valid(i -&gt; "Applied: " + (i * 2));
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Function&lt;Integer, String&gt;&gt; invalidFnKind =
-    VALIDATED.invalid(Collections.singletonList("Function is invalid"));
-
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; validValueForAp = validatedMonad.of(25);
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; invalidValueForAp =
-    VALIDATED.invalid(Collections.singletonList("Value is invalid"));
-
-// Valid function, Valid value
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; apValidFnValidVal =
-    validatedMonad.ap(validFnKind, validValueForAp); // Valid("Applied: 50")
-System.out.println("Ap (ValidFn, ValidVal): " + VALIDATED.narrow(apValidFnValidVal));
-
-// Invalid function, Valid value
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; apInvalidFnValidVal =
-    validatedMonad.ap(invalidFnKind, validValueForAp); // Invalid(["Function is invalid"])
-System.out.println("Ap (InvalidFn, ValidVal): " + VALIDATED.narrow(apInvalidFnValidVal));
-
-// Valid function, Invalid value
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; apValidFnInvalidVal =
-    validatedMonad.ap(validFnKind, invalidValueForAp); // Invalid(["Value is invalid"])
-System.out.println("Ap (ValidFn, InvalidVal): " + VALIDATED.narrow(apValidFnInvalidVal));
-
-// Invalid function, Invalid value
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; apInvalidFnInvalidVal =
-    validatedMonad.ap(invalidFnKind, invalidValueForAp); // Invalid(["Function is invalid"])
-System.out.println("Ap (InvalidFn, InvalidVal): " + VALIDATED.narrow(apInvalidFnInvalidVal));
-</code></pre>
-</div>
-</div>
-<h3 id="monaderror-operations"><a class="header" href="#monaderror-operations">MonadError Operations</a></h3>
-<p>As <code>ValidatedMonad&lt;E&gt;</code> implements <code>MonadError&lt;ValidatedKind.Witness&lt;E&gt;, E&gt;</code>, it provides standardised ways to create and handle errors. Refer to ValidatedMonadExample.java (Section 6) for detailed examples.</p>
-<div id="admonition-_recover_-and-_recoverwith_" class="admonition admonish-note" role="note" aria-labelledby="admonition-_recover_-and-_recoverwith_-title">
-<div class="admonition-title">
-<div id="admonition-_recover_-and-_recoverwith_-title">
-<p><em>recover</em> and <em>recoverWith</em></p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-_recover_-and-_recoverwith_"></a>
-</div>
-<div>
-<pre><code class="language-java">// From ValidatedMonadExample.java (Section 6)
-ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = ValidatedMonad.instance();
-List&lt;String&gt; initialError = Collections.singletonList("Initial Failure");
-
-// 1. Create an Invalid Kind using raiseError
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; invalidKindRaised = // Renamed to avoid conflict
-    validatedMonad.raiseError(initialError);
-System.out.println("Raised error: " + VALIDATED.narrow(invalidKindRaised)); // Invalid([Initial Failure])
-
-// 2. Handle the error: recover to a Valid state
-Function&lt;List&lt;String&gt;, Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt;&gt; recoverToValid =
-    errors -&gt; {
-        System.out.println("MonadError: Recovery handler called with errors: " + errors);
-        return validatedMonad.of(0); // Recover with default value 0
-    };
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; recoveredValid =
-    validatedMonad.handleErrorWith(invalidKindRaised, recoverToValid);
-System.out.println("Recovered to Valid: " + VALIDATED.narrow(recoveredValid)); // Valid(0)
-
-// 3. Handle the error: transform to another Invalid state
-Function&lt;List&lt;String&gt;, Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt;&gt; transformError =
-    errors -&gt; validatedMonad.raiseError(Collections.singletonList("Transformed Error: " + errors.get(0)));
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; transformedInvalid =
-    validatedMonad.handleErrorWith(invalidKindRaised, transformError);
-System.out.println("Transformed to Invalid: " + VALIDATED.narrow(transformedInvalid)); // Invalid([Transformed Error: Initial Failure])
-
-// 4. Handle a Valid Kind: handler is not called
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; validKindOriginal = validatedMonad.of(100);
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; notHandled =
-    validatedMonad.handleErrorWith(validKindOriginal, recoverToValid); // Handler not called
-System.out.println("Handling Valid (no change): " + VALIDATED.narrow(notHandled)); // Valid(100)
-
-// 5. Using a default method like handleError
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; errorForHandle = validatedMonad.raiseError(Collections.singletonList("Error for handleError"));
-Function&lt;List&lt;String&gt;, Integer&gt; plainValueRecoveryHandler = errors -&gt; -1; // Returns plain value
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; recoveredWithHandle = validatedMonad.handleError(errorForHandle, plainValueRecoveryHandler);
-System.out.println("Recovered with handleError: " + VALIDATED.narrow(recoveredWithHandle)); // Valid(-1)
-</code></pre>
-<p>The default <code>recover</code> and <code>recoverWith</code> methods from <code>MonadError</code> are also available.</p>
-</div>
-</div>
-<div id="admonition-combining-operations-for-simple-validation" class="admonition admonish-note" role="note" aria-labelledby="admonition-combining-operations-for-simple-validation-title">
-<div class="admonition-title">
-<div id="admonition-combining-operations-for-simple-validation-title">
-<p>Combining operations for simple validation</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-combining-operations-for-simple-validation"></a>
-</div>
-<div>
-<p>This example demonstrates how <code>ValidatedMonad</code> along with <code>Validated</code> can be used to chain operations that might succeed or fail. With <code>ValidatedMonad</code> now implementing <code>MonadError</code>, operations like <code>raiseError</code> can be used for clearer error signalling, and <code>handleErrorWith</code> (or other <code>MonadError</code> methods) can be used for more robust recovery strategies within such validation flows.</p>
-<ul>
-<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/validated/ValidatedMonadExample.java">ValidatedMonadExample.java</a> <em>see "Combined Validation Scenario"</em>.</li>
-</ul>
-<pre><code class="language-java">// Simplified from the ValidatedMonadExample.java
-public void combinedValidationScenarioWithMonadError() {
-  ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = ValidatedMonad.instance();
-  Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; userInput1 = validatedMonad.of("123");
-  Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; userInput2 = validatedMonad.of("abc"); // This will lead to an Invalid
-
-  Function&lt;String, Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt;&gt; parseToIntKindMonadError =
-      (String s) -&gt; {
-        try {
-          return validatedMonad.of(Integer.parseInt(s)); // Lifts to Valid
-        } catch (NumberFormatException e) {
-          // Using raiseError for semantic clarity
-          return validatedMonad.raiseError(
-              Collections.singletonList("'" + s + "' is not a number (via raiseError)."));
-        }
-      };
-
-  Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; parsed1 =
-      validatedMonad.flatMap(parseToIntKindMonadError, userInput1);
-  Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; parsed2 =
-      validatedMonad.flatMap(parseToIntKindMonadError, userInput2); // Will be Invalid
-
-  System.out.println("Parsed Input 1 (Combined): " + VALIDATED.narrow(parsed1)); // Valid(123)
-  System.out.println("Parsed Input 2 (Combined): " + VALIDATED.narrow(parsed2)); // Invalid(['abc' is not a number...])
-
-  // Example of recovering the parse of userInput2 using handleErrorWith
-  Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; parsed2Recovered =
-      validatedMonad.handleErrorWith(
-          parsed2,
-          errors -&gt; {
-            System.out.println("Combined scenario recovery: " + errors);
-            return validatedMonad.of(0); // Default to 0 if parsing failed
-          });
-  System.out.println(
-      "Parsed Input 2 (Recovered to 0): " + VALIDATED.narrow(parsed2Recovered)); // Valid(0)
+static Validated&lt;List&lt;String&gt;, Integer&gt; validateAge(int age) {
+    return (age &lt; 18)
+        ? Validated.invalid(List.of("Must be at least 18 years old"))
+        : Validated.valid(age);
 }
 </code></pre>
-<p>This example demonstrates how <code>ValidatedMonad</code> along with <code>Validated</code> can be used to chain operations that might succeed or fail, propagating errors and allowing for clear handling of either outcome, further enhanced by <code>MonadError</code> capabilities.</p>
+<p>Each validator works independently. None depends on another's result. This is the key to accumulation.</p>
+</div>
+</div>
+<div id="admonition-step-2-compose-with-flatmap-fail-fast" class="admonition admonish-example" role="note" aria-labelledby="admonition-step-2-compose-with-flatmap-fail-fast-title">
+<div class="admonition-title">
+<div id="admonition-step-2-compose-with-flatmap-fail-fast-title">
+<p>Step 2: Compose with flatMap (Fail-Fast)</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-step-2-compose-with-flatmap-fail-fast"></a>
+</div>
+<div>
+<p>When validations <strong>depend</strong> on each other, use <code>flatMap</code>. The chain stops at the first failure:</p>
+<pre><code class="language-java">// Dependent validation: email domain must match company based on user's role
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; result =
+    validatedMonad.flatMap(
+        name -&gt; validatedMonad.flatMap(
+            email -&gt; VALIDATED.valid("User: " + name + " &lt;" + email + "&gt;"),
+            VALIDATED.widen(validateEmail("alice@example.com"))
+        ),
+        VALIDATED.widen(validateName("Alice"))
+    );
+// Valid("User: Alice &lt;alice@example.com&gt;")
+
+// If the first step fails, everything stops:
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; failed =
+    validatedMonad.flatMap(
+        name -&gt; validatedMonad.flatMap(
+            email -&gt; VALIDATED.valid("User: " + name + " &lt;" + email + "&gt;"),
+            VALIDATED.widen(validateEmail("bad@@"))      // never reached
+        ),
+        VALIDATED.widen(validateName(""))                 // Invalid — stops here
+    );
+// Invalid(["Name is required"])
+</code></pre>
+</div>
+</div>
+<div id="admonition-step-3-compose-with-ap-error-accumulation" class="admonition admonish-example" role="note" aria-labelledby="admonition-step-3-compose-with-ap-error-accumulation-title">
+<div class="admonition-title">
+<div id="admonition-step-3-compose-with-ap-error-accumulation-title">
+<p>Step 3: Compose with ap (Error Accumulation)</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-step-3-compose-with-ap-error-accumulation"></a>
+</div>
+<div>
+<p>When validations are <strong>independent</strong>, use <code>ap</code> with a <code>Semigroup</code>. All validators run, and errors combine:</p>
+<pre><code class="language-java">// All three validators run regardless of individual failures
+Validated&lt;List&lt;String&gt;, String&gt;  name  = validateName("");           // Invalid
+Validated&lt;List&lt;String&gt;, String&gt;  email = validateEmail("bad@@");     // Invalid
+Validated&lt;List&lt;String&gt;, Integer&gt; age   = validateAge(15);            // Invalid
+
+// Using map3 to combine — ALL errors are collected:
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, String&gt; result = validatedMonad.map3(
+    VALIDATED.widen(name),
+    VALIDATED.widen(email),
+    VALIDATED.widen(age),
+    (n, e, a) -&gt; "User(" + n + ", " + e + ", age=" + a + ")"
+);
+
+Validated&lt;List&lt;String&gt;, String&gt; finalResult = VALIDATED.narrow(result);
+// Invalid(["Name is required", "Invalid email format", "Must be at least 18 years old"])
+//         ^^^ ALL three errors in one pass!
+</code></pre>
+<p><code>map3</code> uses <code>ap</code> under the hood — it lifts the combining function into the <code>Validated</code> context and applies each argument, accumulating errors via the <code>Semigroup</code>. The <code>mapN</code> family (<code>map2</code>, <code>map3</code>, <code>map4</code>) is the recommended way to combine independent validations without writing curried functions manually.</p>
+</div>
+</div>
+<div id="admonition-step-4-recover-from-errors" class="admonition admonish-example" role="note" aria-labelledby="admonition-step-4-recover-from-errors-title">
+<div class="admonition-title">
+<div id="admonition-step-4-recover-from-errors-title">
+<p>Step 4: Recover from Errors</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-step-4-recover-from-errors"></a>
+</div>
+<div>
+<p><code>ValidatedMonad&lt;E&gt;</code> implements <code>MonadError</code>, so you get structured recovery:</p>
+<pre><code class="language-java">Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; failed =
+    validatedMonad.raiseError(List.of("Something went wrong"));
+
+// handleErrorWith — recover to a Valid state
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; recovered =
+    validatedMonad.handleErrorWith(failed, errors -&gt; validatedMonad.of(0));
+// Valid(0)
+
+// handleErrorWith — transform the error
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; transformed =
+    validatedMonad.handleErrorWith(failed,
+        errors -&gt; validatedMonad.raiseError(
+            List.of("Transformed: " + errors.getFirst())));
+// Invalid(["Transformed: Something went wrong"])
+
+// handleError — recover with a plain value
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; fallback =
+    validatedMonad.handleError(failed, errors -&gt; -1);
+// Valid(-1)
+
+// Valid values pass through untouched — handler is never called
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; ok = validatedMonad.of(42);
+Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; stillOk =
+    validatedMonad.handleErrorWith(ok, errors -&gt; validatedMonad.of(0));
+// Valid(42) — handler was never invoked
+</code></pre>
+</div>
+</div>
+<h3 id="working-with-validatede-a-directly"><a class="header" href="#working-with-validatede-a-directly">Working with <code>Validated&lt;E, A&gt;</code> Directly</a></h3>
+<p>Beyond the typeclass, the <code>Validated</code> type itself offers useful methods:</p>
+<ul>
+<li><code>isValid()</code> / <code>isInvalid()</code> — check the state.</li>
+<li><code>get()</code> / <code>getError()</code> — extract value or error (throws <code>NoSuchElementException</code> on wrong case).</li>
+<li><code>orElse(other)</code> / <code>orElseGet(supplier)</code> / <code>orElseThrow(supplier)</code> — safe extraction with fallbacks.</li>
+<li><code>fold(invalidMapper, validMapper)</code> — eliminate both cases into a single result.</li>
+<li><code>map</code>, <code>flatMap</code>, <code>ap</code> — also available directly on <code>Validated</code> instances.</li>
+</ul>
+<div id="admonition-which-composition-to-choose" class="admonition admonish-note" role="note" aria-labelledby="admonition-which-composition-to-choose-title">
+<div class="admonition-title">
+<div id="admonition-which-composition-to-choose-title">
+<p>Which Composition to Choose?</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-which-composition-to-choose"></a>
+</div>
+<div>
+<pre><code>Does step B depend on step A's result?
+  |
+  +-- YES --&gt; flatMap (fail-fast)
+  |           "Validate email, THEN check if domain matches company"
+  |
+  +-- NO  --&gt; ap + Semigroup (accumulate)
+              "Validate name AND email AND age independently"
+</code></pre>
+<p>Many real-world forms mix both: independent field validations (accumulate), followed by cross-field checks (fail-fast).</p>
+</div>
+</div>
+<h2 id="when-to-use-validated"><a class="header" href="#when-to-use-validated">When to Use Validated</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Use</th></tr></thead><tbody>
+<tr><td>Form/input validation — want ALL errors at once</td><td><code>Validated</code> with <code>ap</code> + <code>Semigroup</code></td></tr>
+<tr><td>Sequential validation — later steps depend on earlier results</td><td><code>ValidatedMonad</code> (fail-fast via <code>flatMap</code>)</td></tr>
+<tr><td>Typed errors with arbitrary branching</td><td>Prefer <a href="./either_monad.html">Either</a></td></tr>
+<tr><td>Application-level validation with fluent API</td><td>Prefer <a href="../effect/path_validation.html">ValidationPath</a></td></tr>
+<tr><td>Mix of independent + dependent validations</td><td>Independent fields via <code>ap</code>, then cross-field checks via <code>flatMap</code></td></tr>
+</tbody></table>
+</div><div id="admonition-key-points" class="admonition admonish-tip" role="note" aria-labelledby="admonition-key-points-title">
+<div class="admonition-title">
+<div id="admonition-key-points-title">
+<p>Key Points</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-key-points"></a>
+</div>
+<div>
+<ul>
+<li><code>Validated&lt;E, A&gt;</code> is <code>Valid(value)</code> or <code>Invalid(error)</code> — explicitly models validation outcomes.</li>
+<li><strong>Monadic</strong> operations (<code>flatMap</code> via <code>ValidatedMonad</code>) are <strong>fail-fast</strong>: the first <code>Invalid</code> short-circuits the chain.</li>
+<li><strong>Applicative</strong> operations (<code>ap</code> with a <code>Semigroup&lt;E&gt;</code>) <strong>accumulate</strong> errors from independent validations.</li>
+<li><code>ValidatedMonad&lt;E&gt;</code> implements <code>MonadError&lt;ValidatedKind.Witness&lt;E&gt;, E&gt;</code>, giving you <code>raiseError</code> and <code>handleErrorWith</code> for structured recovery.</li>
+<li>The choice between <code>flatMap</code> and <code>ap</code> is a design decision: <strong>dependent</strong> validations use flatMap, <strong>independent</strong> validations use ap.</li>
+<li><code>ValidatedKindHelper</code> provides zero-cost <code>widen()</code>/<code>narrow()</code> casts for HKT integration.</li>
+</ul>
 </div>
 </div>
 <hr />
@@ -646,6 +566,25 @@ ValidationPath&lt;List&lt;Error&gt;, Order&gt; order = Path.validation(validateU
     .via(u -&gt; createOrder(u));
 </code></pre>
 <p>See <a href="../effect/effect_path_overview.html">Effect Path Overview</a> for the complete guide.</p>
+</div>
+</div>
+<div id="admonition-benchmarks" class="admonition admonish-example" role="note" aria-labelledby="admonition-benchmarks-title">
+<div class="admonition-title">
+<div id="admonition-benchmarks-title">
+<p>Benchmarks</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-benchmarks"></a>
+</div>
+<div>
+<p>Validated has dedicated JMH benchmarks. Key expectations:</p>
+<ul>
+<li><strong><code>invalidMap</code></strong> reuses the same Invalid instance with zero allocation (like Either.Left)</li>
+<li><strong><code>invalidLongChain</code></strong> benefits from sustained instance reuse over deep chains</li>
+<li>If Invalid operations allocate memory, instance reuse is broken</li>
+</ul>
+<pre><code class="language-bash">./gradlew :hkj-benchmarks:jmh --includes=".*ValidatedBenchmark.*"
+</code></pre>
+<p>See <a href="../benchmarks.html">Benchmarks &amp; Performance</a> for full details.</p>
 </div>
 </div>
 <hr />

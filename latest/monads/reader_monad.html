@@ -512,17 +512,80 @@ Kind&lt;ReaderKind.Witness&lt;AppConfig&gt;, Unit&gt; getUrlAndLogKey = readerMo
 </ul>
 </div>
 </div>
-<div id="admonition-key-points" class="admonition admonish-tip" role="note" aria-labelledby="admonition-key-points-title">
+<div id="admonition-how-environment-threading-works" class="admonition admonish-note" role="note" aria-labelledby="admonition-how-environment-threading-works-title">
+<div class="admonition-title">
+<div id="admonition-how-environment-threading-works-title">
+<p>How Environment Threading Works</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-how-environment-threading-works"></a>
+</div>
+<div>
+<pre><code>                        AppConfig
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+         getDbUrl     getTimeout    getApiKey
+         (config)     (config)      (config)
+              │            │            │
+              ▼            ▼            ▼
+        "prod-db"       5000       "key-123"
+
+flatMap chains pass the SAME environment to each step:
+
+runReader(program, config)
+    │
+    ├──► getDbUrl(config)        → "prod-db"
+    ├──► buildConn(url, config)  → "prod-db?key=key-123"
+    └──► formatInfo(conn)        → "Connected to prod-db"
+</code></pre>
+<p>Each step in a <code>flatMap</code> chain receives the same environment <code>R</code>. The environment is provided once at the end via <code>runReader</code> — individual steps never need it as an explicit parameter.</p>
+</div>
+</div>
+<h2 id="when-to-use-reader"><a class="header" href="#when-to-use-reader">When to Use Reader</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Use</th></tr></thead><tbody>
+<tr><td>Threading configuration through multiple functions</td><td><code>Reader</code> / <code>ReaderMonad</code></td></tr>
+<tr><td>Functional dependency injection</td><td><code>Reader</code> — dependencies provided at <code>runReader</code> time</td></tr>
+<tr><td>Testing with different configurations</td><td><code>Reader</code> — swap environments without changing code</td></tr>
+<tr><td>Modifying the environment for a sub-computation</td><td><code>Reader</code> with <code>local</code> (modify env for inner Reader)</td></tr>
+<tr><td>Combining configuration with error handling or async</td><td>Use <a href="../transformers/readert_transformer.html">ReaderT transformer</a></td></tr>
+<tr><td>Application-level environment-dependent pipelines</td><td>Prefer composing with other Path types</td></tr>
+</tbody></table>
+</div><div id="admonition-key-points" class="admonition admonish-tip" role="note" aria-labelledby="admonition-key-points-title">
 <div class="admonition-title">
 <div id="admonition-key-points-title">
-<p>Key Points:</p>
+<p>Key Points</p>
 </div>
 <a class="admonition-anchor-link" href="#admonition-key-points"></a>
 </div>
 <div>
-<p>The Reader monad (<code>Reader&lt;R, A&gt;</code>, <code>ReaderKind</code>, <code>ReaderMonad</code>) in <code>Higher-Kinded-J</code> provides a functional approach to dependency injection and configuration management.</p>
-<p>It allows you to define computations that depend on a read-only environment <code>R</code> without explicitly passing <code>R</code> everywhere. By using Higher-Kinded-J and the <code>ReaderMonad</code>, you can compose these dependent functions cleanly using <code>map</code> and <code>flatMap</code>, providing the actual environment only once when the final computation is executed via <code>runReader</code>.</p>
-<p>This leads to more modular, testable, and less cluttered code when dealing with shared context.</p>
+<ul>
+<li><code>Reader&lt;R, A&gt;</code> wraps a function <code>R → A</code> — it describes a computation that depends on environment <code>R</code>.</li>
+<li>Nothing executes until <code>runReader(reader, environment)</code> is called with a concrete environment.</li>
+<li><code>flatMap</code> chains pass the <strong>same</strong> environment to each step — no manual threading.</li>
+<li><code>ask()</code> returns the environment itself — useful when a step needs the full config.</li>
+<li><code>constant(value)</code> ignores the environment — useful for lifting pure values into Reader context.</li>
+<li><code>Reader&lt;R, A&gt;</code> directly implements <code>ReaderKind&lt;R, A&gt;</code>, so <code>widen</code>/<code>narrow</code> are zero-cost casts.</li>
+</ul>
+</div>
+</div>
+<hr />
+<div id="admonition-benchmarks" class="admonition admonish-example" role="note" aria-labelledby="admonition-benchmarks-title">
+<div class="admonition-title">
+<div id="admonition-benchmarks-title">
+<p>Benchmarks</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-benchmarks"></a>
+</div>
+<div>
+<p>Reader has dedicated JMH benchmarks measuring function composition overhead, environment access, and chain depth. Key expectations:</p>
+<ul>
+<li><strong><code>of</code> / <code>constant</code></strong> are very fast — they wrap a function with no computation</li>
+<li><strong><code>flatMap</code> chains</strong> incur minimal overhead — each step is a function call with the shared environment</li>
+<li><strong><code>ask</code></strong> is essentially free — it returns the environment directly</li>
+</ul>
+<pre><code class="language-bash">./gradlew :hkj-benchmarks:jmh --includes=".*ReaderBenchmark.*"
+</code></pre>
+<p>See <a href="../benchmarks.html">Benchmarks &amp; Performance</a> for full details and how to interpret results.</p>
 </div>
 </div>
 <div id="admonition-further-reading" class="admonition admonish-tip" role="note" aria-labelledby="admonition-further-reading-title">

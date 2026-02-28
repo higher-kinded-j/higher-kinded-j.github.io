@@ -287,9 +287,27 @@
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/io/IOExample.java">IOExample.java</a></p>
 </div>
 </div>
-<p>In functional programming, managing side effects (like printing to the console, reading files, making network calls, generating random numbers, or getting the current time) while maintaining purity is a common challenge.</p>
-<p>The <code>IO&lt;A&gt;</code> monad in <code>higher-kinded-j</code> provides a way to encapsulate these side-effecting computations, making them first-class values that can be composed and manipulated functionally.</p>
-<p>The key idea is that an <code>IO&lt;A&gt;</code> value doesn't <em>perform</em> the side effect immediately upon creation. Instead, it represents a <em>description</em> or <em>recipe</em> for a computation that, when executed, will perform the effect and potentially produce a value of type <code>A</code>. The actual execution is deferred until explicitly requested.</p>
+<h2 id="the-problem-side-effects-everywhere"><a class="header" href="#the-problem-side-effects-everywhere">The Problem: Side Effects Everywhere</a></h2>
+<p>Consider a method that loads configuration, connects to a database, and logs the result:</p>
+<pre><code class="language-java">// Every call executes immediately — untestable, unrepeatable, order-dependent
+Config config = loadConfig();                     // reads disk
+Connection conn = connectToDb(config);            // opens network socket
+logger.info("Connected to " + conn.endpoint());   // writes to stdout
+return conn;
+</code></pre>
+<p>Each line performs a side effect the instant it runs. You can't test <code>connectToDb</code> without a real database. You can't reorder or retry steps without re-executing earlier effects. And if you want to compose this with other workflows, you're stuck — the effects have already happened.</p>
+<p>The <code>IO</code> monad solves this by separating <strong>description</strong> from <strong>execution</strong>. An <code>IO&lt;A&gt;</code> value is a <em>recipe</em> for a computation that will produce an <code>A</code> when run — but nothing happens until you explicitly say "go." This means you can build, compose, and inspect entire programs as pure values, then execute them once at the application boundary.</p>
+<pre><code class="language-java">// Describe effects — nothing executes yet
+Kind&lt;IOKind.Witness, Config&gt;     loadCfg  = IO_OP.delay(() -&gt; loadConfig());
+Kind&lt;IOKind.Witness, Connection&gt; connect  = ioMonad.flatMap(
+    cfg -&gt; IO_OP.delay(() -&gt; connectToDb(cfg)), loadCfg);
+Kind&lt;IOKind.Witness, Connection&gt; logged   = ioMonad.peek(
+    conn -&gt; logger.info("Connected to " + conn.endpoint()), connect);
+
+// Execute the entire recipe at the edge
+Connection conn = IO_OP.unsafeRunSync(logged);
+</code></pre>
+<p>The logic is testable (swap <code>loadConfig</code> for a stub), composable (chain more steps with <code>flatMap</code>), and the effects happen exactly once, in exactly the order you specified.</p>
 <h2 id="core-components"><a class="header" href="#core-components">Core Components</a></h2>
 <p><strong>The IO Type</strong></p>
 <p><img src="../images/puml/io_detail.svg" alt="io_detail.svg" /></p>
@@ -297,206 +315,233 @@
 <p><img src="../images/puml/io_kind.svg" alt="io_kind.svg" /></p>
 <p><strong>Typeclasses for IO</strong></p>
 <p><img src="../images/puml/io_monad.svg" alt="io_monad.svg" /></p>
-<p>The <code>IO</code> functionality is built upon several related components:</p>
-<ol>
-<li><strong><code>IO&lt;A&gt;</code></strong>: The core functional interface. An <code>IO&lt;A&gt;</code> instance essentially wraps a <code>Supplier&lt;A&gt;</code> (or similar function) that performs the side effect and returns a value <code>A</code>. The crucial method is <code>unsafeRunSync()</code>, which executes the encapsulated computation. <code>IO&lt;A&gt;</code> directly extends <code>IOKind&lt;A&gt;</code>, making it a first-class participant in the HKT simulation.</li>
-<li><strong><code>IOKind&lt;A&gt;</code></strong>: The HKT marker interface (<code>Kind&lt;IOKind.Witness, A&gt;</code>) for <code>IO</code>. This allows <code>IO</code> to be treated as a generic type constructor <code>F</code> in type classes like <code>Functor</code>, <code>Applicative</code>, and <code>Monad</code>. The witness type is <code>IOKind.Witness</code>. Since <code>IO&lt;A&gt;</code> directly extends this interface, no wrapper types are needed.</li>
-<li><strong><code>IOKindHelper</code></strong>: The essential utility class for working with <code>IO</code> in the HKT simulation. It provides:
-<ul>
-<li><code>widen(IO&lt;A&gt;)</code>: Converts a concrete <code>IO&lt;A&gt;</code> instance into its HKT representation <code>Kind&lt;IOKind.Witness, A&gt;</code>. Since <code>IO</code> directly implements <code>IOKind</code>, this is a null-checked cast with zero runtime overhead.</li>
-<li><code>narrow(Kind&lt;IOKind.Witness, A&gt;)</code>: Converts back to the concrete <code>IO&lt;A&gt;</code>. Performs an <code>instanceof IO</code> check and cast. Throws <code>KindUnwrapException</code> if the input Kind is invalid.</li>
-<li><code>delay(Supplier&lt;A&gt;)</code>: The primary factory method to create an <code>IOKind&lt;A&gt;</code> by wrapping a side-effecting computation described by a <code>Supplier</code>.</li>
-<li><code>unsafeRunSync(Kind&lt;IOKind.Witness, A&gt;)</code>: The method to <em>execute</em> the computation described by an <code>IOKind</code>. This is typically called at the "end of the world" in your application (e.g., in the <code>main</code> method) to run the composed IO program.</li>
-</ul>
-</li>
-<li><strong><code>IOFunctor</code></strong>: Implements <code>Functor&lt;IOKind.Witness&gt;</code>. Provides the <code>map</code> operation to transform the result value <code>A</code> of an <code>IO</code> computation <em>without</em> executing the effect.</li>
-<li><strong><code>IOApplicative</code></strong>: Extends <code>IOFunctor</code> and implements <code>Applicative&lt;IOKind.Witness&gt;</code>. Provides <code>of</code> (to lift a pure value into <code>IO</code> without side effects) and <code>ap</code> (to apply a function within <code>IO</code> to a value within <code>IO</code>).</li>
-<li><strong><code>IOMonad</code></strong>: Extends <code>IOApplicative</code> and implements <code>Monad&lt;IOKind.Witness&gt;</code>. Provides <code>flatMap</code> to sequence <code>IO</code> computations, ensuring effects happen in the intended order.</li>
-</ol>
-<h2 id="purpose-and-usage"><a class="header" href="#purpose-and-usage">Purpose and Usage</a></h2>
-<ul>
-<li><strong>Encapsulating Side Effects</strong>: Describe effects (like printing, reading files, network calls) as <code>IO</code> values without executing them immediately.</li>
-<li><strong>Maintaining Purity</strong>: Functions that create or combine <code>IO</code> values remain pure. They don't perform the effects themselves, they just build up a description of the effects to be performed later.</li>
-<li><strong>Composition</strong>: Use <code>map</code> and <code>flatMap</code> (via <code>IOMonad</code>) to build complex sequences of side-effecting operations from smaller, reusable <code>IO</code> actions.</li>
-<li><strong>Deferred Execution</strong>: Effects are only performed when <code>unsafeRunSync</code> is called on the final, composed <code>IO</code> value. This separates the description of the program from its execution.</li>
-</ul>
-<p><strong>Important Note:</strong> <code>IO</code> in this library primarily deals with <em>deferring</em> execution. It does <em>not</em> automatically provide sophisticated error handling like <code>Either</code> or <code>Try</code>, nor does it manage asynchronicity like <code>CompletableFuture</code>. Exceptions thrown during <code>unsafeRunSync</code> will typically propagate unless explicitly handled <em>within</em> the <code>Supplier</code> provided to <code>IOKindHelper.delay</code>. For combining IO with typed error handling, consider using <code>EitherT&lt;IOKind.Witness, E, A&gt;</code> (monad transformer) or wrapping IO operations with <code>Try</code> for exception handling.</p>
-<div id="admonition-example-1-creating-basic-io-actions" class="admonition admonish-example" role="note" aria-labelledby="admonition-example-1-creating-basic-io-actions-title">
+<p>The <code>IO</code> functionality is built upon these key pieces:</p>
+<div class="table-wrapper"><table><thead><tr><th>Component</th><th>Role</th></tr></thead><tbody>
+<tr><td><code>IO&lt;A&gt;</code></td><td>Wraps a <code>Supplier&lt;A&gt;</code> — describes an effect that produces <code>A</code> when run. Directly extends <code>IOKind&lt;A&gt;</code>, so no wrapper allocation is needed.</td></tr>
+<tr><td><code>IOKind&lt;A&gt;</code> / <code>IOKindHelper</code></td><td>HKT bridge: <code>widen()</code> and <code>narrow()</code> (zero-cost casts), <code>delay()</code> to create deferred effects, <code>unsafeRunSync()</code> to execute them</td></tr>
+<tr><td><code>IOMonad</code></td><td>Type class instance (<code>Monad&lt;IOKind.Witness&gt;</code>): provides <code>map</code>, <code>flatMap</code>, <code>of</code>, and <code>ap</code> for composing IO programs</td></tr>
+</tbody></table>
+</div><div id="admonition-how-the-operations-map" class="admonition admonish-note" role="note" aria-labelledby="admonition-how-the-operations-map-title">
 <div class="admonition-title">
-<div id="admonition-example-1-creating-basic-io-actions-title">
-<p>Example 1: Creating Basic IO Actions</p>
+<div id="admonition-how-the-operations-map-title">
+<p>How the Operations Map</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-example-1-creating-basic-io-actions"></a>
+<a class="admonition-anchor-link" href="#admonition-how-the-operations-map"></a>
+</div>
+<div>
+<div class="table-wrapper"><table><thead><tr><th>Type Class Operation</th><th>What It Does</th></tr></thead><tbody>
+<tr><td><code>IO_OP.delay(supplier)</code></td><td>Wrap a side effect — nothing executes yet</td></tr>
+<tr><td><code>ioMonad.of(value)</code></td><td>Lift a pure value into IO (no effect)</td></tr>
+<tr><td><code>ioMonad.map(f, fa)</code></td><td>Transform the eventual result without adding new effects</td></tr>
+<tr><td><code>ioMonad.flatMap(f, fa)</code></td><td>Sequence two effects — the second can depend on the first's result</td></tr>
+<tr><td><code>ioMonad.ap(ff, fa)</code></td><td>Apply a function-in-IO to a value-in-IO</td></tr>
+<tr><td><code>IO_OP.unsafeRunSync(fa)</code></td><td><strong>Execute</strong> — run the recipe and produce the result. Call this at the edge.</td></tr>
+</tbody></table>
+</div></div>
+</div>
+<div id="admonition-what-io-does-not-do" class="admonition admonish-warning" role="note" aria-labelledby="admonition-what-io-does-not-do-title">
+<div class="admonition-title">
+<div id="admonition-what-io-does-not-do-title">
+<p>What IO Does Not Do</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-what-io-does-not-do"></a>
+</div>
+<div>
+<ul>
+<li><strong>Error handling</strong> — Exceptions thrown during <code>unsafeRunSync</code> propagate directly. For typed error handling, combine with <a href="../transformers/eithert_transformer.html">EitherT</a> or wrap operations with <a href="./try_monad.html">Try</a>.</li>
+<li><strong>Async execution</strong> — IO runs synchronously on the calling thread. For async, see <a href="./cf_monad.html">CompletableFutureMonad</a>. For virtual-thread concurrency, see <a href="./vtask_monad.html">VTaskPath</a>.</li>
+<li><strong>Resource management</strong> — IO alone doesn't guarantee cleanup. Use <a href="../effect/path_io.html">IOPath's bracket pattern</a> for safe resource handling.</li>
+</ul>
+</div>
+</div>
+<h2 id="working-with-io"><a class="header" href="#working-with-io">Working with IO</a></h2>
+<p>The following examples build a small program step by step: creating IO actions, composing them, then executing the result.</p>
+<div id="admonition-creating-io-actions" class="admonition admonish-example" role="note" aria-labelledby="admonition-creating-io-actions-title">
+<div class="admonition-title">
+<div id="admonition-creating-io-actions-title">
+<p>Creating IO Actions</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-creating-io-actions"></a>
 </div>
 <div>
 <ul>
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/io/IOExample.java">IOExample.java</a></li>
 </ul>
-<p>Use <code>IOKindHelper.delay</code> to capture side effects. Use <code>IOMonad.of</code> for pure values within IO.</p>
-<pre><code class="language-java">import org.higherkindedj.hkt.Kind;
-import org.higherkindedj.hkt.io.*; 
-import org.higherkindedj.hkt.Unit;
-import java.util.function.Supplier;
-import java.util.Scanner;
+<p>Use <code>IO_OP.delay</code> to capture side effects. Use <code>ioMonad.of</code> for pure values within IO.</p>
+<pre><code class="language-java">IOMonad ioMonad = IOMonad.INSTANCE;
+java.util.Scanner scanner = new java.util.Scanner(System.in);
 
-// Get the IOMonad instance
-IOMonad ioMonad = IOMonad.INSTANCE;
-
-// IO action to print a message
-Kind&lt;IOKind.Witness, Unit&gt; printHello = IOKindHelper.delay(() -&gt; {
+// IO action to print a message — nothing happens yet
+Kind&lt;IOKind.Witness, Unit&gt; printHello = IO_OP.delay(() -&gt; {
     System.out.println("Hello from IO!");
     return Unit.INSTANCE;
 });
 
-// IO action to read a line from the console
-Kind&lt;IOKind.Witness, String&gt; readLine = IOKindHelper.delay(() -&gt; {
+// IO action to read a line from the console — nothing happens yet
+Kind&lt;IOKind.Witness, String&gt; readLine = IO_OP.delay(() -&gt; {
     System.out.print("Enter your name: ");
-    // Scanner should ideally be managed more robustly in real apps
-    try (Scanner scanner = new Scanner(System.in)) {
-         return scanner.nextLine();
-    }
+    return scanner.nextLine();
 });
 
-// IO action that returns a pure value (no side effect description here)
+// Lift a pure value — no side effect at all
 Kind&lt;IOKind.Witness, Integer&gt; pureValueIO = ioMonad.of(42);
 
-// IO action that simulates getting the current time (a side effect)
-Kind&lt;IOKind.Witness, Long&gt; currentTime = IOKindHelper.delay(System::currentTimeMillis);
-
-// Creating an IO action that might fail internally
-Kind&lt;IOKind.Witness, String&gt; potentiallyFailingIO = IOKindHelper.delay(() -&gt; {
-   if (Math.random() &lt; 0.5) {
-       throw new RuntimeException("Simulated failure!");
-   }
-   return "Success!";
-});
-
-
+// Capture a time-dependent side effect
+Kind&lt;IOKind.Witness, Long&gt; currentTime = IO_OP.delay(System::currentTimeMillis);
 </code></pre>
+<p>None of these execute when created. The <code>Supplier</code> inside <code>delay</code> is stored, not called.</p>
 </div>
 </div>
-<p><em>Nothing happens when you create these <code>IOKind</code> values. The <code>Supplier</code> inside <code>delay</code> is not executed.</em></p>
-<div id="admonition-example-2-executing-io-actions" class="admonition admonish-example" role="note" aria-labelledby="admonition-example-2-executing-io-actions-title">
+<div id="admonition-executing-io-actions" class="admonition admonish-example" role="note" aria-labelledby="admonition-executing-io-actions-title">
 <div class="admonition-title">
-<div id="admonition-example-2-executing-io-actions-title">
-<p>Example 2. Executing IO Actions</p>
+<div id="admonition-executing-io-actions-title">
+<p>Executing IO Actions</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-example-2-executing-io-actions"></a>
+<a class="admonition-anchor-link" href="#admonition-executing-io-actions"></a>
 </div>
 <div>
 <ul>
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/io/IOExample.java">IOExample.java</a></li>
 </ul>
-<p>Use <code>IOKindHelper.unsafeRunSync</code> to run the computation.</p>
-<pre><code class="language-java">// (Continuing from above examples)
-
-// Execute printHello
-System.out.println("Running printHello:");
-IOKindHelper.unsafeRunSync(printHello); // Actually prints "Hello from IO!"
-
-// Execute readLine (will block for user input)
-// System.out.println("\nRunning readLine:");
-// String name = IOKindHelper.unsafeRunSync(readLine);
-// System.out.println("User entered: " + name);
+<p>Use <code>IO_OP.unsafeRunSync</code> to run the computation. This is the "end of the world" — call it at application boundaries, not deep inside your logic.</p>
+<pre><code class="language-java">// Execute printHello — now the effect happens
+IO_OP.unsafeRunSync(printHello); // prints "Hello from IO!"
 
 // Execute pureValueIO
-System.out.println("\nRunning pureValueIO:");
-Integer fetchedValue = IOKindHelper.unsafeRunSync(pureValueIO);
-System.out.println("Fetched pure value: " + fetchedValue); // Output: 42
+Integer value = IO_OP.unsafeRunSync(pureValueIO);
+System.out.println("Fetched: " + value); // Output: 42
 
-// Execute potentiallyFailingIO
-System.out.println("\nRunning potentiallyFailingIO:");
+// Running the same action again re-executes the effect
+IO_OP.unsafeRunSync(printHello); // prints "Hello from IO!" again
+
+// Exceptions propagate — handle at the boundary
+Kind&lt;IOKind.Witness, String&gt; risky = IO_OP.delay(() -&gt; {
+    if (Math.random() &lt; 0.5) throw new RuntimeException("Boom!");
+    return "OK";
+});
 try {
-String result = IOKindHelper.unsafeRunSync(potentiallyFailingIO);
-   System.out.println("Succeeded: " + result);
+    IO_OP.unsafeRunSync(risky);
 } catch (RuntimeException e) {
-   System.err.println("Caught expected failure: " + e.getMessage());
-   }
-
-// Notice that running the same IO action again executes the effect again
-   System.out.println("\nRunning printHello again:");
-IOKindHelper.unsafeRunSync(printHello); // Prints "Hello from IO!" again
+    System.err.println("Caught: " + e.getMessage());
+}
 </code></pre>
 </div>
 </div>
-<div id="admonition-example-3-composing-io-actions-with-_map_-and-_flatmap_" class="admonition admonish-example" role="note" aria-labelledby="admonition-example-3-composing-io-actions-with-_map_-and-_flatmap_-title">
+<div id="admonition-composing-with-map-and-flatmap" class="admonition admonish-example" role="note" aria-labelledby="admonition-composing-with-map-and-flatmap-title">
 <div class="admonition-title">
-<div id="admonition-example-3-composing-io-actions-with-_map_-and-_flatmap_-title">
-<p>Example 3: Composing IO Actions with <em>map</em> and <em>flatMap</em></p>
+<div id="admonition-composing-with-map-and-flatmap-title">
+<p>Composing with map and flatMap</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-example-3-composing-io-actions-with-_map_-and-_flatmap_"></a>
+<a class="admonition-anchor-link" href="#admonition-composing-with-map-and-flatmap"></a>
 </div>
 <div>
 <ul>
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/io/IOExample.java">IOExample.java</a></li>
 </ul>
-<p>Use <code>IOMonad</code> instance methods.</p>
-<pre><code class="language-java">import org.higherkindedj.hkt.io.IOMonad;
-import org.higherkindedj.hkt.Unit;
-import java.util.function.Function;
+<p><code>map</code> transforms the result of an IO action <em>without executing it</em>. <code>flatMap</code> sequences two IO actions — the second can depend on the first's result.</p>
+<pre><code class="language-java">IOMonad ioMonad = IOMonad.INSTANCE;
 
-IOMonad ioMonad = IOMonad.INSTANCE;
+// --- map: transform a result ---
+Kind&lt;IOKind.Witness, String&gt; readLineAction = IO_OP.delay(() -&gt; "Test Input");
 
-// --- map example ---
-Kind&lt;IOKind.Witness, String&gt; readLineAction = IOKindHelper.delay(() -&gt; "Test Input"); // Simulate input
-
-// Map the result of readLineAction without executing readLine yet
 Kind&lt;IOKind.Witness, String&gt; greetAction = ioMonad.map(
-    name -&gt; "Hello, " + name + "!", // Function to apply to the result
+    name -&gt; "Hello, " + name + "!",
     readLineAction
 );
 
 System.out.println("Greet action created, not executed yet.");
-// Now execute the mapped action
-String greeting = IOKindHelper.unsafeRunSync(greetAction);
-System.out.println("Result of map: " + greeting); // Output: Hello, Test Input!
+String greeting = IO_OP.unsafeRunSync(greetAction);
+System.out.println(greeting); // Output: Hello, Test Input!
 
-// --- flatMap example ---
-// Action 1: Get name
-Kind&lt;IOKind.Witness, String&gt; getName = IOKindHelper.delay(() -&gt; {
+// --- flatMap: sequence dependent effects ---
+Kind&lt;IOKind.Witness, String&gt; getName = IO_OP.delay(() -&gt; {
     System.out.println("Effect: Getting name...");
     return "Alice";
 });
 
-// Action 2 (depends on name): Print greeting
 Function&lt;String, Kind&lt;IOKind.Witness, Unit&gt;&gt; printGreeting = name -&gt;
-    IOKindHelper.delay(() -&gt; {
-        System.out.println("Effect: Printing greeting for " + name);
+    IO_OP.delay(() -&gt; {
         System.out.println("Welcome, " + name + "!");
         return Unit.INSTANCE;
     });
 
-// Combine using flatMap
-Kind&lt;IOKind.Witness, Void&gt; combinedAction = ioMonad.flatMap(printGreeting, getName);
+// Combine — nothing runs until unsafeRunSync
+Kind&lt;IOKind.Witness, Unit&gt; combinedAction = ioMonad.flatMap(printGreeting, getName);
 
-System.out.println("\nCombined action created, not executed yet.");
-// Execute the combined action
-IOKindHelper.unsafeRunSync(combinedAction);
+IO_OP.unsafeRunSync(combinedAction);
 // Output:
 // Effect: Getting name...
-// Effect: Printing greeting for Alice
 // Welcome, Alice!
-
-// --- Full Program Example ---
-Kind&lt;IOKind.Witness, Unit&gt; program = ioMonad.flatMap(
-    ignored -&gt; ioMonad.flatMap( // Chain after printing hello
-        name -&gt; ioMonad.map( // Map the result of printing the greeting
-            ignored2 -&gt; { System.out.println("Program finished");
-              return Unit.INSTANCE; },
-              printGreeting.apply(name) // Action 3: Print greeting based on name
-        ),
-        readLine // Action 2: Read line
-    ),
-    printHello // Action 1: Print Hello
-);
-
-System.out.println("\nComplete IO Program defined. Executing...");
-// IOKindHelper.unsafeRunSync(program); // Uncomment to run the full program
 </code></pre>
-<p><em>Notes:</em></p>
+</div>
+</div>
+<div id="admonition-conditional-execution-and-utility-methods" class="admonition admonish-example" role="note" aria-labelledby="admonition-conditional-execution-and-utility-methods-title">
+<div class="admonition-title">
+<div id="admonition-conditional-execution-and-utility-methods-title">
+<p>Conditional Execution and Utility Methods</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-conditional-execution-and-utility-methods"></a>
+</div>
+<div>
 <ul>
-<li><code>map</code> transforms the <em>result</em> of an <code>IO</code> action without changing the effect itself (though the transformation happens <em>after</em> the effect runs).</li>
-<li><code>flatMap</code> sequences <code>IO</code> actions, ensuring the effect of the first action completes before the second action (which might depend on the first action's result) begins.</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/io/IOExample.java">IOExample.java</a></li>
+</ul>
+<p>Beyond <code>map</code> and <code>flatMap</code>, <code>IOMonad</code> provides utility methods for common patterns.</p>
+<pre><code class="language-java">Kind&lt;IOKind.Witness, String&gt; getAliceName = ioMonad.of("Alice");
+
+Function&lt;String, Kind&lt;IOKind.Witness, Unit&gt;&gt; printGreeting = name -&gt;
+    IO_OP.delay(() -&gt; { System.out.println("Welcome, " + name + "!"); return Unit.INSTANCE; });
+
+Function&lt;String, Kind&lt;IOKind.Witness, Unit&gt;&gt; doNothing = name -&gt; ioMonad.of(Unit.INSTANCE);
+
+// peek — log without affecting the pipeline
+Kind&lt;IOKind.Witness, String&gt; logged =
+    ioMonad.peek(name -&gt; System.out.println("LOG: Name -&gt; " + name), getAliceName);
+
+// flatMapIfOrElse — conditional branching
+Kind&lt;IOKind.Witness, Unit&gt; conditionalGreeting =
+    ioMonad.flatMapIfOrElse(
+        name -&gt; !name.equalsIgnoreCase("admin"),  // predicate
+        printGreeting,                              // true branch
+        doNothing,                                  // false branch
+        logged                                      // input value
+    );
+
+// as — replace the result, keeping the effect
+Kind&lt;IOKind.Witness, Unit&gt; finalProgram =
+    ioMonad.as(
+        Unit.INSTANCE,
+        ioMonad.peek(_ -&gt; System.out.println("Program finished."), conditionalGreeting));
+
+IO_OP.unsafeRunSync(finalProgram);
+// Output:
+// LOG: Name -&gt; Alice
+// Welcome, Alice!
+// Program finished.
+</code></pre>
+</div>
+</div>
+<h2 id="when-to-use-io"><a class="header" href="#when-to-use-io">When to Use IO</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Use</th></tr></thead><tbody>
+<tr><td>Deferring side effects for testability and composition</td><td><code>IO</code> / <code>IOMonad</code></td></tr>
+<tr><td>Side effects with typed error handling</td><td>Combine with <a href="../transformers/eithert_transformer.html">EitherT</a></td></tr>
+<tr><td>Application-level effect composition</td><td>Prefer <a href="../effect/path_io.html">IOPath</a> for fluent API</td></tr>
+<tr><td>Concurrent / async execution</td><td>Consider <a href="./vtask_monad.html">VTaskPath</a> or <a href="./cf_monad.html">CompletableFutureMonad</a></td></tr>
+</tbody></table>
+</div><div id="admonition-key-points" class="admonition admonish-tip" role="note" aria-labelledby="admonition-key-points-title">
+<div class="admonition-title">
+<div id="admonition-key-points-title">
+<p>Key Points</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-key-points"></a>
+</div>
+<div>
+<ul>
+<li><code>IO&lt;A&gt;</code> is a <strong>description</strong>, not an execution. Nothing happens until <code>unsafeRunSync</code> is called.</li>
+<li><code>IO&lt;A&gt;</code> directly extends <code>IOKind&lt;A&gt;</code>, so <code>widen</code>/<code>narrow</code> are zero-cost casts — no wrapper allocation.</li>
+<li><code>map</code> transforms the eventual result; <code>flatMap</code> sequences dependent effects. Neither triggers execution.</li>
+<li>Call <code>unsafeRunSync</code> at the application boundary ("end of the world") — never deep inside business logic.</li>
+<li>Re-running the same IO value re-executes the effect. IO values are recipes, not cached results.</li>
 </ul>
 </div>
 </div>
@@ -516,9 +561,9 @@ System.out.println("\nComplete IO Program defined. Executing...");
 <li>A consistent API shared across all effect types</li>
 </ul>
 <pre><code class="language-java">// Instead of manual IO chaining:
-Kind&lt;IOKind.Witness, Config&gt; config = IOKindHelper.delay(() -&gt; loadConfig());
+Kind&lt;IOKind.Witness, Config&gt; config = IO_OP.delay(() -&gt; loadConfig());
 Kind&lt;IOKind.Witness, String&gt; value = ioMonad.flatMap(
-    c -&gt; IOKindHelper.delay(() -&gt; c.getValue("key")), config);
+    c -&gt; IO_OP.delay(() -&gt; c.getValue("key")), config);
 
 // Use IOPath for cleaner composition:
 IOPath&lt;String&gt; value = Path.io(() -&gt; loadConfig())

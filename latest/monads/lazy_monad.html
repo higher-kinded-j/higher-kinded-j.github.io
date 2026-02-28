@@ -269,10 +269,10 @@
 <div>
 <ul>
 <li>How to defer expensive computations until their results are actually needed</li>
-<li>Understanding memoisation and how results are cached after first evaluation</li>
-<li>Handling exceptions in lazy computations with ThrowableSupplier</li>
-<li>Composing lazy operations while preserving laziness</li>
-<li>Building efficient pipelines that avoid unnecessary work</li>
+<li>Understanding memoization: compute once, read many times</li>
+<li>Composing lazy operations with <code>map</code> and <code>flatMap</code> while preserving laziness</li>
+<li>Handling exceptions in lazy computations with <code>ThrowableSupplier</code></li>
+<li>Choosing between <code>Lazy</code> and <code>IO</code> for deferred work</li>
 </ul>
 </div>
 </div>
@@ -287,7 +287,35 @@
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/lazy/LazyExample.java">LazyExample.java</a></p>
 </div>
 </div>
-<p>This article introduces the <code>Lazy&lt;A&gt;</code> type and its associated components within the <code>higher-kinded-j</code> library. <code>Lazy</code> provides a mechanism for deferred computation, where a value is calculated only when needed and the result (or any exception thrown during calculation) is memoised (cached).</p>
+<h2 id="the-problem-doing-work-youll-throw-away"><a class="header" href="#the-problem-doing-work-youll-throw-away">The Problem: Doing Work You'll Throw Away</a></h2>
+<p>Imagine a dashboard that assembles a user summary from three data sources:</p>
+<pre><code class="language-java">String buildDashboard(String userId) {
+    var profile         = fetchUserProfile(userId);      // 200ms
+    var recommendations = fetchRecommendations(userId);  // 800ms
+    var analytics       = fetchAnalytics(userId);        // 500ms
+    return summarize(profile, recommendations, analytics);
+}
+</code></pre>
+<p>Every call pays the full 1500ms cost. But 90% of callers only need the profile. The other two results are assembled, inspected, and thrown away. That is 1300ms of wasted work on nearly every request.</p>
+<pre><code>EAGER (always runs everything):         LAZY (runs on demand):
+  fetchUserProfile()    -&gt; 200ms done     defer(fetchUserProfile)     -&gt; 0ms
+  fetchRecommendations()-&gt; 800ms waste    defer(fetchRecommendations) -&gt; 0ms
+  fetchAnalytics()      -&gt; 500ms waste    defer(fetchAnalytics)       -&gt; 0ms
+  Total: 1500ms                          force(userProfile)          -&gt; 200ms
+                                         Total: 200ms (saved 87%)
+</code></pre>
+<p>With <code>Lazy</code>, each computation is wrapped in a deferred shell. Nothing runs until you explicitly call <code>force()</code>. If you never force a value, you never pay its cost.</p>
+<p>This is not a niche optimization. Any time your code builds a data structure with fields that are expensive to populate but cheap to skip, laziness eliminates wasted work at zero architectural cost. The calling code decides what to evaluate -- not the producer.</p>
+<h2 id="the-fix-defer-and-force"><a class="header" href="#the-fix-defer-and-force">The Fix: Defer and Force</a></h2>
+<p><code>Lazy&lt;A&gt;</code> stores a computation without executing it. Call <code>defer()</code> to wrap the work; call <code>force()</code> when you actually need the result. After the first <code>force()</code>, the result is cached -- subsequent calls return instantly with zero recomputation.</p>
+<pre><code class="language-java">Kind&lt;LazyKind.Witness, String&gt; profile = LAZY.defer(() -&gt; fetchUserProfile(userId));
+// Nothing has executed yet.
+
+String result = LAZY.force(profile);  // Now it runs -- once.
+String cached = LAZY.force(profile);  // Returns the cached value instantly.
+</code></pre>
+<p>This is the "compute once, read many" guarantee. Whether you force the value twice or two thousand times, the underlying supplier runs exactly once. The first caller pays the cost; every subsequent caller gets the answer for free.</p>
+<p>Contrast this with a raw <code>Supplier&lt;T&gt;</code>, which re-executes on every <code>.get()</code> call. <code>Lazy</code> gives you the same deferred interface with built-in caching and exception handling baked in.</p>
 <h2 id="core-components"><a class="header" href="#core-components">Core Components</a></h2>
 <p><strong>The Lazy Type</strong></p>
 <p><img src="../images/puml/lazy_class.svg" alt="lazy_class.svg" /></p>
@@ -295,169 +323,196 @@
 <p><img src="../images/puml/lazy_kind.svg" alt="lazy_kind.svg" /></p>
 <p><strong>Typeclasses for Lazy</strong></p>
 <p><img src="../images/puml/lazy_monad.svg" alt="lazy_monad.svg" /></p>
-<p>The lazy evaluation feature revolves around these key types:</p>
-<ol>
-<li><strong><code>ThrowableSupplier&lt;T&gt;</code></strong>: A functional interface similar to <code>java.util.function.Supplier</code>, but its <code>get()</code> method is allowed to throw any <code>Throwable</code> (including checked exceptions). This is used as the underlying computation for <code>Lazy</code>.</li>
-<li><strong><code>Lazy&lt;A&gt;</code></strong>: The core class representing a computation that produces a value of type <code>A</code> lazily. It takes a <code>ThrowableSupplier&lt;? extends A&gt;</code> during construction (<code>Lazy.defer</code>). Evaluation is triggered only by the <code>force()</code> method, and the result or exception is cached. <code>Lazy.now(value)</code> creates an already evaluated instance.</li>
-<li><strong><code>LazyKind&lt;A&gt;</code></strong>: The HKT marker interface (<code>Kind&lt;LazyKind.Witness, A&gt;</code>) for <code>Lazy</code>, allowing it to be used generically with type classes like <code>Functor</code> and <code>Monad</code>.</li>
-<li><strong><code>LazyKindHelper</code></strong>: A utility class providing static methods to bridge between the concrete <code>Lazy&lt;A&gt;</code> type and its HKT representation <code>LazyKind&lt;A&gt;</code>. It includes:
-<ul>
-<li><code>widen(Lazy&lt;A&gt;)</code>: Wraps a <code>Lazy</code> instance into <code>LazyKind</code>.</li>
-<li><code>narrow(Kind&lt;LazyKind.Witness, A&gt;)</code>: Unwraps <code>LazyKind</code> back to <code>Lazy</code>. Throws <code>KindUnwrapException</code> if the input Kind is invalid.</li>
-<li><code>defer(ThrowableSupplier&lt;A&gt;)</code>: Factory to create a <code>LazyKind</code> from a computation.</li>
-<li><code>now(A value)</code>: Factory to create an already evaluated <code>LazyKind</code>.</li>
-<li><code>force(Kind&lt;LazyKind.Witness, A&gt;)</code>: Convenience method to unwrap and force evaluation.</li>
-</ul>
-</li>
-<li><strong><code>LazyMonad</code></strong>: The type class instance implementing <code>Monad&lt;LazyKind.Witness&gt;</code>, <code>Applicative&lt;LazyKind.Witness&gt;</code>, and <code>Functor&lt;LazyKind.Witness&gt;</code>. It provides standard monadic operations (<code>map</code>, <code>flatMap</code>, <code>of</code>, <code>ap</code>) for <code>LazyKind</code>, ensuring laziness is maintained during composition.</li>
-</ol>
-<h2 id="purpose-and-usage"><a class="header" href="#purpose-and-usage">Purpose and Usage</a></h2>
-<ul>
-<li><strong>Deferred Computation</strong>: Use <code>Lazy</code> when you have potentially expensive computations that should only execute if their result is actually needed.</li>
-<li><strong>Memoization</strong>: The result (or exception) of the computation is stored after the first call to <code>force()</code>, subsequent calls return the cached result without re-computation.</li>
-<li><strong>Exception Handling</strong>: Computations wrapped in <code>Lazy.defer</code> can throw any <code>Throwable</code>. This exception is caught, memoised, and re-thrown by <code>force()</code>.</li>
-<li><strong>Functional Composition</strong>: <code>LazyMonad</code> allows chaining lazy computations using <code>map</code> and <code>flatMap</code> while preserving laziness. The composition itself doesn't trigger evaluation; only forcing the final <code>LazyKind</code> does.</li>
-<li><strong>HKT Integration</strong>: <code>LazyKind</code> and <code>LazyMonad</code> enable using lazy computations within generic functional code expecting <code>Kind&lt;F, A&gt;</code> where <code>F extends WitnessArity&lt;?&gt;</code> and <code>Monad&lt;F&gt;</code> where <code>F extends WitnessArity&lt;TypeArity.Unary&gt;</code>.</li>
-</ul>
-<div id="admonition-example-creating-lazy-instances" class="admonition admonish-example" role="note" aria-labelledby="admonition-example-creating-lazy-instances-title">
-<div class="admonition-title">
-<div id="admonition-example-creating-lazy-instances-title">
-<p>Example: Creating Lazy Instances</p>
+<div class="table-wrapper"><table><thead><tr><th>Component</th><th>Role</th></tr></thead><tbody>
+<tr><td><code>ThrowableSupplier&lt;T&gt;</code></td><td>Like <code>Supplier</code>, but its <code>get()</code> may throw any <code>Throwable</code> -- the computation source for <code>Lazy</code></td></tr>
+<tr><td><code>Lazy&lt;A&gt;</code></td><td>Core class: wraps a supplier, evaluates on <code>force()</code>, and memoizes the result (or exception)</td></tr>
+<tr><td><code>LazyKind&lt;A&gt;</code></td><td>HKT marker (<code>Kind&lt;LazyKind.Witness, A&gt;</code>) so <code>Lazy</code> can participate in generic typeclass code</td></tr>
+<tr><td><code>LazyKindHelper</code></td><td>Bridge utilities: <code>widen</code>, <code>narrow</code>, <code>defer</code>, <code>now</code>, <code>force</code> for converting between <code>Lazy</code> and <code>LazyKind</code></td></tr>
+<tr><td><code>LazyMonad</code></td><td>Typeclass instance implementing <code>Monad</code>, <code>Applicative</code>, and <code>Functor</code> for <code>LazyKind.Witness</code></td></tr>
+</tbody></table>
 </div>
-<a class="admonition-anchor-link" href="#admonition-example-creating-lazy-instances"></a>
+<p><code>LazyKindHelper</code> deserves special attention. It is your primary API surface when working with <code>Lazy</code> in generic HKT code. Its static methods handle the wrapping and unwrapping so you can stay in the <code>Kind&lt;LazyKind.Witness, A&gt;</code> world without manual casting:</p>
+<ul>
+<li><strong><code>defer(supplier)</code></strong> -- create a deferred <code>LazyKind</code> from a <code>ThrowableSupplier</code></li>
+<li><strong><code>now(value)</code></strong> -- create an already-evaluated <code>LazyKind</code></li>
+<li><strong><code>force(kind)</code></strong> -- unwrap and evaluate, returning the cached result or throwing the cached exception</li>
+<li><strong><code>widen(lazy)</code></strong> / <strong><code>narrow(kind)</code></strong> -- convert between <code>Lazy&lt;A&gt;</code> and <code>Kind&lt;LazyKind.Witness, A&gt;</code></li>
+</ul>
+<div id="admonition-how-lazy-evaluation-works" class="admonition admonish-note" role="note" aria-labelledby="admonition-how-lazy-evaluation-works-title">
+<div class="admonition-title">
+<div id="admonition-how-lazy-evaluation-works-title">
+<p>How Lazy Evaluation Works</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-how-lazy-evaluation-works"></a>
 </div>
 <div>
-<ul>
-<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/lazy/LazyExample.java">LazyExample.java</a></li>
-</ul>
-<pre><code class="language-java">
-// 1. Deferring a computation (that might throw checked exception)
-java.util.concurrent.atomic.AtomicInteger counter = new java.util.concurrent.atomic.AtomicInteger(0);
-Kind&lt;LazyKind.Witness, String&gt; deferredLazy = LAZY.defer(() -&gt; {
-    System.out.println("Executing expensive computation...");
+<pre><code>defer(() -&gt; compute())          force()            force()
+       |                           |                  |
+       v                           v                  v
+  [unevaluated]  --------&gt;  [compute &amp; cache]  ---&gt;  [return cached]
+   Supplier stored       Supplier called once     No recomputation
+</code></pre>
+<p>The <code>Supplier</code> is stored on creation, invoked exactly once on the first <code>force()</code>, and the result (or exception) is cached for all subsequent calls.</p>
+</div>
+</div>
+<div id="admonition-memoization-in-action" class="admonition admonish-tip" role="note" aria-labelledby="admonition-memoization-in-action-title">
+<div class="admonition-title">
+<div id="admonition-memoization-in-action-title">
+<p>Memoization in Action</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-memoization-in-action"></a>
+</div>
+<div>
+<p>The first <code>force()</code> pays the full computation cost. Every call after that is effectively free:</p>
+<pre><code>force() #1  --&gt;  supplier runs  --&gt;  result stored  --&gt;  200ms
+force() #2  --&gt;  cache hit      --&gt;  result returned --&gt;    0ms
+force() #3  --&gt;  cache hit      --&gt;  result returned --&gt;    0ms
+  ...
+force() #N  --&gt;  cache hit      --&gt;  result returned --&gt;    0ms
+</code></pre>
+<p>This makes <code>Lazy</code> ideal for values that are expensive to produce but read frequently -- configuration lookups, parsed templates, compiled patterns, and similar compute-once artifacts.</p>
+</div>
+</div>
+<div id="admonition-example-1-deferred-computation" class="admonition admonish-example" role="note" aria-labelledby="admonition-example-1-deferred-computation-title">
+<div class="admonition-title">
+<div id="admonition-example-1-deferred-computation-title">
+<p>Example 1: Deferred Computation</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-example-1-deferred-computation"></a>
+</div>
+<div>
+<p>Creating lazy values does no work. Forcing them does -- exactly once.</p>
+<pre><code class="language-java">AtomicInteger counter = new AtomicInteger(0);
+
+// Deferred: the supplier is stored, not called
+Kind&lt;LazyKind.Witness, String&gt; deferred = LAZY.defer(() -&gt; {
     counter.incrementAndGet();
-    // Simulate potential failure
-    if (System.currentTimeMillis() % 2 == 0) {
-         // Throwing a checked exception is allowed by ThrowableSupplier
-         throw new java.io.IOException("Simulated IO failure");
-    }
-    Thread.sleep(50); // Simulate work
+    Thread.sleep(50); // simulate work
     return "Computed Value";
 });
 
-// 2. Creating an already evaluated Lazy
-Kind&lt;LazyKind.Witness, String&gt; nowLazy = LAZY.now("Precomputed Value");
+// Already-evaluated: no supplier to call later
+Kind&lt;LazyKind.Witness, String&gt; ready = LAZY.now("Precomputed Value");
 
-// 3. Using the underlying Lazy type directly (less common when using HKT)
-Lazy&lt;String&gt; directLazy = Lazy.defer(() -&gt; { counter.incrementAndGet(); return "Direct Lazy"; });
+System.out.println("Counter after creation: " + counter.get()); // 0
+
+String result1 = LAZY.force(deferred);  // runs the supplier
+System.out.println(result1);            // "Computed Value"
+System.out.println("Counter: " + counter.get()); // 1
+
+String result2 = LAZY.force(deferred);  // returns cached value
+System.out.println("Counter: " + counter.get()); // still 1 -- no recomputation
+
+String resultNow = LAZY.force(ready);   // "Precomputed Value" -- counter unchanged
 </code></pre>
+<p>Exceptions follow the same rule: if the computation throws on the first <code>force()</code>, that exception is cached. Every subsequent <code>force()</code> rethrows the same exception without re-executing the supplier. This means error behavior is deterministic -- you will never see a computation fail once, then succeed on retry through the same <code>Lazy</code> instance.</p>
 </div>
 </div>
-<div id="admonition-example-forcing-evaluation" class="admonition admonish-example" role="note" aria-labelledby="admonition-example-forcing-evaluation-title">
+<div id="admonition-example-2-composing-with-map-and-flatmap" class="admonition admonish-example" role="note" aria-labelledby="admonition-example-2-composing-with-map-and-flatmap-title">
 <div class="admonition-title">
-<div id="admonition-example-forcing-evaluation-title">
-<p>Example: Forcing Evaluation</p>
+<div id="admonition-example-2-composing-with-map-and-flatmap-title">
+<p>Example 2: Composing with map and flatMap</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-example-forcing-evaluation"></a>
+<a class="admonition-anchor-link" href="#admonition-example-2-composing-with-map-and-flatmap"></a>
 </div>
 <div>
-<ul>
-<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/lazy/LazyExample.java">LazyExample.java</a></li>
-</ul>
-<p>Evaluation only happens when <code>force()</code> is called (directly or via the helper).</p>
-<pre><code class="language-java">// (Continuing from above)
-System.out.println("Lazy instances created. Counter: " + counter.get()); // Output: 0
+<p><code>LazyMonad</code> lets you chain transformations without triggering evaluation. Only the final <code>force()</code> runs the entire pipeline.</p>
+<pre><code class="language-java">LazyMonad lazyMonad = LazyMonad.INSTANCE;
+AtomicInteger counter = new AtomicInteger(0);
 
-try {
-    // Force the deferred computation
-    String result1 = LAZY.force(deferredLazy); // force() throws Throwable
-    System.out.println("Result 1: " + result1);
-    System.out.println("Counter after first force: " + counter.get()); // Output: 1
+Kind&lt;LazyKind.Witness, Integer&gt; base = LAZY.defer(() -&gt; {
+    counter.incrementAndGet();
+    return 10;
+});
 
-    // Force again - uses memoised result
-    String result2 = LAZY.force(deferredLazy);
-    System.out.println("Result 2: " + result2);
-    System.out.println("Counter after second force: " + counter.get()); // Output: 1 (not re-computed)
+// map: transform the eventual value without forcing it
+Kind&lt;LazyKind.Witness, String&gt; mapped = lazyMonad.map(i -&gt; "Value: " + i, base);
+System.out.println("Counter after map: " + counter.get()); // 0
 
-    // Force the 'now' instance
-    String resultNow = LAZY.force(nowLazy);
-    System.out.println("Result Now: " + resultNow);
-    System.out.println("Counter after forcing 'now': " + counter.get()); // Output: 1 (no computation ran for 'now')
+System.out.println(LAZY.force(mapped)); // "Value: 10"
+System.out.println("Counter: " + counter.get()); // 1
 
-} catch (Throwable t) { // Catch Throwable because force() can re-throw anything
-    System.err.println("Caught exception during force: " + t);
-    // Exception is also memoised:
-    try {
-        LAZY.force(deferredLazy);
-    } catch (Throwable t2) {
-        System.err.println("Caught memoised exception: " + t2);
-        System.out.println("Counter after failed force: " + counter.get()); // Output: 1
-    }
-}
-</code></pre>
-</div>
-</div>
-<div id="admonition-example-using-_lazymonad_-_map_-and-_flatmap_" class="admonition admonish-example" role="note" aria-labelledby="admonition-example-using-_lazymonad_-_map_-and-_flatmap_-title">
-<div class="admonition-title">
-<div id="admonition-example-using-_lazymonad_-_map_-and-_flatmap_-title">
-<p>Example: Using <em>LazyMonad</em> (<em>map</em> and <em>flatMap</em>)</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-example-using-_lazymonad_-_map_-and-_flatmap_"></a>
-</div>
-<div>
-<ul>
-<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/lazy/LazyExample.java">LazyExample.java</a></li>
-</ul>
-<pre><code class="language-java">
-LazyMonad lazyMonad = LazyMonad.INSTANCE;
-counter.set(0); // Reset counter for this example
-
-Kind&lt;LazyKind.Witness, Integer&gt; initialLazy = LAZY.defer(() -&gt; { counter.incrementAndGet(); return 10; });
-
-// --- map ---
-// Apply a function lazily
-Function&lt;Integer, String&gt; toStringMapper = i -&gt; "Value: " + i;
-Kind&lt;LazyKind.Witness, String&gt; mappedLazy = lazyMonad.map(toStringMapper, initialLazy);
-
-System.out.println("Mapped Lazy created. Counter: " + counter.get()); // Output: 0
-
-try {
-    System.out.println("Mapped Result: " + LAZY.force(mappedLazy)); // Triggers evaluation of initialLazy &amp; map
-    // Output: Mapped Result: Value: 10
-    System.out.println("Counter after forcing mapped: " + counter.get()); // Output: 1
-} catch (Throwable t) { /* ... */ }
-
-
-// --- flatMap ---
-// Sequence lazy computations
-Function&lt;Integer, Kind&lt;LazyKind.Witness, String&gt;&gt; multiplyAndStringifyLazy =
-    i -&gt; LAZY.defer(() -&gt; { // Inner computation is also lazy
-        int result = i * 5;
-        return "Multiplied: " + result;
-    });
-
-Kind&lt;LazyKind.Witness, String&gt; flatMappedLazy = lazyMonad.flatMap(multiplyAndStringifyLazy, initialLazy);
-
-System.out.println("FlatMapped Lazy created. Counter: " + counter.get()); // Output: 1 (map already forced initialLazy)
-
-try {
-    System.out.println("FlatMapped Result: " + force(flatMappedLazy)); // Triggers evaluation of inner lazy
-    // Output: FlatMapped Result: Multiplied: 50
-} catch (Throwable t) { /* ... */ }
-
-// --- Chaining ---
-Kind&lt;LazyKind.Witness, String&gt; chainedLazy = lazyMonad.flatMap(
-    value1 -&gt; lazyMonad.map(
-        value2 -&gt; "Combined: " + value1 + " &amp; " + value2, // Combine results
-        LAZY.defer(()-&gt;value1 * 2) // Second lazy step, depends on result of first
+// flatMap: sequence two lazy computations
+Kind&lt;LazyKind.Witness, String&gt; chained = lazyMonad.flatMap(
+    v1 -&gt; lazyMonad.map(
+        v2 -&gt; "Combined: " + v1 + " &amp; " + v2,
+        LAZY.defer(() -&gt; v1 * 2)  // second step depends on first
     ),
-    LAZY.defer(()-&gt;5) // First lazy step
+    LAZY.defer(() -&gt; 5)           // first step
 );
 
-try{
-    System.out.println("Chained Result: "+force(chainedLazy)); // Output: Combined: 5 &amp; 10
-}catch(Throwable t){/* ... */}
+System.out.println(LAZY.force(chained)); // "Combined: 5 &amp; 10"
 </code></pre>
+<p>Neither <code>map</code> nor <code>flatMap</code> triggers evaluation -- they build a new <code>Lazy</code> that will run the full chain when forced. This means you can construct an entire pipeline of transformations upfront, and the cost of the whole pipeline is paid only at the single point where <code>force()</code> is called.</p>
+</div>
+</div>
+<div id="admonition-lazy-vs-io-know-the-difference" class="admonition admonish-warning" role="note" aria-labelledby="admonition-lazy-vs-io-know-the-difference-title">
+<div class="admonition-title">
+<div id="admonition-lazy-vs-io-know-the-difference-title">
+<p>Lazy vs IO: Know the Difference</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-lazy-vs-io-know-the-difference"></a>
+</div>
+<div>
+<p><strong><code>Lazy</code></strong> defers <strong>pure computation</strong> -- work that depends only on its inputs and always produces the same result. The memoized value is safe to reuse because it never changes.</p>
+<p><strong><code>IO</code></strong> defers <strong>side effects</strong> -- work that reads files, calls APIs, writes to databases, or depends on external state. Each execution may produce a different result, so memoization would give stale answers.</p>
+<div class="table-wrapper"><table><thead><tr><th>Question</th><th>Answer</th></tr></thead><tbody>
+<tr><td>Does it read a file, call an API, or write to a database?</td><td>Use <code>IO</code></td></tr>
+<tr><td>Does it compute a value from pure inputs?</td><td>Use <code>Lazy</code></td></tr>
+<tr><td>Should repeated calls return the same cached result?</td><td>Use <code>Lazy</code></td></tr>
+<tr><td>Should repeated calls re-execute the effect?</td><td>Use <code>IO</code></td></tr>
+</tbody></table>
+</div>
+<p><strong>Rule of thumb:</strong> if your computation talks to the outside world, use <a href="./io_monad.html"><code>IO</code></a>. If it only crunches data, use <code>Lazy</code>.</p>
+</div>
+</div>
+<h2 id="when-to-use-lazy"><a class="header" href="#when-to-use-lazy">When to Use Lazy</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Recommendation</th></tr></thead><tbody>
+<tr><td>Deferring expensive computation until needed</td><td><code>Lazy</code> / <code>LazyMonad</code></td></tr>
+<tr><td>Composing deferred computations while preserving laziness</td><td><code>LazyMonad</code> -- <code>map</code>/<code>flatMap</code> don't trigger evaluation</td></tr>
+<tr><td>Caching computation results (memoization)</td><td><code>Lazy</code> -- result is cached after first <code>force()</code></td></tr>
+<tr><td>Computations that may throw checked exceptions</td><td><code>Lazy</code> -- wraps <code>ThrowableSupplier</code></td></tr>
+<tr><td>Building data structures with optional expensive fields</td><td><code>Lazy</code> -- callers force only what they need</td></tr>
+<tr><td>Configuration values loaded once and reused</td><td><code>Lazy</code> -- natural fit for compute-once semantics</td></tr>
+<tr><td>Deferred side effects with execution control</td><td>Prefer <a href="./io_monad.html">IO</a> instead</td></tr>
+</tbody></table>
+</div><div id="admonition-key-points" class="admonition admonish-tip" role="note" aria-labelledby="admonition-key-points-title">
+<div class="admonition-title">
+<div id="admonition-key-points-title">
+<p>Key Points</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-key-points"></a>
+</div>
+<div>
+<ul>
+<li><code>Lazy&lt;A&gt;</code> wraps a <code>ThrowableSupplier&lt;A&gt;</code> -- nothing executes until <code>force()</code> is called.</li>
+<li>Results are <strong>memoized</strong>: the first <code>force()</code> computes and caches; subsequent calls return the cached value instantly.</li>
+<li>Exceptions are also memoized -- if the computation throws on first <code>force()</code>, the same exception is rethrown on subsequent calls.</li>
+<li><code>map</code> and <code>flatMap</code> via <code>LazyMonad</code> produce new <code>Lazy</code> values without triggering evaluation of the input.</li>
+<li><code>Lazy.now(value)</code> creates an already-evaluated instance -- useful for lifting pure values into the Lazy context.</li>
+<li><code>ThrowableSupplier</code> allows checked exceptions -- no need for awkward <code>try</code>/<code>catch</code> inside lambdas.</li>
+<li>Thread safety: <code>Lazy</code> ensures the supplier runs at most once, even under concurrent <code>force()</code> calls.</li>
+</ul>
+</div>
+</div>
+<hr />
+<div id="admonition-benchmarks" class="admonition admonish-example" role="note" aria-labelledby="admonition-benchmarks-title">
+<div class="admonition-title">
+<div id="admonition-benchmarks-title">
+<p>Benchmarks</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-benchmarks"></a>
+</div>
+<div>
+<p>Lazy has dedicated JMH benchmarks measuring deferred construction, memoization overhead, and chain depth. Key expectations:</p>
+<ul>
+<li><strong>Construction</strong> (<code>defer</code>, <code>now</code>) is very fast -- Lazy is a thin wrapper with no immediate execution</li>
+<li><strong>First <code>force()</code></strong> incurs the full computation cost; subsequent calls return the cached result</li>
+<li><strong>Deep chains (50+)</strong> of <code>map</code>/<code>flatMap</code> complete without error -- composition overhead dominates at depth</li>
+</ul>
+<pre><code class="language-bash">./gradlew :hkj-benchmarks:jmh --includes=".*LazyBenchmark.*"
+</code></pre>
+<p>See <a href="../benchmarks.html">Benchmarks &amp; Performance</a> for full details and how to interpret results.</p>
 </div>
 </div>
 <hr />
