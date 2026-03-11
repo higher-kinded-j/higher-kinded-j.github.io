@@ -277,6 +277,7 @@ deeply methodical approach to composing sequential operations.</p>
 <li>How ForPath bridges the For comprehension system and the Effect Path API</li>
 <li>Creating comprehensions directly with Path types (no manual <code>Kind</code> extraction)</li>
 <li>Using generators (<code>.from()</code>), bindings (<code>.let()</code>), guards (<code>.when()</code>), and projections (<code>.yield()</code>)</li>
+<li>Expressing independent computations with <code>par()</code> for parallel composition</li>
 <li>Integrating optics with <code>.focus()</code> and <code>.match()</code> for structural navigation</li>
 <li>Choosing between ForPath and the standard For class</li>
 </ul>
@@ -492,6 +493,76 @@ String result = greeting.unsafeRun();  // "Hello ALICE from London"
 Try&lt;OrderSummary&gt; result = orderWorkflow.runSafe();
 </code></pre>
 <hr />
+<h2 id="parallel-composition-with-par"><a class="header" href="#parallel-composition-with-par">Parallel Composition with <code>par()</code></a></h2>
+<p>When two or more Path computations are independent, <code>ForPath.par()</code> lets you express this directly. For <code>VTaskPath</code>, this enables <strong>true concurrent execution</strong> on virtual threads via <code>Par.map2</code>/<code>Par.map3</code>. For other types, it documents the independence even if execution is sequential.</p>
+<h3 id="static-entry-points"><a class="header" href="#static-entry-points">Static Entry Points</a></h3>
+<p><code>ForPath.par()</code> accepts two or three independent Path values and combines them using applicative semantics:</p>
+<pre><code class="language-java">// Two independent MaybePaths
+MaybePath&lt;String&gt; result =
+    ForPath.par(Path.just("Alice"), Path.just(42))
+        .yield((name, age) -&gt; name + " is " + age);
+// Just("Alice is 42")
+
+// Three independent EitherPaths
+EitherPath&lt;String, String&gt; profile =
+    ForPath.par(
+            Path.&lt;String, String&gt;right("Alice"),
+            Path.&lt;String, Integer&gt;right(42),
+            Path.&lt;String, String&gt;right("admin"))
+        .yield((name, age, role) -&gt; name + " (" + age + ") [" + role + "]");
+// Right("Alice (42) [admin]")
+</code></pre>
+<p>Short-circuiting works as expected for types with failure semantics:</p>
+<pre><code class="language-java">MaybePath&lt;String&gt; result =
+    ForPath.par(Path.just("Bob"), Path.&lt;Integer&gt;nothing())
+        .yield((name, age) -&gt; name + " is " + age);
+// Nothing — the second computation failed
+</code></pre>
+<h3 id="vtaskpath-true-parallel-execution"><a class="header" href="#vtaskpath-true-parallel-execution">VTaskPath: True Parallel Execution</a></h3>
+<p>For <code>VTaskPath</code>, <code>par()</code> uses <code>Par.map2</code>/<code>Par.map3</code> under the hood, which spawns virtual threads via <code>StructuredTaskScope</code>. Independent computations genuinely execute concurrently:</p>
+<pre><code class="language-java">VTaskPath&lt;String&gt; result =
+    ForPath.par(
+            Path.vtaskPath(() -&gt; fetchUserData(userId)),    // virtual thread 1
+            Path.vtaskPath(() -&gt; fetchConfigData()))        // virtual thread 2
+        .yield((user, config) -&gt; buildResponse(user, config));
+
+// Both fetches run concurrently; total time ≈ max(fetch1, fetch2)
+String response = result.run().run();
+</code></pre>
+<h3 id="iopath-and-idpath"><a class="header" href="#iopath-and-idpath">IOPath and IdPath</a></h3>
+<p>IO computations can also be combined with <code>par()</code>, though execution is currently sequential:</p>
+<pre><code class="language-java">IOPath&lt;String&gt; result =
+    ForPath.par(Path.io(() -&gt; "hello"), Path.io(() -&gt; "world"))
+        .yield((a, b) -&gt; a + " " + b);
+
+String value = result.unsafeRun();  // "hello world"
+</code></pre>
+<p>IdPath uses <code>Id.of()</code> to wrap values:</p>
+<pre><code class="language-java">IdPath&lt;Integer&gt; sum =
+    ForPath.par(Path.idPath(Id.of(10)), Path.idPath(Id.of(20)), Path.idPath(Id.of(30)))
+        .yield((a, b, c) -&gt; a + b + c);
+// Id(60)
+</code></pre>
+<h3 id="chaining-after-par"><a class="header" href="#chaining-after-par">Chaining After <code>par()</code></a></h3>
+<p>The result of <code>par()</code> is a regular step, so you can chain <code>.from()</code>, <code>.let()</code>, <code>.when()</code>, or <code>.yield()</code> after it:</p>
+<pre><code class="language-java">MaybePath&lt;String&gt; result =
+    ForPath.par(Path.just("Alice"), Path.just(5))
+        .let(t -&gt; t._1() + " has " + t._2() + " letters")
+        .yield((name, len, sentence) -&gt; sentence.toUpperCase());
+// Just("ALICE HAS 5 LETTERS")
+</code></pre>
+<h3 id="when-is-par-actually-parallel"><a class="header" href="#when-is-par-actually-parallel">When Is <code>par()</code> Actually Parallel?</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Path Type</th><th>Behaviour</th></tr></thead><tbody>
+<tr><td><code>VTaskPath</code></td><td>True concurrency via <code>Par.map2</code>/<code>Par.map3</code> on virtual threads</td></tr>
+<tr><td><code>IOPath</code></td><td>Sequential (applicative, not parallel)</td></tr>
+<tr><td><code>MaybePath</code>, <code>OptionalPath</code></td><td>Sequential; short-circuits on Nothing/empty</td></tr>
+<tr><td><code>EitherPath</code>, <code>TryPath</code></td><td>Sequential; short-circuits on Left/Failure</td></tr>
+<tr><td><code>NonDetPath</code></td><td>Cartesian product (applicative semantics)</td></tr>
+<tr><td><code>IdPath</code></td><td>Immediate; no effect to parallelise</td></tr>
+</tbody></table>
+</div>
+<p>Even when execution is sequential, <code>par()</code> documents the <em>intent</em> that the computations are independent, making the dependency structure of your workflow explicit.</p>
+<hr />
 <h2 id="extended-arity-example-6-bindings"><a class="header" href="#extended-arity-example-6-bindings">Extended Arity Example (6+ Bindings)</a></h2>
 <p>All ForPath types support up to 12 chained bindings. Step 1 is hand-written; steps 2-12 are generated by the <code>hkj-processor</code> annotation processor:</p>
 <pre><code class="language-java">// A 6-step MaybePath comprehension
@@ -544,6 +615,7 @@ as it works directly with the transformer's <code>Kind</code> representation.</p
 <li><strong>ForPath eliminates boilerplate</strong> when composing Path types in for-comprehension style</li>
 <li><strong>Entry points accept Path types directly</strong> and return Path types</li>
 <li><strong>All For operations are supported</strong>: <code>from()</code>, <code>let()</code>, <code>when()</code> (where applicable), <code>yield()</code></li>
+<li><strong><code>par()</code> expresses independent computations</strong> with true concurrency for VTaskPath</li>
 <li><strong>Optics integration</strong> via <code>focus()</code> and <code>match()</code> enables structural navigation</li>
 <li><strong>Type safety is preserved</strong> throughout the comprehension</li>
 </ul>
@@ -566,6 +638,17 @@ as it works directly with the transformer's <code>Kind</code> representation.</p
 <pre><code class="language-bash">./gradlew :hkj-benchmarks:jmh --includes=".*ForPathVTaskBenchmark.*"
 </code></pre>
 <p>See <a href="../benchmarks.html">Benchmarks &amp; Performance</a> for full details and how to interpret results.</p>
+</div>
+</div>
+<div id="admonition-hands-on-learning" class="admonition admonish-info" role="note" aria-labelledby="admonition-hands-on-learning-title">
+<div class="admonition-title">
+<div id="admonition-hands-on-learning-title">
+<p>Hands-On Learning</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-hands-on-learning"></a>
+</div>
+<div>
+<p>Practice parallel composition with ForPath in <a href="../tutorials/expression/forpath_parallel_journey.html">Tutorial 02: ForPath Parallel Composition</a> (9 exercises, ~20 minutes).</p>
 </div>
 </div>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
