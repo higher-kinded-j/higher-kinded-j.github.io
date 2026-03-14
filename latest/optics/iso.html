@@ -272,6 +272,7 @@
 <li>How to define lossless, reversible conversions between equivalent types</li>
 <li>Creating isomorphisms with <code>Iso.of(get, reverseGet)</code></li>
 <li>Using <code>reverse()</code> to flip conversion directions</li>
+<li>Composing Isos with lenses, prisms, and comprehensions</li>
 <li>Step-by-step transformation workflows for data format conversion</li>
 <li>Testing round-trip properties to ensure conversion correctness</li>
 <li>When to use isos vs direct conversion methods vs manual adapters</li>
@@ -293,20 +294,20 @@
 <p>This leaves one final, fundamental question: what if you have two data types that are different in structure but hold the exact same information? How do you switch between them losslessly? For this, we need our final core optic: the <strong><code>Iso</code></strong>.</p>
 <hr />
 <h2 id="the-scenario-translating-between-equivalent-types"><a class="header" href="#the-scenario-translating-between-equivalent-types">The Scenario: Translating Between Equivalent Types</a></h2>
-<p>An <strong><code>Iso</code></strong> (Isomorphism) is a "two-way street." It's an optic that represents a perfectly reversible, lossless conversion between two equivalent types. Think of it as a <strong>universal translator</strong> or a type-safe adapter that you can compose with other optics.</p>
+<p>An <strong><code>Iso</code></strong> (Isomorphism) is a "two-way street." It is an optic that represents a perfectly reversible, lossless conversion between two equivalent types. Think of it as a <strong>universal translator</strong> or a type-safe adapter that you can compose with other optics.</p>
 <p>An <code>Iso</code> is the right tool when you need to:</p>
 <ul>
 <li>Convert a wrapper type to its raw value (e.g., <code>UserId(long id)</code> &lt;-&gt; <code>long</code>).</li>
 <li>Handle data encoding and decoding (e.g., <code>byte[]</code> &lt;-&gt; <code>Base64 String</code>).</li>
 <li>Bridge two data structures that are informationally identical (e.g., a custom record and a generic tuple).</li>
 </ul>
-<p>Let's explore that last case. Imagine we have a <code>Point</code> record and want to convert it to a generic <code>Tuple2</code> to use with a library that operates on tuples.</p>
+<p>Let us explore that last case. Imagine we have a <code>Point</code> record and want to convert it to a generic <code>Tuple2</code> to use with a library that operates on tuples.</p>
 <p><strong>The Data Model:</strong></p>
 <pre><code class="language-java">public record Point(int x, int y) {}
 
 public record Tuple2&lt;A, B&gt;(A _1, B _2) {}
 </code></pre>
-<p>These two records can hold the same information. An <code>Iso</code> is the perfect way to formalize this relationship.</p>
+<p>These two records can hold the same information. An <code>Iso</code> is the perfect way to formalise this relationship.</p>
 <hr />
 <h2 id="think-of-isos-like"><a class="header" href="#think-of-isos-like">Think of Isos Like...</a></h2>
 <ul>
@@ -369,14 +370,14 @@ Point convertedBack = pointToTupleIso.reverse().get(myTuple); // -&gt; Point[10,
 assert myPoint.equals(convertedBack); // Always true for lawful Isos
 </code></pre>
 <h3 id="step-3-composing-isos-as-a-bridge"><a class="header" href="#step-3-composing-isos-as-a-bridge">Step 3: Composing Isos as a Bridge</a></h3>
-<p>The most powerful feature of an <code>Iso</code> is its ability to act as an adapter or "glue" between other optics. Because the conversion is lossless, an <code>Iso</code> preserves the "shape" of the optic it's composed with.</p>
+<p>The most powerful feature of an <code>Iso</code> is its ability to act as an adapter or "glue" between other optics. Because the conversion is lossless, an <code>Iso</code> preserves the "shape" of the optic it is composed with.</p>
 <ul>
 <li><code>Iso + Iso = Iso</code></li>
 <li><strong><code>Iso + Lens = Lens</code></strong></li>
 <li><strong><code>Iso + Prism = Prism</code></strong></li>
 <li><strong><code>Iso + Traversal = Traversal</code></strong></li>
 </ul>
-<p>This second rule is incredibly useful. We can compose our <code>Iso&lt;Point, Tuple2&gt;</code> with a <code>Lens</code> that operates on a <code>Tuple2</code> to create a brand new <code>Lens</code> that operates directly on our <code>Point</code>!</p>
+<p>This second rule is incredibly useful. We can compose our <code>Iso&lt;Point, Tuple2&gt;</code> with a <code>Lens</code> that operates on a <code>Tuple2</code> to create a brand new <code>Lens</code> that operates directly on our <code>Point</code>:</p>
 <pre><code class="language-java">// A standard Lens that gets the first element of any Tuple2
 Lens&lt;Tuple2&lt;Integer, Integer&gt;, Integer&gt; tupleFirstElementLens = ...;
 
@@ -387,6 +388,49 @@ Lens&lt;Point, Integer&gt; pointToX = pointToTupleIso.andThen(tupleFirstElementL
 Point movedPoint = pointToX.modify(x -&gt; x + 5, myPoint); // -&gt; Point[15, 20]
 </code></pre>
 <p>The <code>Iso</code> acted as a bridge, allowing a generic <code>Lens</code> for tuples to work on our specific <code>Point</code> record.</p>
+<h3 id="step-4-isos-in-comprehension-workflows"><a class="header" href="#step-4-isos-in-comprehension-workflows">Step 4: Isos in Comprehension Workflows</a></h3>
+<p>Composition with individual lenses is useful, but Isos truly come into their own when they are woven into <a href="../functional/for_comprehension.html">comprehension</a> workflows. Instead of scattering <code>iso.get()</code> and <code>iso.reverseGet()</code> calls throughout your code, you can let the comprehension handle the conversion for you -- keeping both representations in scope at once.</p>
+<p>The <code>For</code> comprehension's <code>through()</code> method does exactly this. It converts the currently bound value via an Iso and accumulates both the original and the converted value, so you can reason in whichever representation suits each step:</p>
+<pre><code class="language-java">Iso&lt;Integer, Double&gt; centsToDollars =
+    Iso.of(cents -&gt; cents / 100.0, dollars -&gt; (int) (dollars * 100));
+
+Kind&lt;IdKind.Witness, String&gt; result =
+    For.from(idMonad, Id.of(50000))
+        .through(centsToDollars)
+        .yield((cents, dollars) -&gt;
+            "Budget: " + cents + " cents = $" + dollars);
+// Result: "Budget: 50000 cents = $500.0"
+</code></pre>
+<p>Both values are available in <code>yield()</code> without any manual conversion. When used with a <code>MonadZero</code> such as <code>Maybe</code> or <code>List</code>, <code>through()</code> preserves the ability to apply <code>when()</code> guards on the converted values:</p>
+<pre><code class="language-java">Kind&lt;ListKind.Witness, String&gt; result =
+    For.from(listMonad, LIST.widen(temperatures))
+        .through(celsiusToFahrenheitIso)
+        .when(t -&gt; t._2().value() &gt; 50.0)  // filter on the Fahrenheit value
+        .yield((celsius, fahrenheit) -&gt; celsius.value() + "C");
+</code></pre>
+<p>Within a <a href="../functional/forstate_comprehension.html">ForState</a> workflow, two additional operations let you modify or set a field through an Iso without ever touching the internal representation directly:</p>
+<pre><code class="language-java">// Increase budget by 10%, reasoning in dollars, storing in cents
+ForState.withState(idMonad, Id.of(department))
+    .modifyVia(budgetLens, centsToDollars, dollars -&gt; dollars * 1.1)
+    .yield();
+
+// Set budget to exactly $750.00 (stored internally as 75000 cents)
+ForState.withState(idMonad, Id.of(department))
+    .updateVia(budgetLens, centsToDollars, 750.0)
+    .yield();
+</code></pre>
+<p>The <code>modifyVia</code> flow is: <code>lens.get</code> → <code>iso.get</code> → <code>modifier</code> → <code>iso.reverseGet</code> → <code>lens.set</code>. The <code>updateVia</code> flow is simpler: <code>iso.reverseGet(value)</code> → <code>lens.set</code>. Both honour the Iso's round-trip property.</p>
+<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+</div>
+<div>
+<p>For the full range of optics operations within comprehensions -- including traversals, pattern matching, and bulk transforms -- see <a href="../functional/for_optics.html">Optics Integration</a>.</p>
+</div>
+</div>
 <hr />
 <h2 id="when-to-use-isos-vs-other-approaches"><a class="header" href="#when-to-use-isos-vs-other-approaches">When to Use Isos vs Other Approaches</a></h2>
 <h3 id="use-isos-when"><a class="header" href="#use-isos-when">Use Isos When:</a></h3>
@@ -403,12 +447,12 @@ Iso&lt;LocalDate, String&gt; dateStringIso = Iso.of(
 );
 
 // Use with any date-focused lens
-Lens&lt;Person, String&gt; birthDateStringLens = 
+Lens&lt;Person, String&gt; birthDateStringLens =
     PersonLenses.birthDate().andThen(dateStringIso);
 </code></pre>
 <h3 id="use-direct-conversion-methods-when"><a class="header" href="#use-direct-conversion-methods-when">Use Direct Conversion Methods When:</a></h3>
 <ul>
-<li><strong>One-way conversion</strong> - You don't need the reverse operation</li>
+<li><strong>One-way conversion</strong> - You do not need the reverse operation</li>
 <li><strong>Non-lossless conversion</strong> - Information is lost in the conversion</li>
 <li><strong>Performance critical paths</strong> - Minimal abstraction overhead needed</li>
 </ul>
@@ -436,11 +480,11 @@ public Optional&lt;Point&gt; parsePoint(String input) {
 </code></pre>
 <hr />
 <h2 id="common-pitfalls"><a class="header" href="#common-pitfalls">Common Pitfalls</a></h2>
-<h3 id="dont-do-this"><a class="header" href="#dont-do-this">Don't Do This:</a></h3>
+<h3 id="do-not-do-this"><a class="header" href="#do-not-do-this">Do Not Do This:</a></h3>
 <pre><code class="language-java">// Lossy conversion - not a true isomorphism
 Iso&lt;Double, Integer&gt; lossyIso = Iso.of(
     d -&gt; d.intValue(),    // Loses decimal precision!
-    i -&gt; i.doubleValue()  // Can't recover original value
+    i -&gt; i.doubleValue()  // Cannot recover original value
 );
 
 // One-way thinking - forgetting about reverseGet
@@ -472,7 +516,7 @@ public static &lt;A, B&gt; void testIsomorphism(Iso&lt;A, B&gt; iso, A original)
 }
 
 // Reuse Isos as constants
-public static final Iso&lt;Point, Tuple2&lt;Integer, Integer&gt;&gt; POINT_TO_TUPLE = 
+public static final Iso&lt;Point, Tuple2&lt;Integer, Integer&gt;&gt; POINT_TO_TUPLE =
     Iso.of(
         point -&gt; Tuple.of(point.x(), point.y()),
         tuple -&gt; new Point(tuple._1(), tuple._2())
@@ -489,18 +533,18 @@ public static final Iso&lt;Point, Tuple2&lt;Integer, Integer&gt;&gt; POINT_TO_TU
 </ul>
 <p><strong>Best Practice</strong>: For frequently used conversions, create Isos as constants and test them:</p>
 <pre><code class="language-java">public class DataIsos {
-    public static final Iso&lt;UserId, Long&gt; USER_ID_LONG = 
+    public static final Iso&lt;UserId, Long&gt; USER_ID_LONG =
         Iso.of(UserId::value, UserId::new);
-    
-    public static final Iso&lt;Money, BigDecimal&gt; MONEY_DECIMAL = 
+
+    public static final Iso&lt;Money, BigDecimal&gt; MONEY_DECIMAL =
         Iso.of(Money::amount, Money::new);
-    
+
     // Test your isos
     static {
         testIsomorphism(USER_ID_LONG, new UserId(12345L));
         testIsomorphism(MONEY_DECIMAL, new Money(new BigDecimal("99.99")));
     }
-  
+
     private static &lt;A, B&gt; void testIsomorphism(Iso&lt;A, B&gt; iso, A original) {
         B converted = iso.get(original);
         A roundTrip = iso.reverse().get(converted);
@@ -534,9 +578,9 @@ public class CustomerIsos {
             LocalDate.parse(dto.birthDateString(), DateTimeFormatter.ISO_LOCAL_DATE)
         )
     );
-  
+
     // Now any Customer lens can work with DTOs
-    public static final Lens&lt;CustomerDto, String&gt; DTO_NAME = 
+    public static final Lens&lt;CustomerDto, String&gt; DTO_NAME =
         CUSTOMER_DTO.reverse().andThen(CustomerLenses.name()).andThen(CUSTOMER_DTO);
 }
 </code></pre>
@@ -559,9 +603,9 @@ public class ConfigIsos {
             return new DatabaseConfig(parts[0], Integer.parseInt(parts[1]), parts[2]);
         }
     );
-  
+
     // Use with existing configuration lenses
-    public static final Lens&lt;DatabaseConfig, String&gt; CONNECTION_STRING_HOST = 
+    public static final Lens&lt;DatabaseConfig, String&gt; CONNECTION_STRING_HOST =
         DB_CONNECTION.andThen(
             Lens.of(
                 cs -&gt; cs.value().split("//")[1].split(":")[0],
@@ -576,12 +620,12 @@ public record ProductId(UUID value) {}
 public record CategoryId(UUID value) {}
 
 public class WrapperIsos {
-    public static final Iso&lt;ProductId, UUID&gt; PRODUCT_ID_UUID = 
+    public static final Iso&lt;ProductId, UUID&gt; PRODUCT_ID_UUID =
         Iso.of(ProductId::value, ProductId::new);
-  
-    public static final Iso&lt;CategoryId, UUID&gt; CATEGORY_ID_UUID = 
+
+    public static final Iso&lt;CategoryId, UUID&gt; CATEGORY_ID_UUID =
         Iso.of(CategoryId::value, CategoryId::new);
-  
+
     // Use with any UUID-based operations
     public static String formatProductId(ProductId id) {
         return PRODUCT_ID_UUID
