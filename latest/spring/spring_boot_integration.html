@@ -269,8 +269,9 @@
 </div>
 <div>
 <ul>
-<li>How to use Either, Validated, and CompletableFuturePath as Spring controller return types</li>
+<li>How to use Either, Validated, CompletableFuturePath, VTaskPath, and VStreamPath as Spring controller return types</li>
 <li>Zero-configuration setup with the hkj-spring-boot-starter</li>
+<li>Virtual thread integration with VTaskPath (async) and VStreamPath (SSE streaming)</li>
 <li>Automatic JSON serialisation with customisable formats</li>
 <li>Monitoring functional operations with Spring Boot Actuator</li>
 <li>Securing endpoints with functional error handling patterns</li>
@@ -341,6 +342,8 @@ public class UserController {
 <li>Either to HTTP response conversion with automatic status code mapping</li>
 <li>Validated to HTTP response with error accumulation</li>
 <li>CompletableFuturePath support for async operations</li>
+<li>VTaskPath support for virtual thread async via DeferredResult</li>
+<li>VStreamPath support for SSE streaming on virtual threads</li>
 <li>JSON serialisation for functional types</li>
 <li>Customisable error type to HTTP status code mapping</li>
 </ul>
@@ -525,6 +528,84 @@ The framework uses Spring's async request processing:</p>
 </ol>
 <p>See the <a href="../effect/path_types.html">Effect Path API documentation</a> for comprehensive examples.</p>
 <hr />
+<h3 id="vtaskpath-virtual-thread-async"><a class="header" href="#vtaskpath-virtual-thread-async">4. VTaskPath: Virtual Thread Async Operations</a></h3>
+<p><code>VTaskPath&lt;A&gt;</code> runs deferred computations on virtual threads, providing async responses without thread pool configuration.</p>
+<h4 id="basic-usage-3"><a class="header" href="#basic-usage-3">Basic Usage</a></h4>
+<pre><code class="language-java">@GetMapping("/users/{id}")
+public VTaskPath&lt;User&gt; getUser(@PathVariable String id) {
+    return vtUserService.findById(id);
+    // Executes on a virtual thread via DeferredResult
+    // No thread pool configuration needed
+}
+</code></pre>
+<p><strong>Response Handling:</strong>
+The framework uses Spring's <code>DeferredResult</code>:</p>
+<ol>
+<li>Controller returns <code>VTaskPath</code></li>
+<li>Framework calls <code>VTask.runAsync()</code> on a virtual thread</li>
+<li>Result is wrapped in <code>DeferredResult</code> with configurable timeout</li>
+<li>When complete, result is converted to HTTP 200 with JSON body</li>
+<li>On failure, returns configured error status (default: 500)</li>
+</ol>
+<h4 id="structured-concurrency"><a class="header" href="#structured-concurrency">Structured Concurrency</a></h4>
+<p>Use <code>Scope</code> for parallel fan-out with automatic cancellation:</p>
+<pre><code class="language-java">@GetMapping("/users/{id}/enriched")
+public VTaskPath&lt;EnrichedUser&gt; getEnrichedUser(@PathVariable String id) {
+    VTask&lt;User&gt; userTask = VTask.of(() -&gt; findUser(id));
+    VTask&lt;Profile&gt; profileTask = VTask.of(() -&gt; fetchProfile(id));
+    VTask&lt;OrderSummary&gt; ordersTask = VTask.of(() -&gt; fetchOrders(id));
+
+    return Path.vtask(
+        Scope.&lt;Object&gt;allSucceed()
+            .fork(userTask)
+            .fork(profileTask)
+            .fork(ordersTask)
+            .join())
+        .map(results -&gt; new EnrichedUser(
+            (User) results.get(0),
+            (Profile) results.get(1),
+            (OrderSummary) results.get(2)
+        ));
+}
+</code></pre>
+<p><strong>Key advantages over CompletableFuturePath:</strong></p>
+<ul>
+<li>No thread pool sizing or tuning — virtual threads scale automatically with the JVM</li>
+<li>Structured concurrency via <code>Scope</code> replaces <code>CompletableFuture.allOf()</code> with cancellation awareness</li>
+<li>Simpler imperative code style — blocking is free on virtual threads</li>
+</ul>
+<hr />
+<h3 id="vstreampath-sse-streaming"><a class="header" href="#vstreampath-sse-streaming">5. VStreamPath: SSE Streaming on Virtual Threads</a></h3>
+<p><code>VStreamPath&lt;A&gt;</code> enables Server-Sent Events (SSE) streaming backed by virtual threads. No WebFlux or Reactor dependency required.</p>
+<h4 id="basic-usage-4"><a class="header" href="#basic-usage-4">Basic Usage</a></h4>
+<pre><code class="language-java">@GetMapping(value = "/users/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public VStreamPath&lt;User&gt; streamUsers() {
+    return vtUserService.streamAllUsers();
+    // Each element emitted as an SSE data: event with JSON payload
+}
+</code></pre>
+<p><strong>Response Handling:</strong></p>
+<ol>
+<li>Controller returns <code>VStreamPath</code></li>
+<li>Framework starts a virtual thread to consume the stream</li>
+<li>Each element is written as an SSE <code>data:</code> event with JSON payload</li>
+<li>A completion event is sent when the stream ends</li>
+<li>On error, an SSE error event is sent</li>
+</ol>
+<h4 id="parameterised-streams"><a class="header" href="#parameterised-streams">Parameterised Streams</a></h4>
+<pre><code class="language-java">@GetMapping(value = "/ticks", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public VStreamPath&lt;TickEvent&gt; streamTicks(@RequestParam(defaultValue = "10") int count) {
+    return vtUserService.streamTicks(count);
+    // Infinite stream limited by take(count)
+}
+</code></pre>
+<p><strong>Key advantages:</strong></p>
+<ul>
+<li>No WebFlux, no Reactor, no Flux — just imperative code that streams</li>
+<li>Pull-based with natural backpressure via virtual thread blocking</li>
+<li>Configurable stream timeout via <code>hkj.virtual-threads.stream-timeout-ms</code></li>
+</ul>
+<hr />
 <h2 id="json-serialisation"><a class="header" href="#json-serialisation">JSON Serialisation</a></h2>
 <p>The starter provides flexible JSON serialisation for functional types.</p>
 <h3 id="configuration"><a class="header" href="#configuration">Configuration</a></h3>
@@ -584,6 +665,8 @@ The framework uses Spring's async request processing:</p>
     either-path-enabled: true               # Enable EitherPath handler (default: true)
     validated-path-enabled: true            # Enable ValidationPath handler (default: true)
     completable-future-path-enabled: true   # Enable CompletableFuturePath handler (default: true)
+    vtask-path-enabled: true               # Enable VTaskPath handler (default: true)
+    vstream-path-enabled: true             # Enable VStreamPath handler (default: true)
     default-error-status: 400               # Default HTTP status for unmapped errors
 </code></pre>
 <h3 id="async-executor-configuration"><a class="header" href="#async-executor-configuration">Async Executor Configuration</a></h3>
@@ -594,6 +677,13 @@ The framework uses Spring's async request processing:</p>
     max-pool-size: 20                  # Maximum threads
     queue-capacity: 100                # Queue size before rejection
     thread-name-prefix: "hkj-async-"   # Thread naming pattern
+</code></pre>
+<h3 id="virtual-thread-configuration"><a class="header" href="#virtual-thread-configuration">Virtual Thread Configuration</a></h3>
+<p>For VTaskPath and VStreamPath operations (no pool sizing needed):</p>
+<pre><code class="language-yaml">hkj:
+  virtual-threads:
+    default-timeout-ms: 30000          # VTask timeout (default: 30s)
+    stream-timeout-ms: 60000           # VStream timeout (default: 60s, 0 = no timeout)
 </code></pre>
 <p>For complete configuration options, see <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/CONFIGURATION.md">hkj-spring/CONFIGURATION.md</a>.</p>
 <hr />
@@ -796,6 +886,8 @@ management:
 <li><strong>EitherPath metrics:</strong> Success/error counts and rates</li>
 <li><strong>ValidationPath metrics:</strong> Valid/invalid counts and error distributions</li>
 <li><strong>CompletableFuturePath metrics:</strong> Async operation durations and success rates</li>
+<li><strong>VTaskPath metrics:</strong> Virtual thread execution durations and success rates</li>
+<li><strong>VStreamPath metrics:</strong> Stream completion counts and element distribution</li>
 <li><strong>Thread pool health:</strong> Active threads, queue size, saturation</li>
 </ul>
 <h3 id="custom-hkj-endpoint"><a class="header" href="#custom-hkj-endpoint">Custom HKJ Endpoint</a></h3>
@@ -997,6 +1089,8 @@ public class HkjWebMvcAutoConfiguration implements WebMvcConfigurer {
 <li><strong>EitherPathReturnValueHandler:</strong> Converts <code>EitherPath&lt;L, R&gt;</code> to HTTP responses</li>
 <li><strong>ValidationPathReturnValueHandler:</strong> Converts <code>ValidationPath&lt;E, A&gt;</code> to HTTP responses</li>
 <li><strong>CompletableFuturePathReturnValueHandler:</strong> Unwraps <code>CompletableFuturePath&lt;A&gt;</code> for async processing</li>
+<li><strong>VTaskPathReturnValueHandler:</strong> Executes <code>VTaskPath&lt;A&gt;</code> on virtual threads via <code>DeferredResult</code></li>
+<li><strong>VStreamPathReturnValueHandler:</strong> Streams <code>VStreamPath&lt;A&gt;</code> as SSE events on virtual threads</li>
 </ol>
 <p>Handlers are registered automatically and integrated seamlessly with Spring's request processing lifecycle.</p>
 <h3 id="non-invasive-design"><a class="header" href="#non-invasive-design">Non-Invasive Design</a></h3>
@@ -1012,7 +1106,7 @@ public class HkjWebMvcAutoConfiguration implements WebMvcConfigurer {
 <h3 id="can-i-mix-functional-and-traditional-exception-handling"><a class="header" href="#can-i-mix-functional-and-traditional-exception-handling">Can I mix functional and traditional exception handling?</a></h3>
 <p>Yes! The integration is non-invasive. You can use <code>EitherPath</code>, <code>ValidationPath</code>, and <code>CompletableFuturePath</code> alongside traditional <code>ResponseEntity</code> and exception-based endpoints in the same application.</p>
 <h3 id="does-this-work-with-spring-webflux"><a class="header" href="#does-this-work-with-spring-webflux">Does this work with Spring WebFlux?</a></h3>
-<p>Currently, the starter supports Spring Web MVC (servlet-based). WebFlux support is planned for a future release.</p>
+<p>Currently, the starter supports Spring Web MVC (servlet-based). For reactive-style streaming, use <code>VStreamPath</code> which provides SSE streaming on virtual threads without requiring WebFlux or Reactor dependencies.</p>
 <h3 id="can-i-customise-the-error--http-status-mapping"><a class="header" href="#can-i-customise-the-error--http-status-mapping">Can I customise the error → HTTP status mapping?</a></h3>
 <p>Yes. Implement a custom return value handler or use the configuration properties to set default status codes. See <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/CONFIGURATION.md">CONFIGURATION.md</a> for details.</p>
 <h3 id="how-does-performance-compare-to-exceptions"><a class="header" href="#how-does-performance-compare-to-exceptions">How does performance compare to exceptions?</a></h3>
@@ -1051,7 +1145,8 @@ public class UserService {
 <h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
 <p>The hkj-spring-boot-starter brings functional programming patterns seamlessly into Spring Boot applications:</p>
 <ul>
-<li><strong>Return functional types from controllers:</strong> EitherPath, ValidationPath, CompletableFuturePath</li>
+<li><strong>Return functional types from controllers:</strong> EitherPath, ValidationPath, CompletableFuturePath, VTaskPath, VStreamPath</li>
+<li><strong>Virtual thread integration:</strong> VTaskPath for async, VStreamPath for SSE streaming — no thread pools or WebFlux needed</li>
 <li><strong>Automatic HTTP response conversion:</strong> No boilerplate required</li>
 <li><strong>Explicit, type-safe error handling:</strong> Errors in method signatures</li>
 <li><strong>Composable operations:</strong> Functional composition with map/via/flatMap</li>
