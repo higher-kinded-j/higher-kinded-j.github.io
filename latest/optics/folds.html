@@ -276,6 +276,7 @@
 <li>Composing folds with other optics for deep, conditional queries</li>
 <li>The difference between <code>getAll</code>, <code>preview</code>, <code>find</code>, <code>exists</code>, <code>all</code>, and <code>length</code></li>
 <li>Maybe-based extensions for functional optional handling (<code>previewMaybe</code>, <code>findMaybe</code>, <code>getAllMaybe</code>)</li>
+<li>Combining multiple folds with <code>plus</code>, <code>empty</code>, and <code>sum</code> for multi-path extraction</li>
 <li>When to use Fold vs Traversal vs direct field access vs Stream API</li>
 <li>Building read-only data processing pipelines with clear intent</li>
 </ul>
@@ -290,6 +291,17 @@
 </div>
 <div>
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/FoldUsageExample.java">FoldUsageExample</a></p>
+</div>
+</div>
+<div id="admonition-hands-on-practice" class="admonition admonish-note" role="note" aria-labelledby="admonition-hands-on-practice-title">
+<div class="admonition-title">
+<div id="admonition-hands-on-practice-title">
+<p>Hands On Practice</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-hands-on-practice"></a>
+</div>
+<div>
+<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial18_FoldCombination.java">Tutorial18_FoldCombination.java</a></p>
 </div>
 </div>
 <p>In previous guides, we explored optics that allow both reading and writing: <strong><code>Lens</code></strong> for required fields, <strong><code>Prism</code></strong> for conditional variants, <strong><code>Iso</code></strong> for lossless conversions, and <strong><code>Traversal</code></strong> for bulk operations on collections.</p>
@@ -883,6 +895,93 @@ double maxPriceRaw = productsFold.foldMap(rawMaxMonoid, ProductItem::price, orde
 </ul>
 <p><strong>Pro Tip</strong>: You can create custom monoids for any domain-specific aggregation logic, like calculating weighted averages, combining validation results, or merging configuration objects.</p>
 <hr />
+<h2 id="combining-folds"><a class="header" href="#combining-folds">Combining Folds</a></h2>
+<h3 id="the-problem-extracting-values-from-multiple-paths"><a class="header" href="#the-problem-extracting-values-from-multiple-paths">The Problem: Extracting Values from Multiple Paths</a></h3>
+<p>Consider a data structure with values scattered across different fields or branches. Without fold combination, you would need to call <code>getAll</code> on each fold separately and concatenate the results manually:</p>
+<pre><code class="language-java">record Team(String name, Employee lead, List&lt;Employee&gt; members) {}
+record Employee(String name, String email) {}
+
+// Separate folds for different paths
+Fold&lt;Team, String&gt; leadEmail = teamLeadLens.asFold()
+    .andThen(employeeEmailLens.asFold());
+Fold&lt;Team, String&gt; memberEmails = Fold.&lt;Team, Employee&gt;of(Team::members)
+    .andThen(employeeEmailLens.asFold());
+
+// Manual combination - verbose and error-prone
+List&lt;String&gt; allEmails = new ArrayList&lt;&gt;();
+allEmails.addAll(leadEmail.getAll(team));
+allEmails.addAll(memberEmails.getAll(team));
+</code></pre>
+<h3 id="the-solution-foldplus"><a class="header" href="#the-solution-foldplus">The Solution: <code>Fold.plus()</code></a></h3>
+<p><code>Fold.plus()</code> combines two folds into one that returns results from both:</p>
+<pre><code class="language-java">// Clean, composable combination
+Fold&lt;Team, String&gt; allEmails = leadEmail.plus(memberEmails);
+
+// Use like any other fold
+List&lt;String&gt; emails = allEmails.getAll(team);
+boolean hasGmail = allEmails.exists(e -&gt; e.endsWith("@gmail.com"), team);
+int emailCount = allEmails.length(team);
+</code></pre>
+<h3 id="the-monoid-structure"><a class="header" href="#the-monoid-structure">The Monoid Structure</a></h3>
+<p>Folds under <code>plus</code> form a monoid, meaning they satisfy three laws:</p>
+<div class="table-wrapper"><table><thead><tr><th>Law</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><strong>Left identity</strong></td><td><code>Fold.empty().plus(f)</code> behaves like <code>f</code></td></tr>
+<tr><td><strong>Right identity</strong></td><td><code>f.plus(Fold.empty())</code> behaves like <code>f</code></td></tr>
+<tr><td><strong>Associativity</strong></td><td><code>(a.plus(b)).plus(c)</code> behaves like <code>a.plus(b.plus(c))</code></td></tr>
+</tbody></table>
+</div>
+<p><code>Fold.empty()</code> is the identity element, a fold that focuses on nothing:</p>
+<pre><code class="language-java">Fold&lt;Team, String&gt; nothing = Fold.empty();
+nothing.getAll(team);    // Returns: []
+nothing.length(team);    // Returns: 0
+nothing.isEmpty(team);   // Returns: true
+</code></pre>
+<p>For combining three or more folds, use <code>Fold.sum()</code>:</p>
+<pre><code class="language-java">Fold&lt;Team, String&gt; allText = Fold.sum(
+    teamNameFold,
+    leadNameFold,
+    memberNamesFold
+);
+// Equivalent to: teamNameFold.plus(leadNameFold).plus(memberNamesFold)
+</code></pre>
+<h3 id="combining-different-optic-types"><a class="header" href="#combining-different-optic-types">Combining Different Optic Types</a></h3>
+<p>Any optic can participate in fold combination via its <code>asFold()</code> method:</p>
+<pre><code class="language-java">// Lens-derived fold (exactly one element)
+Fold&lt;Config, String&gt; hostFold = hostLens.asFold();
+
+// Prism-derived fold (zero or one element)
+Fold&lt;Config, String&gt; optionalPortFold = portPrism.asFold();
+
+// Affine-derived fold (zero or one element)
+Fold&lt;Config, String&gt; optionalDbFold = dbAffine.asFold();
+
+// Combine them all
+Fold&lt;Config, String&gt; allConfigStrings = Fold.sum(
+    hostFold, optionalPortFold, optionalDbFold
+);
+</code></pre>
+<h3 id="ordering-guarantees"><a class="header" href="#ordering-guarantees">Ordering Guarantees</a></h3>
+<p>Elements from the first fold always appear before elements from the second:</p>
+<pre><code class="language-java">Fold&lt;Employee, String&gt; nameFirst = nameLens.asFold().plus(emailLens.asFold());
+nameFirst.getAll(employee);
+// Returns: ["Alice", "alice@example.com"]
+
+Fold&lt;Employee, String&gt; emailFirst = emailLens.asFold().plus(nameLens.asFold());
+emailFirst.getAll(employee);
+// Returns: ["alice@example.com", "Alice"]
+</code></pre>
+<div id="admonition-performance-note" class="admonition admonish-note" role="note" aria-labelledby="admonition-performance-note-title">
+<div class="admonition-title">
+<div id="admonition-performance-note-title">
+<p>Performance Note</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-performance-note"></a>
+</div>
+<div>
+<p>Each constituent fold in a <code>plus</code> combination performs its own pass over the source. For most use cases this is negligible, but if you are combining many folds over very large collections, consider whether a single custom <code>foldMap</code> implementation would be more appropriate.</p>
+</div>
+</div>
+<hr />
 <h2 id="when-to-use-folds-vs-other-approaches"><a class="header" href="#when-to-use-folds-vs-other-approaches">When to Use Folds vs Other Approaches</a></h2>
 <h3 id="use-fold-when"><a class="header" href="#use-fold-when">Use Fold When:</a></h3>
 <ul>
@@ -1338,6 +1437,18 @@ Electronics count: 4
 </ul>
 <p>By adding <code>Fold</code> to your arsenal alongside <code>Lens</code>, <code>Prism</code>, <code>Iso</code>, and <code>Traversal</code>, you have complete coverage for both reading and writing immutable data structures in a type-safe, composable way.</p>
 <p>The key insight: <strong>Folds make queries first-class citizens in your codebase</strong>, just as valuable and well-designed as the commands that modify state.</p>
+<hr />
+<div id="admonition-hands-on-learning" class="admonition admonish-info" role="note" aria-labelledby="admonition-hands-on-learning-title">
+<div class="admonition-title">
+<div id="admonition-hands-on-learning-title">
+<p>Hands-On Learning</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-hands-on-learning"></a>
+</div>
+<div>
+<p>Practice fold combination in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial18_FoldCombination.java">Tutorial 18: Fold Combination</a> (8 exercises, ~10 minutes).</p>
+</div>
+</div>
 <hr />
 <p><strong>Previous:</strong> <a href="traversals.html">Traversals: Handling Bulk Updates</a>
 <strong>Next:</strong> <a href="getters.html">Getters: Composable Read-Only Access</a></p>
