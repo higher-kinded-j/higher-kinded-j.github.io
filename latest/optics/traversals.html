@@ -280,6 +280,7 @@
 <li>Using <code>@GenerateTraversals</code> for automatic collection optics</li>
 <li>Composing traversals with lenses and prisms for deep bulk updates</li>
 <li>The <code>Traversals.modify()</code> and <code>Traversals.getAll()</code> utility methods</li>
+<li>Converting a Traversal to a read-only Fold with <code>asFold()</code> for queries and aggregation</li>
 <li>Understanding zero-or-more target semantics</li>
 <li>When to use traversals vs streams vs manual loops for collection processing</li>
 </ul>
@@ -1002,6 +1003,82 @@ Original league unchanged: League[name=Pro League, teams=[Team[name=Team Alpha, 
 </div>
 </div>
 <hr />
+<h2 id="converting-to-read-only-folds-with-asfold"><a class="header" href="#converting-to-read-only-folds-with-asfold">Converting to Read-Only Folds with <code>asFold()</code></a></h2>
+<h3 id="switching-from-modification-to-aggregation"><a class="header" href="#switching-from-modification-to-aggregation"><em>Switching from Modification to Aggregation</em></a></h3>
+<p>Sometimes you build a <code>Traversal</code> for modification but later need the same path for read-only queries, aggregation, or combining with other folds. The <code>asFold()</code> method converts any <code>Traversal&lt;S, A&gt;</code> into a <code>Fold&lt;S, A&gt;</code>, giving you access to the full Fold API: <code>foldMap</code>, <code>exists</code>, <code>all</code>, <code>length</code>, <code>preview</code>, and more.</p>
+<h3 id="why-convert"><a class="header" href="#why-convert">Why Convert?</a></h3>
+<p>A <code>Traversal</code> already provides <code>getAll</code> (via <code>Traversals.getAll()</code>), but converting to a <code>Fold</code> unlocks:</p>
+<div class="table-wrapper"><table><thead><tr><th>Capability</th><th>Traversal</th><th>Fold (via <code>asFold()</code>)</th></tr></thead><tbody>
+<tr><td>Get all values</td><td><code>Traversals.getAll()</code></td><td><code>getAll()</code></td></tr>
+<tr><td>Monoidal aggregation</td><td>Not available</td><td><code>foldMap(monoid, f, source)</code></td></tr>
+<tr><td>Check existence</td><td>Not available</td><td><code>exists(predicate, source)</code></td></tr>
+<tr><td>Check all match</td><td>Not available</td><td><code>all(predicate, source)</code></td></tr>
+<tr><td>Count elements</td><td>Not available</td><td><code>length(source)</code></td></tr>
+<tr><td>Get first element</td><td>Not available</td><td><code>preview(source)</code></td></tr>
+<tr><td>Combine with other folds</td><td>Not available</td><td><code>plus(otherFold)</code></td></tr>
+</tbody></table>
+</div>
+<p><strong>Intent clarity</strong> is also important: using a <code>Fold</code> signals to other developers that the code path is strictly read-only.</p>
+<h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
+<pre><code class="language-java">// Build a traversal to all player scores
+Traversal&lt;League, Integer&gt; allScores =
+    LeagueTraversals.teams()
+        .andThen(TeamTraversals.players())
+        .andThen(PlayerLenses.score().asTraversal());
+
+// Convert to a Fold for read-only queries
+Fold&lt;League, Integer&gt; scoresFold = allScores.asFold();
+
+// Now use the full Fold API
+int totalScore = scoresFold.foldMap(Monoids.integerAddition(), s -&gt; s, league);
+boolean hasHighScorer = scoresFold.exists(s -&gt; s &gt; 100, league);
+boolean allPositive = scoresFold.all(s -&gt; s &gt; 0, league);
+int playerCount = scoresFold.length(league);
+Optional&lt;Integer&gt; firstScore = scoresFold.preview(league);
+</code></pre>
+<h3 id="filtered-traversals-as-folds"><a class="header" href="#filtered-traversals-as-folds">Filtered Traversals as Folds</a></h3>
+<p>Converting a filtered traversal to a fold is particularly useful for conditional queries:</p>
+<pre><code class="language-java">// Filtered traversal: only active players (score &gt; 0)
+Traversal&lt;League, Player&gt; activePlayers =
+    LeagueTraversals.teams()
+        .andThen(TeamTraversals.players())
+        .filtered(p -&gt; p.score() &gt; 0);
+
+// Convert to fold for aggregation
+Fold&lt;League, Player&gt; activePlayersFold = activePlayers.asFold();
+int activeCount = activePlayersFold.length(league);
+boolean anyHighScorer = activePlayersFold
+    .andThen(PlayerLenses.score().asFold())
+    .exists(s -&gt; s &gt; 100, league);
+</code></pre>
+<h3 id="combining-with-other-folds-using-plus"><a class="header" href="#combining-with-other-folds-using-plus">Combining with Other Folds Using <code>plus()</code></a></h3>
+<p>One of the most powerful patterns is combining a traversal-derived fold with other folds using <code>plus()</code> for multi-path extraction:</p>
+<pre><code class="language-java">// Fold from a traversal: all member emails
+Fold&lt;Team, String&gt; memberEmails =
+    TeamTraversals.players()
+        .andThen(PlayerLenses.email().asTraversal())
+        .asFold();
+
+// Fold from a lens: team lead email
+Fold&lt;Team, String&gt; leadEmail =
+    TeamLenses.lead().asFold()
+        .andThen(PlayerLenses.email().asFold());
+
+// Combine both paths into a single fold
+Fold&lt;Team, String&gt; allEmails = leadEmail.plus(memberEmails);
+
+List&lt;String&gt; emails = allEmails.getAll(team);
+// Result: lead email followed by all member emails
+</code></pre>
+<h3 id="how-it-works-internally"><a class="header" href="#how-it-works-internally">How It Works Internally</a></h3>
+<p>The <code>asFold()</code> method leverages the existing <code>modifyF</code> infrastructure with a special <code>Const</code> applicative. Instead of modifying the structure, it accumulates monoidal values:</p>
+<ol>
+<li>Each focused element <code>A</code> is mapped to a monoidal value <code>M</code> via the provided function</li>
+<li>The <code>Const</code> applicative combines these values using the monoid, discarding structural modifications</li>
+<li>The final accumulated result is extracted</li>
+</ol>
+<p>This means <code>asFold()</code> traverses the structure exactly once, making it efficient even for deeply nested paths.</p>
+<hr />
 <h2 id="unifying-the-concepts"><a class="header" href="#unifying-the-concepts">Unifying the Concepts</a></h2>
 <p>A <code>Traversal</code> is the most general of the core optics. In fact, all other optics can be seen as specialised <code>Traversal</code>s:</p>
 <ul>
@@ -1018,7 +1095,7 @@ Original league unchanged: League[name=Pro League, teams=[Team[name=Team Alpha, 
 <a class="admonition-anchor-link" href="#admonition-hands-on-learning"></a>
 </div>
 <div>
-<p>Practice traversal basics in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial05_TraversalBasics.java">Tutorial 05: Traversal Basics</a> (7 exercises, ~10 minutes).</p>
+<p>Practice traversal basics in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial05_TraversalBasics.java">Tutorial 05: Traversal Basics</a> (8 exercises, ~12 minutes).</p>
 </div>
 </div>
 <hr />
