@@ -298,7 +298,7 @@
 <a class="admonition-anchor-link" href="#admonition-hands-on-practice"></a>
 </div>
 <div>
-<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial12_FocusDSL.java">Tutorial12_FocusDSL.java</a> | <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial13_AdvancedFocusDSL.java">Tutorial13_AdvancedFocusDSL.java</a></p>
+<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial12_FocusDSL.java">Tutorial12_FocusDSL.java</a> | <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial13_AdvancedFocusDSL.java">Tutorial13_AdvancedFocusDSL.java</a> | <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial19_NavigatorGeneration.java">Tutorial19_NavigatorGeneration.java</a></p>
 </div>
 </div>
 <div id="admonition-example-code" class="admonition admonish-note" role="note" aria-labelledby="admonition-example-code-title">
@@ -716,6 +716,56 @@ Optional&lt;String&gt; homeCity = UserFocus.homeAddress().city().getOptional(use
 // workAddresses navigator methods return TraversalPath
 List&lt;String&gt; workCities = UserFocus.workAddresses().city().getAll(user);
 </code></pre>
+<h3 id="spi-aware-navigator-path-widening"><a class="header" href="#spi-aware-navigator-path-widening">SPI-Aware Navigator Path Widening</a></h3>
+<p>The path widening table above covers <code>Optional</code>, <code>Maybe</code>, <code>List</code>, <code>Set</code>, and <code>Collection</code> types, which are recognised by hardcoded checks. However, many useful container types are registered through the <code>TraversableGenerator</code> SPI, and these are also recognised for navigator widening.</p>
+<p>Each SPI generator declares a <code>Cardinality</code> value that determines the navigator path type:</p>
+<div class="table-wrapper"><table><thead><tr><th>Cardinality</th><th>Navigator Path</th><th>Types</th></tr></thead><tbody>
+<tr><td><code>ZERO_OR_ONE</code></td><td><code>AffinePath</code></td><td><code>Either&lt;L,R&gt;</code>, <code>Try&lt;A&gt;</code>, <code>Validated&lt;E,A&gt;</code>, <code>Optional&lt;A&gt;</code>, <code>Maybe&lt;A&gt;</code></td></tr>
+<tr><td><code>ZERO_OR_MORE</code></td><td><code>TraversalPath</code></td><td><code>Map&lt;K,V&gt;</code>, arrays, Eclipse Collections, Guava, Vavr, Apache Commons</td></tr>
+</tbody></table>
+</div>
+<p>For example, a record with a <code>Map</code> field and an <code>Either</code> field:</p>
+<pre><code class="language-java">@GenerateFocus(generateNavigators = true)
+record Warehouse(String name, Map&lt;String, Integer&gt; inventory, Either&lt;String, String&gt; verifiedName) {}
+
+// inventory → TraversalPath (Map is ZERO_OR_MORE via MapValueGenerator SPI)
+List&lt;Integer&gt; quantities = WarehouseFocus.inventory().getAll(warehouse);
+
+// verifiedName → AffinePath (Either is ZERO_OR_ONE via EitherGenerator SPI)
+Optional&lt;String&gt; verified = WarehouseFocus.verifiedName().getOptional(warehouse);
+</code></pre>
+<h4 id="compound-widening"><a class="header" href="#compound-widening">Compound Widening</a></h4>
+<p>When navigating through multiple container types, the path widens according to lattice rules:</p>
+<div class="table-wrapper"><table><thead><tr><th>Current</th><th>+ Field</th><th>= Result</th></tr></thead><tbody>
+<tr><td>FOCUS</td><td>AFFINE</td><td>AFFINE</td></tr>
+<tr><td>FOCUS</td><td>TRAVERSAL</td><td>TRAVERSAL</td></tr>
+<tr><td>AFFINE</td><td>AFFINE</td><td>AFFINE</td></tr>
+<tr><td>AFFINE</td><td>TRAVERSAL</td><td>TRAVERSAL</td></tr>
+<tr><td>TRAVERSAL</td><td>anything</td><td>TRAVERSAL</td></tr>
+</tbody></table>
+</div>
+<p>For instance, navigating through <code>Optional&lt;Address&gt;</code> (AFFINE) where <code>Address</code> has a <code>Map&lt;String, String&gt;</code> field (TRAVERSAL via SPI) produces a <code>TraversalPath</code>:</p>
+<pre><code class="language-java">@GenerateFocus(generateNavigators = true)
+record Company(String name, Optional&lt;Address&gt; backup) {}
+
+@GenerateFocus(generateNavigators = true)
+record Address(String street, Map&lt;String, String&gt; metadata) {}
+
+// Optional (AFFINE) + Map (TRAVERSAL via SPI) = TRAVERSAL
+TraversalPath&lt;Company, String&gt; metadataValues =
+    CompanyFocus.backup().metadata();  // Returns TraversalPath
+</code></pre>
+<div id="admonition-custom-generators" class="admonition admonish-note" role="note" aria-labelledby="admonition-custom-generators-title">
+<div class="admonition-title">
+<div id="admonition-custom-generators-title">
+<p>Custom Generators</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-custom-generators"></a>
+</div>
+<div>
+<p>If you write a custom <code>TraversableGenerator</code> for your own container type, override <code>getCardinality()</code> to return <code>ZERO_OR_ONE</code> for optional-like types. The default is <code>ZERO_OR_MORE</code>, which is correct for collection-like types. See <a href="../tooling/generator_plugins.html">Traversal Generator Plugins</a> for details.</p>
+</div>
+</div>
 <h3 id="controlling-navigator-generation"><a class="header" href="#controlling-navigator-generation">Controlling Navigator Generation</a></h3>
 <h4 id="depth-limiting"><a class="header" href="#depth-limiting">Depth Limiting</a></h4>
 <p>Prevent excessive code generation for deeply nested structures:</p>
@@ -1522,7 +1572,7 @@ TraversalPath&lt;JsonNode, String&gt; path = TraversalPath.of(dynamicPath);
 <a class="admonition-anchor-link" href="#admonition-hands-on-learning"></a>
 </div>
 <div>
-<p>Practice the Focus DSL in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial12_FocusDSL.java">Tutorial 12: Focus DSL</a> (10 exercises, ~12 minutes) and <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial13_AdvancedFocusDSL.java">Tutorial 13: Advanced Focus DSL</a> (8 exercises, ~12 minutes).</p>
+<p>Practice the Focus DSL in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial12_FocusDSL.java">Tutorial 12: Focus DSL</a> (10 exercises, ~12 minutes), <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial13_AdvancedFocusDSL.java">Tutorial 13: Advanced Focus DSL</a> (8 exercises, ~12 minutes), and <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial19_NavigatorGeneration.java">Tutorial 19: Navigator Generation</a> (7 exercises, ~10 minutes).</p>
 </div>
 </div>
 <hr />
