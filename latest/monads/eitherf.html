@@ -265,8 +265,13 @@
 }
 
 </style>
-<h1 id="eitherf-either-for-effects"><a class="header" href="#eitherf-either-for-effects">EitherF: <em>Either for Effects</em></a></h1>
-<p><code>EitherF&lt;F, G, A&gt;</code> is <code>Either</code> lifted to the type constructor level.</p>
+<h1 id="eitherf-composing-effect-vocabularies"><a class="header" href="#eitherf-composing-effect-vocabularies">EitherF: Composing Effect Vocabularies</a></h1>
+<h2 id="one-program-many-languages-one-interpreter"><a class="header" href="#one-program-many-languages-one-interpreter"><em>One program, many languages, one interpreter</em></a></h2>
+<blockquote>
+<p><em>"Only connect! That was the whole of her sermon."</em></p>
+<p>-- E.M. Forster, <em>Howards End</em></p>
+</blockquote>
+<p>Forster's imperative applies to effect algebras. A payment service speaks four separate languages: gateway operations, fraud checks, ledger entries, notifications. Each is a self-contained sealed interface with its own vocabulary. But a program orchestrating all four needs a single type that can hold any instruction from any vocabulary. <code>EitherF</code> is the connection: a union type at the type-constructor level that routes each instruction to the interpreter that speaks its language.</p>
 <hr />
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
@@ -277,14 +282,33 @@
 </div>
 <div>
 <ul>
-<li>What EitherF is and when to use it</li>
-<li>How Inject embeds effects into composed types</li>
-<li>How Interpreters.combine merges interpreters</li>
+<li>Why programs using multiple effect algebras need a composed effect type</li>
+<li>How <code>EitherF</code> represents "this instruction or that instruction" at the type constructor level</li>
+<li>How <code>Inject</code> embeds single-effect instructions into the composed type</li>
+<li>How <code>Interpreters.combine</code> merges individual interpreters into one</li>
+<li>How <code>Free.translate</code> lifts programs between effect types</li>
+<li>When <code>@ComposeEffects</code> generates all of this automatically</li>
 </ul>
 </div>
 </div>
-<h2 id="core-concept"><a class="header" href="#core-concept">Core Concept</a></h2>
-<p>Just as <code>Either&lt;L, R&gt;</code> represents "a value that is either an L or an R," <code>EitherF&lt;F, G, A&gt;</code> represents "an instruction that is either from effect-set F or effect-set G."</p>
+<h2 id="the-problem-when-one-vocabulary-isnt-enough"><a class="header" href="#the-problem-when-one-vocabulary-isnt-enough">The Problem: When One Vocabulary Isn't Enough</a></h2>
+<p>The <a href="free_monad.html">Free monad</a> lets you build a program as a data structure and interpret it in different ways. But a Free program is parameterised by a single instruction type:</p>
+<pre><code class="language-java">Free&lt;ConsoleOpKind.Witness, String&gt; program = ...
+</code></pre>
+<p>This program can only contain console instructions. What if your workflow also needs database operations?</p>
+<pre><code class="language-java">// Console operations
+Free&lt;ConsoleOpKind.Witness, Unit&gt; greeting = printLine("Hello");
+
+// Database operations
+Free&lt;DbOpKind.Witness, User&gt; lookup = dbLookup("alice");
+
+// How do you combine them into one program?
+// Free&lt;???, Unit&gt; combined = greeting.flatMap(_ -&gt; lookup);  // Type mismatch!
+</code></pre>
+<p>The type parameters <code>ConsoleOpKind.Witness</code> and <code>DbOpKind.Witness</code> are different. You cannot <code>flatMap</code> across them. You need a type that says "this instruction is <em>either</em> a console operation <em>or</em> a database operation."</p>
+<p>That type is <code>EitherF</code>.</p>
+<h2 id="the-solution-either-for-type-constructors"><a class="header" href="#the-solution-either-for-type-constructors">The Solution: Either for Type Constructors</a></h2>
+<p>Just as <code>Either&lt;L, R&gt;</code> holds a value that is either an <code>L</code> or an <code>R</code>, <code>EitherF&lt;F, G, A&gt;</code> holds an instruction that is either from effect set <code>F</code> or effect set <code>G</code>:</p>
 <pre><code class="language-java">public sealed interface EitherF&lt;F, G, A&gt;
     permits EitherF.Left, EitherF.Right {
 
@@ -293,39 +317,105 @@
 }
 </code></pre>
 <p>The <code>F</code> suffix follows the established <code>modifyF</code> convention where it means "lifted to the functor/effect level."</p>
-<h2 id="when-to-use"><a class="header" href="#when-to-use">When to Use</a></h2>
-<p>Use EitherF when composing multiple effect algebras for Free monad programs. A program that needs both Console and Database operations uses <code>EitherF&lt;ConsoleOpKind.Witness, DbOpKind.Witness&gt;</code> as its effect type.</p>
-<p>For most users, EitherF is an implementation detail; the <code>@ComposeEffects</code> annotation generates the composition automatically.</p>
-<h2 id="inject"><a class="header" href="#inject">Inject</a></h2>
-<p><code>Inject&lt;F, G&gt;</code> witnesses that effect type F can be embedded into a larger effect type G:</p>
+<p>When an instruction arrives, dispatch is a simple pattern match:</p>
+<pre><code>Instruction arrives
+    │
+    ├── Left(consoleOp)  →  Console interpreter handles it
+    │
+    └── Right(dbOp)      →  Database interpreter handles it
+</code></pre>
+<p>Now both instruction types live in one combined type, and <code>Free&lt;EitherFKind.Witness&lt;ConsoleOp, DbOp&gt;, A&gt;</code> can hold instructions from either vocabulary.</p>
+<h2 id="scaling-up-right-nesting-for-3-effects"><a class="header" href="#scaling-up-right-nesting-for-3-effects">Scaling Up: Right-Nesting for 3+ Effects</a></h2>
+<p>Two effects use a flat <code>EitherF&lt;F, G&gt;</code>. Three or more effects nest on the right:</p>
+<pre><code>Two effects:    EitherF&lt;F, G&gt;
+Three effects:  EitherF&lt;F, EitherF&lt;G, H&gt;&gt;
+Four effects:   EitherF&lt;F, EitherF&lt;G, EitherF&lt;H, I&gt;&gt;&gt;
+</code></pre>
+<p>The <a href="../examples/payment_processing.html">payment processing example</a> composes four effect algebras this way:</p>
+<pre><code>EitherF&lt; PaymentGatewayOp,
+         EitherF&lt; FraudCheckOp,
+                  EitherF&lt; LedgerOp,
+                           NotificationOp &gt;&gt;&gt;
+
+Dispatch:
+  Left?  → gateway interpreter
+  Right? → Left?  → fraud interpreter
+           Right? → Left?  → ledger interpreter
+                    Right? → notification interpreter
+</code></pre>
+<p>Each instruction is routed to exactly one interpreter based on its position in the nesting. Users never construct this nesting manually; the <a href="../effect/effect_handlers.html#composing-effects"><code>@ComposeEffects</code></a> annotation generates it automatically.</p>
+<h2 id="inject-embedding-instructions"><a class="header" href="#inject-embedding-instructions">Inject: Embedding Instructions</a></h2>
+<p>Without <code>Inject</code>, every instruction would need manual wrapping:</p>
+<pre><code class="language-java">// Without Inject: verbose and error-prone
+Free&lt;Composed, RiskScore&gt; checkFraud = Free.liftF(
+    EitherFKindHelper.widen(
+        EitherF.right(EitherFKindHelper.widen(
+            EitherF.left(fraudOp)))),
+    composedFunctor);
+
+// With Inject: clean and type-safe
+Free&lt;Composed, RiskScore&gt; checkFraud = fraud.checkTransaction(amount, customer, Function.identity());
+</code></pre>
+<p><code>Inject&lt;F, G&gt;</code> witnesses that effect type <code>F</code> can be embedded into a larger composed type <code>G</code>:</p>
 <pre><code class="language-java">public interface Inject&lt;F, G&gt; {
   &lt;A&gt; Kind&lt;G, A&gt; inject(Kind&lt;F, A&gt; fa);
 }
 </code></pre>
 <p>Standard instances (provided by <code>InjectInstances</code>):</p>
 <p><code>injectLeft()</code>
-: Inject into the left of an EitherF</p>
+: Embeds into the left position of an <code>EitherF</code></p>
 <p><code>injectRight()</code>
-: Inject into the right of an EitherF</p>
+: Embeds into the right position of an <code>EitherF</code></p>
 <p><code>injectRightThen(Inject)</code>
-: Transitive injection for 3+ effects</p>
-<h2 id="interpreterscombine"><a class="header" href="#interpreterscombine">Interpreters.combine</a></h2>
-<p>Merges individual interpreters into one for the composed type:</p>
-<pre><code class="language-java">Natural&lt;EitherFKind.Witness&lt;F, G&gt;, M&gt; combined =
-    Interpreters.combine(interpreterF, interpreterG);
+: Transitive injection for 3+ effects, chaining through nested right positions</p>
+<h2 id="interpreterscombine-one-dispatcher-for-everything"><a class="header" href="#interpreterscombine-one-dispatcher-for-everything">Interpreters.combine: One Dispatcher for Everything</a></h2>
+<p>Individual interpreters each handle one effect algebra. <code>Interpreters.combine</code> merges them into a single natural transformation that dispatches to the right handler:</p>
+<pre><code class="language-java">var interpreter = Interpreters.combine(
+    gatewayInterpreter,
+    fraudInterpreter,
+    ledgerInterpreter,
+    notificationInterpreter);
+
+// One call interprets the entire composed program
+IO&lt;PaymentResult&gt; result = IOKindHelper.IO_OP.narrow(
+    program.foldMap(interpreter, IOMonad.INSTANCE));
 </code></pre>
-<p>Overloads support 2, 3, and 4 effects. For 3+ effects, nesting is internal: <code>EitherF&lt;F, EitherF&lt;G, H&gt;&gt;</code>. Users never construct this manually.</p>
-<h2 id="freetranslate"><a class="header" href="#freetranslate">Free.translate</a></h2>
-<p>Transforms <code>Free&lt;F, A&gt;</code> to <code>Free&lt;G, A&gt;</code> using a natural transformation:</p>
+<p>Overloads support 2, 3, and 4 effects. Internally, <code>combine</code> pattern-matches on <code>Left</code>/<code>Right</code> at each nesting level and delegates to the corresponding interpreter.</p>
+<h2 id="freetranslate-lifting-between-effect-types"><a class="header" href="#freetranslate-lifting-between-effect-types">Free.translate: Lifting Between Effect Types</a></h2>
+<p><code>Free.translate</code> transforms <code>Free&lt;F, A&gt;</code> to <code>Free&lt;G, A&gt;</code> using a natural transformation and a target functor:</p>
 <pre><code class="language-java">Free&lt;G, A&gt; translated = Free.translate(program, inject::inject, functorG);
 </code></pre>
-<p>This is how <code>Bound</code> instances lift single-effect operations into the composed effect type.</p>
+<p>This is how <code>Bound</code> instances work internally: when you call <code>console.readLine(Function.identity())</code>, the <code>Bound</code> class lifts the single-effect instruction into the composed <code>EitherF</code> type via <code>Free.translate</code> and the appropriate <code>Inject</code> instance.</p>
+<h2 id="when-composeeffects-does-it-for-you"><a class="header" href="#when-composeeffects-does-it-for-you">When @ComposeEffects Does It For You</a></h2>
+<p>For most users, <code>EitherF</code> is an implementation detail. The <a href="../effect/effect_handlers.html#composing-effects"><code>@ComposeEffects</code></a> annotation generates the entire composition infrastructure:</p>
+<pre><code class="language-java">@ComposeEffects
+public record AppEffects(
+    Class&lt;ConsoleOp&lt;?&gt;&gt; console,
+    Class&lt;DbOp&lt;?&gt;&gt; db) {}
+// Generates: AppEffectsWiring with Inject instances, composed Functor, BoundSet
+</code></pre>
+<p>The generated <code>BoundSet</code> provides smart constructors that handle injection automatically. You write programs using <code>bounds.console().readLine(...)</code> and <code>bounds.db().save(...)</code> without thinking about <code>EitherF</code>, <code>Inject</code>, or nesting.</p>
+<p>Understanding EitherF matters when you need to debug type errors, write custom composition, or understand what the generated code does under the hood.</p>
 <hr />
-<h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
+<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+</div>
+<div>
 <ul>
-<li><a href="free_monad.html">Free Monad</a>: the Free monad that EitherF compositions target</li>
-<li><a href="../examples/payment_processing.html">Payment Processing</a>: worked example using EitherF composition</li>
+<li><strong><a href="free_monad.html">Free Monad</a></strong> - The program-as-data foundation that EitherF compositions target</li>
+<li><strong><a href="../effect/effect_handlers_intro.html">Effect Handlers Introduction</a></strong> - Motivation and terminology for the effect handler system</li>
+<li><strong><a href="../effect/effect_handlers.html">Effect Handler Reference</a></strong> - Technical reference for <code>@EffectAlgebra</code> and <code>@ComposeEffects</code></li>
+<li><strong><a href="../examples/payment_processing.html">Payment Processing</a></strong> - Complete worked example composing four effect algebras</li>
 </ul>
+</div>
+</div>
+<hr />
+<p><strong>Previous:</strong> <a href="free_applicative.html">Free Applicative</a>
+<strong>Next:</strong> <a href="coyoneda.html">Coyoneda</a></p>
 
                     </main>
 

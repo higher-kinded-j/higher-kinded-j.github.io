@@ -1639,6 +1639,192 @@ EitherPath&lt;Error, Report&gt; report =
 </ul>
 <p><strong>Related:</strong> <a href="#effect-path">Effect Path</a>, <a href="#focus-dsl">Focus DSL</a>, <a href="#focuspath">FocusPath</a></p>
 <hr />
+<h2 id="effect-handlers"><a class="header" href="#effect-handlers">Effect Handlers</a></h2>
+<h3 id="effect-algebra"><a class="header" href="#effect-algebra">Effect Algebra</a></h3>
+<p><strong>Definition:</strong> A sealed interface annotated with <code>@EffectAlgebra</code> where each permitted record represents a domain operation. The Java equivalent of "algebraic effects" from functional programming. Each operation carries its parameters and a continuation function that transforms the operation's natural result type.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">@EffectAlgebra
+public sealed interface ConsoleOp&lt;A&gt;
+    permits ConsoleOp.ReadLine, ConsoleOp.PrintLine {
+
+  &lt;B&gt; ConsoleOp&lt;B&gt; mapK(Function&lt;? super A, ? extends B&gt; f);
+
+  record ReadLine&lt;A&gt;(Function&lt;String, A&gt; k) implements ConsoleOp&lt;A&gt; {
+    @Override
+    public &lt;B&gt; ConsoleOp&lt;B&gt; mapK(Function&lt;? super A, ? extends B&gt; f) {
+      return new ReadLine&lt;&gt;(k.andThen(f));
+    }
+  }
+
+  record PrintLine&lt;A&gt;(String message, Function&lt;Unit, A&gt; k) implements ConsoleOp&lt;A&gt; {
+    @Override
+    public &lt;B&gt; ConsoleOp&lt;B&gt; mapK(Function&lt;? super A, ? extends B&gt; f) {
+      return new PrintLine&lt;&gt;(message, k.andThen(f));
+    }
+  }
+}
+</code></pre>
+<p><strong>When to Use:</strong> When you need to define a closed set of domain operations that can be interpreted in multiple ways (production, testing, audit). The sealed modifier guarantees exhaustive handling in interpreters.</p>
+<p><strong>Related:</strong> <a href="#continuation-passing-style-cps">Continuation-Passing Style</a>, <a href="#free-monad">Free Monad</a>, <a href="#effectalgebra">@EffectAlgebra</a></p>
+<hr />
+<h3 id="continuation-passing-style-cps"><a class="header" href="#continuation-passing-style-cps">Continuation-Passing Style (CPS)</a></h3>
+<p><strong>Definition:</strong> A pattern where each operation record includes a <code>Function</code> parameter (conventionally named <code>k</code>) that transforms the operation's natural result type to the generic type parameter <code>A</code>. If a <code>Charge</code> operation naturally produces a <code>ChargeResult</code>, the continuation <code>Function&lt;ChargeResult, A&gt;</code> lets callers transform that result inline. This is the same idea as <code>CompletableFuture.thenApply</code>: chain a transformation onto a value that does not exist yet.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// The continuation k transforms ChargeResult → A
+record Charge&lt;A&gt;(Money amount, PaymentMethod method,
+    Function&lt;ChargeResult, A&gt; k) implements PaymentGatewayOp&lt;A&gt; { }
+
+// Using Function.identity() returns the natural result type directly
+Free&lt;G, ChargeResult&gt; charge =
+    gateway.charge(amount, method, Function.identity());
+
+// Using a custom continuation transforms the result inline
+Free&lt;G, TransactionId&gt; txId =
+    gateway.charge(amount, method, result -&gt; result.transactionId());
+</code></pre>
+<p><strong>Why CPS:</strong> Enables proper Java type inference at call sites. Without the continuation, the compiler cannot infer the relationship between the operation's result and the program's type parameter.</p>
+<p><strong>Related:</strong> <a href="#effect-algebra">Effect Algebra</a>, <a href="#mapk">mapK</a></p>
+<hr />
+<h3 id="mapk"><a class="header" href="#mapk">mapK</a></h3>
+<p><strong>Definition:</strong> A method on each effect algebra record that composes the continuation function with a new transformation. The generated Functor delegates to <code>mapK</code> rather than using unsafe casts. Analogous to <code>Stream.map</code> but applied to a single instruction rather than a collection.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">record ReadLine&lt;A&gt;(Function&lt;String, A&gt; k) implements ConsoleOp&lt;A&gt; {
+  @Override
+  public &lt;B&gt; ConsoleOp&lt;B&gt; mapK(Function&lt;? super A, ? extends B&gt; f) {
+    return new ReadLine&lt;&gt;(k.andThen(f));  // Compose continuations
+  }
+}
+</code></pre>
+<p><strong>Why It Matters:</strong> Enables the generated Functor to map over instructions without cast-through. Each record knows how to transform its own continuation, keeping type safety throughout the chain.</p>
+<p><strong>Related:</strong> <a href="#effect-algebra">Effect Algebra</a>, <a href="#continuation-passing-style-cps">Continuation-Passing Style</a></p>
+<hr />
+<h3 id="free-monad"><a class="header" href="#free-monad">Free Monad</a></h3>
+<p><strong>Definition:</strong> A data structure (<code>Free&lt;F, A&gt;</code>) that represents a program as a tree of instructions. There are five main node types: <code>Pure</code> (return a value), <code>Suspend</code> (an instruction to execute), <code>FlatMapped</code> (sequence two programs), <code>HandleError</code> (error recovery), and <code>Ap</code> (applicative sub-expression). Because the program is data, it can be inspected, transformed, and interpreted in different ways.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Building a Free program from effect algebra operations
+Free&lt;G, String&gt; program =
+    console.readLine(Function.identity())
+        .flatMap(name -&gt; console.printLine("Hello, " + name, Function.identity())
+        .flatMap(_ -&gt; Free.pure("Done")));
+
+// The program is a tree:
+//   FlatMapped
+//     Suspend[ReadLine]
+//     λ(name) → FlatMapped
+//                 Suspend[PrintLine("Hello, " + name)]
+//                 λ(_) → Pure("Done")
+</code></pre>
+<p><strong>When to Use:</strong> When you need to build programs that can be interpreted in multiple ways, inspected before execution, or composed from multiple effect algebras.</p>
+<p><strong>Related:</strong> <a href="#foldmap">foldMap</a>, <a href="#effect-algebra">Effect Algebra</a>, <a href="#eitherf">EitherF</a></p>
+<hr />
+<h3 id="eitherf"><a class="header" href="#eitherf">EitherF</a></h3>
+<p><strong>Definition:</strong> A sum type lifted to the type constructor level. Used to compose multiple effect algebras into a single combined type via right-nesting. The <code>@ComposeEffects</code> annotation generates this composition automatically.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">// Right-nested composition of four effect algebras:
+// EitherF&lt;PaymentGatewayOp,
+//   EitherF&lt;FraudCheckOp,
+//     EitherF&lt;LedgerOp,
+//       NotificationOp&gt;&gt;&gt;
+@ComposeEffects
+public record PaymentEffects(
+    Class&lt;PaymentGatewayOp&lt;?&gt;&gt; gateway,
+    Class&lt;FraudCheckOp&lt;?&gt;&gt; fraud,
+    Class&lt;LedgerOp&lt;?&gt;&gt; ledger,
+    Class&lt;NotificationOp&lt;?&gt;&gt; notification) {}
+</code></pre>
+<p><strong>When to Use:</strong> When your program uses operations from multiple effect algebras. <code>@ComposeEffects</code> generates the <code>EitherF</code> nesting, <code>Inject</code> instances, and a <code>BoundSet</code> automatically.</p>
+<p><strong>Related:</strong> <a href="#inject">Inject</a>, <a href="#effect-algebra">Effect Algebra</a></p>
+<hr />
+<h3 id="inject"><a class="header" href="#inject">Inject</a></h3>
+<p><strong>Definition:</strong> A type class witnessing that one effect algebra <code>F</code> can be embedded into a composed effect type <code>G</code> (a right-nested <code>EitherF</code> chain). Generated by <code>@ComposeEffects</code>. Provides the <code>inj</code> method that wraps an instruction in the appropriate <code>EitherF</code> position.</p>
+<p><strong>When to Use:</strong> Automatically generated and used by the <code>BoundSet</code> smart constructors. You rarely interact with <code>Inject</code> directly.</p>
+<p><strong>Related:</strong> <a href="#eitherf">EitherF</a>, <a href="#boundset">BoundSet</a></p>
+<hr />
+<h3 id="interpreter-effect-handler"><a class="header" href="#interpreter-effect-handler">Interpreter (Effect Handler)</a></h3>
+<p><strong>Definition:</strong> A natural transformation that converts effect algebra instructions into a target monad (e.g., <code>IO</code> for production, <code>Id</code> for testing). Extends the abstract skeleton generated by <code>@EffectAlgebra</code>. Multiple interpreters are combined using <code>Interpreters.combine()</code>.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">public class IOConsoleInterpreter extends ConsoleOpInterpreter&lt;IOKind.Witness&gt; {
+  @Override
+  protected &lt;A&gt; Kind&lt;IOKind.Witness, A&gt; handleReadLine(ConsoleOp.ReadLine&lt;A&gt; op) {
+    return IOKindHelper.IO_OP.widen(
+        IO.delay(() -&gt; op.k().apply(scanner.nextLine())));
+  }
+
+  @Override
+  protected &lt;A&gt; Kind&lt;IOKind.Witness, A&gt; handlePrintLine(ConsoleOp.PrintLine&lt;A&gt; op) {
+    return IOKindHelper.IO_OP.widen(
+        IO.delay(() -&gt; { System.out.println(op.message()); return op.k().apply(Unit.INSTANCE); }));
+  }
+}
+</code></pre>
+<p><strong>When to Use:</strong> Write one interpreter per effect algebra per execution mode. A production interpreter targets <code>IO</code>; a test interpreter targets <code>Id</code> for pure, synchronous execution.</p>
+<p><strong>Related:</strong> <a href="#foldmap">foldMap</a>, <a href="#effect-algebra">Effect Algebra</a></p>
+<hr />
+<h3 id="foldmap"><a class="header" href="#foldmap">foldMap</a></h3>
+<p><strong>Definition:</strong> The method that interprets a Free monad program by traversing its instruction tree, applying a natural transformation (interpreter) to each <code>Suspend</code> node, and combining results using the target monad's <code>flatMap</code>. Stack-safe via internal trampolining.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">var interpreter = Interpreters.combine(consoleInterp, dbInterp);
+IO&lt;String&gt; result = IOKindHelper.IO_OP.narrow(
+    program.foldMap(interpreter, IOMonad.INSTANCE));
+</code></pre>
+<p><strong>How It Works:</strong></p>
+<ul>
+<li><code>Pure(a)</code> returns the value wrapped in the target monad</li>
+<li><code>Suspend(instruction)</code> applies the interpreter to the instruction</li>
+<li><code>FlatMapped(program, continuation)</code> interprets the sub-program, then flatMaps the continuation</li>
+</ul>
+<p><strong>Related:</strong> <a href="#free-monad">Free Monad</a>, <a href="#interpreter-effect-handler">Interpreter</a></p>
+<hr />
+<h3 id="effectalgebra"><a class="header" href="#effectalgebra">@EffectAlgebra</a></h3>
+<p><strong>Definition:</strong> An annotation processor that generates five classes per annotated sealed interface:</p>
+<div class="table-wrapper"><table><thead><tr><th>Generated Class</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>*Kind</code></td><td>HKT marker + Witness</td></tr>
+<tr><td><code>*KindHelper</code></td><td>widen/narrow conversions</td></tr>
+<tr><td><code>*Functor</code></td><td>Functor instance (delegates to <code>mapK</code>)</td></tr>
+<tr><td><code>*Ops</code></td><td>Smart constructors + <code>Bound</code> inner class</td></tr>
+<tr><td><code>*Interpreter</code></td><td>Abstract interpreter skeleton</td></tr>
+</tbody></table>
+</div>
+<p><strong>When to Use:</strong> Annotate every sealed interface that defines a set of domain operations. The generated classes eliminate boilerplate and provide type-safe construction and interpretation.</p>
+<p><strong>Related:</strong> <a href="#effect-algebra">Effect Algebra</a>, <a href="#composeeffects">@ComposeEffects</a></p>
+<hr />
+<h3 id="composeeffects"><a class="header" href="#composeeffects">@ComposeEffects</a></h3>
+<p><strong>Definition:</strong> An annotation processor that generates composition infrastructure for multiple effect algebras: <code>Inject</code> instances, a composed <code>Functor</code>, and a <code>BoundSet</code> for program construction. Annotate a record whose fields are <code>Class&lt;?&gt;</code> references to the effect algebras being composed.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">@ComposeEffects
+public record AppEffects(
+    Class&lt;ConsoleOp&lt;?&gt;&gt; console,
+    Class&lt;DbOp&lt;?&gt;&gt; db) {}
+// Generates: AppEffectsWiring with boundSet(), interpret(), etc.
+</code></pre>
+<p><strong>Related:</strong> <a href="#eitherf">EitherF</a>, <a href="#inject">Inject</a>, <a href="#boundset">BoundSet</a></p>
+<hr />
+<h3 id="boundset"><a class="header" href="#boundset">BoundSet</a></h3>
+<p><strong>Definition:</strong> A generated container holding <code>Bound</code> instances for each effect algebra in a composition. Each <code>Bound</code> provides smart constructors that automatically inject operations into the correct position in the composed <code>EitherF</code> chain. Obtained from the generated <code>*Wiring.boundSet()</code> method.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">var bounds = AppEffectsWiring.boundSet();
+var console = bounds.console();  // Bound&lt;ComposedType&gt; for ConsoleOp
+var db = bounds.db();            // Bound&lt;ComposedType&gt; for DbOp
+
+Free&lt;ComposedType, String&gt; program =
+    console.readLine(Function.identity())
+        .flatMap(name -&gt; db.save(name, Function.identity()));
+</code></pre>
+<p><strong>Related:</strong> <a href="#composeeffects">@ComposeEffects</a>, <a href="#inject">Inject</a></p>
+<hr />
+<h3 id="programanalyser"><a class="header" href="#programanalyser">ProgramAnalyser</a></h3>
+<p><strong>Definition:</strong> A utility that traverses a Free monad program tree without executing it, counting instructions, error recovery points, and parallel scopes. All counts are lower bounds because <code>FlatMapped</code> continuations are opaque functions that cannot be inspected without a value.</p>
+<p><strong>Example:</strong></p>
+<pre><code class="language-java">ProgramAnalysis analysis = ProgramAnalyser.analyse(program);
+
+analysis.suspendCount();     // Number of instructions
+analysis.recoveryPoints();   // Number of HandleError nodes
+analysis.parallelScopes();   // Number of Ap nodes
+analysis.hasOpaqueRegions(); // FlatMapped continuations present
+</code></pre>
+<p><strong>When to Use:</strong> Before executing programs in production, to estimate cost, count external calls, or verify structural properties. Useful for audit logging and capacity planning.</p>
+<p><strong>Related:</strong> <a href="#free-monad">Free Monad</a></p>
+<hr />
 <h2 id="optics-terminology"><a class="header" href="#optics-terminology">Optics Terminology</a></h2>
 <h3 id="affine"><a class="header" href="#affine">Affine</a></h3>
 <p><strong>Definition:</strong> An optic that focuses on zero or one values within a structure. Affine sits between Lens (exactly one) and Prism (zero or one for sum types) in the optic hierarchy. It combines the "might not be there" aspect of Prism with the "focus on part of a product" aspect of Lens.</p>
