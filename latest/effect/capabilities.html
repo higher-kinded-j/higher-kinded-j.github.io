@@ -479,19 +479,19 @@ which tells you something about the general state of affairs in software.</p>
 <p><strong>What it means:</strong> The computation is deferred until you explicitly run it.</p>
 <p><strong>The analogy:</strong> A written contract. It describes what will happen, but nothing
 happens until someone signs and executes it.</p>
-<pre><code class="language-java">public interface Effectful&lt;A&gt; extends Chainable&lt;A&gt; {
+<pre><code class="language-java">public sealed interface Effectful&lt;A&gt; extends Chainable&lt;A&gt; permits IOPath, VTaskPath {
     A unsafeRun();
-    Try&lt;A&gt; runSafe();
-    Effectful&lt;A&gt; handleError(Function&lt;? super Throwable, ? extends A&gt; handler);
+    default Try&lt;A&gt; runSafe() { return Try.of(this::unsafeRun); }
+
+    Effectful&lt;A&gt; handleError(Function&lt;? super Throwable, ? extends A&gt; recovery);
     Effectful&lt;A&gt; handleErrorWith(
-        Function&lt;? super Throwable, ? extends Effectful&lt;A&gt;&gt; handler
-    );
-    Effectful&lt;A&gt; ensuring(Runnable cleanup);
+        Function&lt;? super Throwable, ? extends Effectful&lt;A&gt;&gt; recovery);
+    Effectful&lt;A&gt; guarantee(Runnable finalizer);
 }
 </code></pre>
-<p>Only <code>IOPath</code> implements <code>Effectful</code>. All other Path types evaluate immediately
-when you call <code>map</code> or <code>via</code>. With <code>IOPath</code>, nothing happens until you call
-<code>unsafeRun()</code> or <code>runSafe()</code>:</p>
+<p><code>IOPath</code> and <code>VTaskPath</code> implement <code>Effectful</code>. All other Path types evaluate
+immediately when you call <code>map</code> or <code>via</code>. With <code>IOPath</code>, nothing happens until
+you call <code>unsafeRun()</code> or <code>runSafe()</code>:</p>
 <pre><code class="language-java">IOPath&lt;String&gt; readFile = Path.io(() -&gt; {
     System.out.println("Reading file...");  // Not printed yet
     return Files.readString(path);
@@ -503,11 +503,23 @@ IOPath&lt;Integer&gt; lineCount = readFile.map(s -&gt; s.split("\n").length);
 // NOW it executes
 Integer count = lineCount.unsafeRun();  // "Reading file..." printed
 </code></pre>
-<p>The <code>ensuring</code> method guarantees cleanup runs regardless of success or failure:</p>
-<pre><code class="language-java">IOPath&lt;Data&gt; withCleanup = Path.io(() -&gt; acquireResource())
+<p>All five methods are defined at the capability level, so code written against
+<code>Effectful&lt;A&gt;</code> can recover from errors and run cleanup regardless of which
+concrete implementation it holds:</p>
+<pre><code class="language-java">// Works whether `effect` is an IOPath or a VTaskPath
+public static &lt;A&gt; Effectful&lt;A&gt; safeOrDefault(Effectful&lt;A&gt; effect, A fallback) {
+    return effect.handleError(t -&gt; fallback);
+}
+
+IOPath&lt;Data&gt; withCleanup = Path.io(() -&gt; acquireResource())
     .via(resource -&gt; Path.io(() -&gt; useResource(resource)))
-    .ensuring(() -&gt; releaseResource());
+    .guarantee(() -&gt; releaseResource());
 </code></pre>
+<p><code>handleErrorWith</code> accepts any <code>Effectful&lt;A&gt;</code> from its recovery function, so an
+<code>IOPath</code> can recover into a <code>VTaskPath</code> fallback (or vice versa); the returned
+value keeps the concrete type of the receiver. The concrete <code>IOPath</code> /
+<code>VTaskPath</code> classes still narrow the return type to their own type, so direct
+callers never lose type information.</p>
 <p>The name <code>unsafeRun</code> is deliberate. It's a warning: side effects are about to
 happen, referential transparency ends here. Call it at the edge of your system,
 not scattered throughout.</p>
@@ -670,6 +682,7 @@ don't ask for more than a Path can deliver.</p>
         <script src="../version-switcher.js"></script>
         <script src=".././theme/version-switcher.js"></script>
         <script src=".././theme/sidebar-nav-link.js"></script>
+        <script src=".././theme/chapter-title.js"></script>
 
 
     </div>
