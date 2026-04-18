@@ -276,14 +276,15 @@
 </div>
 <div>
 <ul>
-<li>How to use Either, Validated, CompletableFuturePath, VTaskPath, and VStreamPath as Spring controller return types</li>
+<li>How to use Either, Validated, Maybe, Try, IO, CompletableFuture, VTask, VStream, and Free as Spring controller return types (via their Path wrappers)</li>
 <li>Zero-configuration setup with the hkj-spring-boot-starter</li>
 <li>Virtual thread integration with VTaskPath (async) and VStreamPath (SSE streaming)</li>
 <li>Automatic JSON serialisation with customisable formats</li>
+<li>Success HTTP status control via <code>@ResponseStatus</code> on handler methods</li>
 <li>Monitoring functional operations with Spring Boot Actuator</li>
 <li>Securing endpoints with functional error handling patterns</li>
 <li>Building production-ready applications with explicit, typed errors</li>
-<li>Testing functional controllers with MockMvc</li>
+<li>Testing functional controllers with MockMvc, both full context and <code>@WebMvcTest</code> slices</li>
 </ul>
 </div>
 </div>
@@ -346,11 +347,14 @@ public class UserController {
 <h3 id="step-3-run-your-application"><a class="header" href="#step-3-run-your-application">Step 3: Run Your Application</a></h3>
 <p>That's it! The starter auto-configures everything:</p>
 <ul>
-<li>Either to HTTP response conversion with automatic status code mapping</li>
-<li>Validated to HTTP response with error accumulation</li>
+<li>EitherPath to HTTP response conversion with automatic status code mapping</li>
+<li>ValidationPath to HTTP response with error accumulation</li>
+<li>MaybePath, TryPath, and IOPath handlers for optional, exception-capturing, and deferred computations</li>
 <li>CompletableFuturePath support for async operations</li>
 <li>VTaskPath support for virtual thread async via DeferredResult</li>
 <li>VStreamPath support for SSE streaming on virtual threads</li>
+<li>FreePath support for Free-monad programs interpreted through <code>EffectBoundary</code></li>
+<li><code>@ResponseStatus</code> honoured on handler methods to override the default success status</li>
 <li>JSON serialisation for functional types</li>
 <li>Customisable error type to HTTP status code mapping</li>
 </ul>
@@ -613,6 +617,47 @@ public VStreamPath&lt;TickEvent&gt; streamTicks(@RequestParam(defaultValue = "10
 <li>Configurable stream timeout via <code>hkj.virtual-threads.stream-timeout-ms</code></li>
 </ul>
 <hr />
+<h2 id="http-status-codes"><a class="header" href="#http-status-codes">HTTP Status Codes</a></h2>
+<p>Every Effect Path return-value handler resolves the success and error status codes independently, so the same controller method can map typed successes and typed failures to different HTTP responses.</p>
+<h3 id="success-status-with-responsestatus"><a class="header" href="#success-status-with-responsestatus">Success Status with <code>@ResponseStatus</code></a></h3>
+<p>Handlers delegate to <code>SuccessStatusResolver</code> to pick the success status, in this order:</p>
+<ol>
+<li><code>@ResponseStatus</code> on the handler method</li>
+<li><code>@ResponseStatus</code> on the controller class</li>
+<li>Meta-annotations (e.g. custom <code>@Created</code>, <code>@NoContent</code>)</li>
+<li>The handler's default (typically <code>200</code>)</li>
+</ol>
+<pre><code class="language-java">@RestController
+@RequestMapping("/api/orders")
+public class OrderController {
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public EitherPath&lt;DomainError, Order&gt; create(@RequestBody OrderRequest req) {
+        return orderService.create(req);
+        // Right(order)           → HTTP 201 Created
+        // Left(ValidationError)  → HTTP 400 (via ErrorStatusCodeMapper)
+    }
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public MaybePath&lt;Void&gt; cancel(@PathVariable String id) {
+        return orderService.cancel(id);
+        // Just(_)   → HTTP 204 No Content (body suppressed)
+        // Nothing() → HTTP 404
+    }
+}
+</code></pre>
+<p>All nine Effect Path handlers honour <code>@ResponseStatus</code> consistently.</p>
+<h3 id="error-status-mapping"><a class="header" href="#error-status-mapping">Error Status Mapping</a></h3>
+<p>Error responses continue to flow through <code>ErrorStatusCodeMapper</code>. Register mappings for each error type, with a configurable fallback:</p>
+<pre><code class="language-yaml">hkj:
+  web:
+    either:
+      default-error-status: 400  # Fallback for unmapped Left error types
+</code></pre>
+<p>Tagged errors (those implementing the library's status-bearing error interface, or registered by type) produce their mapped status; everything else falls back to the default.</p>
+<hr />
 <h2 id="json-serialisation"><a class="header" href="#json-serialisation">JSON Serialisation</a></h2>
 <p>The starter provides flexible JSON serialisation for functional types.</p>
 <h3 id="configuration"><a class="header" href="#configuration">Configuration</a></h3>
@@ -671,11 +716,17 @@ public VStreamPath&lt;TickEvent&gt; streamTicks(@RequestParam(defaultValue = "10
   web:
     either-path-enabled: true               # Enable EitherPath handler (default: true)
     validated-path-enabled: true            # Enable ValidationPath handler (default: true)
+    maybe-path-enabled: true                # Enable MaybePath handler (default: true)
+    try-path-enabled: true                  # Enable TryPath handler (default: true)
+    io-path-enabled: true                   # Enable IOPath handler (default: true)
     completable-future-path-enabled: true   # Enable CompletableFuturePath handler (default: true)
-    vtask-path-enabled: true               # Enable VTaskPath handler (default: true)
-    vstream-path-enabled: true             # Enable VStreamPath handler (default: true)
-    default-error-status: 400               # Default HTTP status for unmapped errors
+    vtask-path-enabled: true                # Enable VTaskPath handler (default: true)
+    vstream-path-enabled: true              # Enable VStreamPath handler (default: true)
+    free-path-enabled: true                 # Enable FreePath handler (default: true)
+    either:
+      default-error-status: 400             # Default HTTP status for unmapped Left errors
 </code></pre>
+<p>The canonical key for the EitherPath default error status is <code>hkj.web.either.default-error-status</code>. The legacy flat path <code>hkj.web.default-error-status</code> is preserved as a backward-compatible alias and binds to the same value.</p>
 <h3 id="async-executor-configuration"><a class="header" href="#async-executor-configuration">Async Executor Configuration</a></h3>
 <p>For CompletableFuturePath operations, configure the async thread pool:</p>
 <pre><code class="language-yaml">hkj:
@@ -1018,6 +1069,40 @@ void shouldHandleAsyncCompletableFuturePathResponse() throws Exception {
         .andExpect(jsonPath("$.id").value("1"));
 }
 </code></pre>
+<h3 id="slice-testing-with-webmvctest"><a class="header" href="#slice-testing-with-webmvctest">Slice Testing with <code>@WebMvcTest</code></a></h3>
+<p>For fast controller-only tests without the full application context, use Spring's <code>@WebMvcTest</code> slice. The slice excludes auto-configurations by default, so the HKJ auto-configurations must be imported explicitly:</p>
+<pre><code class="language-java">@WebMvcTest(UserController.class)
+@ImportAutoConfiguration({
+    HkjAutoConfiguration.class,
+    HkjJacksonAutoConfiguration.class,
+    HkjWebMvcAutoConfiguration.class
+})
+class UserControllerWebMvcSliceTest {
+
+    @Autowired private MockMvc mockMvc;
+    @MockitoBean private UserService userService;
+
+    @Test
+    void shouldReturn200ForExistingUser() throws Exception {
+        when(userService.findById("1"))
+            .thenReturn(Either.right(new User("1", "alice@example.com")));
+
+        mockMvc.perform(get("/api/users/1"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.value.id").value("1"));
+    }
+
+    @Test
+    void shouldReturn404ForTaggedError() throws Exception {
+        when(userService.findById("999"))
+            .thenReturn(Either.left(new UserNotFoundError("999")));
+
+        mockMvc.perform(get("/api/users/999"))
+            .andExpect(status().isNotFound());
+    }
+}
+</code></pre>
+<p>The three imports activate EitherPath/ValidationPath/Maybe/Try/IO/CompletableFuture/VTask/VStream/Free return-value handling, Jackson modules for functional types, and the error-status mapper; everything a controller slice needs. For integration-style tests covering the full stack, prefer <code>@SpringBootTest @AutoConfigureMockMvc</code> as shown above.</p>
 <h3 id="unit-testing-services"><a class="header" href="#unit-testing-services">Unit Testing Services</a></h3>
 <p>Services returning functional types are easy to test without mocking frameworks:</p>
 <pre><code class="language-java">class UserServiceTest {
@@ -1095,10 +1180,19 @@ public class HkjWebMvcAutoConfiguration implements WebMvcConfigurer {
 <ol>
 <li><strong>EitherPathReturnValueHandler:</strong> Converts <code>EitherPath&lt;L, R&gt;</code> to HTTP responses</li>
 <li><strong>ValidationPathReturnValueHandler:</strong> Converts <code>ValidationPath&lt;E, A&gt;</code> to HTTP responses</li>
+<li><strong>MaybePathReturnValueHandler:</strong> Converts <code>MaybePath&lt;A&gt;</code>, mapping <code>Just</code> to <code>200</code> and <code>Nothing</code> to <code>404</code></li>
+<li><strong>TryPathReturnValueHandler:</strong> Converts <code>TryPath&lt;A&gt;</code>, mapping <code>Success</code> to <code>200</code> and <code>Failure</code> to an error response</li>
+<li><strong>IOPathReturnValueHandler:</strong> Executes <code>IOPath&lt;A&gt;</code> and writes the captured result</li>
 <li><strong>CompletableFuturePathReturnValueHandler:</strong> Unwraps <code>CompletableFuturePath&lt;A&gt;</code> for async processing</li>
 <li><strong>VTaskPathReturnValueHandler:</strong> Executes <code>VTaskPath&lt;A&gt;</code> on virtual threads via <code>DeferredResult</code></li>
 <li><strong>VStreamPathReturnValueHandler:</strong> Streams <code>VStreamPath&lt;A&gt;</code> as SSE events on virtual threads</li>
+<li><strong>FreePathReturnValueHandler:</strong> Interprets <code>FreePath&lt;F, A&gt;</code> via the registered <code>EffectBoundary</code> bean</li>
 </ol>
+<p>Supporting collaborators:</p>
+<ul>
+<li><strong><code>SuccessStatusResolver</code>:</strong> Reads <code>@ResponseStatus</code> on the handler method (with controller-class fallback and meta-annotation support) so each handler can override its default success status.</li>
+<li><strong><code>ErrorStatusCodeMapper</code>:</strong> Configurable error-type to HTTP status mapping, falling back to <code>hkj.web.either.default-error-status</code>.</li>
+</ul>
 <p>Handlers are registered automatically and integrated seamlessly with Spring's request processing lifecycle.</p>
 <h3 id="non-invasive-design"><a class="header" href="#non-invasive-design">Non-Invasive Design</a></h3>
 <p>The integration doesn't modify existing Spring Boot behaviour:</p>
