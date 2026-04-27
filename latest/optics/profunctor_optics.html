@@ -572,362 +572,32 @@ public record PersonDto(String fullName, String birthDateString, List&lt;String&
 }
 </code></pre>
 <hr />
-<h2 id="working-with-type-safe-wrappers"><a class="header" href="#working-with-type-safe-wrappers">Working with Type-Safe Wrappers</a></h2>
-<p>Another powerful use case is adapting optics to work with strongly-typed wrapper classes while maintaining type safety.</p>
-<p><strong>The Challenge</strong>: You want to use string manipulation functions on wrapper types:</p>
-<pre><code class="language-java">// Strongly-typed wrappers
-public record UserId(String value) {}
-public record UserName(String value) {}
-public record Email(String value) {}
-
-@GenerateLenses
-public record User(UserId id, UserName name, Email email, LocalDate createdAt) {}
-</code></pre>
-<p><strong>The Solution</strong>: Create adapted lenses that unwrap and rewrap values:</p>
-<pre><code class="language-java">public class WrapperAdapters {
-  
-    // Generic wrapper lens creator
-    public static &lt;W&gt; Lens&lt;W, String&gt; stringWrapperLens(
-        Function&lt;W, String&gt; unwrap,
-        Function&lt;String, W&gt; wrap
-    ) {
-        return Lens.of(unwrap, (wrapper, newValue) -&gt; wrap.apply(newValue));
-    }
-  
-    // Specific wrapper lenses
-    public static final Lens&lt;UserId, String&gt; USER_ID_STRING = 
-        stringWrapperLens(UserId::value, UserId::new);
-      
-    public static final Lens&lt;UserName, String&gt; USER_NAME_STRING = 
-        stringWrapperLens(UserName::value, UserName::new);
-      
-    public static final Lens&lt;Email, String&gt; EMAIL_STRING = 
-        stringWrapperLens(Email::value, Email::new);
-  
-    // Composed lenses for User operations
-    public static final Lens&lt;User, String&gt; USER_NAME_VALUE = 
-        UserLenses.name().andThen(USER_NAME_STRING);
-      
-    public static final Lens&lt;User, String&gt; USER_EMAIL_VALUE = 
-        UserLenses.email().andThen(EMAIL_STRING);
-  
-    // Usage examples
-    public User normaliseUser(User userLogin) {
-        return USER_NAME_VALUE.modify(name -&gt; 
-            Arrays.stream(name.toLowerCase().split(" "))
-                .map(word -&gt; Character.toUpperCase(word.charAt(0)) + word.substring(1))
-                .collect(joining(" ")),
-            userLogin
-        );
-    }
-  
-    public User updateEmailDomain(User userLogin, String newDomain) {
-        return USER_EMAIL_VALUE.modify(email -&gt; {
-            String localPart = email.substring(0, email.indexOf('@'));
-            return localPart + "@" + newDomain;
-        }, userLogin);
-    }
-}
-</code></pre>
+<div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
+<div class="admonition-title">
+<div id="admonition-see-also-title">
+<p>See Also</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-see-also"></a>
+</div>
+<div>
+<ul>
+<li><a href="profunctor_optics_recipes.html">Profunctor Optics: Recipes</a>, wrapper-type recipes, V1/V2 migration adapters, and a complete runnable example.</li>
+</ul>
+</div>
+</div>
 <hr />
-<h2 id="migration-patterns"><a class="header" href="#migration-patterns">Migration Patterns</a></h2>
-<p>Profunctor adaptations are particularly valuable during system migrations:</p>
-<h3 id="legacy-system-integration"><a class="header" href="#legacy-system-integration">Legacy System Integration</a></h3>
-<pre><code class="language-java">// You have optics for PersonV1, but data is now PersonV2
-public record PersonV1(String name, int age) {}
-
-@GenerateLenses
-public record PersonV2(String firstName, String lastName, LocalDate birthDate) {}
-
-public class MigrationAdapters {
-  
-    // Convert between versions
-    private static PersonV1 v2ToV1(PersonV2 v2) {
-        return new PersonV1(
-            v2.firstName() + " " + v2.lastName(),
-            Period.between(v2.birthDate(), LocalDate.now()).getYears()
-        );
-    }
-  
-    private static PersonV2 v1ToV2(PersonV1 v1) {
-        String[] nameParts = v1.name().split(" ", 2);
-        return new PersonV2(
-            nameParts[0],
-            nameParts.length &gt; 1 ? nameParts[1] : "",
-            LocalDate.now().minusYears(v1.age())
-        );
-    }
-  
-    // Existing V1 optics work with V2 data
-    public static final Lens&lt;PersonV2, String&gt; V2_NAME_FROM_V1_LENS = 
-        // Assume we have a V1 name lens
-        Lens.of(PersonV1::name, (p1, name) -&gt; new PersonV1(name, p1.age()))
-            .dimap(MigrationAdapters::v2ToV1, MigrationAdapters::v1ToV2);
-}
-</code></pre>
-<h3 id="database-schema-evolution"><a class="header" href="#database-schema-evolution">Database Schema Evolution</a></h3>
-<pre><code class="language-java">// Old database entity
-public record CustomerEntityV1(Long id, String name, String email) {}
-
-// New database entity  
-@GenerateLenses
-public record CustomerEntityV2(Long id, String firstName, String lastName, String emailAddress, boolean active) {}
-
-public class SchemaAdapters {
-  
-    // Adapter for name field
-    public static final Lens&lt;CustomerEntityV2, String&gt; FULL_NAME_ADAPTER = 
-        Lens.of(CustomerEntityV1::name, (v1, name) -&gt; new CustomerEntityV1(v1.id(), name, v1.email()))
-            .dimap(
-                // V2 -&gt; V1 conversion
-                v2 -&gt; new CustomerEntityV1(v2.id(), v2.firstName() + " " + v2.lastName(), v2.emailAddress()),
-                // V1 -&gt; V2 conversion  
-                v1 -&gt; {
-                    String[] parts = v1.name().split(" ", 2);
-                    return new CustomerEntityV2(
-                        v1.id(),
-                        parts[0],
-                        parts.length &gt; 1 ? parts[1] : "",
-                        v1.email(),
-                        true // Default active status
-                    );
-                }
-            );
-}
-</code></pre>
-<hr />
-<h2 id="complete-runnable-example"><a class="header" href="#complete-runnable-example">Complete, Runnable Example</a></h2>
-<p>This comprehensive example demonstrates all three profunctor operations in a realistic scenario:</p>
-<pre><code class="language-java">package org.higherkindedj.example.optics.profunctor;
-
-import org.higherkindedj.optics.Lens;
-import org.higherkindedj.optics.Traversal;
-import org.higherkindedj.optics.annotations.GenerateLenses;
-import org.higherkindedj.optics.annotations.GenerateTraversals;
-import org.higherkindedj.optics.util.Traversals;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.util.List;
-import java.util.Optional;
-
-public class OpticProfunctorExample {
-
-    // Internal data model
-    @GenerateLenses
-    @GenerateTraversals
-    public record Person(String firstName, String lastName, LocalDate birthDate, List&lt;String&gt; hobbies) {}
-  
-    @GenerateLenses
-    public record Employee(int id, Person personalInfo, String department) {}
-  
-    // External API model
-    @GenerateLenses
-    public record PersonDto(String fullName, String birthDateString, List&lt;String&gt; interests) {}
-  
-    @GenerateLenses  
-    public record EmployeeDto(int employeeId, PersonDto person, String dept) {}
-  
-    // Type-safe wrapper
-    public record UserId(long value) {}
-  
-    @GenerateLenses
-    public record UserProfile(UserId id, String displayName, boolean active) {}
-
-    public static void main(String[] args) {
-        System.out.println("=== PROFUNCTOR OPTICS EXAMPLE ===");
-      
-        // Test data
-        var person = new Person("Alice", "Johnson", 
-            LocalDate.of(1985, 6, 15), 
-            List.of("reading", "cycling", "photography"));
-        var employee = new Employee(123, person, "Engineering");
-      
-        // --- SCENARIO 1: contramap - Adapt source type ---
-        System.out.println("--- Scenario 1: contramap (Source Adaptation) ---");
-      
-        // Original lens works on Person, adapt it for Employee
-        Lens&lt;Person, String&gt; firstNameLens = PersonLenses.firstName();
-        Lens&lt;Employee, String&gt; employeeFirstNameLens = 
-            firstNameLens.contramap(Employee::personalInfo);
-      
-        String name = employeeFirstNameLens.get(employee);
-        Employee renamedEmployee = employeeFirstNameLens.set("Alicia", employee);
-      
-        System.out.println("Original employee: " + employee);
-        System.out.println("Extracted name: " + name);
-        System.out.println("Renamed employee: " + renamedEmployee);
-        System.out.println();
-      
-        // --- SCENARIO 2: map - Adapt target type ---
-        System.out.println("--- Scenario 2: map (Target Adaptation) ---");
-      
-        // Original lens returns LocalDate, adapt it to return formatted string
-        Lens&lt;Person, LocalDate&gt; birthDateLens = PersonLenses.birthDate();
-        Lens&lt;Person, String&gt; birthDateStringLens = 
-            birthDateLens.map(date -&gt; date.format(DateTimeFormatter.ISO_LOCAL_DATE));
-      
-        String formattedDate = birthDateStringLens.get(person);
-        // Note: set operation would need to parse the string back to LocalDate
-        System.out.println("Person: " + person);
-        System.out.println("Formatted birth date: " + formattedDate);
-        System.out.println();
-      
-        // --- SCENARIO 3: dimap - Adapt both source and target ---
-        System.out.println("--- Scenario 3: dimap (Both Source and Target Adaptation) ---");
-      
-        // Convert between internal Person and external PersonDto
-        Traversal&lt;Person, String&gt; hobbiesTraversal = PersonTraversals.hobbies();
-        Traversal&lt;PersonDto, String&gt; interestsTraversal = hobbiesTraversal.dimap(
-            // PersonDto -&gt; Person
-            dto -&gt; {
-                String[] nameParts = dto.fullName().split(" ", 2);
-                return new Person(
-                    nameParts[0],
-                    nameParts.length &gt; 1 ? nameParts[1] : "",
-                    LocalDate.parse(dto.birthDateString()),
-                    dto.interests()
-                );
-            },
-            // Person -&gt; PersonDto  
-            p -&gt; new PersonDto(
-                p.firstName() + " " + p.lastName(),
-                p.birthDate().toString(),
-                p.hobbies()
-            )
-        );
-      
-        var personDto = new PersonDto("Bob Smith", "1990-03-20", 
-            List.of("gaming", "cooking", "travel"));
-      
-        List&lt;String&gt; extractedInterests = Traversals.getAll(interestsTraversal, personDto);
-        PersonDto updatedDto = Traversals.modify(interestsTraversal, 
-            interest -&gt; interest.toUpperCase(), personDto);
-      
-        System.out.println("Original DTO: " + personDto);
-        System.out.println("Extracted interests: " + extractedInterests);
-        System.out.println("Updated DTO: " + updatedDto);
-        System.out.println();
-      
-        // --- SCENARIO 4: Working with wrapper types ---
-        System.out.println("--- Scenario 4: Wrapper Type Integration ---");
-      
-        // Create a lens that works directly with the wrapped value
-        Lens&lt;UserId, Long&gt; userIdValueLens = Lens.of(UserId::value, (id, newValue) -&gt; new UserId(newValue));
-        Lens&lt;UserProfile, Long&gt; profileIdValueLens = 
-            UserProfileLenses.id().andThen(userIdValueLens);
-      
-        var userProfile = new UserProfile(new UserId(456L), "Alice J.", true);
-      
-        Long idValue = profileIdValueLens.get(userProfile);
-        UserProfile updatedProfile = profileIdValueLens.modify(id -&gt; id + 1000, userProfile);
-      
-        System.out.println("Original profile: " + userProfile);
-        System.out.println("Extracted ID value: " + idValue);
-        System.out.println("Updated profile: " + updatedProfile);
-        System.out.println();
-      
-        // --- SCENARIO 5: Chaining adaptations ---
-        System.out.println("--- Scenario 5: Chaining Adaptations ---");
-      
-        // Chain multiple adaptations: Employee -&gt; Person -&gt; String (formatted)
-        Lens&lt;Employee, String&gt; formattedEmployeeName = 
-            PersonLenses.firstName()
-                .contramap(Employee::personalInfo)  // Employee -&gt; Person
-                .map(name -&gt; "Mr/Ms. " + name.toUpperCase()); // String -&gt; Formatted String
-      
-        String formalName = formattedEmployeeName.get(employee);
-        Employee formalEmployee = formattedEmployeeName.set("Mr/Ms. ROBERT", employee);
-      
-        System.out.println("Original employee: " + employee);
-        System.out.println("Formal name: " + formalName);
-        System.out.println("Employee with formal name: " + formalEmployee);
-        System.out.println();
-      
-        // --- SCENARIO 6: Safe adaptations with Optional ---
-        System.out.println("--- Scenario 6: Safe Adaptations ---");
-      
-        // Handle potentially null fields safely
-        Lens&lt;Optional&lt;Person&gt;, Optional&lt;String&gt;&gt; safeNameLens = 
-            PersonLenses.firstName()
-                .map(Optional::of)
-                .contramap(optPerson -&gt; optPerson.orElse(new Person("", "", LocalDate.now(), List.of())));
-      
-        Optional&lt;Person&gt; maybePerson = Optional.of(person);
-        Optional&lt;Person&gt; emptyPerson = Optional.empty();
-      
-        Optional&lt;String&gt; safeName1 = safeNameLens.get(maybePerson);
-        Optional&lt;String&gt; safeName2 = safeNameLens.get(emptyPerson);
-      
-        System.out.println("Safe name from present person: " + safeName1);
-        System.out.println("Safe name from empty person: " + safeName2);
-    }
-}
-</code></pre>
-<p><strong>Expected Output:</strong></p>
-<pre><code>=== PROFUNCTOR OPTICS EXAMPLE ===
---- Scenario 1: contramap (Source Adaptation) ---
-Original employee: Employee[id=123, personalInfo=Person[firstName=Alice, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]], department=Engineering]
-Extracted name: Alice
-Renamed employee: Employee[id=123, personalInfo=Person[firstName=Alicia, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]], department=Engineering]
-
---- Scenario 2: map (Target Adaptation) ---
-Person: Person[firstName=Alice, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]]
-Formatted birth date: 1985-06-15
-
---- Scenario 3: dimap (Both Source and Target Adaptation) ---
-Original DTO: PersonDto[fullName=Bob Smith, birthDateString=1990-03-20, interests=[gaming, cooking, travel]]
-Extracted interests: [gaming, cooking, travel]
-Updated DTO: PersonDto[fullName=Bob Smith, birthDateString=1990-03-20, interests=[GAMING, COOKING, TRAVEL]]
-
---- Scenario 4: Wrapper Type Integration ---
-Original profile: UserProfile[id=UserId[value=456], displayName=Alice J., active=true]
-Extracted ID value: 456
-Updated profile: UserProfile[id=UserId[value=1456], displayName=Alice J., active=true]
-
---- Scenario 5: Chaining Adaptations ---
-Original employee: Employee[id=123, personalInfo=Person[firstName=Alice, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]], department=Engineering]
-Formal name: Mr/Ms. ALICE
-Employee with formal name: Employee[id=123, personalInfo=Person[firstName=ROBERT, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]], department=Engineering]
-
---- Scenario 6: Safe Adaptations ---
-Safe name from present person: Optional[Alice]
-Safe name from empty person: Optional[]
-</code></pre>
-<hr />
-<h2 id="integration-with-existing-optics"><a class="header" href="#integration-with-existing-optics">Integration with Existing Optics</a></h2>
-<p>Profunctor adaptations work seamlessly with all the optic types and features you've already learned:</p>
-<h3 id="with-effectful-updates"><a class="header" href="#with-effectful-updates">With Effectful Updates</a></h3>
-<pre><code class="language-java">// Original effectful lens
-Lens&lt;Person, String&gt; emailLens = PersonLenses.email();
-
-// Adapt it for Employee and use with validation
-Lens&lt;Employee, String&gt; employeeEmailLens = emailLens.contramap(Employee::personalInfo);
-
-// Use with effectful validation as normal
-Kind&lt;ValidatedKind.Witness&lt;String&gt;, Employee&gt; result = 
-    employeeEmailLens.modifyF(this::validateEmail, employee, validatedApplicative);
-</code></pre>
-<h3 id="with-deep-composition"><a class="header" href="#with-deep-composition">With Deep Composition</a></h3>
-<pre><code class="language-java">// Compose adapted optics just like regular optics
-Traversal&lt;EmployeeDto, String&gt; deepPath = 
-    apiAdapter.asTraversal()
-        .andThen(PersonTraversals.hobbies())
-        .andThen(stringProcessor);
-</code></pre>
-<p>This profunctor capability makes higher-kinded-j optics incredibly flexible and reusable, allowing you to adapt existing, well-tested optics to work with new data formats and requirements without rewriting your core business logic.</p>
-<hr />
-<p><strong>Previous:</strong> <a href="advanced_prism_patterns.html">Advanced Prism Patterns</a>
-<strong>Next:</strong> <a href="ch4_intro.html">Java-Friendly APIs</a></p>
+<p><strong>Previous:</strong> <a href="advanced_prism_patterns_recipes.html">Advanced Prism Patterns: Recipes</a>
+<strong>Next:</strong> <a href="profunctor_optics_recipes.html">Profunctor Optics: Recipes</a></p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../optics/advanced_prism_patterns.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../optics/advanced_prism_patterns_recipes.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../optics/ch4_intro.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../optics/profunctor_optics_recipes.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -937,11 +607,11 @@ Traversal&lt;EmployeeDto, String&gt; deepPath =
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../optics/advanced_prism_patterns.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../optics/advanced_prism_patterns_recipes.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../optics/ch4_intro.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../optics/profunctor_optics_recipes.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
