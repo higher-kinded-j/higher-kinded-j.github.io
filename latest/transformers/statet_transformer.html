@@ -267,6 +267,11 @@
 </style>
 <h1 id="the-statet-transformer"><a class="header" href="#the-statet-transformer">The StateT Transformer:</a></h1>
 <h2 id="managing-state-across-effect-boundaries"><a class="header" href="#managing-state-across-effect-boundaries"><em>Managing State Across Effect Boundaries</em></a></h2>
+<blockquote>
+<p><em>"You could not step twice into the same river."</em></p>
+<p>-- Heraclitus</p>
+</blockquote>
+<p>State that changes between steps is exactly the river Heraclitus described. <code>StateT</code> lets each step see the river it actually faces while keeping the same composable surface.</p>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -277,45 +282,51 @@
 <div>
 <ul>
 <li>How to add stateful computation to any existing monad</li>
-<li>Building stack operations that can fail (StateT with Optional)</li>
-<li>Understanding the relationship between State and StateT&lt;S, Identity, A&gt;</li>
-<li>Creating complex workflows that manage both state and other effects</li>
-<li>Using <code>get</code>, <code>set</code>, <code>modify</code> operations within transformer contexts</li>
+<li>Building stack operations that can fail (<code>StateT</code> with <code>Optional</code>)</li>
+<li>Understanding the relationship between <code>State</code> and <code>StateT&lt;S, Identity, A&gt;</code></li>
+<li>Using <code>For</code> comprehensions with <code>get</code>, <code>put</code>, <code>modify</code> to keep witness types localised</li>
+<li>When to use the <a href="../effect/advanced_effects.html"><code>WithStatePath</code></a> Path type or the <a href="mtl_state.html"><code>MonadState</code></a> capability instead of raw <code>StateT</code></li>
 </ul>
 </div>
 </div>
 <div id="admonition-see-example-code" class="admonition admonish-example" role="note" aria-labelledby="admonition-see-example-code-title">
 <div class="admonition-title">
 <div id="admonition-see-example-code-title">
-<p>See Example Code:</p>
+<p>See Example Code</p>
 </div>
 <a class="admonition-anchor-link" href="#admonition-see-example-code"></a>
 </div>
 <div>
 <ul>
-<li>
-<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/state_t/StateTExample.java">StateTExample.java</a></p>
-</li>
-<li>
-<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/state_t/StateTStackExample.java">StateTStackExample</a></p>
-</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/state_t/StateTExample.java">StateTExample.java</a></li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/state_t/StateTStackExample.java">StateTStackExample</a></li>
 </ul>
+</div>
+</div>
+<div id="admonition-path-first-stack-later" class="admonition admonish-note" role="note" aria-labelledby="admonition-path-first-stack-later-title">
+<div class="admonition-title">
+<div id="admonition-path-first-stack-later-title">
+<p>Path First, Stack Later</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-path-first-stack-later"></a>
+</div>
+<div>
+<p>For most use cases, <a href="../effect/advanced_effects.html"><code>WithStatePath&lt;S, A&gt;</code></a> is the better starting point when state is the only effect. When you need polymorphic, stack-independent code, the <a href="mtl_state.html"><code>MonadState&lt;F, S&gt;</code></a> capability is usually a better fit than the concrete <code>StateT</code>.</p>
+<p>Reach for raw <code>StateT</code> only when you need to combine state with a specific outer monad that Path does not wrap, or when you are constructing your own MTL instance.</p>
 </div>
 </div>
 <hr />
 <h2 id="the-problem-stateful-operations-that-can-fail"><a class="header" href="#the-problem-stateful-operations-that-can-fail">The Problem: Stateful Operations that Can Fail</a></h2>
 <p>Imagine a stack data structure where <code>pop</code> might fail on an empty stack. Without <code>StateT</code>, you end up managing both the state transitions and the optionality by hand:</p>
-<pre><code class="language-java">// Without StateT: manual state + optional management
-Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; pop(List&lt;Integer&gt; stack) {
+<pre><code class="language-java">Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; pop(List&lt;Integer&gt; stack) {
     if (stack.isEmpty()) return Optional.empty();
-    List&lt;Integer&gt; newStack = new LinkedList&lt;&gt;(stack);
+    var newStack = new LinkedList&lt;&gt;(stack);
     Integer value = newStack.remove(0);
     return Optional.of(StateTuple.of(newStack, value));
 }
 
-// Composing: push, push, pop, pop, sum the popped values
 Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; workflow(List&lt;Integer&gt; initial) {
-    var afterPush1 = push(initial, 10);   // Returns StateTuple (always succeeds)
+    var afterPush1 = push(initial, 10);
     var afterPush2 = push(afterPush1.state(), 20);
     var pop1Result = pop(afterPush2.state());
     if (pop1Result.isEmpty()) return Optional.empty();
@@ -326,23 +337,44 @@ Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; workflow(List&lt;
 }
 </code></pre>
 <p>Each operation returns both a new state and a value; the optionality adds another layer of checking. The state threading is manual and error-prone. Miss one <code>.get().state()</code> call and you use stale state.</p>
-<h2 id="the-solution-statet"><a class="header" href="#the-solution-statet">The Solution: StateT</a></h2>
-<pre><code class="language-java">// With StateT: state threading + optionality handled automatically
-var computation =
-    For.from(ST_OPT_MONAD, push(10))
-        .from(_ -&gt; push(20))
-        .from(_ -&gt; pop())
-        .from(_ -&gt; pop())
-        .yield((a, b, p1, p2) -&gt; {
-            System.out.println("Popped: " + p1 + ", " + p2);
-            return p1 + p2;
-        });
+<hr />
+<h2 id="the-solution"><a class="header" href="#the-solution">The Solution</a></h2>
+<h3 id="with-the-effect-path-api-single-effect"><a class="header" href="#with-the-effect-path-api-single-effect">With the Effect Path API (single effect)</a></h3>
+<p>If state is the only effect, <code>WithStatePath</code> is the simplest expression:</p>
+<pre><code class="language-java">WithStatePath&lt;List&lt;Integer&gt;, Integer&gt; workflow() {
+    return WithStatePath.&lt;List&lt;Integer&gt;&gt;modify(s -&gt; prepend(s, 10))
+        .then(() -&gt; WithStatePath.modify(s -&gt; prepend(s, 20)))
+        .then(() -&gt; WithStatePath.&lt;List&lt;Integer&gt;&gt;get())
+        .map(state -&gt; state.get(0) + state.get(1));
+}
+</code></pre>
+<h3 id="with-raw-statet-combined-effect"><a class="header" href="#with-raw-statet-combined-effect">With raw <code>StateT</code> (combined effect)</a></h3>
+<p>When state must combine with another effect (here <code>Optional</code>):</p>
+<pre><code class="language-java">var optMonad    = OptionalMonad.INSTANCE;
+var stateTMonad = StateTMonad.&lt;List&lt;Integer&gt;, OptionalKind.Witness&gt;instance(optMonad);
 
-Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; result =
-    OPTIONAL.narrow(StateTKindHelper.runStateT(computation, Collections.emptyList()));
+var computation = For.from(stateTMonad, push(10))
+    .from(_ -&gt; push(20))
+    .from(_ -&gt; pop())
+    .from(_ -&gt; pop())
+    .yield((a, b, p1, p2) -&gt; p1 + p2);
+
+var result = OPTIONAL.narrow(StateTKindHelper.runStateT(computation, Collections.emptyList()));
 // → Optional.of(StateTuple([], 30))
 </code></pre>
-<p>The state flows from one operation to the next through <code>flatMap</code>. If any operation returns <code>Optional.empty()</code> (e.g., popping an empty stack), the rest are skipped. No manual state passing, no null checks.</p>
+<p>The state flows from one operation to the next through <code>flatMap</code>. If any operation returns <code>Optional.empty()</code> (e.g. popping an empty stack), the rest are skipped. No manual state passing, no null checks.</p>
+<hr />
+<h2 id="the-railway-view"><a class="header" href="#the-railway-view">The Railway View</a></h2>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Value</b>   ═══●═══════════●═══════════●═══════════●═══▶  result A (in F)</span>
+    <span style="color:#4CAF50">           push(10)    push(20)    pop         pop</span>
+    <span style="color:#4CAF50">           (flatMap)   (flatMap)   (flatMap)   (flatMap)</span>
+               │           │           │           │
+               ▼           ▼           ▼           ▼
+    <span style="color:#2196F3"><b>State</b>   ═══●═══════════●═══════════●═══════════●═══▶  final state S</span>
+    <span style="color:#2196F3">           [10]        [20,10]     [10]        []</span>
+</pre>
+<p>Both tracks advance in lockstep: each <code>flatMap</code> produces a new <code>(value, state)</code> pair. Calling <code>runStateT(initialState)</code> at the boundary kicks the whole computation off and yields the final state alongside the result. If the outer monad <code>F</code> short-circuits (here <code>Optional.empty()</code> on an empty pop), subsequent steps are skipped and both tracks freeze.</p>
 <hr />
 <h2 id="how-statet-works"><a class="header" href="#how-statet-works">How StateT Works</a></h2>
 <p><code>StateT&lt;S, F, A&gt;</code> represents a computation that takes an initial state <code>S</code>, produces a result <code>A</code> and a new state <code>S</code>, all within the context of a monad <code>F</code>.</p>
@@ -368,162 +400,111 @@ Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; result =
     │  execStateT ──▶ returns F&lt;S&gt; (discards value)            │
     └──────────────────────────────────────────────────────────┘
 </code></pre>
-<p><img src="../images/puml/statet_transformer.svg" alt="statet_transformer.svg" /></p>
 <ul>
 <li><strong><code>S</code></strong>: The type of the state.</li>
-<li><strong><code>F</code></strong>: The witness type for the underlying monad (e.g., <code>OptionalKind.Witness</code>, <code>IOKind.Witness</code>).</li>
+<li><strong><code>F</code></strong>: The witness type for the underlying monad (e.g. <code>OptionalKind.Witness</code>, <code>IOKind.Witness</code>).</li>
 <li><strong><code>A</code></strong>: The type of the computed value.</li>
 <li><strong><code>StateTuple&lt;S, A&gt;</code></strong>: A container holding the pair <code>(state, value)</code>.</li>
 </ul>
-<p>The fundamental structure is a function: <code>S -&gt; F&lt;StateTuple&lt;S, A&gt;&gt;</code></p>
-<pre><code class="language-java">// StateT holds: Function&lt;S, Kind&lt;F, StateTuple&lt;S, A&gt;&gt;&gt;
-StateT&lt;Integer, OptionalKind.Witness, String&gt; computation =
-    StateT.create(
-        currentState -&gt; {
-            if (currentState &lt; 0) return OPTIONAL.widen(Optional.empty());
-            return OPTIONAL.widen(Optional.of(
-                StateTuple.of(currentState + 1, "Value: " + currentState)));
-        },
-        optionalMonad);
+<p>The fundamental structure is a function <code>S -&gt; F&lt;StateTuple&lt;S, A&gt;&gt;</code>:</p>
+<pre><code class="language-java">StateT&lt;Integer, OptionalKind.Witness, String&gt; computation = StateT.create(
+    currentState -&gt; currentState &lt; 0
+        ? OPTIONAL.widen(Optional.empty())
+        : OPTIONAL.widen(Optional.of(StateTuple.of(currentState + 1, "Value: " + currentState))),
+    optionalMonad);
 </code></pre>
 <hr />
 <h2 id="setting-up-statetmonad"><a class="header" href="#setting-up-statetmonad">Setting Up StateTMonad</a></h2>
 <p>The <code>StateTMonad&lt;S, F&gt;</code> class implements <code>Monad&lt;StateTKind.Witness&lt;S, F&gt;&gt;</code>. It requires a <code>Monad&lt;F&gt;</code> instance for the underlying monad:</p>
-<pre><code class="language-java">OptionalMonad optionalMonad = OptionalMonad.INSTANCE;
-
-StateTMonad&lt;Integer, OptionalKind.Witness&gt; stateTMonad =
-    StateTMonad.instance(optionalMonad);
+<pre><code class="language-java">var optionalMonad = OptionalMonad.INSTANCE;
+var stateTMonad   = StateTMonad.&lt;Integer, OptionalKind.Witness&gt;instance(optionalMonad);
 </code></pre>
-<div id="admonition-key-classes" class="admonition admonish-note" role="note" aria-labelledby="admonition-key-classes-title">
+<div id="admonition-working-with-kind" class="admonition admonish-note" role="note" aria-labelledby="admonition-working-with-kind-title">
 <div class="admonition-title">
-<div id="admonition-key-classes-title">
-<p>Key Classes</p>
+<div id="admonition-working-with-kind-title">
+<p>Working with Kind</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-key-classes"></a>
+<a class="admonition-anchor-link" href="#admonition-working-with-kind"></a>
 </div>
 <div>
 <ul>
-<li><strong><code>StateT&lt;S, F, A&gt;</code></strong>: The primary data type holding <code>S -&gt; Kind&lt;F, StateTuple&lt;S, A&gt;&gt;</code>.</li>
-<li><strong><code>StateTKind&lt;S, F, A&gt;</code></strong>: The <code>Kind</code> representation for generic monadic usage.</li>
-<li><strong><code>StateTKind.Witness&lt;S, F&gt;</code></strong>: The higher-kinded type witness. Both <code>S</code> and <code>F</code> are part of the witness.</li>
-<li><strong><code>StateTMonad&lt;S, F&gt;</code></strong>: The <code>Monad</code> instance, providing <code>of</code>, <code>map</code>, <code>flatMap</code>, <code>ap</code>.</li>
-<li><strong><code>StateTKindHelper</code></strong>: Utility for <code>narrow</code>, <code>runStateT</code>, <code>evalStateT</code>, <code>execStateT</code>.</li>
-<li><strong><code>StateTuple&lt;S, A&gt;</code></strong>: A record holding <code>(S state, A value)</code>.</li>
+<li><strong><code>StateT&lt;S, F, A&gt;</code></strong>: the primary data type holding <code>S -&gt; Kind&lt;F, StateTuple&lt;S, A&gt;&gt;</code>.</li>
+<li><strong><code>StateTKind&lt;S, F, A&gt;</code></strong>: the <code>Kind</code> representation for generic monadic usage.</li>
+<li><strong><code>StateTKind.Witness&lt;S, F&gt;</code></strong>: the higher-kinded type witness. Both <code>S</code> and <code>F</code> are part of the witness.</li>
+<li><strong><code>StateTMonad&lt;S, F&gt;</code></strong>: the <code>Monad</code> instance, providing <code>of</code>, <code>map</code>, <code>flatMap</code>, <code>ap</code>.</li>
+<li><strong><code>StateTKindHelper</code></strong>: utility for <code>narrow</code>, <code>runStateT</code>, <code>evalStateT</code>, <code>execStateT</code>.</li>
+<li><strong><code>StateTuple&lt;S, A&gt;</code></strong>: a record holding <code>(S state, A value)</code>.</li>
 </ul>
 </div>
 </div>
 <hr />
 <h2 id="running-statet-computations"><a class="header" href="#running-statet-computations">Running StateT Computations</a></h2>
 <pre><code class="language-java">// Run: returns F&lt;StateTuple&lt;S, A&gt;&gt;
-Kind&lt;OptionalKind.Witness, StateTuple&lt;Integer, String&gt;&gt; result =
-    StateTKindHelper.runStateT(computation, 10);
+var result    = StateTKindHelper.runStateT(computation, 10);
 // → Optional.of(StateTuple(11, "Value: 10"))
 
 // Eval: returns F&lt;A&gt; (discards state)
-Kind&lt;OptionalKind.Witness, String&gt; valueOnly =
-    StateTKindHelper.evalStateT(computation, 10);
+var valueOnly = StateTKindHelper.evalStateT(computation, 10);
 // → Optional.of("Value: 10")
 
 // Exec: returns F&lt;S&gt; (discards value)
-Kind&lt;OptionalKind.Witness, Integer&gt; stateOnly =
-    StateTKindHelper.execStateT(computation, 10);
+var stateOnly = StateTKindHelper.execStateT(computation, 10);
 // → Optional.of(11)
 </code></pre>
 <hr />
+<h2 id="key-operations"><a class="header" href="#key-operations">Key Operations</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Behaviour</th></tr></thead><tbody>
+<tr><td><code>stateTMonad.of(value)</code></td><td>Wraps a pure value, leaving state unchanged</td></tr>
+<tr><td><code>stateTMonad.map(f, kind)</code></td><td>Transforms the value; state passes through</td></tr>
+<tr><td><code>stateTMonad.flatMap(f, kind)</code></td><td>Sequences operations, threading the updated state</td></tr>
+</tbody></table>
+</div>
+<p>The <code>MonadState</code> capability adds <code>get()</code>, <code>put(s)</code>, <code>modify(f)</code>, <code>gets(f)</code>, and <code>inspect(f)</code> on top.</p>
+<hr />
 <h2 id="composing-statet-actions"><a class="header" href="#composing-statet-actions">Composing StateT Actions</a></h2>
-<p>Like any monad, <code>StateT</code> computations compose with <code>map</code> and <code>flatMap</code>:</p>
-<div id="admonition-map-transforming-the-value" class="admonition admonish-note" role="note" aria-labelledby="admonition-map-transforming-the-value-title">
+<p>Like any monad, <code>StateT</code> computations compose with <code>map</code> and <code>flatMap</code>. Most pages in this chapter show this through <code>For</code> comprehensions; the explicit forms are equivalent:</p>
+<div id="admonition-map-transforming-the-value" class="admonition admonish-example" role="note" aria-labelledby="admonition-map-transforming-the-value-title">
 <div class="admonition-title">
 <div id="admonition-map-transforming-the-value-title">
-<p>map: Transforming the Value</p>
+<p>map: transforming the value</p>
 </div>
 <a class="admonition-anchor-link" href="#admonition-map-transforming-the-value"></a>
 </div>
 <div>
-<pre><code class="language-java">Kind&lt;StateTKind.Witness&lt;Integer, OptionalKind.Witness&gt;, Integer&gt; initial =
-    StateT.create(s -&gt; OPTIONAL.widen(
-        Optional.of(StateTuple.of(s + 1, s * 2))), optionalMonad);
+<pre><code class="language-java">var initial = StateT.&lt;Integer, OptionalKind.Witness, Integer&gt;create(
+    s -&gt; OPTIONAL.widen(Optional.of(StateTuple.of(s + 1, s * 2))),
+    optionalMonad);
 
-Kind&lt;StateTKind.Witness&lt;Integer, OptionalKind.Witness&gt;, String&gt; mapped =
-    stateTMonad.map(val -&gt; "Computed: " + val, initial);
+var mapped = stateTMonad.map(val -&gt; "Computed: " + val, initial);
 
-// Run with state 5:
-// 1. initial: state=6, value=10
-// 2. map: value → "Computed: 10"
-// Result: Optional.of(StateTuple(6, "Computed: 10"))
+// Run with state 5: initial → state=6, value=10; map → "Computed: 10"
+// → Optional.of(StateTuple(6, "Computed: 10"))
 </code></pre>
 </div>
 </div>
-<div id="admonition-flatmap-sequencing-state-operations" class="admonition admonish-note" role="note" aria-labelledby="admonition-flatmap-sequencing-state-operations-title">
+<div id="admonition-flatmap-sequencing-state-operations" class="admonition admonish-example" role="note" aria-labelledby="admonition-flatmap-sequencing-state-operations-title">
 <div class="admonition-title">
 <div id="admonition-flatmap-sequencing-state-operations-title">
-<p>flatMap: Sequencing State Operations</p>
+<p>flatMap: sequencing state operations</p>
 </div>
 <a class="admonition-anchor-link" href="#admonition-flatmap-sequencing-state-operations"></a>
 </div>
 <div>
-<pre><code class="language-java">Kind&lt;StateTKind.Witness&lt;Integer, OptionalKind.Witness&gt;, Integer&gt; firstStep =
-    StateT.create(s -&gt; OPTIONAL.widen(
-        Optional.of(StateTuple.of(s + 1, s * 10))), optionalMonad);
+<pre><code class="language-java">var firstStep = StateT.&lt;Integer, OptionalKind.Witness, Integer&gt;create(
+    s -&gt; OPTIONAL.widen(Optional.of(StateTuple.of(s + 1, s * 10))),
+    optionalMonad);
 
-Function&lt;Integer, Kind&lt;StateTKind.Witness&lt;Integer, OptionalKind.Witness&gt;, String&gt;&gt;
-    secondStepFn = prevValue -&gt; StateT.create(
-        s -&gt; {
-            if (prevValue &gt; 100) {
-                return OPTIONAL.widen(Optional.of(
-                    StateTuple.of(s + prevValue, "Large: " + prevValue)));
-            }
-            return OPTIONAL.widen(Optional.empty()); // Fail if too small
-        }, optionalMonad);
+Function&lt;Integer, Kind&lt;StateTKind.Witness&lt;Integer, OptionalKind.Witness&gt;, String&gt;&gt; secondStepFn =
+    prevValue -&gt; StateT.create(
+        s -&gt; prevValue &gt; 100
+            ? OPTIONAL.widen(Optional.of(StateTuple.of(s + prevValue, "Large: " + prevValue)))
+            : OPTIONAL.widen(Optional.empty()),
+        optionalMonad);
 
-Kind&lt;StateTKind.Witness&lt;Integer, OptionalKind.Witness&gt;, String&gt; combined =
-    stateTMonad.flatMap(secondStepFn, firstStep);
-
-// Run with state 15: firstStep → (16, 150), secondStep(150) → (166, "Large: 150")
-// Run with state 5:  firstStep → (6, 50), secondStep(50) → empty (too small)
+var combined = stateTMonad.flatMap(secondStepFn, firstStep);
+// state 15: firstStep → (16, 150), secondStep(150) → (166, "Large: 150")
+// state 5:  firstStep → (6, 50),  secondStep(50)  → empty
 </code></pre>
-</div>
-</div>
-<hr />
-<h2 id="transforming-the-outer-monad-with-mapt"><a class="header" href="#transforming-the-outer-monad-with-mapt">Transforming the Outer Monad with <code>mapT</code></a></h2>
-<p>Sometimes you need to change the <em>outer monad</em> of a <code>StateT</code> without touching the state-threading logic. Perhaps you want to switch from <code>Optional</code> to <code>Id</code> (guaranteeing a result with a default), or apply a natural transformation to move between effect types.</p>
-<p>Because <code>StateT</code> stores its <code>Monad&lt;F&gt;</code> instance internally, switching from <code>F</code> to <code>G</code> requires supplying a new <code>Monad&lt;G&gt;</code>. This is the one transformer where <code>mapT</code> takes an extra parameter:</p>
-<pre><code>  state ──&gt; runStateTFn() ──&gt; Kind&lt;F, StateTuple&lt;S, A&gt;&gt; ──&gt; f ──&gt; Kind&lt;G, StateTuple&lt;S, A&gt;&gt;
-    │                                                                        │
-    └──── combined into new StateT&lt;S, G, A&gt; with monadG ────────────────────┘
-</code></pre>
-<pre><code class="language-java">// Switch from Optional to Id, providing a default for empty results
-StateT&lt;Integer, OptionalKind.Witness, String&gt; optStateT = ...;
-Monad&lt;IdKind.Witness&gt; idMonad = IdMonad.instance();
-
-StateT&lt;Integer, IdKind.Witness, String&gt; idStateT =
-    optStateT.mapT(idMonad, optKind -&gt; {
-      Optional&lt;StateTuple&lt;Integer, String&gt;&gt; opt = OPTIONAL.narrow(optKind);
-      return ID.widen(Id.of(opt.orElse(StateTuple.of(0, "default"))));
-    });
-</code></pre>
-<div id="admonition-mapt-vs-map" class="admonition admonish-note" role="note" aria-labelledby="admonition-mapt-vs-map-title">
-<div class="admonition-title">
-<div id="admonition-mapt-vs-map-title">
-<p>mapT vs map</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-mapt-vs-map"></a>
-</div>
-<div>
-<p><code>map</code> transforms the <em>value</em> produced by the state computation (the <code>A</code> in <code>StateTuple&lt;S, A&gt;</code>).
-<code>mapT</code> transforms the <em>outer monad</em> wrapping each state transition — the <code>F</code> in <code>S -&gt; F&lt;StateTuple&lt;S, A&gt;&gt;</code>.
-The state-threading is completely unaffected.</p>
-</div>
-</div>
-<div id="admonition-statet-requires-a-new-monad-instance" class="admonition admonish-warning" role="note" aria-labelledby="admonition-statet-requires-a-new-monad-instance-title">
-<div class="admonition-title">
-<div id="admonition-statet-requires-a-new-monad-instance-title">
-<p>StateT requires a new Monad instance</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-statet-requires-a-new-monad-instance"></a>
-</div>
-<div>
-<p>Unlike the other five transformers, <code>StateT.mapT</code> takes <code>Monad&lt;G&gt; monadG</code> as its first parameter. This is because <code>StateT</code> stores the monad instance for internal sequencing — when you switch monads, the new <code>StateT</code> needs the new monad to continue operating correctly.</p>
 </div>
 </div>
 <hr />
@@ -540,20 +521,18 @@ static &lt;S, F&gt; Kind&lt;StateTKind.Witness&lt;S, F&gt;, Unit&gt; set(S newSt
 }
 
 // modify: update the state with a function, return Unit
-static &lt;S, F&gt; Kind&lt;StateTKind.Witness&lt;S, F&gt;, Unit&gt; modify(
-        Function&lt;S, S&gt; f, Monad&lt;F&gt; monadF) {
+static &lt;S, F&gt; Kind&lt;StateTKind.Witness&lt;S, F&gt;, Unit&gt; modify(Function&lt;S, S&gt; f, Monad&lt;F&gt; monadF) {
     return StateT.create(s -&gt; monadF.of(StateTuple.of(f.apply(s), Unit.INSTANCE)), monadF);
 }
 
 // gets: extract a value derived from the state
-static &lt;S, F, A&gt; Kind&lt;StateTKind.Witness&lt;S, F&gt;, A&gt; gets(
-        Function&lt;S, A&gt; f, Monad&lt;F&gt; monadF) {
+static &lt;S, F, A&gt; Kind&lt;StateTKind.Witness&lt;S, F&gt;, A&gt; gets(Function&lt;S, A&gt; f, Monad&lt;F&gt; monadF) {
     return StateT.create(s -&gt; monadF.of(StateTuple.of(s, f.apply(s))), monadF);
 }
 </code></pre>
 <hr />
 <h2 id="real-world-example-stack-with-failure"><a class="header" href="#real-world-example-stack-with-failure">Real-World Example: Stack with Failure</a></h2>
-<div id="admonition-stack-operations-with-optional-failure" class="admonition admonish-note" role="note" aria-labelledby="admonition-stack-operations-with-optional-failure-title">
+<div id="admonition-stack-operations-with-optional-failure" class="admonition admonish-example" role="note" aria-labelledby="admonition-stack-operations-with-optional-failure-title">
 <div class="admonition-title">
 <div id="admonition-stack-operations-with-optional-failure-title">
 <p>Stack Operations with Optional Failure</p>
@@ -564,16 +543,15 @@ static &lt;S, F, A&gt; Kind&lt;StateTKind.Witness&lt;S, F&gt;, A&gt; gets(
 <ul>
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/state_t/StateTStackExample.java">StateTStackExample.java</a></li>
 </ul>
-<p><strong>The problem:</strong> You need stack push/pop operations where popping an empty stack produces an absence rather than an exception, and you want to compose these operations cleanly.</p>
+<p><strong>The problem:</strong> stack push/pop operations where popping an empty stack produces an absence rather than an exception. Compose them cleanly.</p>
 <p><strong>The solution:</strong></p>
 <pre><code class="language-java">private static final OptionalMonad OPT_MONAD = OptionalMonad.INSTANCE;
 private static final StateTMonad&lt;List&lt;Integer&gt;, OptionalKind.Witness&gt; ST_OPT_MONAD =
     StateTMonad.instance(OPT_MONAD);
 
-static Kind&lt;StateTKind.Witness&lt;List&lt;Integer&gt;, OptionalKind.Witness&gt;, Unit&gt;
-    push(Integer value) {
+static Kind&lt;StateTKind.Witness&lt;List&lt;Integer&gt;, OptionalKind.Witness&gt;, Unit&gt; push(Integer value) {
   return StateTKindHelper.stateT(stack -&gt; {
-      List&lt;Integer&gt; newStack = new LinkedList&lt;&gt;(stack);
+      var newStack = new LinkedList&lt;&gt;(stack);
       newStack.add(0, value);
       return OPTIONAL.widen(Optional.of(StateTuple.of(newStack, Unit.INSTANCE)));
   }, OPT_MONAD);
@@ -581,43 +559,73 @@ static Kind&lt;StateTKind.Witness&lt;List&lt;Integer&gt;, OptionalKind.Witness&g
 
 static Kind&lt;StateTKind.Witness&lt;List&lt;Integer&gt;, OptionalKind.Witness&gt;, Integer&gt; pop() {
   return StateTKindHelper.stateT(stack -&gt; {
-      if (stack.isEmpty()) {
-          return OPTIONAL.widen(Optional.empty()); // Cannot pop empty stack
-      }
-      List&lt;Integer&gt; newStack = new LinkedList&lt;&gt;(stack);
+      if (stack.isEmpty()) return OPTIONAL.widen(Optional.empty());
+      var newStack = new LinkedList&lt;&gt;(stack);
       Integer popped = newStack.remove(0);
       return OPTIONAL.widen(Optional.of(StateTuple.of(newStack, popped)));
   }, OPT_MONAD);
 }
 
-// Compose with For comprehension:
-var computation =
-    For.from(ST_OPT_MONAD, push(10))
-        .from(_ -&gt; push(20))
-        .from(_ -&gt; pop())
-        .from(_ -&gt; pop())
-        .yield((a, b, p1, p2) -&gt; {
-            System.out.println("Popped in order: " + p1 + ", then " + p2);
-            return p1 + p2;
-        });
+// Compose with For:
+var computation = For.from(ST_OPT_MONAD, push(10))
+    .from(_ -&gt; push(20))
+    .from(_ -&gt; pop())
+    .from(_ -&gt; pop())
+    .yield((a, b, p1, p2) -&gt; p1 + p2);
 
-List&lt;Integer&gt; initialStack = Collections.emptyList();
-Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; result =
-    OPTIONAL.narrow(StateTKindHelper.runStateT(computation, initialStack));
+var result = OPTIONAL.narrow(StateTKindHelper.runStateT(computation, Collections.emptyList()));
 // → Optional.of(StateTuple([], 30))
 
-// Popping an empty stack:
-Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; emptyPop =
-    OPTIONAL.narrow(StateTKindHelper.runStateT(pop(), Collections.emptyList()));
+var emptyPop = OPTIONAL.narrow(StateTKindHelper.runStateT(pop(), Collections.emptyList()));
 // → Optional.empty()
 </code></pre>
-<p><strong>Why this works:</strong> The <code>For</code> comprehension sequences state operations through <code>flatMap</code>. Each <code>push</code> returns the updated stack as new state; each <code>pop</code> either returns the popped value with an updated stack, or <code>Optional.empty()</code> which short-circuits the rest. The state threading is completely automatic.</p>
+<p><strong>Why this works:</strong> the <code>For</code> comprehension sequences state operations through <code>flatMap</code>. Each <code>push</code> returns the updated stack as new state; each <code>pop</code> either returns the popped value with an updated stack or <code>Optional.empty()</code>, which short-circuits the rest. The state threading is completely automatic.</p>
+</div>
+</div>
+<hr />
+<h2 id="transforming-the-outer-monad-with-mapt"><a class="header" href="#transforming-the-outer-monad-with-mapt">Transforming the Outer Monad with <code>mapT</code></a></h2>
+<p>Sometimes you need to change the <em>outer monad</em> of a <code>StateT</code> without touching the state-threading logic. Perhaps you want to switch from <code>Optional</code> to <code>Id</code> (guaranteeing a result with a default), or apply a natural transformation to move between effect types.</p>
+<p>Because <code>StateT</code> stores its <code>Monad&lt;F&gt;</code> instance internally, switching from <code>F</code> to <code>G</code> requires supplying a new <code>Monad&lt;G&gt;</code>. This is the one transformer where <code>mapT</code> takes an extra parameter:</p>
+<pre><code>  state ──&gt; runStateTFn() ──&gt; Kind&lt;F, StateTuple&lt;S, A&gt;&gt; ──&gt; f ──&gt; Kind&lt;G, StateTuple&lt;S, A&gt;&gt;
+    │                                                                        │
+    └──── combined into new StateT&lt;S, G, A&gt; with monadG ────────────────────┘
+</code></pre>
+<pre><code class="language-java">StateT&lt;Integer, OptionalKind.Witness, String&gt; optStateT = ...;
+var idMonad = IdMonad.instance();
+
+var idStateT = optStateT.mapT(idMonad, optKind -&gt; {
+  Optional&lt;StateTuple&lt;Integer, String&gt;&gt; opt = OPTIONAL.narrow(optKind);
+  return ID.widen(Id.of(opt.orElse(StateTuple.of(0, "default"))));
+});
+</code></pre>
+<div id="admonition-mapt-vs-map" class="admonition admonish-note" role="note" aria-labelledby="admonition-mapt-vs-map-title">
+<div class="admonition-title">
+<div id="admonition-mapt-vs-map-title">
+<p>mapT vs map</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-mapt-vs-map"></a>
+</div>
+<div>
+<p><code>map</code> transforms the <em>value</em> produced by the state computation (the <code>A</code> in <code>StateTuple&lt;S, A&gt;</code>).
+<code>mapT</code> transforms the <em>outer monad</em> wrapping each state transition, the <code>F</code> in <code>S -&gt; F&lt;StateTuple&lt;S, A&gt;&gt;</code>.
+The state-threading is completely unaffected.</p>
+</div>
+</div>
+<div id="admonition-statet-requires-a-new-monad-instance" class="admonition admonish-warning" role="note" aria-labelledby="admonition-statet-requires-a-new-monad-instance-title">
+<div class="admonition-title">
+<div id="admonition-statet-requires-a-new-monad-instance-title">
+<p>StateT requires a new Monad instance</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-statet-requires-a-new-monad-instance"></a>
+</div>
+<div>
+<p>Unlike the other five transformers, <code>StateT.mapT</code> takes <code>Monad&lt;G&gt; monadG</code> as its first parameter. This is because <code>StateT</code> stores the monad instance for internal sequencing; when you switch monads, the new <code>StateT</code> needs the new monad to continue operating correctly.</p>
 </div>
 </div>
 <hr />
 <h2 id="relationship-to-state-monad"><a class="header" href="#relationship-to-state-monad">Relationship to State Monad</a></h2>
 <p>The <a href="../monads/state_monad.html">State Monad</a> (<code>State&lt;S, A&gt;</code>) is a specialised case of <code>StateT</code>. Specifically, <code>State&lt;S, A&gt;</code> is equivalent to <code>StateT&lt;S, IdKind.Witness, A&gt;</code>, where <code>Id</code> is the Identity monad (a monad that adds no effects).</p>
-<p>If your stateful computation doesn't need to combine with another effect, use <code>State&lt;S, A&gt;</code> directly. Reach for <code>StateT</code> when you need state <em>and</em> another effect (optionality, error handling, async).</p>
+<p>If your stateful computation does not need to combine with another effect, use <code>State&lt;S, A&gt;</code> directly (or <code>WithStatePath&lt;S, A&gt;</code>). Reach for <code>StateT</code> when you need state <em>and</em> another effect (optionality, error handling, async).</p>
 <hr />
 <div id="admonition-common-mistakes" class="admonition admonish-warning" role="note" aria-labelledby="admonition-common-mistakes-title">
 <div class="admonition-title">
@@ -628,9 +636,10 @@ Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; emptyPop =
 </div>
 <div>
 <ul>
-<li><strong>Using stale state:</strong> In manual state threading, it's easy to accidentally use the state from step 1 in step 3. <code>StateT.flatMap</code> eliminates this by threading updated state automatically.</li>
-<li><strong>Null in <code>ap</code>:</strong> The <code>ap</code> method requires the function it extracts from the first <code>StateT</code> computation to be non-null. A <code>null</code> function will cause a <code>NullPointerException</code>.</li>
-<li><strong>Confusing StateT with ReaderT:</strong> If your "state" never changes, you probably want <code>ReaderT</code>. Use <code>StateT</code> only when operations need to <em>modify</em> the state.</li>
+<li><strong>Using stale state:</strong> in manual state threading, it is easy to accidentally use the state from step 1 in step 3. <code>StateT.flatMap</code> eliminates this by threading updated state automatically.</li>
+<li><strong>Null in <code>ap</code>:</strong> the <code>ap</code> method requires the function it extracts from the first <code>StateT</code> computation to be non-null. A <code>null</code> function will cause a <code>NullPointerException</code>.</li>
+<li><strong>Confusing <code>StateT</code> with <code>ReaderT</code>:</strong> if your "state" never changes, you probably want <a href="readert_transformer.html"><code>ReaderT</code></a>. Use <code>StateT</code> only when operations need to <em>modify</em> the state.</li>
+<li><strong>Reaching for the transformer when <code>WithStatePath</code> would do:</strong> if state is your only effect, <code>WithStatePath</code> is shorter and reads more naturally.</li>
 </ul>
 </div>
 </div>
@@ -644,11 +653,26 @@ Optional&lt;StateTuple&lt;List&lt;Integer&gt;, Integer&gt;&gt; emptyPop =
 </div>
 <div>
 <ul>
+<li><a href="../effect/advanced_effects.html">WithStatePath / Advanced Effects</a> - The Path-API equivalent</li>
+<li><a href="mtl_state.html">MonadState</a> - The MTL capability for stack-independent code</li>
+<li><a href="archetypes.html">Stack Archetypes</a> - The Workflow Stack archetype maps to <code>StateT</code>/<code>WithStatePath</code></li>
+<li><a href="migration_cookbook.html">Migration Cookbook</a> - Side-by-side translations</li>
 <li><a href="../monads/state_monad.html">State Monad</a> - Understand the basics of stateful computations</li>
-<li><a href="./transformers.html">Monad Transformers</a> - General concept of monad transformers</li>
+<li><a href="transformers.html">Monad Transformers</a> - General concept of monad transformers</li>
 <li><a href="readert_transformer.html">ReaderT</a> - When you need read-only environment, not mutable state</li>
 <li><a href="../examples/examples_draughts.html">Draughts Example ("checkers")</a> - See the HKJ State Monad used in a game</li>
 </ul>
+</div>
+</div>
+<div id="admonition-hands-on-learning" class="admonition admonish-info" role="note" aria-labelledby="admonition-hands-on-learning-title">
+<div class="admonition-title">
+<div id="admonition-hands-on-learning-title">
+<p>Hands-On Learning</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-hands-on-learning"></a>
+</div>
+<div>
+<p>The <code>MonadState</code> capability that wraps <code>StateT</code> is exercised in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/transformers/Tutorial04_PolymorphicCapabilities.java">Tutorial 04: Polymorphic Capabilities (MTL)</a> (14 exercises, ~30-40 minutes).</p>
 </div>
 </div>
 <hr />

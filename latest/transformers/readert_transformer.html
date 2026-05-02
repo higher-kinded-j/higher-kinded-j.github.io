@@ -281,40 +281,45 @@
 </div>
 <div>
 <ul>
-<li>How to combine dependency injection (Reader) with other effects like async operations</li>
+<li>How to combine dependency injection (<code>Reader</code>) with other effects like async operations</li>
 <li>Building configuration-dependent workflows that are also async or failable</li>
-<li>Using <code>ask</code>, <code>reader</code>, and <code>lift</code> to work with environment-dependent computations</li>
+<li>Using <code>For</code> comprehensions with <code>ask</code>, <code>reader</code>, and <code>lift</code> to keep witness types localised</li>
 <li>Creating testable microservice clients with injected configuration</li>
-<li>Managing database connections, API keys, and other contextual dependencies</li>
+<li>When to use the <a href="../effect/advanced_effects.html"><code>ReaderPath</code></a> Path type or the <a href="mtl_reader.html"><code>MonadReader</code></a> capability instead of raw <code>ReaderT</code></li>
 </ul>
 </div>
 </div>
 <div id="admonition-see-example-code" class="admonition admonish-example" role="note" aria-labelledby="admonition-see-example-code-title">
 <div class="admonition-title">
 <div id="admonition-see-example-code-title">
-<p>See Example Code:</p>
+<p>See Example Code</p>
 </div>
 <a class="admonition-anchor-link" href="#admonition-see-example-code"></a>
 </div>
 <div>
 <ul>
-<li>
-<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/reader_t/ReaderTExample.java">ReaderTExample.java</a></p>
-</li>
-<li>
-<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/reader_t/ReaderTAsyncExample.java">ReaderTAsyncExample.java</a></p>
-</li>
-<li>
-<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/reader_t/ReaderTAsyncUnitExample.java">ReaderTAsyncUnitExample.java</a></p>
-</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/reader_t/ReaderTExample.java">ReaderTExample.java</a></li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/reader_t/ReaderTAsyncExample.java">ReaderTAsyncExample.java</a></li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/reader_t/ReaderTAsyncUnitExample.java">ReaderTAsyncUnitExample.java</a></li>
 </ul>
+</div>
+</div>
+<div id="admonition-path-first-stack-later" class="admonition admonish-note" role="note" aria-labelledby="admonition-path-first-stack-later-title">
+<div class="admonition-title">
+<div id="admonition-path-first-stack-later-title">
+<p>Path First, Stack Later</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-path-first-stack-later"></a>
+</div>
+<div>
+<p>For most use cases, <a href="../effect/advanced_effects.html"><code>ReaderPath&lt;R, A&gt;</code></a> is the better starting point when the environment is the only effect. When you need polymorphic, stack-independent code, the <a href="mtl_reader.html"><code>MonadReader&lt;F, R&gt;</code></a> capability is usually a better fit than the concrete <code>ReaderT</code>.</p>
+<p>Reach for raw <code>ReaderT</code> only when you need to combine an environment with a specific outer monad that Path does not wrap, or when you are constructing your own MTL instance.</p>
 </div>
 </div>
 <hr />
 <h2 id="the-problem-configuration-everywhere"><a class="header" href="#the-problem-configuration-everywhere">The Problem: Configuration Everywhere</a></h2>
 <p>Consider a service that needs API keys and URLs for every operation:</p>
-<pre><code class="language-java">// Without ReaderT: passing config through every function
-CompletableFuture&lt;ServiceData&gt; fetchData(AppConfig config, String itemId) {
+<pre><code class="language-java">CompletableFuture&lt;ServiceData&gt; fetchData(AppConfig config, String itemId) {
     return CompletableFuture.supplyAsync(() -&gt;
         callApi(config.apiKey(), config.serviceUrl(), itemId));
 }
@@ -324,33 +329,65 @@ CompletableFuture&lt;ProcessedData&gt; processData(AppConfig config, ServiceData
         transform(data, config.apiKey()));
 }
 
-// Every call requires explicit config passing:
 CompletableFuture&lt;ProcessedData&gt; workflow(AppConfig config) {
     return fetchData(config, "item123")
         .thenCompose(data -&gt; processData(config, data));
 }
 </code></pre>
 <p>The <code>config</code> parameter threads through every function signature, every call site, every test. It's noise that obscures the actual logic. Rename a config field, and you touch every function in the chain.</p>
-<h2 id="the-solution-readert"><a class="header" href="#the-solution-readert">The Solution: ReaderT</a></h2>
-<pre><code class="language-java">// With ReaderT: config is implicit
-ReaderT&lt;CompletableFutureKind.Witness, AppConfig, ServiceData&gt;
-    fetchDataRT(String itemId) {
+<hr />
+<h2 id="the-solution"><a class="header" href="#the-solution">The Solution</a></h2>
+<h3 id="with-the-effect-path-api-single-effect"><a class="header" href="#with-the-effect-path-api-single-effect">With the Effect Path API (single effect)</a></h3>
+<p>If the environment is the only effect, <code>ReaderPath</code> is the simplest expression:</p>
+<pre><code class="language-java">ReaderPath&lt;AppConfig, ProcessedData&gt; workflow() {
+    return Path.&lt;AppConfig&gt;ask()
+        .via(config -&gt; Path.right(callApi(config.apiKey(), "item123")))
+        .via(data   -&gt; Path.&lt;AppConfig&gt;ask()
+            .map(config -&gt; transform(data, config.apiKey())));
+}
+</code></pre>
+<h3 id="with-raw-readert-combined-effect"><a class="header" href="#with-raw-readert-combined-effect">With raw <code>ReaderT</code> (combined effect)</a></h3>
+<p>When the environment must combine with another monad (here <code>CompletableFuture</code>):</p>
+<pre><code class="language-java">var futureMonad  = CompletableFutureMonad.INSTANCE;
+var readerTMonad = new ReaderTMonad&lt;CompletableFutureKind.Witness, AppConfig&gt;(futureMonad);
+
+ReaderT&lt;CompletableFutureKind.Witness, AppConfig, ServiceData&gt; fetchDataRT(String itemId) {
   return ReaderT.of(config -&gt;
       FUTURE.widen(CompletableFuture.supplyAsync(() -&gt;
           callApi(config.apiKey(), config.serviceUrl(), itemId))));
 }
 
-ReaderT&lt;CompletableFutureKind.Witness, AppConfig, ProcessedData&gt;
-    processDataRT(ServiceData data) {
+ReaderT&lt;CompletableFutureKind.Witness, AppConfig, ProcessedData&gt; processDataRT(ServiceData data) {
   return ReaderT.reader(futureMonad,
       config -&gt; transform(data, config.apiKey()));
 }
 
-// Config provided once, at the end:
-Kind&lt;CompletableFutureKind.Witness, ProcessedData&gt; result =
-    composedWorkflow.run().apply(prodConfig);
+// Compose with For:
+var workflowRT = For.from(readerTMonad, fetchDataRT("item123"))
+    .from(data -&gt; processDataRT(data))
+    .yield((data, processed) -&gt; processed);
+
+// Provide the config once at the edge:
+var result = FUTURE.join(READER_T.narrow(workflowRT).run().apply(prodConfig));
 </code></pre>
-<p>The <code>AppConfig</code> is threaded implicitly through <code>flatMap</code>. Each operation declares its dependency on <code>AppConfig</code> in its return type, but never receives it as a parameter. The config is provided once, when you run the computation.</p>
+<p>The <code>AppConfig</code> is threaded implicitly through <code>flatMap</code>. Each operation declares its dependency on <code>AppConfig</code> in its return type but never receives it as a parameter.</p>
+<hr />
+<h2 id="the-railway-view"><a class="header" href="#the-railway-view">The Railway View</a></h2>
+<pre style="line-height:1.5;font-size:0.95em">
+    <span style="color:#4CAF50"><b>Value</b>     ═══●═══════════●═══════════●═══▶  ProcessedData (in F)</span>
+    <span style="color:#4CAF50">              fetchData    process       map</span>
+    <span style="color:#4CAF50">              (flatMap)    (flatMap)</span>
+                  ▲            ▲            ▲    <i>config read at each step</i>
+    <span style="color:#2196F3"><b>AppConfig</b> ═══╧═══════════╧═══════════╧═══▶  read-only, never modified</span>
+    <span style="color:#2196F3">              apiKey       serviceUrl    executor</span>
+
+                                              │
+                                         <i>run(prodConfig)</i>  provide the environment once at the edge
+</pre>
+<p>The configuration sits on its own track and is never consumed; each <code>flatMap</code> step reads from it without changing it. <code>run().apply(config)</code> supplies the environment at the boundary, after which the value track collapses into the outer monad <code>F</code>.</p>
+<hr />
+<h2 id="how-readert-works"><a class="header" href="#how-readert-works">How ReaderT Works</a></h2>
+<p><code>ReaderT&lt;F, R, A&gt;</code> wraps a function <code>R -&gt; Kind&lt;F, A&gt;</code>. When you supply an environment of type <code>R</code>, you get back a monadic value <code>Kind&lt;F, A&gt;</code>.</p>
 <pre><code>    ┌──────────────────────────────────────────────────────────┐
     │  ReaderT&lt;CompletableFutureKind.Witness, AppConfig, A&gt;    │
     │                                                          │
@@ -374,12 +411,8 @@ Kind&lt;CompletableFutureKind.Witness, ProcessedData&gt; result =
     │  run ──────▶ provides config, returns F&lt;A&gt;               │
     └──────────────────────────────────────────────────────────┘
 </code></pre>
-<hr />
-<h2 id="how-readert-works"><a class="header" href="#how-readert-works">How ReaderT Works</a></h2>
-<p><code>ReaderT&lt;F, R, A&gt;</code> wraps a function <code>R -&gt; Kind&lt;F, A&gt;</code>. When you supply an environment of type <code>R</code>, you get back a monadic value <code>Kind&lt;F, A&gt;</code>.</p>
-<p><img src="../images/puml/readert_transformer.svg" alt="readert_transformer.svg" /></p>
 <ul>
-<li><strong><code>F</code></strong>: The witness type of the <strong>outer monad</strong> (e.g., <code>CompletableFutureKind.Witness</code>).</li>
+<li><strong><code>F</code></strong>: The witness type of the <strong>outer monad</strong> (e.g. <code>CompletableFutureKind.Witness</code>).</li>
 <li><strong><code>R</code></strong>: The type of the <strong>read-only environment</strong> (configuration, dependencies).</li>
 <li><strong><code>A</code></strong>: The type of the value produced, within the outer monad <code>F</code>.</li>
 <li><strong><code>run</code></strong>: The core function <code>R -&gt; Kind&lt;F, A&gt;</code>.</li>
@@ -392,115 +425,57 @@ Kind&lt;CompletableFutureKind.Witness, ProcessedData&gt; result =
 <hr />
 <h2 id="setting-up-readertmonad"><a class="header" href="#setting-up-readertmonad">Setting Up ReaderTMonad</a></h2>
 <p>The <code>ReaderTMonad&lt;F, R&gt;</code> class implements <code>Monad&lt;ReaderTKind.Witness&lt;F, R&gt;&gt;</code>, providing standard monadic operations. It requires a <code>Monad&lt;F&gt;</code> instance for the outer monad:</p>
-<pre><code class="language-java">OptionalMonad optionalMonad = OptionalMonad.INSTANCE;
-record AppConfig(String apiKey) {}
+<pre><code class="language-java">record AppConfig(String apiKey) {}
 
-ReaderTMonad&lt;OptionalKind.Witness, AppConfig&gt; readerTOptionalMonad =
-    new ReaderTMonad&lt;&gt;(optionalMonad);
+var readerTOptionalMonad = new ReaderTMonad&lt;OptionalKind.Witness, AppConfig&gt;(OptionalMonad.INSTANCE);
 </code></pre>
-<div id="admonition-type-witness-and-helpers" class="admonition admonish-note" role="note" aria-labelledby="admonition-type-witness-and-helpers-title">
+<div id="admonition-working-with-kind" class="admonition admonish-note" role="note" aria-labelledby="admonition-working-with-kind-title">
 <div class="admonition-title">
-<div id="admonition-type-witness-and-helpers-title">
-<p>Type Witness and Helpers</p>
+<div id="admonition-working-with-kind-title">
+<p>Working with Kind</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-type-witness-and-helpers"></a>
+<a class="admonition-anchor-link" href="#admonition-working-with-kind"></a>
 </div>
 <div>
 <p><strong>Witness Type:</strong> <code>ReaderTKind&lt;F, R, A&gt;</code> extends <code>Kind&lt;ReaderTKind.Witness&lt;F, R&gt;, A&gt;</code>. The outer monad <code>F</code> and environment <code>R</code> are fixed; <code>A</code> is the variable value type.</p>
-<p><strong>KindHelper:</strong> <code>ReaderTKindHelper</code> provides <code>READER_T.widen</code> and <code>READER_T.narrow</code> for safe conversion.</p>
+<p><strong>KindHelper:</strong> <code>ReaderTKindHelper</code> provides <code>READER_T.widen</code> and <code>READER_T.narrow</code> for safe conversion. With <code>For</code> comprehensions you rarely need them; they appear at the boundaries when interoperating with raw <code>flatMap</code> chains.</p>
 <pre><code class="language-java">Kind&lt;ReaderTKind.Witness&lt;F, R&gt;, A&gt; kind = READER_T.widen(readerT);
-ReaderT&lt;F, R, A&gt; concrete = READER_T.narrow(kind);
+ReaderT&lt;F, R, A&gt; concrete                = READER_T.narrow(kind);
 </code></pre>
 </div>
 </div>
 <hr />
 <h2 id="key-operations"><a class="header" href="#key-operations">Key Operations</a></h2>
-<div id="admonition-key-operations-with-_readertmonad_" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-operations-with-_readertmonad_-title">
-<div class="admonition-title">
-<div id="admonition-key-operations-with-_readertmonad_-title">
-<p>Key Operations with <em>ReaderTMonad</em></p>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Behaviour</th></tr></thead><tbody>
+<tr><td><code>readerTMonad.of(value)</code></td><td>Lifts a pure value; environment is ignored. Returns <code>ReaderT(r -&gt; outerMonad.of(value))</code></td></tr>
+<tr><td><code>readerTMonad.map(f, kind)</code></td><td>Transforms the result value <code>A -&gt; B</code> within the outer monad; environment unchanged</td></tr>
+<tr><td><code>readerTMonad.flatMap(f, kind)</code></td><td>Sequences operations; threads the <em>same</em> environment to the next step</td></tr>
+</tbody></table>
 </div>
-<a class="admonition-anchor-link" href="#admonition-key-operations-with-_readertmonad_"></a>
-</div>
-<div>
-<ul>
-<li><strong><code>readerTMonad.of(value)</code></strong>: Lifts a pure value into <code>ReaderT</code>. The environment is ignored. Result: <code>ReaderT(r -&gt; outerMonad.of(value))</code>.</li>
-<li><strong><code>readerTMonad.map(func, readerTKind)</code></strong>: Transforms the result value <code>A -&gt; B</code> within the outer monad. The environment passes through unchanged. Result: <code>ReaderT(r -&gt; F&lt;B&gt;)</code>.</li>
-<li><strong><code>readerTMonad.flatMap(func, readerTKind)</code></strong>: The core sequencing operation. Runs the first <code>ReaderT</code> with the environment to get <code>Kind&lt;F, A&gt;</code>. If it yields an <code>A</code>, applies <code>func</code> to get a new <code>ReaderT&lt;F, R, B&gt;</code>, which is then also run with the <strong>same environment</strong>. This is what makes configuration threading automatic.</li>
-</ul>
-</div>
-</div>
-<hr />
-<h2 id="transforming-the-outer-monad-with-mapt"><a class="header" href="#transforming-the-outer-monad-with-mapt">Transforming the Outer Monad with <code>mapT</code></a></h2>
-<p>Sometimes you need to change the <em>outer monad</em> of a <code>ReaderT</code> without altering the environment-threading logic. Perhaps you want to switch from <code>Optional</code> to <code>Id</code> (collapsing optionality with a default), or apply a natural transformation to move between effect types.</p>
-<p>Because <code>ReaderT</code> wraps a function rather than a value, <code>mapT</code> composes the transformation function after each result of <code>run</code>:</p>
-<pre><code>  env ──&gt; run() ──&gt; Kind&lt;F, A&gt; ──&gt; f ──&gt; Kind&lt;G, A&gt;
-   │                                          │
-   └──── combined into new ReaderT&lt;G, R, A&gt; ──┘
-</code></pre>
-<pre><code class="language-java">// Switch from Optional to Id, providing a default for empty results
-ReaderT&lt;OptionalKind.Witness, Config, String&gt; optReader = ...;
-
-ReaderT&lt;IdKind.Witness, Config, String&gt; idReader =
-    optReader.mapT(optKind -&gt; {
-      Optional&lt;String&gt; opt = OPTIONAL.narrow(optKind);
-      return ID.widen(Id.of(opt.orElse("default")));
-    });
-</code></pre>
-<div id="admonition-mapt-vs-map" class="admonition admonish-note" role="note" aria-labelledby="admonition-mapt-vs-map-title">
-<div class="admonition-title">
-<div id="admonition-mapt-vs-map-title">
-<p>mapT vs map</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-mapt-vs-map"></a>
-</div>
-<div>
-<p><code>map</code> transforms the <em>value</em> produced by the reader (the <code>A</code> in <code>Kind&lt;F, A&gt;</code>).
-<code>mapT</code> transforms the <em>outer monad</em> that wraps each result — the <code>F</code> in <code>R -&gt; F&lt;A&gt;</code>.
-The environment-threading is completely unaffected.</p>
-</div>
-</div>
+<p>The <code>MonadReader</code> capability adds <code>ask()</code>, <code>reader(f)</code>, and <code>local(f, ma)</code> on top.</p>
 <hr />
 <h2 id="creating-readert-instances"><a class="header" href="#creating-readert-instances">Creating ReaderT Instances</a></h2>
-<div id="admonition-creating-_readert_-instances" class="admonition admonish-note" role="note" aria-labelledby="admonition-creating-_readert_-instances-title">
-<div class="admonition-title">
-<div id="admonition-creating-_readert_-instances-title">
-<p>Creating <em>ReaderT</em> Instances</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-creating-_readert_-instances"></a>
-</div>
-<div>
-<pre><code class="language-java">OptionalMonad optMonad = OptionalMonad.INSTANCE;
+<pre><code class="language-java">var optMonad   = OptionalMonad.INSTANCE;
 record Config(String setting) {}
-Config testConfig = new Config("TestValue");
 
 // 1. Directly from R -&gt; F&lt;A&gt; function
-ReaderT&lt;OptionalKind.Witness, Config, String&gt; rt1 = ReaderT.of(
+var rt1 = ReaderT.&lt;OptionalKind.Witness, Config, String&gt;of(
     cfg -&gt; OPTIONAL.widen(Optional.of("Data based on " + cfg.setting())));
-// Run: OPTIONAL.narrow(rt1.run().apply(testConfig))
-// → Optional.of("Data based on TestValue")
 
 // 2. Lifting an existing F&lt;A&gt; (environment ignored)
-Kind&lt;OptionalKind.Witness, Integer&gt; optionalValue =
-    OPTIONAL.widen(Optional.of(123));
-ReaderT&lt;OptionalKind.Witness, Config, Integer&gt; rt2 =
-    ReaderT.lift(optMonad, optionalValue);
-// Run: always returns Optional.of(123) regardless of config
+Kind&lt;OptionalKind.Witness, Integer&gt; optionalValue = OPTIONAL.widen(Optional.of(123));
+var rt2 = ReaderT.&lt;OptionalKind.Witness, Config, Integer&gt;lift(optMonad, optionalValue);
 
 // 3. From R -&gt; A function (result lifted into F)
-ReaderT&lt;OptionalKind.Witness, Config, String&gt; rt3 =
-    ReaderT.reader(optMonad, cfg -&gt; "Hello from " + cfg.setting());
-// Run: Optional.of("Hello from TestValue")
+var rt3 = ReaderT.&lt;OptionalKind.Witness, Config, String&gt;reader(
+    optMonad, cfg -&gt; "Hello from " + cfg.setting());
 
 // 4. ask: provides the environment itself as the result
-ReaderT&lt;OptionalKind.Witness, Config, Config&gt; rt4 = ReaderT.ask(optMonad);
-// Run: Optional.of(Config("TestValue"))
+var rt4 = ReaderT.&lt;OptionalKind.Witness, Config&gt;ask(optMonad);
 </code></pre>
-</div>
-</div>
 <hr />
 <h2 id="real-world-example-configuration-dependent-async-services"><a class="header" href="#real-world-example-configuration-dependent-async-services">Real-World Example: Configuration-Dependent Async Services</a></h2>
-<div id="admonition-configuration-dependent-asynchronous-service-calls" class="admonition admonish-note" role="note" aria-labelledby="admonition-configuration-dependent-asynchronous-service-calls-title">
+<div id="admonition-configuration-dependent-asynchronous-service-calls" class="admonition admonish-example" role="note" aria-labelledby="admonition-configuration-dependent-asynchronous-service-calls-title">
 <div class="admonition-title">
 <div id="admonition-configuration-dependent-asynchronous-service-calls-title">
 <p>Configuration-Dependent Asynchronous Service Calls</p>
@@ -511,55 +486,45 @@ ReaderT&lt;OptionalKind.Witness, Config, Config&gt; rt4 = ReaderT.ask(optMonad);
 <ul>
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/reader_t/ReaderTAsyncExample.java">ReaderTAsyncExample.java</a></li>
 </ul>
-<p><strong>The problem:</strong> You have async service operations that all need an <code>AppConfig</code> (API keys, URLs, executor). You want to compose them without passing config through every call.</p>
+<p><strong>The problem:</strong> async service operations that all need an <code>AppConfig</code> (API keys, URLs, executor). Compose them without passing config through every call.</p>
 <p><strong>The solution:</strong></p>
-<pre><code class="language-java">static final Monad&lt;CompletableFutureKind.Witness&gt; futureMonad =
-    CompletableFutureMonad.INSTANCE;
-static final ReaderTMonad&lt;CompletableFutureKind.Witness, AppConfig&gt; cfReaderTMonad =
-    new ReaderTMonad&lt;&gt;(futureMonad);
-
-record AppConfig(String apiKey, String serviceUrl, ExecutorService executor) {}
+<pre><code class="language-java">record AppConfig(String apiKey, String serviceUrl, ExecutorService executor) {}
 record ServiceData(String rawData) {}
 record ProcessedData(String info) {}
 
-// Operation 1: fetch data (needs config for URL and API key)
-static ReaderT&lt;CompletableFutureKind.Witness, AppConfig, ServiceData&gt;
-    fetchServiceDataRT(String itemId) {
+var futureMonad  = CompletableFutureMonad.INSTANCE;
+var readerTMonad = new ReaderTMonad&lt;CompletableFutureKind.Witness, AppConfig&gt;(futureMonad);
+
+ReaderT&lt;CompletableFutureKind.Witness, AppConfig, ServiceData&gt; fetchServiceDataRT(String itemId) {
   return ReaderT.of(config -&gt; FUTURE.widen(
       CompletableFuture.supplyAsync(() -&gt;
           new ServiceData("Raw data for " + itemId + " from " + config.serviceUrl()),
           config.executor())));
 }
 
-// Operation 2: process data (needs config for API key)
-static ReaderT&lt;CompletableFutureKind.Witness, AppConfig, ProcessedData&gt;
-    processDataRT(ServiceData data) {
+ReaderT&lt;CompletableFutureKind.Witness, AppConfig, ProcessedData&gt; processDataRT(ServiceData data) {
   return ReaderT.reader(futureMonad,
       config -&gt; new ProcessedData("Processed: " + data.rawData().toUpperCase()));
 }
 
-// Compose: fetch then process
-Kind&lt;ReaderTKind.Witness&lt;CompletableFutureKind.Witness, AppConfig&gt;, ProcessedData&gt;
-    workflowRT = cfReaderTMonad.flatMap(
-        data -&gt; READER_T.widen(processDataRT(data)),
-        READER_T.widen(fetchServiceDataRT("item123")));
-
-ReaderT&lt;CompletableFutureKind.Witness, AppConfig, ProcessedData&gt; composedWorkflow =
-    READER_T.narrow(workflowRT);
+// Compose with For:
+var workflowRT = For.from(readerTMonad, fetchServiceDataRT("item123"))
+    .from(data -&gt; processDataRT(data))
+    .yield((data, processed) -&gt; processed);
 
 // Run with different configs:
-AppConfig prodConfig = new AppConfig("prod_key", "https://api.prod.example.com", executor);
-AppConfig stagingConfig = new AppConfig("staging_key", "https://api.staging.example.com", executor);
+var prodConfig    = new AppConfig("prod_key", "https://api.prod.example.com", executor);
+var stagingConfig = new AppConfig("staging_key", "https://api.staging.example.com", executor);
 
-ProcessedData prodResult = FUTURE.join(composedWorkflow.run().apply(prodConfig));
-ProcessedData stagingResult = FUTURE.join(composedWorkflow.run().apply(stagingConfig));
+var prodResult    = FUTURE.join(READER_T.narrow(workflowRT).run().apply(prodConfig));
+var stagingResult = FUTURE.join(READER_T.narrow(workflowRT).run().apply(stagingConfig));
 </code></pre>
-<p><strong>Why this works:</strong> The <code>AppConfig</code> is threaded through both <code>fetchServiceDataRT</code> and <code>processDataRT</code> by <code>flatMap</code>. The same workflow runs against production and staging simply by providing different configs at the <code>run().apply(...)</code> call. The workflow definition is completely decoupled from the environment.</p>
+<p><strong>Why this works:</strong> the <code>AppConfig</code> is threaded through both operations by <code>flatMap</code>. The same workflow runs against production and staging by changing the argument to <code>run().apply(...)</code>. The workflow definition is completely decoupled from the environment.</p>
 </div>
 </div>
 <hr />
 <h2 id="using-ask-to-access-configuration-mid-workflow"><a class="header" href="#using-ask-to-access-configuration-mid-workflow">Using <code>ask</code> to Access Configuration Mid-Workflow</a></h2>
-<div id="admonition-accessing-configuration-with-ask" class="admonition admonish-note" role="note" aria-labelledby="admonition-accessing-configuration-with-ask-title">
+<div id="admonition-accessing-configuration-with-ask" class="admonition admonish-example" role="note" aria-labelledby="admonition-accessing-configuration-with-ask-title">
 <div class="admonition-title">
 <div id="admonition-accessing-configuration-with-ask-title">
 <p>Accessing Configuration with <code>ask</code></p>
@@ -567,18 +532,14 @@ ProcessedData stagingResult = FUTURE.join(composedWorkflow.run().apply(stagingCo
 <a class="admonition-anchor-link" href="#admonition-accessing-configuration-with-ask"></a>
 </div>
 <div>
-<p><strong>The problem:</strong> Within a composed workflow, you need to read a specific config value without restructuring the computation.</p>
+<p><strong>The problem:</strong> within a composed workflow, read a specific config value without restructuring the computation.</p>
 <p><strong>The solution:</strong></p>
-<pre><code class="language-java">ReaderT&lt;CompletableFutureKind.Witness, AppConfig, AppConfig&gt; getConfigRT =
-    ReaderT.ask(futureMonad);
+<pre><code class="language-java">var getConfigRT  = ReaderT.&lt;CompletableFutureKind.Witness, AppConfig&gt;ask(futureMonad);
+var serviceUrlRT = readerTMonad.map(
+    (AppConfig cfg) -&gt; "Service URL: " + cfg.serviceUrl(),
+    getConfigRT);
 
-Kind&lt;ReaderTKind.Witness&lt;CompletableFutureKind.Witness, AppConfig&gt;, String&gt;
-    getServiceUrlRT = cfReaderTMonad.map(
-        (AppConfig cfg) -&gt; "Service URL: " + cfg.serviceUrl(),
-        READER_T.widen(getConfigRT));
-
-String stagingUrl = FUTURE.join(
-    READER_T.narrow(getServiceUrlRT).run().apply(stagingConfig));
+var stagingUrl = FUTURE.join(READER_T.narrow(serviceUrlRT).run().apply(stagingConfig));
 // → "Service URL: https://api.staging.example.com"
 </code></pre>
 <p><code>ReaderT.ask</code> returns the entire environment as the result, which you can then <code>map</code> over to extract specific fields.</p>
@@ -586,7 +547,7 @@ String stagingUrl = FUTURE.join(
 </div>
 <hr />
 <h2 id="fire-and-forget-operations-with-unit"><a class="header" href="#fire-and-forget-operations-with-unit">Fire-and-Forget Operations with Unit</a></h2>
-<div id="admonition-readert-for-actions-returning-unit" class="admonition admonish-note" role="note" aria-labelledby="admonition-readert-for-actions-returning-unit-title">
+<div id="admonition-readert-for-actions-returning-unit" class="admonition admonish-example" role="note" aria-labelledby="admonition-readert-for-actions-returning-unit-title">
 <div class="admonition-title">
 <div id="admonition-readert-for-actions-returning-unit-title">
 <p><code>ReaderT</code> for Actions Returning <code>Unit</code></p>
@@ -597,20 +558,46 @@ String stagingUrl = FUTURE.join(
 <ul>
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/reader_t/ReaderTAsyncUnitExample.java">ReaderTAsyncUnitExample.java</a></li>
 </ul>
-<p><strong>The problem:</strong> Some operations (logging, initialisation, sending metrics) depend on configuration but don't produce a meaningful return value.</p>
-<p><strong>The solution:</strong> Use <code>Unit</code> as the value type:</p>
-<pre><code class="language-java">static ReaderT&lt;CompletableFutureKind.Witness, AppConfig, Unit&gt; initialiseComponentRT() {
+<p><strong>The problem:</strong> some operations (logging, initialisation, sending metrics) depend on configuration but don't produce a meaningful return value.</p>
+<p><strong>The solution:</strong> use <code>Unit</code> as the value type:</p>
+<pre><code class="language-java">ReaderT&lt;CompletableFutureKind.Witness, AppConfig, Unit&gt; initialiseComponentRT() {
     return ReaderT.of(config -&gt; FUTURE.widen(
         CompletableFuture.runAsync(() -&gt; {
             System.out.println("Initialising with API Key: " + config.apiKey());
-            // ... initialisation work ...
         }, config.executor()).thenApply(v -&gt; Unit.INSTANCE)));
 }
 
-// Run:
-Unit result = FUTURE.join(initialiseComponentRT().run().apply(prodConfig));
+var result = FUTURE.join(initialiseComponentRT().run().apply(prodConfig));
 // → () (Unit.INSTANCE, signifying successful completion)
 </code></pre>
+</div>
+</div>
+<hr />
+<h2 id="transforming-the-outer-monad-with-mapt"><a class="header" href="#transforming-the-outer-monad-with-mapt">Transforming the Outer Monad with <code>mapT</code></a></h2>
+<p>Sometimes you need to change the <em>outer monad</em> of a <code>ReaderT</code> without altering the environment-threading logic. Perhaps you want to switch from <code>Optional</code> to <code>Id</code> (collapsing optionality with a default), or apply a natural transformation to move between effect types.</p>
+<p>Because <code>ReaderT</code> wraps a function rather than a value, <code>mapT</code> composes the transformation function after each result of <code>run</code>:</p>
+<pre><code>  env ──&gt; run() ──&gt; Kind&lt;F, A&gt; ──&gt; f ──&gt; Kind&lt;G, A&gt;
+   │                                          │
+   └──── combined into new ReaderT&lt;G, R, A&gt; ──┘
+</code></pre>
+<pre><code class="language-java">ReaderT&lt;OptionalKind.Witness, Config, String&gt; optReader = ...;
+
+var idReader = optReader.mapT(optKind -&gt; {
+  Optional&lt;String&gt; opt = OPTIONAL.narrow(optKind);
+  return ID.widen(Id.of(opt.orElse("default")));
+});
+</code></pre>
+<div id="admonition-mapt-vs-map" class="admonition admonish-note" role="note" aria-labelledby="admonition-mapt-vs-map-title">
+<div class="admonition-title">
+<div id="admonition-mapt-vs-map-title">
+<p>mapT vs map</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-mapt-vs-map"></a>
+</div>
+<div>
+<p><code>map</code> transforms the <em>value</em> produced by the reader (the <code>A</code> in <code>Kind&lt;F, A&gt;</code>).
+<code>mapT</code> transforms the <em>outer monad</em> that wraps each result, the <code>F</code> in <code>R -&gt; F&lt;A&gt;</code>.
+The environment-threading is completely unaffected.</p>
 </div>
 </div>
 <hr />
@@ -623,9 +610,10 @@ Unit result = FUTURE.join(initialiseComponentRT().run().apply(prodConfig));
 </div>
 <div>
 <ul>
-<li><strong>Forgetting to run:</strong> A <code>ReaderT</code> is a <em>description</em> of a computation, not the computation itself. It does nothing until you call <code>.run().apply(config)</code>. If your tests pass but nothing happens, check that you are running the <code>ReaderT</code>.</li>
+<li><strong>Forgetting to run:</strong> a <code>ReaderT</code> is a <em>description</em> of a computation, not the computation itself. It does nothing until you call <code>.run().apply(config)</code>. If your tests pass but nothing happens, check that you are running the <code>ReaderT</code>.</li>
 <li><strong>Mutating the environment:</strong> <code>R</code> should be immutable. <code>ReaderT</code> passes the same <code>R</code> to every operation in a chain. Mutating it would break referential transparency and produce unpredictable results.</li>
-<li><strong>Using ReaderT when you need state changes:</strong> If the configuration changes between steps, you need <code>StateT</code>, not <code>ReaderT</code>. The "Reader" in <code>ReaderT</code> means <em>read-only</em>.</li>
+<li><strong>Using <code>ReaderT</code> when you need state changes:</strong> if the configuration changes between steps, you need <a href="statet_transformer.html"><code>StateT</code></a>, not <code>ReaderT</code>. The "Reader" in <code>ReaderT</code> means <em>read-only</em>.</li>
+<li><strong>Reaching for the transformer when <code>ReaderPath</code> would do:</strong> if your only effect is the environment, <code>ReaderPath</code> is shorter and reads more naturally.</li>
 </ul>
 </div>
 </div>
@@ -639,6 +627,10 @@ Unit result = FUTURE.join(initialiseComponentRT().run().apply(prodConfig));
 </div>
 <div>
 <ul>
+<li><a href="../effect/advanced_effects.html">ReaderPath / Advanced Effects</a> - The Path-API equivalent</li>
+<li><a href="mtl_reader.html">MonadReader</a> - The MTL capability for stack-independent code</li>
+<li><a href="archetypes.html">Stack Archetypes</a> - The Context Stack archetype maps to <code>ReaderT</code>/<code>ReaderPath</code></li>
+<li><a href="migration_cookbook.html">Migration Cookbook</a> - Side-by-side translations</li>
 <li><a href="transformers.html">Monad Transformers</a> - General concept and choosing the right transformer</li>
 <li><a href="statet_transformer.html">StateT</a> - When your environment needs to change between steps</li>
 <li><a href="eithert_transformer.html">EitherT</a> - When operations can fail with typed errors</li>
@@ -662,6 +654,18 @@ Unit result = FUTURE.join(initialiseComponentRT().run().apply(prodConfig));
 </ul>
 </div>
 </div>
+<div id="admonition-hands-on-learning" class="admonition admonish-info" role="note" aria-labelledby="admonition-hands-on-learning-title">
+<div class="admonition-title">
+<div id="admonition-hands-on-learning-title">
+<p>Hands-On Learning</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-hands-on-learning"></a>
+</div>
+<div>
+<p>The <code>MonadReader</code> capability that wraps <code>ReaderT</code> is exercised in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/transformers/Tutorial04_PolymorphicCapabilities.java">Tutorial 04: Polymorphic Capabilities (MTL)</a> (14 exercises, ~30-40 minutes).</p>
+</div>
+</div>
+<hr />
 <p><strong>Previous:</strong> <a href="maybet_transformer.html">MaybeT</a>
 <strong>Next:</strong> <a href="statet_transformer.html">StateT</a></p>
 

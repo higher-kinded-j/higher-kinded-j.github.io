@@ -267,6 +267,11 @@
 </style>
 <h1 id="the-optionalt-transformer"><a class="header" href="#the-optionalt-transformer">The OptionalT Transformer:</a></h1>
 <h2 id="when-absence-meets-other-effects"><a class="header" href="#when-absence-meets-other-effects"><em>When Absence Meets Other Effects</em></a></h2>
+<blockquote>
+<p><em>"The most beautiful experience we can have is the mysterious."</em></p>
+<p>-- Albert Einstein</p>
+</blockquote>
+<p><code>OptionalT</code> lets a chain of asynchronous lookups disappear cleanly the moment a value is missing. The mystery of "did this resolve?" stays inside the type and never leaks into your control flow.</p>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -276,18 +281,18 @@
 </div>
 <div>
 <ul>
-<li>How to integrate Java's Optional with other monadic contexts</li>
+<li>How to integrate Java's <code>Optional</code> with other monadic contexts</li>
 <li>Building async workflows where each step might return empty results</li>
-<li>Using <code>some</code>, <code>none</code>, and <code>fromOptional</code> to construct OptionalT values</li>
-<li>Creating multi-step data retrieval with graceful failure handling</li>
-<li>Providing default values when optional chains result in empty</li>
+<li>Using <code>For</code> comprehensions to compose multi-step lookups without manual fallback wiring</li>
+<li>Using <code>some</code>, <code>none</code>, <code>fromOptional</code>, <code>liftF</code>, and <code>fromKind</code> to construct <code>OptionalT</code> values</li>
+<li>When to use the <a href="../effect/path_optional.html"><code>OptionalPath</code></a> Path type instead of raw <code>OptionalT</code></li>
 </ul>
 </div>
 </div>
 <div id="admonition-see-example-code" class="admonition admonish-example" role="note" aria-labelledby="admonition-see-example-code-title">
 <div class="admonition-title">
 <div id="admonition-see-example-code-title">
-<p>See Example Code:</p>
+<p>See Example Code</p>
 </div>
 <a class="admonition-anchor-link" href="#admonition-see-example-code"></a>
 </div>
@@ -295,11 +300,22 @@
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/optional_t/OptionalTExample.java">OptionalTExample.java</a></p>
 </div>
 </div>
+<div id="admonition-path-first-stack-later" class="admonition admonish-note" role="note" aria-labelledby="admonition-path-first-stack-later-title">
+<div class="admonition-title">
+<div id="admonition-path-first-stack-later-title">
+<p>Path First, Stack Later</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-path-first-stack-later"></a>
+</div>
+<div>
+<p>For most use cases, <a href="../effect/path_optional.html"><code>OptionalPath&lt;A&gt;</code></a> (or <a href="../effect/path_maybe.html"><code>MaybePath&lt;A&gt;</code></a> for the FP-native equivalent) is the better starting point. It wraps <code>OptionalT</code> in a fluent API that hides the witness types and <code>Kind</code> widening.</p>
+<p>Reach for raw <code>OptionalT</code> only when you need to combine optionality with a specific outer monad (<code>CompletableFuture</code>, <code>IO</code>, <code>VTask</code>, custom) or when you are writing polymorphic library code that names <code>MonadError&lt;F, Unit&gt;</code>.</p>
+</div>
+</div>
 <hr />
 <h2 id="the-problem-nested-async-lookups"><a class="header" href="#the-problem-nested-async-lookups">The Problem: Nested Async Lookups</a></h2>
 <p>Consider fetching a user, then their profile, then their preferences. Each step is async and might return empty:</p>
-<pre><code class="language-java">// Without OptionalT: manual nesting
-CompletableFuture&lt;Optional&lt;UserPreferences&gt;&gt; getPreferences(String userId) {
+<pre><code class="language-java">CompletableFuture&lt;Optional&lt;UserPreferences&gt;&gt; getPreferences(String userId) {
     return fetchUserAsync(userId).thenCompose(optUser -&gt;
         optUser.map(user -&gt;
             fetchProfileAsync(user.id()).thenCompose(optProfile -&gt;
@@ -312,19 +328,29 @@ CompletableFuture&lt;Optional&lt;UserPreferences&gt;&gt; getPreferences(String u
 }
 </code></pre>
 <p>Each step requires checking the <code>Optional</code>, providing a fallback <code>CompletableFuture.completedFuture(Optional.empty())</code> for the absent case, and nesting deeper. Three lookups; three layers of <code>map</code>/<code>orElse</code>. The fallback expression is identical every time.</p>
-<h2 id="the-solution-optionalt"><a class="header" href="#the-solution-optionalt">The Solution: OptionalT</a></h2>
-<pre><code class="language-java">// With OptionalT: flat composition
-OptionalT&lt;CompletableFutureKind.Witness, UserPreferences&gt; getPreferences(String userId) {
-    var userOT = OPTIONAL_T.widen(OptionalT.fromKind(fetchUserAsync(userId)));
-    var workflow = For.from(optionalTMonad, userOT)
-        .from(user -&gt; OPTIONAL_T.widen(OptionalT.fromKind(fetchProfileAsync(user.id()))))
-        .from(profile -&gt; OPTIONAL_T.widen(OptionalT.fromKind(fetchPrefsAsync(profile.userId()))))
-        .yield((user, profile, prefs) -&gt; prefs);
-    return OPTIONAL_T.narrow(workflow);
+<hr />
+<h2 id="the-solution"><a class="header" href="#the-solution">The Solution</a></h2>
+<h3 id="with-the-effect-path-api"><a class="header" href="#with-the-effect-path-api">With the Effect Path API</a></h3>
+<pre><code class="language-java">OptionalPath&lt;UserPreferences&gt; getPreferences(String userId) {
+    return Path.optional(fetchUserAsync(userId))
+        .via(user    -&gt; Path.optional(fetchProfileAsync(user.id())))
+        .via(profile -&gt; Path.optional(fetchPrefsAsync(profile.userId())));
 }
 </code></pre>
+<p>Use this whenever the outer monad is one Path already wraps.</p>
+<h3 id="with-raw-optionalt"><a class="header" href="#with-raw-optionalt">With raw <code>OptionalT</code></a></h3>
+<p>When you need a specific outer monad, use <code>OptionalT</code> with a <code>For</code> comprehension:</p>
+<pre><code class="language-java">var futureMonad    = CompletableFutureMonad.INSTANCE;
+var optionalTMonad = new OptionalTMonad&lt;CompletableFutureKind.Witness&gt;(futureMonad);
+
+var prefsLookup = For.from(optionalTMonad, OptionalT.fromKind(fetchUserAsync(userId)))
+    .from(user    -&gt; OptionalT.fromKind(fetchProfileAsync(user.id())))
+    .from(profile -&gt; OptionalT.fromKind(fetchPrefsAsync(profile.userId())))
+    .yield((user, profile, prefs) -&gt; prefs);
+</code></pre>
 <p>If any step returns empty, subsequent steps are skipped. No manual <code>orElse</code> fallbacks, no repeated <code>Optional.empty()</code> wrapping.</p>
-<h3 id="the-railway-view"><a class="header" href="#the-railway-view">The Railway View</a></h3>
+<hr />
+<h2 id="the-railway-view"><a class="header" href="#the-railway-view">The Railway View</a></h2>
 <pre style="line-height:1.5;font-size:0.95em">
     <span style="color:#4CAF50"><b>Present</b>  ═══●═══════════●═══════════●═══════════▶  UserPreferences</span>
     <span style="color:#4CAF50">          fetchUser   fetchProfile fetchPrefs</span>
@@ -339,7 +365,7 @@ OptionalT&lt;CompletableFutureKind.Witness, UserPreferences&gt; getPreferences(S
                                           │
     <span style="color:#4CAF50">                                      ●═══▶  default UserPreferences</span>
 </pre>
-<p>Each <code>flatMap</code> runs inside the outer monad <code>F</code> (e.g. <code>CompletableFuture</code>). If the inner <code>Optional</code> is empty, subsequent steps are skipped. <code>handleErrorWith</code> can provide a fallback value when the chain yields nothing.</p>
+<p>Each <code>flatMap</code> runs inside the outer monad <code>F</code>. If the inner <code>Optional</code> is empty, subsequent steps are skipped. <code>handleErrorWith</code> can provide a fallback value when the chain yields nothing.</p>
 <hr />
 <h2 id="how-optionalt-works"><a class="header" href="#how-optionalt-works">How OptionalT Works</a></h2>
 <p><code>OptionalT&lt;F, A&gt;</code> wraps a computation yielding <code>Kind&lt;F, Optional&lt;A&gt;&gt;</code>. It represents an effectful computation in <code>F</code> that may or may not produce a value.</p>
@@ -363,61 +389,129 @@ OptionalT&lt;CompletableFutureKind.Witness, UserPreferences&gt; getPreferences(S
     │  handleErrorWith ──▶ recovers from <span style="color:#F44336">empty</span>                 │
     └──────────────────────────────────────────────────────────┘
 </pre>
-<p><img src="../images/puml/optional_t_transformer.svg" alt="optional_t_transformer.svg" /></p>
 <ul>
-<li><strong><code>F</code></strong>: The witness type of the <strong>outer monad</strong> (e.g., <code>CompletableFutureKind.Witness</code>).</li>
+<li><strong><code>F</code></strong>: The witness type of the <strong>outer monad</strong> (e.g. <code>CompletableFutureKind.Witness</code>).</li>
 <li><strong><code>A</code></strong>: The type of the value that might be present within the <code>Optional</code>.</li>
 </ul>
 <pre><code class="language-java">public record OptionalT&lt;F, A&gt;(@NonNull Kind&lt;F, Optional&lt;A&gt;&gt; value)
-    implements OptionalTKind&lt;F, A&gt; {
-  // ... static factory methods ...
-}
+    implements OptionalTKind&lt;F, A&gt; { /* ... static factories ... */ }
 </code></pre>
 <hr />
 <h2 id="setting-up-optionaltmonad"><a class="header" href="#setting-up-optionaltmonad">Setting Up OptionalTMonad</a></h2>
 <p>The <code>OptionalTMonad&lt;F&gt;</code> class implements <code>MonadError&lt;OptionalTKind.Witness&lt;F&gt;, Unit&gt;</code>. The error type is <code>Unit</code>, signifying that an "error" is the <code>Optional.empty()</code> state (absence carries no information beyond its occurrence).</p>
-<pre><code class="language-java">Monad&lt;CompletableFutureKind.Witness&gt; futureMonad = CompletableFutureMonad.INSTANCE;
-
-OptionalTMonad&lt;CompletableFutureKind.Witness&gt; optionalTFutureMonad =
-    new OptionalTMonad&lt;&gt;(futureMonad);
+<pre><code class="language-java">var futureMonad    = CompletableFutureMonad.INSTANCE;
+var optionalTMonad = new OptionalTMonad&lt;CompletableFutureKind.Witness&gt;(futureMonad);
 </code></pre>
-<div id="admonition-type-witness-and-helpers" class="admonition admonish-note" role="note" aria-labelledby="admonition-type-witness-and-helpers-title">
+<div id="admonition-working-with-kind" class="admonition admonish-note" role="note" aria-labelledby="admonition-working-with-kind-title">
 <div class="admonition-title">
-<div id="admonition-type-witness-and-helpers-title">
-<p>Type Witness and Helpers</p>
+<div id="admonition-working-with-kind-title">
+<p>Working with Kind</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-type-witness-and-helpers"></a>
+<a class="admonition-anchor-link" href="#admonition-working-with-kind"></a>
 </div>
 <div>
 <p><strong>Witness Type:</strong> <code>OptionalTKind&lt;F, A&gt;</code> extends <code>Kind&lt;OptionalTKind.Witness&lt;F&gt;, A&gt;</code>. The outer monad <code>F</code> is fixed; <code>A</code> is the variable value type.</p>
-<p><strong>KindHelper:</strong> <code>OptionalTKindHelper</code> provides <code>OPTIONAL_T.widen</code> and <code>OPTIONAL_T.narrow</code> for safe conversion between <code>OptionalT&lt;F, A&gt;</code> and its <code>Kind</code> representation.</p>
+<p><strong>KindHelper:</strong> <code>OptionalTKindHelper</code> provides <code>OPTIONAL_T.widen</code> and <code>OPTIONAL_T.narrow</code> for safe conversion between <code>OptionalT&lt;F, A&gt;</code> and its <code>Kind</code> representation. With <code>For</code> comprehensions you rarely need them; they appear at the boundaries when interoperating with raw <code>flatMap</code> chains.</p>
 <pre><code class="language-java">Kind&lt;OptionalTKind.Witness&lt;F&gt;, A&gt; kind = OPTIONAL_T.widen(optionalT);
-OptionalT&lt;F, A&gt; concrete = OPTIONAL_T.narrow(kind);
+OptionalT&lt;F, A&gt; concrete                = OPTIONAL_T.narrow(kind);
 </code></pre>
 </div>
 </div>
 <hr />
 <h2 id="key-operations"><a class="header" href="#key-operations">Key Operations</a></h2>
-<div id="admonition-key-operations-with-_optionaltmonad_" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-operations-with-_optionaltmonad_-title">
-<div class="admonition-title">
-<div id="admonition-key-operations-with-_optionaltmonad_-title">
-<p>Key Operations with <em>OptionalTMonad</em>:</p>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Behaviour</th></tr></thead><tbody>
+<tr><td><code>optionalTMonad.of(value)</code></td><td>Lifts a nullable value as <code>F&lt;Optional.ofNullable(value)&gt;</code></td></tr>
+<tr><td><code>optionalTMonad.map(f, kind)</code></td><td>Applies <code>A -&gt; B</code> to the present value; <code>null</code> results become <code>empty</code></td></tr>
+<tr><td><code>optionalTMonad.flatMap(f, kind)</code></td><td>Sequences operations; empty short-circuits the rest</td></tr>
+<tr><td><code>optionalTMonad.raiseError(Unit.INSTANCE)</code></td><td>Creates <code>F&lt;Optional.empty()&gt;</code></td></tr>
+<tr><td><code>optionalTMonad.handleErrorWith(kind, handler)</code></td><td>Recovers from empty by applying <code>handler</code></td></tr>
+</tbody></table>
 </div>
-<a class="admonition-anchor-link" href="#admonition-key-operations-with-_optionaltmonad_"></a>
+<hr />
+<h2 id="creating-optionalt-instances"><a class="header" href="#creating-optionalt-instances">Creating OptionalT Instances</a></h2>
+<pre><code class="language-java">var futureMonad = CompletableFutureMonad.INSTANCE;
+
+// 1. From an existing F&lt;Optional&lt;A&gt;&gt;
+Kind&lt;CompletableFutureKind.Witness, Optional&lt;String&gt;&gt; fOptional =
+    FUTURE.widen(CompletableFuture.completedFuture(Optional.of("Data")));
+var ot1 = OptionalT.fromKind(fOptional);
+
+// 2. From a present value: F&lt;Optional.of(a)&gt;
+var ot2 = OptionalT.some(futureMonad, "Data");
+
+// 3. Empty: F&lt;Optional.empty()&gt;
+var ot3 = OptionalT.&lt;CompletableFutureKind.Witness, String&gt;none(futureMonad);
+
+// 4. From a plain java.util.Optional: F&lt;Optional&lt;A&gt;&gt;
+var ot4 = OptionalT.fromOptional(futureMonad, Optional.of(123));
+
+// 5. Lifting F&lt;A&gt; into OptionalT (null -&gt; empty, non-null -&gt; present)
+Kind&lt;CompletableFutureKind.Witness, String&gt; fValue =
+    FUTURE.widen(CompletableFuture.completedFuture("Data"));
+var ot5 = OptionalT.liftF(futureMonad, fValue);
+</code></pre>
+<p><code>ot1.value()</code> returns the underlying <code>Kind&lt;CompletableFutureKind.Witness, Optional&lt;String&gt;&gt;</code>, which you narrow back to a concrete <code>CompletableFuture&lt;Optional&lt;String&gt;&gt;</code> when you need the result.</p>
+<hr />
+<h2 id="real-world-example-async-multi-step-data-retrieval"><a class="header" href="#real-world-example-async-multi-step-data-retrieval">Real-World Example: Async Multi-Step Data Retrieval</a></h2>
+<div id="admonition-asynchronous-multi-step-data-retrieval" class="admonition admonish-example" role="note" aria-labelledby="admonition-asynchronous-multi-step-data-retrieval-title">
+<div class="admonition-title">
+<div id="admonition-asynchronous-multi-step-data-retrieval-title">
+<p>Asynchronous Multi-Step Data Retrieval</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-asynchronous-multi-step-data-retrieval"></a>
 </div>
 <div>
 <ul>
-<li><strong><code>optionalTMonad.of(value)</code></strong>: Lifts a nullable value <code>A</code> into <code>OptionalT</code>. Result: <code>F&lt;Optional.ofNullable(value)&gt;</code>.</li>
-<li><strong><code>optionalTMonad.map(func, optionalTKind)</code></strong>: Applies <code>A -&gt; B</code> to the present value. If <code>func</code> returns <code>null</code>, the result becomes <code>F&lt;Optional.empty()&gt;</code>. Result: <code>OptionalT(F&lt;Optional&lt;B&gt;&gt;)</code>.</li>
-<li><strong><code>optionalTMonad.flatMap(func, optionalTKind)</code></strong>: Sequences operations. If present, applies <code>func</code> to get the next <code>OptionalT</code>. If empty at any point, short-circuits to <code>F&lt;Optional.empty()&gt;</code>.</li>
-<li><strong><code>optionalTMonad.raiseError(Unit.INSTANCE)</code></strong>: Creates an <code>OptionalT</code> representing absence. Result: <code>F&lt;Optional.empty()&gt;</code>.</li>
-<li><strong><code>optionalTMonad.handleErrorWith(optionalTKind, handler)</code></strong>: Handles an empty state. The handler <code>Unit -&gt; Kind&lt;OptionalTKind.Witness&lt;F&gt;, A&gt;</code> is invoked when the inner <code>Optional</code> is empty.</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/optional_t/OptionalTExample.java">OptionalTExample.java</a></li>
 </ul>
+<p><strong>The problem:</strong> fetch a user, then their profile, then their preferences. Each step is async and might not find data. The chain should short-circuit on the first empty result.</p>
+<p><strong>The solution:</strong></p>
+<pre><code class="language-java">var futureMonad    = CompletableFutureMonad.INSTANCE;
+var optionalTMonad = new OptionalTMonad&lt;CompletableFutureKind.Witness&gt;(futureMonad);
+
+// Service stubs return Future&lt;Optional&lt;T&gt;&gt;
+Kind&lt;CompletableFutureKind.Witness, Optional&lt;User&gt;&gt; fetchUserAsync(String userId) {
+    return FUTURE.widen(CompletableFuture.supplyAsync(() -&gt;
+        "user1".equals(userId) ? Optional.of(new User(userId, "Alice"))
+                               : Optional.empty()));
+}
+
+// Workflow: user -&gt; profile -&gt; preferences
+var workflow = For.from(optionalTMonad, OptionalT.fromKind(fetchUserAsync(userId)))
+    .from(user    -&gt; OptionalT.fromKind(fetchProfileAsync(user.id())))
+    .from(profile -&gt; OptionalT.fromKind(fetchPrefsAsync(profile.userId())))
+    .yield((user, profile, prefs) -&gt; prefs);
+</code></pre>
+<p><strong>Why this works:</strong> each <code>from</code> only executes its lambda if the previous step produced a present value. If <code>fetchUserAsync</code> returns empty, neither <code>fetchProfileAsync</code> nor <code>fetchPrefsAsync</code> is called.</p>
+</div>
+</div>
+<hr />
+<h2 id="providing-defaults-with-error-recovery"><a class="header" href="#providing-defaults-with-error-recovery">Providing Defaults with Error Recovery</a></h2>
+<div id="admonition-recovery-with-default-values" class="admonition admonish-example" role="note" aria-labelledby="admonition-recovery-with-default-values-title">
+<div class="admonition-title">
+<div id="admonition-recovery-with-default-values-title">
+<p>Recovery with Default Values</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-recovery-with-default-values"></a>
+</div>
+<div>
+<p><strong>The problem:</strong> when the preference chain returns empty, you want to provide default preferences rather than propagating the absence.</p>
+<p><strong>The solution:</strong></p>
+<pre><code class="language-java">Kind&lt;OptionalTKind.Witness&lt;CompletableFutureKind.Witness&gt;, UserPreferences&gt;
+    getPrefsWithDefault(String userId) {
+  var prefsAttempt = getFullUserPreferences(userId);
+
+  return optionalTMonad.handleErrorWith(
+      prefsAttempt,
+      (Unit v) -&gt; OptionalT.some(futureMonad, new UserPreferences(userId, "default-light")));
+}
+</code></pre>
+<p><code>OptionalT</code> already implements the <code>Kind</code> interface, so neither the source value nor the handler's result need an explicit <code>OPTIONAL_T.widen</code> call. The <code>handleErrorWith</code> handler receives <code>Unit</code> (since absence carries no information) and returns an <code>OptionalT</code> containing the default preferences.</p>
 </div>
 </div>
 <hr />
 <h2 id="transforming-the-outer-monad-with-mapt"><a class="header" href="#transforming-the-outer-monad-with-mapt">Transforming the Outer Monad with <code>mapT</code></a></h2>
-<p>Sometimes you need to change the <em>outer monad</em> of an <code>OptionalT</code> without touching the inner <code>Optional</code>. Perhaps you have awaited an async result and want to continue in a synchronous context, or you want to apply a natural transformation to switch effect types.</p>
+<p>Sometimes you need to change the <em>outer monad</em> of an <code>OptionalT</code> without touching the inner <code>Optional</code>. Perhaps you have awaited an async result and want to continue in a synchronous context.</p>
 <p><code>mapT</code> applies a function to the wrapped <code>Kind&lt;F, Optional&lt;A&gt;&gt;</code> and produces a new <code>OptionalT&lt;G, A&gt;</code>:</p>
 <pre><code>  OptionalT&lt; F , A &gt;  ── mapT(f) ──&gt;  OptionalT&lt; G , A &gt;
        │                                     │
@@ -429,14 +523,12 @@ OptionalT&lt;F, A&gt; concrete = OPTIONAL_T.narrow(kind);
   │ └─────┘ │                           │ └─────┘ │
   └─────────┘                           └─────────┘
 </code></pre>
-<pre><code class="language-java">// Switch from Future to Optional after awaiting an async result
-OptionalT&lt;CompletableFutureKind.Witness, String&gt; asyncOt = ...;
+<pre><code class="language-java">OptionalT&lt;CompletableFutureKind.Witness, String&gt; asyncOt = ...;
 
-OptionalT&lt;OptionalKind.Witness, String&gt; syncOt =
-    asyncOt.mapT(futureKind -&gt; {
-      Optional&lt;String&gt; awaited = FUTURE.narrow(futureKind).join();
-      return OPTIONAL.widen(Optional.of(awaited));
-    });
+var syncOt = asyncOt.mapT(futureKind -&gt; {
+  Optional&lt;String&gt; awaited = FUTURE.narrow(futureKind).join();
+  return OPTIONAL.widen(Optional.of(awaited));
+});
 </code></pre>
 <div id="admonition-mapt-vs-map" class="admonition admonish-note" role="note" aria-labelledby="admonition-mapt-vs-map-title">
 <div class="admonition-title">
@@ -447,133 +539,8 @@ OptionalT&lt;OptionalKind.Witness, String&gt; syncOt =
 </div>
 <div>
 <p><code>map</code> transforms the <em>value</em> inside the <code>Optional</code> (the <code>A</code> in <code>Optional.of(A)</code>).
-<code>mapT</code> transforms the <em>outer monad</em> wrapping the <code>Optional</code> — the <code>F</code> in <code>F&lt;Optional&lt;A&gt;&gt;</code>.
+<code>mapT</code> transforms the <em>outer monad</em> wrapping the <code>Optional</code>, the <code>F</code> in <code>F&lt;Optional&lt;A&gt;&gt;</code>.
 They operate at different levels of the transformer stack.</p>
-</div>
-</div>
-<hr />
-<h2 id="creating-optionalt-instances"><a class="header" href="#creating-optionalt-instances">Creating OptionalT Instances</a></h2>
-<div id="admonition-creating-_optionalt_-instances" class="admonition admonish-note" role="note" aria-labelledby="admonition-creating-_optionalt_-instances-title">
-<div class="admonition-title">
-<div id="admonition-creating-_optionalt_-instances-title">
-<p>Creating <em>OptionalT</em> Instances</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-creating-_optionalt_-instances"></a>
-</div>
-<div>
-<ul>
-<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/optional_t/OptionalTExample.java">OptionalTExample.java</a></li>
-</ul>
-<pre><code class="language-java">Monad&lt;CompletableFutureKind.Witness&gt; futureMonad = CompletableFutureMonad.INSTANCE;
-
-// 1. From an existing F&lt;Optional&lt;A&gt;&gt;
-Kind&lt;CompletableFutureKind.Witness, Optional&lt;String&gt;&gt; fOptional =
-    FUTURE.widen(CompletableFuture.completedFuture(Optional.of("Data")));
-OptionalT&lt;CompletableFutureKind.Witness, String&gt; ot1 = OptionalT.fromKind(fOptional);
-
-// 2. From a present value: F&lt;Optional.of(a)&gt;
-OptionalT&lt;CompletableFutureKind.Witness, String&gt; ot2 =
-    OptionalT.some(futureMonad, "Data");
-
-// 3. Empty: F&lt;Optional.empty()&gt;
-OptionalT&lt;CompletableFutureKind.Witness, String&gt; ot3 = OptionalT.none(futureMonad);
-
-// 4. From a plain java.util.Optional: F&lt;Optional&lt;A&gt;&gt;
-OptionalT&lt;CompletableFutureKind.Witness, Integer&gt; ot4 =
-    OptionalT.fromOptional(futureMonad, Optional.of(123));
-
-// 5. Lifting F&lt;A&gt; into OptionalT (null → empty, non-null → present)
-Kind&lt;CompletableFutureKind.Witness, String&gt; fValue =
-    FUTURE.widen(CompletableFuture.completedFuture("Data"));
-OptionalT&lt;CompletableFutureKind.Witness, String&gt; ot5 =
-    OptionalT.liftF(futureMonad, fValue);
-
-// Accessing the wrapped value:
-Kind&lt;CompletableFutureKind.Witness, Optional&lt;String&gt;&gt; wrappedFVO = ot1.value();
-CompletableFuture&lt;Optional&lt;String&gt;&gt; futureOptional = FUTURE.narrow(wrappedFVO);
-</code></pre>
-</div>
-</div>
-<hr />
-<h2 id="real-world-example-async-multi-step-data-retrieval"><a class="header" href="#real-world-example-async-multi-step-data-retrieval">Real-World Example: Async Multi-Step Data Retrieval</a></h2>
-<div id="admonition-asynchronous-multi-step-data-retrieval" class="admonition admonish-note" role="note" aria-labelledby="admonition-asynchronous-multi-step-data-retrieval-title">
-<div class="admonition-title">
-<div id="admonition-asynchronous-multi-step-data-retrieval-title">
-<p>Asynchronous Multi-Step Data Retrieval</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-asynchronous-multi-step-data-retrieval"></a>
-</div>
-<div>
-<ul>
-<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/optional_t/OptionalTExample.java">OptionalTExample.java</a></li>
-</ul>
-<p><strong>The problem:</strong> You need to fetch a user, then their profile, then their preferences. Each step is async and might not find data. You want the chain to short-circuit on the first empty result.</p>
-<p><strong>The solution:</strong></p>
-<pre><code class="language-java">static final Monad&lt;CompletableFutureKind.Witness&gt; futureMonad =
-    CompletableFutureMonad.INSTANCE;
-static final OptionalTMonad&lt;CompletableFutureKind.Witness&gt; optionalTFutureMonad =
-    new OptionalTMonad&lt;&gt;(futureMonad);
-
-// Service stubs return Future&lt;Optional&lt;T&gt;&gt;
-static Kind&lt;CompletableFutureKind.Witness, Optional&lt;User&gt;&gt; fetchUserAsync(String userId) {
-    return FUTURE.widen(CompletableFuture.supplyAsync(() -&gt;
-        "user1".equals(userId) ? Optional.of(new User(userId, "Alice"))
-                               : Optional.empty()));
-}
-
-// Workflow: user → profile → preferences
-static OptionalT&lt;CompletableFutureKind.Witness, UserPreferences&gt;
-    getFullUserPreferences(String userId) {
-
-  OptionalT&lt;CompletableFutureKind.Witness, User&gt; userOT =
-      OptionalT.fromKind(fetchUserAsync(userId));
-
-  OptionalT&lt;CompletableFutureKind.Witness, UserProfile&gt; profileOT =
-      OPTIONAL_T.narrow(optionalTFutureMonad.flatMap(
-          user -&gt; OPTIONAL_T.widen(
-              OptionalT.fromKind(fetchProfileAsync(user.id()))),
-          OPTIONAL_T.widen(userOT)));
-
-  return OPTIONAL_T.narrow(optionalTFutureMonad.flatMap(
-      profile -&gt; OPTIONAL_T.widen(
-          OptionalT.fromKind(fetchPrefsAsync(profile.userId()))),
-      OPTIONAL_T.widen(profileOT)));
-}
-</code></pre>
-<p><strong>Why this works:</strong> Each <code>flatMap</code> only executes its lambda if the previous step produced a present value. If <code>fetchUserAsync</code> returns empty, neither <code>fetchProfileAsync</code> nor <code>fetchPrefsAsync</code> are called.</p>
-</div>
-</div>
-<hr />
-<h2 id="providing-defaults-with-error-recovery"><a class="header" href="#providing-defaults-with-error-recovery">Providing Defaults with Error Recovery</a></h2>
-<div id="admonition-recovery-with-default-values" class="admonition admonish-note" role="note" aria-labelledby="admonition-recovery-with-default-values-title">
-<div class="admonition-title">
-<div id="admonition-recovery-with-default-values-title">
-<p>Recovery with Default Values</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-recovery-with-default-values"></a>
-</div>
-<div>
-<p><strong>The problem:</strong> When the preference chain returns empty, you want to provide default preferences rather than propagating the absence.</p>
-<p><strong>The solution:</strong></p>
-<pre><code class="language-java">static OptionalT&lt;CompletableFutureKind.Witness, UserPreferences&gt;
-    getPrefsWithDefault(String userId) {
-
-  OptionalT&lt;CompletableFutureKind.Witness, UserPreferences&gt; prefsAttempt =
-      getFullUserPreferences(userId);
-
-  Kind&lt;OptionalTKind.Witness&lt;CompletableFutureKind.Witness&gt;, UserPreferences&gt;
-      recovered = optionalTFutureMonad.handleErrorWith(
-          OPTIONAL_T.widen(prefsAttempt),
-          (Unit v) -&gt; {
-              UserPreferences defaultPrefs =
-                  new UserPreferences(userId, "default-light");
-              return OPTIONAL_T.widen(OptionalT.some(futureMonad, defaultPrefs));
-          });
-
-  return OPTIONAL_T.narrow(recovered);
-}
-</code></pre>
-<p>The <code>handleErrorWith</code> handler receives <code>Unit</code> (since absence carries no information) and returns an <code>OptionalT</code> containing the default preferences.</p>
 </div>
 </div>
 <hr />
@@ -587,7 +554,8 @@ static OptionalT&lt;CompletableFutureKind.Witness, UserPreferences&gt;
 <div>
 <ul>
 <li><strong>Null vs. empty confusion:</strong> <code>OptionalT.liftF</code> treats a <code>null</code> value inside <code>F&lt;A&gt;</code> as <code>Optional.empty()</code>. If you want to explicitly signal absence, use <code>OptionalT.none</code> rather than relying on null propagation.</li>
-<li><strong>Unit as error type:</strong> When using <code>handleErrorWith</code>, the handler function receives <code>Unit.INSTANCE</code>, not a descriptive error. If you need typed error information, consider <code>EitherT</code> instead.</li>
+<li><strong>Unit as error type:</strong> when using <code>handleErrorWith</code>, the handler function receives <code>Unit.INSTANCE</code>, not a descriptive error. If you need typed error information, consider <a href="eithert_transformer.html"><code>EitherT</code></a> instead.</li>
+<li><strong>Reaching for the transformer when <code>OptionalPath</code> would do:</strong> if your outer monad is one Path already wraps, <code>OptionalPath</code> is shorter, has less ceremony, and reads more naturally.</li>
 </ul>
 </div>
 </div>
@@ -601,6 +569,9 @@ static OptionalT&lt;CompletableFutureKind.Witness, UserPreferences&gt;
 </div>
 <div>
 <ul>
+<li><a href="../effect/path_optional.html">OptionalPath</a> - The Path-API equivalent, recommended for most use cases</li>
+<li><a href="archetypes.html">Stack Archetypes</a> - The Lookup Stack archetype maps to <code>OptionalT</code>/<code>MaybePath</code></li>
+<li><a href="migration_cookbook.html">Migration Cookbook</a> - Side-by-side translations</li>
 <li><a href="transformers.html">Monad Transformers</a> - General concept and choosing the right transformer</li>
 <li><a href="maybet_transformer.html">MaybeT</a> - Equivalent functionality for Higher-Kinded-J's Maybe type</li>
 <li><a href="eithert_transformer.html">EitherT</a> - When you need typed errors, not just absence</li>
@@ -622,6 +593,18 @@ static OptionalT&lt;CompletableFutureKind.Witness, UserPreferences&gt;
 </ul>
 </div>
 </div>
+<div id="admonition-hands-on-learning" class="admonition admonish-info" role="note" aria-labelledby="admonition-hands-on-learning-title">
+<div class="admonition-title">
+<div id="admonition-hands-on-learning-title">
+<p>Hands-On Learning</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-hands-on-learning"></a>
+</div>
+<div>
+<p>Practice async lookup chains in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/transformers/Tutorial02_AsyncWithAbsence.java">Tutorial 02: Async with Absence</a> (5 exercises, ~25 minutes).</p>
+</div>
+</div>
+<hr />
 <p><strong>Previous:</strong> <a href="eithert_transformer.html">EitherT</a>
 <strong>Next:</strong> <a href="maybet_transformer.html">MaybeT</a></p>
 
