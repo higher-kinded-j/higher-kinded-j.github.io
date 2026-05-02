@@ -426,16 +426,38 @@ public class UserController {
 <li><code>Right(user)</code> → HTTP 200 with JSON: <code>{"id": "1", "email": "alice@example.com", ...}</code></li>
 <li><code>Left(UserNotFoundError)</code> → HTTP 404 with JSON: <code>{"success": false, "error": {"type": "UserNotFoundError", ...}}</code></li>
 </ul>
-<h4 id="error-type-http-status-mapping"><a class="header" href="#error-type-http-status-mapping">Error Type → HTTP Status Mapping</a></h4>
-<p>The framework automatically maps error types to HTTP status codes by examining class names:</p>
+<h4 id="error-type-http-status-mapping"><a class="header" href="#error-type-http-status-mapping">Error Type to HTTP Status Mapping</a></h4>
+<p>The framework resolves the status for a <code>Left</code> error in this order:</p>
+<ol>
+<li>Explicit mapping by simple (or fully-qualified) class name from <code>hkj.web.error-status-mappings</code>.</li>
+<li>Token heuristic on the simple class name (CamelCase split, lower-cased, whole-token match).</li>
+<li>Configured default (<code>hkj.web.either.default-error-status</code>, alias <code>hkj.web.default-error-status</code>).</li>
+</ol>
+<p>Heuristic table:</p>
+<div class="table-wrapper"><table><thead><tr><th>Token(s) present in the simple class name</th><th>HTTP status</th></tr></thead><tbody>
+<tr><td><code>not</code> adjacent to <code>found</code></td><td>404</td></tr>
+<tr><td><code>validation</code> or <code>invalid</code></td><td>400</td></tr>
+<tr><td><code>authorization</code> or <code>forbidden</code></td><td>403</td></tr>
+<tr><td><code>authentication</code> or <code>unauthorized</code></td><td>401</td></tr>
+<tr><td>(no match)</td><td>configured default</td></tr>
+</tbody></table>
+</div>
 <pre><code class="language-java">public sealed interface DomainError permits
-    UserNotFoundError,      // Contains "NotFound" → 404
-    ValidationError,        // Contains "Validation" → 400
-    AuthorizationError,     // Contains "Authorization" → 403
-    AuthenticationError {}  // Contains "Authentication" → 401
-
-// Custom errors default to 400 Bad Request
+    UserNotFoundError,      // -&gt; 404 via heuristic
+    ValidationError,        // -&gt; 400 via heuristic
+    AuthorizationError,     // -&gt; 403 via heuristic
+    AuthenticationError {}  // -&gt; 401 via heuristic
 </code></pre>
+<p>For status codes outside the heuristic table (409 Conflict, 422 Unprocessable Entity, 429 Too Many Requests, 503 Service Unavailable), add explicit entries to <code>hkj.web.error-status-mappings</code>:</p>
+<pre><code class="language-yaml">hkj:
+  web:
+    error-status-mappings:
+      MfaAlreadyEnrolledError: 409
+      PaymentDeclinedError: 422
+      MfaThrottledError: 429
+      ScheduledMaintenanceError: 503
+</code></pre>
+<p>When the status depends on the error's field values (for example, <code>MfaThrottledError.retryAfter() &gt; 60</code> should produce <code>503</code> rather than <code>429</code>), register an <code>ErrorStatusCodeStrategy</code> bean. See the <a href="#http-status-codes">HTTP Status Codes</a> section below for details and the canonical end-to-end fixture.</p>
 <h4 id="composing-operations"><a class="header" href="#composing-operations">Composing Operations</a></h4>
 <pre><code class="language-java">@GetMapping("/{userId}/orders/{orderId}")
 public Either&lt;DomainError, Order&gt; getUserOrder(
@@ -650,25 +672,94 @@ public class OrderController {
 </code></pre>
 <p>All nine Effect Path handlers honour <code>@ResponseStatus</code> consistently.</p>
 <h3 id="error-status-mapping"><a class="header" href="#error-status-mapping">Error Status Mapping</a></h3>
-<p>Error responses continue to flow through <code>ErrorStatusCodeMapper</code>. Register mappings for each error type, with a configurable fallback:</p>
+<p>Every <code>Left</code> value emitted by an <code>EitherPath</code> (or raw <code>Either</code>) handler is run through an <code>ErrorStatusCodeStrategy</code> bean. The auto-configuration registers a default strategy that combines the property-table mappings with the built-in token heuristics; adopters can replace it with their own bean for field-aware decisions.</p>
+<h4 id="property-driven-mappings"><a class="header" href="#property-driven-mappings">Property-driven mappings</a></h4>
+<p>Add entries to <code>hkj.web.error-status-mappings</code> keyed by simple class name (or fully-qualified class name when two error types share a simple name across packages). These mappings take precedence over the heuristics:</p>
 <pre><code class="language-yaml">hkj:
   web:
     either:
-      default-error-status: 400  # Fallback for unmapped Left error types
+      default-error-status: 500          # Fallback for unmapped Left values
+    error-status-mappings:
+      MfaAlreadyEnrolledError: 409       # Conflict
+      PaymentDeclinedError: 422          # Unprocessable Entity
+      MfaThrottledError: 429             # Too Many Requests
+      ScheduledMaintenanceError: 503     # Service Unavailable
 </code></pre>
-<p>Tagged errors (those implementing the library's status-bearing error interface, or registered by type) produce their mapped status; everything else falls back to the default.</p>
+<h4 id="custom-strategy-bean"><a class="header" href="#custom-strategy-bean">Custom strategy bean</a></h4>
+<p>When the status depends on the error's field values, register an <code>ErrorStatusCodeStrategy</code> bean. The default is annotated <code>@ConditionalOnMissingBean</code>, so a user-defined bean replaces it without further wiring:</p>
+<pre><code class="language-java">@Bean
+ErrorStatusCodeStrategy errorStatusCodeStrategy() {
+    return (error, defaultStatus) -&gt; switch (error) {
+        case MfaThrottledError t when t.retryAfter() &gt; 60 -&gt; 503;
+        case MfaThrottledError ignored                   -&gt; 429;
+        // Fall through to property mappings + heuristics for everything else
+        default -&gt; ErrorStatusCodeMapper.determineStatusCode(error, defaultStatus);
+    };
+}
+</code></pre>
+<p>The strategy runs once per error response on the request thread (or the async completion thread for <code>CompletableFuturePath</code> and <code>VTaskPath</code>), so implementations should be thread-safe and side-effect-free.</p>
+<h4 id="response-header-injection"><a class="header" href="#response-header-injection">Response header injection</a></h4>
+<p>Error payloads can surface response headers (<code>Retry-After</code>, <code>WWW-Authenticate</code>, and similar) by implementing <code>HttpHeaderCarrier</code>:</p>
+<pre><code class="language-java">public record MfaThrottledError(int retryAfterSeconds)
+        implements DomainError, HttpHeaderCarrier {
+
+    @Override
+    public Map&lt;String, String&gt; headers() {
+        return Map.of("Retry-After", Integer.toString(retryAfterSeconds));
+    }
+}
+</code></pre>
+<p>The headers are applied by the <code>EitherPath</code>, <code>TryPath</code>, <code>ValidationPath</code>, <code>IOPath</code>, <code>CompletableFuturePath</code>, <code>VTaskPath</code>, and <code>FreePath</code> return-value handlers before the JSON body is written. Internally the headers are added (not set), so multi-valued headers such as <code>WWW-Authenticate</code>, <code>Set-Cookie</code>, and <code>Link</code> accumulate as separate header lines, matching the HTTP grammar; upstream headers set by filters or interceptors are also preserved. For collection-typed payloads (such as <code>ValidationPath</code> <code>Invalid</code> values), every element that implements <code>HttpHeaderCarrier</code> contributes; values accumulate. For single-valued headers like <code>Retry-After</code>, the carrier should ensure the value appears at most once across all payload elements.</p>
+<p><code>VStreamPath</code> does not honour <code>HttpHeaderCarrier</code>, because the response status and headers are committed before the first SSE event. Set required headers via a servlet filter or controller advice before the stream begins.</p>
+<div id="admonition-canonical-fixture" class="admonition admonish-example" role="note" aria-labelledby="admonition-canonical-fixture-title">
+<div class="admonition-title">
+<div id="admonition-canonical-fixture-title">
+<p>Canonical fixture</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-canonical-fixture"></a>
+</div>
+<div>
+<p>The example module contains a <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/example/src/main/java/org/higherkindedj/spring/example/controller/ErrorStatusFixtureController.java"><code>ErrorStatusFixtureController</code></a> and matching <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/example/src/test/java/org/higherkindedj/spring/example/ErrorStatusFixtureSliceTest.java"><code>ErrorStatusFixtureSliceTest</code></a> that exercise every heuristic, every override, and the <code>Retry-After</code> header end-to-end. Copy them as a starting point when adding new error variants.</p>
+</div>
+</div>
+<div id="admonition-known-limits" class="admonition admonish-note" role="note" aria-labelledby="admonition-known-limits-title">
+<div class="admonition-title">
+<div id="admonition-known-limits-title">
+<p>Known limits</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-known-limits"></a>
+</div>
+<div>
+<ul>
+<li>The strategy bean is process-wide. For per-request behaviour, inspect the request context inside the implementation.</li>
+<li><code>MaybePath</code> <code>Nothing</code> carries no payload, so it cannot implement <code>HttpHeaderCarrier</code>. Wrap the result in <code>EitherPath&lt;DomainError, T&gt;</code> if you need headers or per-class status.</li>
+<li><code>@ResponseStatus</code> on the handler method governs success values only; error status always comes from the strategy.</li>
+</ul>
+</div>
+</div>
 <hr />
 <h2 id="json-serialisation"><a class="header" href="#json-serialisation">JSON Serialisation</a></h2>
 <p>The starter provides flexible JSON serialisation for functional types.</p>
 <h3 id="configuration"><a class="header" href="#configuration">Configuration</a></h3>
 <p>Configure serialisation format in <code>application.yml</code>:</p>
 <pre><code class="language-yaml">hkj:
-  jackson:
+  json:
     custom-serializers-enabled: true  # Enable custom serialisers (default: true)
-    either-format: TAGGED             # TAGGED, UNWRAPPED, or DIRECT
-    validated-format: TAGGED          # TAGGED, UNWRAPPED, or DIRECT
-    maybe-format: TAGGED              # TAGGED, UNWRAPPED, or DIRECT
+    either-format: TAGGED             # TAGGED or SIMPLE
+    validated-format: TAGGED          # TAGGED or SIMPLE
+    maybe-format: TAGGED              # TAGGED or SIMPLE
 </code></pre>
+<div id="admonition-property-prefix-vs-actuator-key" class="admonition admonish-note" role="note" aria-labelledby="admonition-property-prefix-vs-actuator-key-title">
+<div class="admonition-title">
+<div id="admonition-property-prefix-vs-actuator-key-title">
+<p>Property prefix vs. actuator key</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-property-prefix-vs-actuator-key"></a>
+</div>
+<div>
+<p>The configuration prefix is <code>hkj.json.*</code>. The actuator endpoint at <code>/actuator/hkj</code> reports the same values under the <code>"jackson"</code> key for backward compatibility with earlier releases.</p>
+</div>
+</div>
 <h3 id="serialisation-formats"><a class="header" href="#serialisation-formats">Serialisation Formats</a></h3>
 <h4 id="tagged-default"><a class="header" href="#tagged-default">TAGGED (Default)</a></h4>
 <p>Wraps the value with metadata indicating success/failure:</p>
@@ -690,25 +781,9 @@ public class OrderController {
   }
 }
 </code></pre>
-<h4 id="unwrapped"><a class="header" href="#unwrapped">UNWRAPPED</a></h4>
-<p>Returns just the value or error without wrapper:</p>
-<pre><code class="language-json">// Right(user)
-{
-  "id": "1",
-  "email": "alice@example.com"
-}
-
-// Left(error)
-{
-  "type": "UserNotFoundError",
-  "userId": "999"
-}
-</code></pre>
-<h4 id="direct"><a class="header" href="#direct">DIRECT</a></h4>
-<p>Uses Either's default <code>toString()</code> representation (useful for debugging):</p>
-<pre><code class="language-json">"Right(value=User[id=1, email=alice@example.com])"
-</code></pre>
-<p>For complete serialisation details, see <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/JACKSON_SERIALIZATION.md">hkj-spring/JACKSON_SERIALIZATION.md</a>.</p>
+<h4 id="simple"><a class="header" href="#simple">SIMPLE</a></h4>
+<p>Compact form without the discriminator metadata, suitable for clients that already infer success and failure from the HTTP status code.</p>
+<p>For complete serialisation details, including the exact field names produced for each format, see <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/JACKSON_SERIALIZATION.md">hkj-spring/JACKSON_SERIALIZATION.md</a>.</p>
 <hr />
 <h2 id="configuration-1"><a class="header" href="#configuration-1">Configuration</a></h2>
 <h3 id="web-configuration"><a class="header" href="#web-configuration">Web Configuration</a></h3>
@@ -1191,7 +1266,9 @@ public class HkjWebMvcAutoConfiguration implements WebMvcConfigurer {
 <p>Supporting collaborators:</p>
 <ul>
 <li><strong><code>SuccessStatusResolver</code>:</strong> Reads <code>@ResponseStatus</code> on the handler method (with controller-class fallback and meta-annotation support) so each handler can override its default success status.</li>
-<li><strong><code>ErrorStatusCodeMapper</code>:</strong> Configurable error-type to HTTP status mapping, falling back to <code>hkj.web.either.default-error-status</code>.</li>
+<li><strong><code>ErrorStatusCodeStrategy</code>:</strong> Functional interface invoked once per error response. The default <code>DefaultErrorStatusCodeStrategy</code> consults <code>hkj.web.error-status-mappings</code> first, then falls back to <code>ErrorStatusCodeMapper</code>'s tokenised heuristics, then to <code>hkj.web.either.default-error-status</code>. Replace the bean to inject custom logic (for example, status that depends on an error's field values).</li>
+<li><strong><code>ErrorStatusCodeMapper</code>:</strong> Token-aware heuristic resolver used by the default strategy. Exposed as a static helper so custom strategies can delegate to the same logic.</li>
+<li><strong><code>HttpHeaderCarrier</code>:</strong> Mix-in interface that lets <code>Left</code>-side error payloads add response headers (<code>Retry-After</code>, <code>WWW-Authenticate</code>, and similar) to the outgoing response. Honoured by every error-bearing handler except <code>VStreamPath</code>.</li>
 </ul>
 <p>Handlers are registered automatically and integrated seamlessly with Spring's request processing lifecycle.</p>
 <h3 id="non-invasive-design"><a class="header" href="#non-invasive-design">Non-Invasive Design</a></h3>
@@ -1208,8 +1285,14 @@ public class HkjWebMvcAutoConfiguration implements WebMvcConfigurer {
 <p>Yes! The integration is non-invasive. You can use <code>EitherPath</code>, <code>ValidationPath</code>, and <code>CompletableFuturePath</code> alongside traditional <code>ResponseEntity</code> and exception-based endpoints in the same application.</p>
 <h3 id="does-this-work-with-spring-webflux"><a class="header" href="#does-this-work-with-spring-webflux">Does this work with Spring WebFlux?</a></h3>
 <p>Currently, the starter supports Spring Web MVC (servlet-based). For reactive-style streaming, use <code>VStreamPath</code> which provides SSE streaming on virtual threads without requiring WebFlux or Reactor dependencies.</p>
-<h3 id="can-i-customise-the-error--http-status-mapping"><a class="header" href="#can-i-customise-the-error--http-status-mapping">Can I customise the error → HTTP status mapping?</a></h3>
-<p>Yes. Implement a custom return value handler or use the configuration properties to set default status codes. See <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/CONFIGURATION.md">CONFIGURATION.md</a> for details.</p>
+<h3 id="can-i-customise-the-error-to-http-status-mapping"><a class="header" href="#can-i-customise-the-error-to-http-status-mapping">Can I customise the error to HTTP status mapping?</a></h3>
+<p>Yes, three layers of customisation are available, each more powerful than the last:</p>
+<ol>
+<li><strong>Property-table mappings</strong> in <code>application.yml</code> for static, class-keyed overrides (<code>hkj.web.error-status-mappings.MfaThrottledError: 429</code>). This covers the majority of cases including the status codes the heuristic table does not produce (409, 422, 429, 503).</li>
+<li><strong>Custom <code>ErrorStatusCodeStrategy</code> bean</strong> when the status depends on the error's field values, the request, or any runtime signal. Declare the bean in any <code>@Configuration</code> class; the default is annotated <code>@ConditionalOnMissingBean</code> and steps aside automatically.</li>
+<li><strong><code>HttpHeaderCarrier</code> mix-in</strong> on the error type itself for surfacing response headers like <code>Retry-After</code> alongside the status code.</li>
+</ol>
+<p>See <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/CONFIGURATION.md">CONFIGURATION.md</a> for the full reference and known limitations.</p>
 <h3 id="how-does-performance-compare-to-exceptions"><a class="header" href="#how-does-performance-compare-to-exceptions">How does performance compare to exceptions?</a></h3>
 <p>Functional error handling is generally faster than exception-throwing for expected error cases, as it avoids stack trace generation and exception propagation overhead. For success cases, performance is equivalent.</p>
 <h3 id="can-i-use-this-with-spring-data-repositories"><a class="header" href="#can-i-use-this-with-spring-data-repositories">Can I use this with Spring Data repositories?</a></h3>
