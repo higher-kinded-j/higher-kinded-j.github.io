@@ -268,23 +268,23 @@
 <h1 id="monaderror-handling-errors-gracefully"><a class="header" href="#monaderror-handling-errors-gracefully">MonadError: Handling Errors Gracefully</a></h1>
 <blockquote>
 <p><em>"The test of a first-rate intelligence is the ability to hold two opposed ideas in mind at the same time."</em></p>
-<p>-- F. Scott Fitzgerald, <em>The Crack-Up</em></p>
+<p>– F. Scott Fitzgerald, <em>The Crack-Up</em></p>
 </blockquote>
-<p>A resilient workflow must hold two paths in mind simultaneously: the path where everything succeeds, and the path where things go wrong. <code>MonadError</code> gives you the tools to express both cleanly.</p>
-<div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
+<p>A resilient workflow holds two paths in mind simultaneously: the path where everything succeeds, and the path where things go wrong. <code>MonadError</code> is the type class that lets us spell both cleanly, in the same code, without sliding into nested try/catch.</p>
+<div id="admonition-what-well-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-well-learn-title">
 <div class="admonition-title">
-<div id="admonition-what-youll-learn-title">
-<p>What You'll Learn</p>
+<div id="admonition-what-well-learn-title">
+<p>What We'll Learn</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-what-youll-learn"></a>
+<a class="admonition-anchor-link" href="#admonition-what-well-learn"></a>
 </div>
 <div>
 <ul>
-<li>How MonadError extends Monad with explicit error handling capabilities</li>
-<li>Using <code>raiseError</code> to create failed computations</li>
-<li>Recovering from errors with <code>handleErrorWith</code> and <code>handleError</code></li>
-<li>Building multi-step workflows with typed errors and layered recovery</li>
-<li>Writing generic, resilient code that works with any error-capable monad</li>
+<li>How <code>MonadError</code> extends <code>Monad</code> with a typed notion of failure</li>
+<li>Using <code>raiseError</code> to construct a failed computation declaratively</li>
+<li>Recovering with <code>handleErrorWith</code> (effect-level) and <code>handleError</code> (value-level)</li>
+<li>Chaining recovery so each fallback only fires when the previous one fails</li>
+<li>Where <code>MonadError</code> shows up inside the Foundations one-liner</li>
 </ul>
 </div>
 </div>
@@ -299,68 +299,66 @@
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial05_MonadErrorHandling.java">Tutorial05_MonadErrorHandling.java</a></p>
 </div>
 </div>
-<h2 id="the-problem-scattered-try-catch-blocks"><a class="header" href="#the-problem-scattered-try-catch-blocks">The Problem: Scattered Try-Catch Blocks</a></h2>
-<p>Consider a configuration loading workflow: parse a file, validate settings, then connect to a database. Each step can fail with a meaningful error, and you want to handle each failure differently. With imperative Java, you end up with scattered, nested try-catch blocks:</p>
-<pre><code class="language-java">// Imperative error handling: scattered and hard to compose
-try {
+<h2 id="the-problem-scattered-try-catch"><a class="header" href="#the-problem-scattered-try-catch">The Problem: Scattered Try-Catch</a></h2>
+<p>A configuration loader parses a file, validates the parsed settings, then opens a database connection. Each step can fail with a meaningful error, and we want different recovery for each. In imperative Java, we end up with nested try/catch:</p>
+<pre><code class="language-java">try {
     Config config = parseConfigFile(path);
     try {
         Settings settings = validateSettings(config);
         try {
-            Connection conn = connectToDatabase(settings);
-            return conn;
+            return connectToDatabase(settings);
         } catch (DbException e) {
-            return connectToFallbackDb(settings); // recovery
+            return connectToFallbackDb(settings);
         }
     } catch (ValidationException e) {
         log.error("Bad config: " + e.getMessage());
-        throw e; // no recovery possible
+        throw e;
     }
 } catch (ParseException e) {
-    return loadDefaultConfig(); // fallback to defaults
+    return loadDefaultConfig();
 }
 </code></pre>
-<p>The error handling logic is tangled with the business logic. Recovery strategies are buried inside catch blocks. And composing or reusing this code is painful.</p>
+<p>Three levels of nesting, three different recovery rules, and the business logic is sandwiched between them. Reordering the steps means re-arranging the pyramid. Adding a fourth step means adding a fourth level. Reading the code top to bottom does not tell us what the workflow <em>does</em>; it tells us how the author chose to indent.</p>
 <hr />
 <h2 id="the-solution-raiseerror-and-handleerrorwith"><a class="header" href="#the-solution-raiseerror-and-handleerrorwith">The Solution: <code>raiseError</code> and <code>handleErrorWith</code></a></h2>
-<p><strong><code>MonadError</code></strong> extends <code>Monad</code> with two fundamental operations that formalise the "try-catch" pattern in a purely functional way:</p>
+<p><code>MonadError</code> extends <code>Monad</code> with two operations that turn try/catch inside out.</p>
 <ol>
-<li><strong><code>raiseError(E error)</code></strong> -- Constructs a failed computation by lifting an error into the monadic context.</li>
-<li><strong><code>handleErrorWith(fa, handler)</code></strong> -- Inspects a potential failure and provides a fallback computation.</li>
+<li><strong><code>raiseError(E error)</code></strong> constructs a failed computation by lifting an error into the monadic context.</li>
+<li><strong><code>handleErrorWith(fa, handler)</code></strong> inspects a failure and provides a fallback computation.</li>
 </ol>
-<pre><code>  raiseError("config not found")
-       |
-       v
-  Kind&lt;F, A&gt; = Left("config not found")
-       |
-       +-- handleErrorWith --&gt; recovery function --&gt; Kind&lt;F, A&gt; = Right(defaults)
-       |
-       +-- (if no handler) --&gt; propagates as Left("config not found")
+<pre><code>   raiseError("config not found")
+        │
+        ▼
+   Kind&lt;F, A&gt;  =  Left("config not found")
+        │
+        ├── handleErrorWith ──&gt; recovery function ──&gt; Kind&lt;F, A&gt; = Right(defaults)
+        │
+        └── (no handler)     ──&gt; propagates as Left("config not found")
 </code></pre>
-<p>Here is the same configuration workflow, rewritten with <code>MonadError</code> using <code>Either&lt;String, A&gt;</code>:</p>
+<p>The same workflow, rebuilt with <code>MonadError</code> over <code>Either&lt;String, A&gt;</code>:</p>
 <pre><code class="language-java">import org.higherkindedj.hkt.Kind;
 import org.higherkindedj.hkt.either.Either;
+import org.higherkindedj.hkt.either.EitherKind;
 import org.higherkindedj.hkt.either.EitherMonad;
 import static org.higherkindedj.hkt.either.EitherKindHelper.EITHER;
 
-MonadError&lt;Either.Witness&lt;String&gt;, String&gt; me = EitherMonad.instance();
+MonadError&lt;EitherKind.Witness&lt;String&gt;, String&gt; me = EitherMonad.instance();
 
-// Each step returns Either&lt;String, T&gt;, using raiseError for failures
-public Kind&lt;Either.Witness&lt;String&gt;, Config&gt; parseConfig(String path) {
+public Kind&lt;EitherKind.Witness&lt;String&gt;, Config&gt; parseConfig(String path) {
     if (!Files.exists(Path.of(path))) {
         return me.raiseError("Config file not found: " + path);
     }
     return me.of(Config.parse(path));
 }
 
-public Kind&lt;Either.Witness&lt;String&gt;, Settings&gt; validate(Config config) {
+public Kind&lt;EitherKind.Witness&lt;String&gt;, Settings&gt; validate(Config config) {
     if (config.dbHost().isBlank()) {
         return me.raiseError("Missing required setting: db.host");
     }
     return me.of(Settings.from(config));
 }
 
-public Kind&lt;Either.Witness&lt;String&gt;, Connection&gt; connect(Settings settings) {
+public Kind&lt;EitherKind.Witness&lt;String&gt;, Connection&gt; connect(Settings settings) {
     if (!settings.isReachable()) {
         return me.raiseError("Cannot reach database: " + settings.dbHost());
     }
@@ -368,25 +366,24 @@ public Kind&lt;Either.Witness&lt;String&gt;, Connection&gt; connect(Settings set
 }
 
 // Compose the workflow with flatMap, then layer recovery on top
-Kind&lt;Either.Witness&lt;String&gt;, Connection&gt; workflow =
+Kind&lt;EitherKind.Witness&lt;String&gt;, Connection&gt; workflow =
     me.flatMap(config -&gt;
         me.flatMap(settings -&gt;
             connect(settings),
-            validate(config)),
-        parseConfig("/etc/app.conf"));
+        validate(config)),
+    parseConfig("/etc/app.conf"));
 
 // Recover from connection failures by trying a fallback database
-Kind&lt;Either.Witness&lt;String&gt;, Connection&gt; resilient = me.handleErrorWith(
+Kind&lt;EitherKind.Witness&lt;String&gt;, Connection&gt; resilient = me.handleErrorWith(
     workflow,
     error -&gt; {
         if (error.startsWith("Cannot reach database")) {
             return connect(Settings.fallback());
         }
-        return me.raiseError(error); // re-raise other errors
-    }
-);
+        return me.raiseError(error);
+    });
 </code></pre>
-<p>The business logic reads top-to-bottom. Recovery strategies are layered on separately, and the whole thing composes cleanly.</p>
+<p>The business logic reads top to bottom. Recovery is a separate layer applied at the end. Re-ordering steps means re-ordering <code>flatMap</code> calls; adding a step means adding a <code>flatMap</code> call. The shape of the code matches the shape of the problem.</p>
 <hr />
 <div id="admonition-interface-signature" class="admonition admonish-note" role="note" aria-labelledby="admonition-interface-signature-title">
 <div class="admonition-title">
@@ -399,16 +396,16 @@ Kind&lt;Either.Witness&lt;String&gt;, Connection&gt; resilient = me.handleErrorW
 <pre><code class="language-java">@NullMarked
 public interface MonadError&lt;F extends WitnessArity&lt;TypeArity.Unary&gt;, E&gt; extends Monad&lt;F&gt; {
 
-  &lt;A&gt; @NonNull Kind&lt;F, A&gt; raiseError(@Nullable final E error);
+  &lt;A&gt; @NonNull Kind&lt;F, A&gt; raiseError(@Nullable E error);
 
   &lt;A&gt; @NonNull Kind&lt;F, A&gt; handleErrorWith(
-      final Kind&lt;F, A&gt; ma,
-      final Function&lt;? super E, ? extends Kind&lt;F, A&gt;&gt; handler);
+      Kind&lt;F, A&gt; ma,
+      Function&lt;? super E, ? extends Kind&lt;F, A&gt;&gt; handler);
 
-  // Value-level recovery (unwraps the error into a plain value)
+  // Value-level recovery; the handler returns a plain A which is auto-lifted
   default &lt;A&gt; @NonNull Kind&lt;F, A&gt; handleError(
-      final Kind&lt;F, A&gt; ma,
-      final Function&lt;? super E, ? extends A&gt; handler) {
+      Kind&lt;F, A&gt; ma,
+      Function&lt;? super E, ? extends A&gt; handler) {
     return handleErrorWith(ma, error -&gt; of(handler.apply(error)));
   }
 }
@@ -418,48 +415,72 @@ public interface MonadError&lt;F extends WitnessArity&lt;TypeArity.Unary&gt;, E&
 <hr />
 <h2 id="recovery-patterns"><a class="header" href="#recovery-patterns">Recovery Patterns</a></h2>
 <h3 id="value-level-recovery-with-handleerror"><a class="header" href="#value-level-recovery-with-handleerror">Value-Level Recovery with <code>handleError</code></a></h3>
-<p><strong>The problem:</strong> An operation might fail, but you have a sensible default value.</p>
-<p><strong>The solution:</strong> <code>handleError</code> unwraps the error and maps it to a plain value, automatically lifting the result back into the monadic context.</p>
-<pre><code class="language-java">MonadError&lt;Either.Witness&lt;String&gt;, String&gt; me = EitherMonad.instance();
+<p><strong>The problem.</strong> An operation might fail, and we have a sensible default value sitting in plain Java.</p>
+<p><strong>The solution.</strong> <code>handleError</code> takes a function <code>E -&gt; A</code> and lifts the result back into the monad for us.</p>
+<pre><code class="language-java">MonadError&lt;EitherKind.Witness&lt;String&gt;, String&gt; me = EitherMonad.instance();
 
-Kind&lt;Either.Witness&lt;String&gt;, Integer&gt; safeDivide(int a, int b) {
+Kind&lt;EitherKind.Witness&lt;String&gt;, Integer&gt; safeDivide(int a, int b) {
     return b == 0
         ? me.raiseError("Cannot divide by zero")
         : me.of(a / b);
 }
 
-// Value-level recovery: error -&gt; default value
-Kind&lt;Either.Witness&lt;String&gt;, Integer&gt; result = me.handleError(
+Kind&lt;EitherKind.Witness&lt;String&gt;, Integer&gt; result = me.handleError(
     safeDivide(10, 0),
-    error -&gt; 0  // plain value, not wrapped in Either
-);
-// Result: Right(0)
+    error -&gt; 0);
+// Right(0)
 </code></pre>
 <h3 id="effect-level-recovery-with-handleerrorwith"><a class="header" href="#effect-level-recovery-with-handleerrorwith">Effect-Level Recovery with <code>handleErrorWith</code></a></h3>
-<p><strong>The problem:</strong> Recovery itself might fail (e.g., trying a fallback service that could also be unavailable).</p>
-<p><strong>The solution:</strong> <code>handleErrorWith</code> lets the recovery function return a new monadic value, which can be either a success or another failure.</p>
-<pre><code class="language-java">// Effect-level recovery: error -&gt; new monadic computation
-Kind&lt;Either.Witness&lt;String&gt;, Integer&gt; result = me.handleErrorWith(
+<p><strong>The problem.</strong> Recovery itself might fail. Falling back to a secondary database is no good if that database is also down.</p>
+<p><strong>The solution.</strong> <code>handleErrorWith</code> takes <code>E -&gt; Kind&lt;F, A&gt;</code>. The recovery function can return a success, another failure, or whatever the type allows.</p>
+<pre><code class="language-java">Kind&lt;EitherKind.Witness&lt;String&gt;, Integer&gt; result = me.handleErrorWith(
     safeDivide(10, 0),
     error -&gt; {
         log.warn("Division failed: " + error + ", trying alternative");
-        return safeDivide(10, 2); // fallback computation that could also fail
-    }
-);
-// Result: Right(5)
+        return safeDivide(10, 2);
+    });
+// Right(5)
 </code></pre>
 <h3 id="chained-recovery"><a class="header" href="#chained-recovery">Chained Recovery</a></h3>
-<p><strong>The problem:</strong> You have multiple fallback strategies, each of which might fail.</p>
-<p><strong>The solution:</strong> Chain <code>handleErrorWith</code> calls to try each fallback in order.</p>
-<pre><code class="language-java">Kind&lt;Either.Witness&lt;String&gt;, Config&gt; config =
+<p><strong>The problem.</strong> Several fallbacks, each able to fail.</p>
+<p><strong>The solution.</strong> Stack <code>handleErrorWith</code> calls. Each layer only triggers when the previous one is still failing.</p>
+<pre><code class="language-java">Kind&lt;EitherKind.Witness&lt;String&gt;, Config&gt; config =
     me.handleErrorWith(
         me.handleErrorWith(
             loadConfigFromFile(),
-            err1 -&gt; loadConfigFromEnv()),
-        err2 -&gt; me.of(Config.defaults())
-    );
-// Tries file first, then environment, then defaults
+            e -&gt; loadConfigFromEnv()),
+        e -&gt; me.of(Config.defaults()));
+// File first, then environment, then defaults
 </code></pre>
+<p>For longer fallback chains, <a href="../effect/path_either.html">Effect Path's <code>recoverWith</code></a> reads more naturally; the same logic, less ceremony.</p>
+<hr />
+<h2 id="back-to-the-one-liner"><a class="header" href="#back-to-the-one-liner">Back to the One-Liner</a></h2>
+<p>In the line we keep returning to:</p>
+<pre><code class="language-java">repo.find(id)
+    .toEitherPath()                  // &lt;-- raiseError equivalent: absence becomes a typed Left
+    .focus().attributes().at(key)
+    .modify(spec::validateAndCoerce)
+    .flatMap(repo::save);
+</code></pre>
+<p><code>.toEitherPath()</code> is the user-facing surface of <code>raiseError</code> for the absence case: a missing record becomes a typed <code>Left</code> carrying the not-found story. Anywhere downstream we wanted to recover, <code>handleErrorWith</code> (or its Effect Path sibling <code>recoverWith</code>) is the door we would walk through. We did not need either in this line because the contract of the service method is "fail loudly to the caller", but the moment we want a per-error recovery rule, <code>MonadError</code> is the layer that hosts it.</p>
+<hr />
+<h2 id="things-people-get-wrong"><a class="header" href="#things-people-get-wrong">Things People Get Wrong</a></h2>
+<div id="admonition-common-misunderstandings" class="admonition admonish-warning" role="note" aria-labelledby="admonition-common-misunderstandings-title">
+<div class="admonition-title">
+<div id="admonition-common-misunderstandings-title">
+<p>Common Misunderstandings</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-common-misunderstandings"></a>
+</div>
+<div>
+<ul>
+<li><strong>"<code>raiseError</code> throws an exception."</strong> It does not. It constructs a value of <code>Kind&lt;F, A&gt;</code> that <em>represents</em> failure. Nothing is thrown, and the rest of the chain politely skips itself. The thrown-exception equivalent is <code>IO.delay(() -&gt; { throw ...; })</code>, and even that does not throw until interpretation.</li>
+<li><strong>"<code>handleErrorWith</code> and a try/catch are the same."</strong> Mechanically similar, semantically different. A try/catch is wired to call-stack unwinding; <code>handleErrorWith</code> is just a function call that runs on a value. The latter composes; the former does not.</li>
+<li><strong>"I have to use <code>Either</code>."</strong> Any <code>MonadError</code> instance works: <code>Try</code>, <code>Validated</code> (in its Monad shape), <code>CompletableFutureMonad</code>, <code>IOMonad</code>, the <code>*Path</code> types. Pick the error type that fits the domain; the recovery story is the same.</li>
+<li><strong>"Recovery is for the end of the chain."</strong> It can be anywhere. Layering <code>handleErrorWith</code> between two <code>flatMap</code> calls is the way we say "if step three fails, try step three again with a different argument before continuing".</li>
+</ul>
+</div>
+</div>
 <hr />
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
@@ -470,11 +491,11 @@ Kind&lt;Either.Witness&lt;String&gt;, Integer&gt; result = me.handleErrorWith(
 </div>
 <div>
 <ul>
-<li><strong><code>raiseError</code></strong> creates a failed computation declaratively, without throwing exceptions</li>
-<li><strong><code>handleErrorWith</code></strong> provides effect-level recovery where the fallback can itself fail</li>
-<li><strong><code>handleError</code></strong> provides value-level recovery with a plain default value</li>
-<li><strong>Recovery composes</strong> by chaining handlers; each layer catches what the previous one missed</li>
-<li><strong>Generic code</strong> written against <code>MonadError&lt;F, E&gt;</code> works with <code>Either</code>, <code>Try</code>, or any error-capable monad</li>
+<li><code>raiseError</code> creates a failed computation declaratively, with no thrown exception</li>
+<li><code>handleErrorWith</code> is effect-level recovery; the handler can itself succeed or fail</li>
+<li><code>handleError</code> is value-level recovery; the handler returns a plain value that is auto-lifted</li>
+<li>Recovery composes by stacking; each layer only fires when the previous one is still failing</li>
+<li>Code written against <code>MonadError&lt;F, E&gt;</code> works with <code>Either</code>, <code>Try</code>, <code>Validated</code>, <code>IO</code>, or any other error-capable monad</li>
 </ul>
 </div>
 </div>
@@ -490,6 +511,7 @@ Kind&lt;Either.Witness&lt;String&gt;, Integer&gt; result = me.handleErrorWith(
 <li><a href="monad.html">Monad</a> - The base type class that MonadError extends</li>
 <li><a href="../monads/either_monad.html">Either</a> - The most common MonadError instance for typed errors</li>
 <li><a href="../monads/try_monad.html">Try</a> - MonadError specialised for <code>Throwable</code> errors</li>
+<li><a href="../hkts/one_line_six_layers.html">One Line, Six Layers</a> - Where this fits in the wider Foundations picture</li>
 </ul>
 </div>
 </div>
@@ -502,7 +524,7 @@ Kind&lt;Either.Witness&lt;String&gt;, Integer&gt; result = me.handleErrorWith(
 </div>
 <div>
 <ul>
-<li><strong>Baeldung</strong>: <a href="https://www.baeldung.com/java-functional-programming">Functional Error Handling in Java</a> - Practical guide to functional patterns in Java</li>
+<li><strong>Baeldung</strong>: <a href="https://www.baeldung.com/java-functional-programming">Functional Programming in Java</a> - Practical guide to functional patterns in Java</li>
 <li><strong>Mark Seemann</strong>: <a href="https://blog.ploeh.dk/2019/01/07/either-bifunctor/">An Either Functor</a> - Step-by-step introduction to Either as a functional error-handling tool</li>
 </ul>
 </div>

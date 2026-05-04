@@ -337,10 +337,12 @@ validateName("")  --&gt; Invalid         validateName("")  --&gt; Invalid("Name 
 </div>
 </div>
 <h2 id="core-components"><a class="header" href="#core-components">Core Components</a></h2>
-<p><strong>Validated Type</strong> — <code>Valid(value)</code> or <code>Invalid(error)</code>:</p>
-<p><img src="../images/puml/validated_type.svg" alt="validated_type.svg" /></p>
-<p><strong>Monadic Structure</strong> — <code>ValidatedMonad&lt;E&gt;</code> enables monadic operations on <code>ValidatedKind.Witness&lt;E&gt;</code>:</p>
-<p><img src="../images/puml/validated_monad.svg" alt="validated_monad.svg" /></p>
+<pre><code class="language-java">public sealed interface Validated&lt;E, A&gt; permits Valid, Invalid { ... }
+
+record Valid&lt;E, A&gt;(A value)   implements Validated&lt;E, A&gt; { ... }
+record Invalid&lt;E, A&gt;(E error) implements Validated&lt;E, A&gt; { ... }
+</code></pre>
+<p><code>Valid</code> and <code>Invalid</code> look like <code>Right</code> and <code>Left</code>, and at the <code>Monad</code> level they behave the same way (fail-fast). The difference shows up in the <code>Applicative</code> instance, where <code>Invalid</code> accumulates rather than short-circuits.</p>
 <div class="table-wrapper"><table><thead><tr><th>Component</th><th>Role</th></tr></thead><tbody>
 <tr><td><code>Validated&lt;E, A&gt;</code></td><td><code>Valid(value)</code> or <code>Invalid(error)</code> — like Either but validation-focused</td></tr>
 <tr><td><code>ValidatedKind&lt;E, A&gt;</code> / <code>ValidatedKindHelper</code></td><td>HKT bridge: <code>widen()</code>, <code>narrow()</code>, <code>valid()</code>, <code>invalid()</code></td></tr>
@@ -373,7 +375,7 @@ validateName("")  --&gt; Invalid         validateName("")  --&gt; Invalid("Name 
 </div>
 <div>
 <p>Each validator is an independent function that returns <code>Validated&lt;List&lt;String&gt;, T&gt;</code>:</p>
-<pre><code class="language-java">ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = ValidatedMonad.instance();
+<pre><code class="language-java">ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = ValidatedMonad.instance(Semigroups.list());
 
 static Validated&lt;List&lt;String&gt;, String&gt; validateName(String name) {
     return (name == null || name.isBlank())
@@ -523,6 +525,18 @@ Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, Integer&gt; stillOk =
 <p>Many real-world forms mix both: independent field validations (accumulate), followed by cross-field checks (fail-fast).</p>
 </div>
 </div>
+<hr />
+<h2 id="back-to-the-one-liner"><a class="header" href="#back-to-the-one-liner">Back to the One-Liner</a></h2>
+<p>The Foundations one-liner uses <code>EitherPath</code> because it is fail-fast by design: a save endpoint either succeeds or surfaces the first reason it could not. The variant we reach for when the request is "validate every field and tell me about every problem in one go" is <code>Validated</code>:</p>
+<pre><code class="language-java">applicative.map3(
+        VALIDATED.widen(validateName(input.name())),
+        VALIDATED.widen(validateEmail(input.email())),
+        VALIDATED.widen(validatePassword(input.password())),
+        UserDetails::new)
+    .flatMap(repo::save);
+</code></pre>
+<p>The shape is the same as the one-liner; only the container changes. <code>Validated</code>'s <code>Applicative</code> accumulates errors through a <code>Semigroup</code>, where <code>EitherPath</code>'s <code>Monad</code> short-circuits at the first <code>Left</code>. Two abstractions, one mechanical decision: do we want fail-fast or fail-slow?</p>
+<p>See <a href="../hkts/one_line_six_layers.html">One Line, Six Layers</a> for the wider picture and <a href="../functional/applicative.html">Applicative</a> for why <code>Validated</code> and <code>Either</code> deliberately disagree at the type-class level.</p>
 <h2 id="when-to-use-validated"><a class="header" href="#when-to-use-validated">When to Use Validated</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Use</th></tr></thead><tbody>
 <tr><td>Form/input validation — want ALL errors at once</td><td><code>Validated</code> with <code>ap</code> + <code>Semigroup</code></td></tr>

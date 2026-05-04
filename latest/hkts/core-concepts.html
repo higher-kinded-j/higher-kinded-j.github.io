@@ -342,14 +342,57 @@ final class Witness implements WitnessArity&lt;TypeArity.Binary&gt; {}
 </ul>
 </li>
 <li><strong><code>A</code> (Type Argument):</strong> The concrete type contained within or parametrised by the constructor (e.g., <code>Integer</code> in <code>List&lt;Integer&gt;</code>).</li>
-<li><strong>How it Works:</strong> The library provides a seamless bridge between a standard java type, like a <code>java.util.List&lt;Integer&gt;</code>and its <code>Kind</code> representation <code>Kind&lt;ListKind.Witness, Integer&gt;</code>. Instead of requiring you to manually wrap objects, this conversion is handled by static helper methods, typically <code>widen</code> and <code>narrow</code>.
+<li><strong>How it Works:</strong> The library provides a seamless bridge between a standard java type, like a <code>java.util.List&lt;Integer&gt;</code>and its <code>Kind</code> representation <code>Kind&lt;ListKind.Witness, Integer&gt;</code>. Instead of requiring us to manually wrap objects, this conversion is handled by static helper methods, typically <code>widen</code> and <code>narrow</code>.
 <ul>
-<li>To treat a <code>List&lt;Integer&gt;</code> as a <code>Kind</code>, you use a helper function like <code>LIST.widen()</code>.</li>
+<li>To treat a <code>List&lt;Integer&gt;</code> as a <code>Kind</code>, we use a helper function like <code>LIST.widen()</code>.</li>
 <li>This <code>Kind</code> object can then be passed to generic functions (such as <code>map</code> or <code>flatMap</code> from a <code>Functor</code> or <code>Monad</code> instance) that expect <code>Kind&lt;F, A&gt;</code>.</li>
 </ul>
 </li>
 <li><strong>Reference:</strong> <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-api/src/main/java/org/higherkindedj/hkt/Kind.java"><code>Kind.java</code></a></li>
 </ul>
+<h3 id="one-round-trip-step-by-step"><a class="header" href="#one-round-trip-step-by-step">One Round-Trip, Step by Step</a></h3>
+<p>The diagram below traces a single <code>flatMap</code> call from user code, through <code>widen</code>, into the type-class instance, and back out via <code>narrow</code>. It is the runtime picture that the rest of this section describes in prose.</p>
+<pre><code>   user code                helper                  type-class instance        underlying type
+
+   Either.right(10)
+        │
+        ▼
+   EITHER.widen(start)  ──▶  null check
+                              │
+                              │ (Either&lt;L,R&gt; already implements EitherKind&lt;L,R&gt;)
+                              │
+                              ▼
+                          typed cast (zero allocation)
+        │
+        ▼
+   Kind&lt;EitherKind.Witness&lt;String&gt;, Integer&gt;
+        │
+        ▼
+   monad.flatMap(f, kind) ──────────────────▶  EitherMonad.flatMap
+                                                    │
+                                                    │ EITHER.narrow(kind)
+                                                    │     │
+                                                    │     ▼
+                                                    │  Either&lt;String, Integer&gt;
+                                                    │
+                                                    │ either.flatMap(f) ──────▶ apply f to Right(10)
+                                                    │                          │
+                                                    │                          ▼
+                                                    │                       new Kind from f
+                                                    ◀──────────────────────
+        │
+        ▼
+   Kind&lt;EitherKind.Witness&lt;String&gt;, String&gt;
+        │
+        ▼
+   EITHER.narrow(result) ──▶  null check
+                              │
+                              │ instanceof Either, cast
+                              │
+                              ▼
+   Either&lt;String, String&gt;      (Right("v=10"))
+</code></pre>
+<p>For a deeper, line-by-line walk-through with allocation costs, see <a href="lifting_the_hood.html">Lifting the Hood</a>.</p>
 <div id="admonition-tip" class="admonition admonish-tip" role="note" aria-labelledby="admonition-tip-title">
 <div class="admonition-title">
 <div id="admonition-tip-title">
@@ -404,7 +447,7 @@ final class Witness implements WitnessArity&lt;TypeArity.Binary&gt; {}
 </li>
 </ul>
 <h2 id="4-defunctionalisation-per-type-constructor"><a class="header" href="#4-defunctionalisation-per-type-constructor">4. Defunctionalisation (Per Type Constructor)</a></h2>
-<p>For each Java type constructor (like <code>List</code>, <code>Optional</code>, <code>IO</code>) you want to simulate as a Higher-Kinded Type, a specific pattern involving several components is used. The exact implementation differs slightly depending on whether the type is defined <em>within</em> the Higher-Kinded-J library (e.g., <code>Id</code>, <code>Maybe</code>, <code>IO</code>, monad transformers) or if it's an <em>external type</em> (e.g., <code>java.util.List</code>, <code>java.util.Optional</code>, <code>java.util.concurrent.CompletableFuture</code>).</p>
+<p>For each Java type constructor (like <code>List</code>, <code>Optional</code>, <code>IO</code>) we want to simulate as a Higher-Kinded Type, a specific pattern involving several components is used. The exact implementation differs slightly depending on whether the type is defined <em>within</em> the Higher-Kinded-J library (e.g., <code>Id</code>, <code>Maybe</code>, <code>IO</code>, monad transformers) or if it's an <em>external type</em> (e.g., <code>java.util.List</code>, <code>java.util.Optional</code>, <code>java.util.concurrent.CompletableFuture</code>).</p>
 <p><strong>Common Components:</strong></p>
 <ul>
 <li>
@@ -451,7 +494,7 @@ final class Witness implements WitnessArity&lt;TypeArity.Binary&gt; {}
 </ul>
 </li>
 </ul>
-<p>This distinction is important for understanding how <code>wrap</code> and <code>unwrap</code> function for different types. However, from the perspective of a user of a type class instance (like <code>OptionalMonad</code>), the interaction remains consistent: you provide a <code>Kind</code> object, and the type class instance handles the necessary operations.</p>
+<p>This distinction is important for understanding how <code>wrap</code> and <code>unwrap</code> function for different types. However, from the perspective of a user of a type class instance (like <code>OptionalMonad</code>), the interaction remains consistent: we provide a <code>Kind</code> object, and the type class instance handles the necessary operations.</p>
 <h2 id="5-the-unit-type"><a class="header" href="#5-the-unit-type">5. The <code>Unit</code> Type</a></h2>
 <p>In functional programming, it's common to have computations or functions that perform an action (often a side effect) but do not produce a specific, meaningful result value. In Java, methods that don't return a value use the <code>void</code> keyword. However, <code>void</code> is not a first-class type and cannot be used as a generic type parameter <code>A</code> in <code>Kind&lt;F, A&gt;</code>.</p>
 <p>Higher-Kinded-J provides the <code>org.higherkindedj.hkt.Unit</code> type to address this.</p>

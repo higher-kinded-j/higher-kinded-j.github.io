@@ -265,31 +265,32 @@
 }
 
 </style>
-<h1 id="foldable--traverse-reducing-a-structure-to-a-summary"><a class="header" href="#foldable--traverse-reducing-a-structure-to-a-summary">Foldable &amp; Traverse: Reducing a Structure to a Summary</a></h1>
+<h1 id="foldable--traverse-reducing-and-reshaping-structures"><a class="header" href="#foldable--traverse-reducing-and-reshaping-structures">Foldable &amp; Traverse: Reducing and Reshaping Structures</a></h1>
 <blockquote>
 <p><em>"Simplicity is the ultimate sophistication."</em></p>
-<p>-- Leonardo da Vinci</p>
+<p>– Leonardo da Vinci</p>
 </blockquote>
-<div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
+<div id="admonition-what-well-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-well-learn-title">
 <div class="admonition-title">
-<div id="admonition-what-youll-learn-title">
-<p>What You'll Learn</p>
+<div id="admonition-what-well-learn-title">
+<p>What We'll Learn</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-what-youll-learn"></a>
+<a class="admonition-anchor-link" href="#admonition-what-well-learn"></a>
 </div>
 <div>
 <ul>
-<li>How to reduce any data structure to a summary value using <code>foldMap</code></li>
-<li>The power of swapping Monoids to get different aggregations from the same data</li>
-<li>Turning effects "inside-out" with <code>traverse</code> operations</li>
-<li>Validating entire collections and collecting all errors at once</li>
-<li>The relationship between <code>sequence</code> and <code>traverse</code> for effectful operations</li>
+<li>How <code>foldMap</code> reduces any data structure to a single summary value</li>
+<li>Why swapping the <code>Monoid</code> is the trick that makes one fold do many jobs</li>
+<li>How <code>traverse</code> turns a structure of effects inside out</li>
+<li>Why <code>traverse</code> plus <code>Validated</code> is the cleanest way to validate an entire collection</li>
+<li>The difference between <code>traverse</code> and <code>sequenceA</code>, and when each one fits</li>
 </ul>
 </div>
 </div>
 <h2 id="foldable-one-structure-many-summaries"><a class="header" href="#foldable-one-structure-many-summaries">Foldable: One Structure, Many Summaries</a></h2>
-<p>The <strong><code>Foldable</code></strong> type class represents one of the most common and powerful patterns in functional programming: <strong>reducing a data structure to a single summary value</strong>. If you've ever calculated the sum of a list of numbers or concatenated a list of strings, you've performed a fold.</p>
-<p><code>Foldable</code> abstracts this pattern, allowing you to write generic code that can aggregate any data structure that knows how to be folded. The key insight is that by swapping the <code>Monoid</code>, you get completely different summaries from the same data.</p>
+<p>The <code>Foldable</code> type class names something every Java developer has done a hundred times: walk a structure, build up an answer.</p>
+<p>Sum a list. Concatenate strings. Check whether every element passes a predicate. The walk is always the same; the answer differs only in <em>what we combine</em> and <em>what we start from</em>. <code>Foldable</code> extracts that walk so we can write the combine-and-start rule once and reuse the walk forever.</p>
+<p>That combine-and-start rule has a name: a <code>Monoid</code>. Pair the <code>Foldable</code> walk with a <code>Monoid</code>, and we have <code>foldMap</code>.</p>
 <div id="admonition-interface-signature" class="admonition admonish-note" role="note" aria-labelledby="admonition-interface-signature-title">
 <div class="admonition-title">
 <div id="admonition-interface-signature-title">
@@ -302,66 +303,60 @@
   &lt;A, M&gt; M foldMap(
       Monoid&lt;M&gt; monoid,
       Function&lt;? super A, ? extends M&gt; f,
-      Kind&lt;F, A&gt; fa
-  );
+      Kind&lt;F, A&gt; fa);
 }
 </code></pre>
 </div>
 </div>
 <hr />
-<h3 id="practical-example-aggregating-a-list-with-different-monoids"><a class="header" href="#practical-example-aggregating-a-list-with-different-monoids">Practical Example: Aggregating a List with Different Monoids</a></h3>
+<h3 id="same-data-three-summaries"><a class="header" href="#same-data-three-summaries">Same Data, Three Summaries</a></h3>
 <pre><code class="language-java">List&lt;Integer&gt; numbers = List.of(1, 2, 3, 4, 5);
 Kind&lt;ListKind.Witness, Integer&gt; numbersKind = LIST.widen(numbers);
 
 Foldable&lt;ListKind.Witness&gt; listFoldable = ListTraverse.INSTANCE;
 
-// --- Sum the numbers ---
 Integer sum = listFoldable.foldMap(
-    Monoids.integerAddition(),    // empty = 0, combine = +
+    Monoids.integerAddition(),
     Function.identity(),
-    numbersKind
-);
-// Result: 15
+    numbersKind);
+// 15
 
-// --- Check if all numbers are positive ---
 Boolean allPositive = listFoldable.foldMap(
-    Monoids.booleanAnd(),         // empty = true, combine = &amp;&amp;
-    num -&gt; num &gt; 0,
-    numbersKind
-);
-// Result: true
+    Monoids.booleanAnd(),
+    n -&gt; n &gt; 0,
+    numbersKind);
+// true
 
-// --- Convert to strings and concatenate ---
-String asString = listFoldable.foldMap(
-    Monoids.string(),             // empty = "", combine = +
+String joined = listFoldable.foldMap(
+    Monoids.string(),
     String::valueOf,
-    numbersKind
-);
-// Result: "12345"
+    numbersKind);
+// "12345"
 </code></pre>
-<p>Same data, same <code>foldMap</code> call, three completely different results, just by swapping the Monoid.</p>
+<p>Same data, same <code>foldMap</code>, three different summaries. The difference is one argument: which <code>Monoid</code> we pass. That is the abstraction earning its keep.</p>
 <hr />
-<h1 id="traverse-effectful-iteration"><a class="header" href="#traverse-effectful-iteration">Traverse: Effectful Iteration</a></h1>
-<p>The <strong><code>Traverse</code></strong> type class is a powerful extension of <code>Foldable</code> and <code>Functor</code>. It allows you to iterate over a data structure, but with a twist: at each step, you can perform an <strong>effectful</strong> action and then collect all the results back into a single effect.</p>
-<p>The true power of <code>traverse</code> is that it can turn a structure of effects "inside-out":</p>
-<pre><code>  traverse turns a structure of effects inside-out:
+<h2 id="traverse-effectful-iteration"><a class="header" href="#traverse-effectful-iteration">Traverse: Effectful Iteration</a></h2>
+<p><code>Traverse</code> extends <code>Foldable</code> and <code>Functor</code> with one additional operation: walk a structure, run an effect at each step, and collect the results back into a single effect.</p>
+<p>The picture worth keeping is a structure flipping inside out:</p>
+<pre><code>   traverse turns a structure of effects inside out:
 
-  Before: List&lt; Validated&lt;E, A&gt; &gt;
-          ┌───────────┬──────────┬───────────┐
-          │ Valid(1)  │ Valid(2) │ Valid(3)  │
-          └───────────┴──────────┴───────────┘
+   Before: List&lt; Validated&lt;E, A&gt; &gt;
+           ┌──────────┬──────────┬──────────┐
+           │ Valid(1) │ Valid(2) │ Valid(3) │
+           └──────────┴──────────┴──────────┘
 
-  After:  Validated&lt; E, List&lt;A&gt; &gt;
-          Valid( [1, 2, 3] )
+   After:  Validated&lt; E, List&lt;A&gt; &gt;
+           Valid( [1, 2, 3] )
 
-  With errors:
-          ┌───────────┬────────────┬───────────┐
-          │ Valid(1)  │ Invalid(e) │ Valid(3)  │
-          └───────────┴────────────┴───────────┘
+   With errors mixed in:
+           ┌──────────┬─────────────┬──────────┐
+           │ Valid(1) │ Invalid(e1) │ Valid(3) │
+           └──────────┴─────────────┴──────────┘
 
-          Invalid( e )   &lt;-- errors accumulated
+   becomes:
+           Invalid( e1 )           // or accumulated, depending on the Applicative
 </code></pre>
-<p>This is one of the most useful type classes for real-world applications, as it elegantly handles scenarios like validating all items in a list, fetching data for each ID in a collection, and much more.</p>
+<p>If we have ever validated every entry in a form, fetched a record for every id in a list, or parsed every line in a file and wanted to know whether the whole batch was good, we have wanted <code>traverse</code>. The hand-rolled version always involves a loop, a list to collect errors, and a flag to track whether anything went wrong. <code>traverse</code> is that pattern in one method call.</p>
 <div id="admonition-interface-signature-1" class="admonition admonish-note" role="note" aria-labelledby="admonition-interface-signature-1-title">
 <div class="admonition-title">
 <div id="admonition-interface-signature-1-title">
@@ -370,22 +365,24 @@ String asString = listFoldable.foldMap(
 <a class="admonition-anchor-link" href="#admonition-interface-signature-1"></a>
 </div>
 <div>
-<pre><code class="language-java">public interface Traverse&lt;T extends WitnessArity&lt;TypeArity.Unary&gt;&gt; extends Functor&lt;T&gt;, Foldable&lt;T&gt; {
+<pre><code class="language-java">public interface Traverse&lt;T extends WitnessArity&lt;TypeArity.Unary&gt;&gt;
+    extends Functor&lt;T&gt;, Foldable&lt;T&gt; {
+
   &lt;F extends WitnessArity&lt;TypeArity.Unary&gt;, A, B&gt; Kind&lt;F, Kind&lt;T, B&gt;&gt; traverse(
       Applicative&lt;F&gt; applicative,
       Function&lt;A, Kind&lt;F, B&gt;&gt; f,
-      Kind&lt;T, A&gt; ta
-  );
-  //... sequenceA method also available
+      Kind&lt;T, A&gt; ta);
+
+  // sequenceA also available
 }
 </code></pre>
 </div>
 </div>
 <hr />
-<h3 id="practical-example-validating-a-list-of-promo-codes"><a class="header" href="#practical-example-validating-a-list-of-promo-codes">Practical Example: Validating a List of Promo Codes</a></h3>
-<p><strong>The problem:</strong> You have a list of promo codes and you want to validate each one. Without <code>traverse</code>, you'd need a manual loop to collect errors and handle the logic yourself.</p>
-<p><strong>The solution:</strong> <code>traverse</code> does it in a single, elegant expression.</p>
-<pre><code class="language-java">public Kind&lt;Validated.Witness&lt;String&gt;, String&gt; validateCode(String code) {
+<h3 id="validating-a-list-of-promo-codes"><a class="header" href="#validating-a-list-of-promo-codes">Validating a List of Promo Codes</a></h3>
+<p><strong>The problem.</strong> A request arrives with four promo codes. We want every one of them validated, with every error reported, in one pass.</p>
+<p><strong>The solution.</strong></p>
+<pre><code class="language-java">public Kind&lt;ValidatedKind.Witness&lt;String&gt;, String&gt; validateCode(String code) {
     if (code.startsWith("VALID")) {
         return VALIDATED.widen(Validated.valid(code));
     }
@@ -395,32 +392,31 @@ String asString = listFoldable.foldMap(
 List&lt;String&gt; codes = List.of("VALID-A", "EXPIRED", "VALID-B", "INVALID");
 Kind&lt;ListKind.Witness, String&gt; codesKind = LIST.widen(codes);
 
-Applicative&lt;Validated.Witness&lt;String&gt;&gt; validatedApplicative =
+Applicative&lt;ValidatedKind.Witness&lt;String&gt;&gt; validatedApplicative =
     ValidatedMonad.instance(Semigroups.string("; "));
 
-Kind&lt;Validated.Witness&lt;String&gt;, Kind&lt;ListKind.Witness, String&gt;&gt; result =
+Kind&lt;ValidatedKind.Witness&lt;String&gt;, Kind&lt;ListKind.Witness, String&gt;&gt; result =
     ListTraverse.INSTANCE.traverse(
         validatedApplicative,
         this::validateCode,
-        codesKind
-    );
+        codesKind);
 
-// Result: Invalid("'EXPIRED' is not a valid code; 'INVALID' is not a valid code")
-System.out.println(VALIDATED.narrow(result));
+// Invalid("'EXPIRED' is not a valid code; 'INVALID' is not a valid code")
 </code></pre>
+<p>One call. Both errors. No loop, no error list, no flag.</p>
 <h3 id="sequencea"><a class="header" href="#sequencea"><code>sequenceA</code></a></h3>
-<p><code>Traverse</code> also provides <code>sequenceA</code>, which is a specialised version of <code>traverse</code>. It's used when you already have a data structure containing effects (e.g., a <code>List&lt;Optional&lt;A&gt;&gt;</code>) and you want to flip it into a single effect containing the data structure (<code>Optional&lt;List&lt;A&gt;&gt;</code>).</p>
+<p><code>sequenceA</code> is <code>traverse</code> with the identity function: we already have a structure of effects, and we just want to flip it. <code>List&lt;Optional&lt;A&gt;&gt;</code> becomes <code>Optional&lt;List&lt;A&gt;&gt;</code>. <code>List&lt;Either&lt;E, A&gt;&gt;</code> becomes <code>Either&lt;E, List&lt;A&gt;&gt;</code>. Same machinery, narrower input.</p>
+<p>We reach for <code>traverse</code> when we are turning each element into an effect. We reach for <code>sequenceA</code> when the elements <em>already are</em> effects.</p>
 <hr />
-<h2 id="traverse-in-for-comprehensions"><a class="header" href="#traverse-in-for-comprehensions">Traverse in For-Comprehensions</a></h2>
-<p>The <code>traverse</code>, <code>sequence</code>, and <code>flatTraverse</code> operations described above can also be used as <strong>steps within for-comprehension chains</strong>. The <code>For</code> and <code>ForPath</code> builders expose these operations directly, so you can process a traversable structure as part of a larger monadic workflow without breaking out of the comprehension.</p>
-<p>For example, within a <code>For</code> comprehension you can write:</p>
+<h2 id="traverse-inside-for-comprehensions"><a class="header" href="#traverse-inside-for-comprehensions">Traverse Inside For-Comprehensions</a></h2>
+<p><code>traverse</code>, <code>sequence</code>, and <code>flatTraverse</code> are not just standalone operations; they fit inside a <code>For</code> chain so we can blend collection iteration with the rest of a monadic workflow without breaking out.</p>
 <pre><code class="language-java">For.from(maybeMonad, MAYBE.just(LIST.widen(List.of(1, 2, 3))))
     .traverse(ListTraverse.INSTANCE,
         t -&gt; t._1(),
         n -&gt; n &gt; 0 ? MAYBE.just(n * 10) : MAYBE.nothing())
     .yield((original, transformed) -&gt; transformed);
 </code></pre>
-<p>The <code>ForPath</code> builder offers the same capability for Effect Path types.</p>
+<p><code>ForPath</code> exposes the same capability for Effect Path types, which is usually how application code reaches it.</p>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
 <div class="admonition-title">
 <div id="admonition-see-also-title">
@@ -430,8 +426,26 @@ System.out.println(VALIDATED.narrow(result));
 </div>
 <div>
 <ul>
-<li><a href="for_traverse.html">Traverse Within Comprehensions</a> -- Full API reference with <code>traverse</code>, <code>sequence</code>, and <code>flatTraverse</code> examples</li>
-<li><a href="../effect/forpath_traverse.html">ForPath Traverse</a> -- The same operations using the Effect Path API</li>
+<li><a href="for_traverse.html">Traverse Within Comprehensions</a> - the full API with <code>traverse</code>, <code>sequence</code>, and <code>flatTraverse</code></li>
+<li><a href="../effect/forpath_traverse.html">ForPath Traverse</a> - the same operations through the Effect Path API</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="things-people-get-wrong"><a class="header" href="#things-people-get-wrong">Things People Get Wrong</a></h2>
+<div id="admonition-common-misunderstandings" class="admonition admonish-warning" role="note" aria-labelledby="admonition-common-misunderstandings-title">
+<div class="admonition-title">
+<div id="admonition-common-misunderstandings-title">
+<p>Common Misunderstandings</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-common-misunderstandings"></a>
+</div>
+<div>
+<ul>
+<li><strong>"<code>Foldable</code> is just <code>Stream.reduce</code> with extra steps."</strong> It is the same idea, formalised so the same fold can target <code>List</code>, <code>Maybe</code>, <code>Either</code>, custom containers, anything with a <code>Foldable</code> instance. <code>Stream.reduce</code> works on <code>Stream</code>. <code>foldMap</code> works on whatever we hand it.</li>
+<li><strong>"<code>traverse</code> runs the steps sequentially."</strong> It runs them in the order the structure dictates, but the <em>combination</em> uses the <code>Applicative</code>, which can be parallel for instances that support it. <code>Validated</code> accumulates; <code>IO</code> sequences; a parallel-aware applicative could fan out. The walking order is fixed, the meaning of "and then combine" is up to the instance.</li>
+<li><strong>"<code>sequenceA</code> and <code>traverse</code> do different things."</strong> <code>sequenceA</code> is <code>traverse(applicative, x -&gt; x, ta)</code>. They differ only in whether we have a function to apply on the way through. The library keeps both because both come up in code, not because they have separate stories.</li>
+<li><strong>"<code>Monoid</code> and <code>Foldable</code> are independent."</strong> They are independent type classes, but they pair so naturally that we will almost always see them together. <code>foldMap</code> exists precisely because that pairing is the right interface for "reduce a structure to a summary".</li>
 </ul>
 </div>
 </div>
@@ -445,11 +459,11 @@ System.out.println(VALIDATED.narrow(result));
 </div>
 <div>
 <ul>
-<li><strong>Foldable reduces structures to summaries</strong> using <code>foldMap</code> and a <code>Monoid</code></li>
-<li><strong>Swap the Monoid, change the result</strong>: sum, product, concatenation, boolean checks, all from the same fold</li>
-<li><strong>Traverse turns effects inside-out</strong>: <code>List&lt;Validated&lt;E, A&gt;&gt;</code> becomes <code>Validated&lt;E, List&lt;A&gt;&gt;</code></li>
-<li><strong>Error accumulation for free</strong>: combine <code>traverse</code> with <code>Validated</code> to validate entire collections in one pass</li>
-<li><strong><code>sequenceA</code></strong> is <code>traverse</code> with the identity function, useful when effects are already in place</li>
+<li><code>Foldable</code> reduces a structure to a summary; the rule for combining lives in the <code>Monoid</code></li>
+<li>Swap the <code>Monoid</code> and the same fold yields sums, products, joined strings, or boolean checks</li>
+<li><code>Traverse</code> flips a structure of effects into an effect of a structure</li>
+<li><code>traverse</code> paired with <code>Validated</code> is the cleanest way to validate an entire collection in one pass</li>
+<li><code>sequenceA</code> is <code>traverse</code> with the identity; reach for it when the elements are already effects</li>
 </ul>
 </div>
 </div>
@@ -462,9 +476,9 @@ System.out.println(VALIDATED.narrow(result));
 </div>
 <div>
 <ul>
-<li><a href="semigroup_and_monoid.html">Semigroup and Monoid</a> - The combining abstractions that power folding</li>
-<li><a href="applicative.html">Applicative</a> - The effect-combining type class that powers traversal</li>
-<li><a href="../monads/validated_monad.html">Validated</a> - The type designed for error accumulation with Traverse</li>
+<li><a href="semigroup_and_monoid.html">Semigroup and Monoid</a> - the combining abstractions that power folding</li>
+<li><a href="applicative.html">Applicative</a> - the effect-combining type class that powers traversal</li>
+<li><a href="../monads/validated_monad.html">Validated</a> - the type designed for error accumulation with Traverse</li>
 </ul>
 </div>
 </div>

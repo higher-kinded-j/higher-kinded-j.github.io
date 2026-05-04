@@ -266,20 +266,19 @@
 
 </style>
 <h1 id="functor-the-mappable-type-class"><a class="header" href="#functor-the-mappable-type-class">Functor: The "Mappable" Type Class</a></h1>
-<div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
+<div id="admonition-what-well-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-well-learn-title">
 <div class="admonition-title">
-<div id="admonition-what-youll-learn-title">
-<p>What You'll Learn</p>
+<div id="admonition-what-well-learn-title">
+<p>What We'll Learn</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-what-youll-learn"></a>
+<a class="admonition-anchor-link" href="#admonition-what-well-learn"></a>
 </div>
 <div>
 <ul>
-<li>How to transform values inside containers without changing the container structure</li>
-<li>The difference between regular functions and functorial mapping</li>
-<li>Functor laws (identity and composition) and why they matter</li>
-<li>How to use Functor instances with List, Optional, and other containers</li>
-<li>When to choose Functor over direct method calls</li>
+<li>How <code>Functor</code> formalises an operation we have already used a hundred times</li>
+<li>The two laws every honest <code>Functor</code> obeys, and why the laws are easier than they look</li>
+<li>How a single <code>map</code> method dispatches to <code>Optional</code>, <code>List</code>, <code>Either</code>, <code>IO</code>, <code>MaybePath</code>, and friends</li>
+<li>Where <code>Functor</code> shows up inside the Foundations one-liner</li>
 </ul>
 </div>
 </div>
@@ -294,12 +293,20 @@
 <p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial02_FunctorMapping.java">Tutorial02_FunctorMapping.java</a></p>
 </div>
 </div>
-<p>At the heart of functional programming is the ability to transform data within a container without having to open it. The <strong><code>Functor</code></strong> type class provides exactly this capability. It's the simplest and most common abstraction for any data structure that can be "mapped over."</p>
-<p>If you've ever used <code>Optional.map()</code> or <code>Stream.map()</code>, you've already been using the Functor pattern! Higher-Kinded-J simply formalises this concept so you can apply it to any data structure.</p>
+<p>We have all written this code:</p>
+<pre><code class="language-java">optional.map(String::length);
+list.stream().map(String::length).toList();
+completableFuture.thenApply(String::length);
+maybePath.map(String::length);
+</code></pre>
+<p>Four method calls, four containers, the same shape. <code>Functor</code> is the name of that shape. If we can write <code>map</code> for some container <code>F</code> such that the laws below hold, then <code>F</code> <em>is</em> a <code>Functor</code>. That is the entire idea, and most of the type classes in this chapter follow the same pattern: they name a capability we already use without naming.</p>
 <hr />
-<h2 id="what-does-it-do"><a class="header" href="#what-does-it-do">What Does It Do?</a></h2>
-<p>A <strong><code>Functor</code></strong> is a type class for any data structure <code>F</code> that supports a <code>map</code> operation. This operation takes a function from <code>A -&gt; B</code> and applies it to the value(s) inside a container <code>F&lt;A&gt;</code>, producing a new container <code>F&lt;B&gt;</code> of the same shape.</p>
-<p>Think of a <code>Functor</code> as a generic "box" that holds a value. The <code>map</code> function lets you transform the contents of the box without ever taking the value out. Whether the box is an <code>Optional</code> that might be empty, a <code>List</code> with many items, or a <code>Try</code> that might hold an error, the mapping logic remains the same.</p>
+<h2 id="what-functor-lets-us-do"><a class="header" href="#what-functor-lets-us-do">What <code>Functor</code> Lets Us Do</a></h2>
+<p>A <code>Functor</code> is a container <code>F</code> that supports a single operation:</p>
+<blockquote>
+<p>Given a function <code>A -&gt; B</code> and an <code>F&lt;A&gt;</code>, produce an <code>F&lt;B&gt;</code> by applying the function inside the container.</p>
+</blockquote>
+<p>The container's <em>shape</em> never changes. A <code>List</code> of three elements maps to a <code>List</code> of three elements. An <code>Optional.empty()</code> maps to an <code>Optional.empty()</code>. A failed <code>Try</code> maps to the same failed <code>Try</code>. The function only ever sees the values, never the container.</p>
 <div id="admonition-interface-signature" class="admonition admonish-note" role="note" aria-labelledby="admonition-interface-signature-title">
 <div class="admonition-title">
 <div id="admonition-interface-signature-title">
@@ -309,82 +316,87 @@
 </div>
 <div>
 <pre><code class="language-java">public interface Functor&lt;F extends WitnessArity&lt;TypeArity.Unary&gt;&gt; {
-  &lt;A, B&gt; @NonNull Kind&lt;F, B&gt; map(final Function&lt;? super A, ? extends B&gt; f, final Kind&lt;F, A&gt; fa);
+  &lt;A, B&gt; @NonNull Kind&lt;F, B&gt; map(
+      Function&lt;? super A, ? extends B&gt; f,
+      Kind&lt;F, A&gt; fa);
 }
 </code></pre>
+<p><code>F</code> is a witness type standing in for the container. <code>Kind&lt;F, A&gt;</code> is "some container <code>F</code> holding an <code>A</code>". The <code>Functor&lt;F&gt;</code> instance is the implementation that knows how to map inside that specific container.</p>
+</div>
+</div>
+<hr />
+<h2 id="two-laws-that-keep-us-honest"><a class="header" href="#two-laws-that-keep-us-honest">Two Laws That Keep Us Honest</a></h2>
+<p>A <code>Functor</code> instance has to obey two rules, and once we have read them we will realise we have always assumed them anyway.</p>
+<p><strong>1. Identity.</strong> Mapping with the identity function changes nothing.</p>
+<pre><code class="language-java">functor.map(x -&gt; x, fa).equals(fa);
+</code></pre>
+<p><strong>2. Composition.</strong> Mapping with <code>f</code> and then with <code>g</code> is the same as mapping once with <code>g.compose(f)</code>.</p>
+<pre><code class="language-java">functor.map(g, functor.map(f, fa))
+    .equals(functor.map(g.compose(f), fa));
+</code></pre>
+<p>Together, these rules say <em>map only transforms the values; it never tampers with the container</em>. Anything that violated them would surprise us in unpleasant ways: a <code>Functor</code> that quietly dropped elements during identity mapping, or that produced different results depending on whether we composed before or after mapping. We are unlikely to write one by accident, but the laws are worth keeping in mind when defining instances for our own types.</p>
+<hr />
+<h2 id="a-single-map-five-different-containers"><a class="header" href="#a-single-map-five-different-containers">A Single <code>map</code>, Five Different Containers</a></h2>
+<p>The reason <code>Functor</code> earns its keep in Higher-Kinded-J is that we can write code once and dispatch to whichever container the caller hands us.</p>
+<pre><code class="language-java">import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
+import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL;
+
+Function&lt;String, Integer&gt; stringLength = String::length;
+
+Functor&lt;OptionalKind.Witness&gt; optFunctor = OptionalFunctor.INSTANCE;
+Functor&lt;ListKind.Witness&gt;     listFunctor = ListFunctor.INSTANCE;
+
+Kind&lt;OptionalKind.Witness, String&gt; presentName = OPTIONAL.widen(Optional.of("Hello"));
+Kind&lt;OptionalKind.Witness, String&gt; absentName  = OPTIONAL.widen(Optional.empty());
+Kind&lt;ListKind.Witness, String&gt;     names       = LIST.widen(List.of("one", "two", "three"));
+
+Kind&lt;OptionalKind.Witness, Integer&gt; presentLength = optFunctor.map(stringLength, presentName);
+Kind&lt;OptionalKind.Witness, Integer&gt; absentLength  = optFunctor.map(stringLength, absentName);
+Kind&lt;ListKind.Witness, Integer&gt;     nameLengths   = listFunctor.map(stringLength, names);
+
+OPTIONAL.narrow(presentLength); // Optional[5]
+OPTIONAL.narrow(absentLength);  // Optional.empty
+LIST.narrow(nameLengths);       // [3, 3, 5]
+</code></pre>
+<p>Same function, three different <code>Kind</code> flows, and not a single conditional. The container takes care of "what does it mean to map an empty thing", because that is what <code>OptionalFunctor</code> is <em>for</em>.</p>
+<hr />
+<h2 id="generic-code-for-free"><a class="header" href="#generic-code-for-free">Generic Code, For Free</a></h2>
+<p>Once we accept <code>Functor&lt;F&gt;</code> as currency, we can write helpers that work for any container at all.</p>
+<pre><code class="language-java">public static &lt;F extends WitnessArity&lt;TypeArity.Unary&gt;, A&gt;
+    Kind&lt;F, String&gt; describe(Functor&lt;F&gt; functor, Kind&lt;F, A&gt; fa) {
+  return functor.map(a -&gt; "value = " + a, fa);
+}
+</code></pre>
+<p><code>describe(optionalFunctor, presentName)</code> returns <code>Optional[value = Hello]</code>. <code>describe(listFunctor, names)</code> returns <code>["value = one", "value = two", "value = three"]</code>. The body of <code>describe</code> does not know, and does not need to know, which container it is operating on. That is the payoff.</p>
+<hr />
+<h2 id="back-to-the-one-liner"><a class="header" href="#back-to-the-one-liner">Back to the One-Liner</a></h2>
+<p>Recall the line from <a href="../hkts/one_line_six_layers.html">One Line, Six Layers</a>:</p>
+<pre><code class="language-java">repo.find(id)
+    .toEitherPath()
+    .focus().attributes().at(key)
+    .modify(spec::validateAndCoerce)   // &lt;-- Functor at work
+    .flatMap(repo::save);
+</code></pre>
+<p><code>.modify(...)</code> runs a <code>Functor</code> <code>map</code> inside the optic, against whatever container the path is currently carrying. When we are on the right rail of an <code>EitherPath</code>, <code>EitherFunctor.map</code> rewrites the focused attribute and leaves the rest of the record alone. When we are on the left rail, the same <code>map</code> is a no-op, because the <code>Functor</code> for <code>Either</code> knows that mapping a <code>Left</code> returns the same <code>Left</code>.</p>
+<p>Two different runtime behaviours, one method name, no <code>if</code> in sight. That is <code>Functor</code> doing its job.</p>
+<hr />
+<h2 id="things-people-get-wrong"><a class="header" href="#things-people-get-wrong">Things People Get Wrong</a></h2>
+<div id="admonition-common-misunderstandings" class="admonition admonish-warning" role="note" aria-labelledby="admonition-common-misunderstandings-title">
+<div class="admonition-title">
+<div id="admonition-common-misunderstandings-title">
+<p>Common Misunderstandings</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-common-misunderstandings"></a>
+</div>
+<div>
 <ul>
-<li><code>f</code>: The function to apply to the value inside the Functor.</li>
-<li><code>fa</code>: The higher-kinded <code>Functor</code> instance (e.g., a <code>Kind&lt;Optional.Witness, String&gt;</code>).</li>
-<li>The <code>F extends WitnessArity&lt;TypeArity.Unary&gt;</code> bound ensures that only valid unary witness types can be used with Functor.</li>
+<li><strong>"Mapping iterates."</strong> Not in general. <code>map</code> on <code>Optional</code> runs the function at most once. <code>map</code> on <code>Either</code> runs it only on the right rail. The "for each element" intuition only fits collections.</li>
+<li><strong>"<code>map</code> runs the function eagerly."</strong> Often, but not always. <code>LazyFunctor.map</code> defers; <code>IOFunctor.map</code> builds an unevaluated <code>IO</code> action. <code>Functor</code> says nothing about <em>when</em> the function runs, only that it eventually does and that the container's shape is preserved.</li>
+<li><strong>"It's just <code>Stream.map</code> with extra steps."</strong> The point of the abstraction is not to be cleverer than <code>Stream.map</code>; it is to let one piece of code talk about <em>all</em> mappable containers at once. We pay a little ceremony at the boundary so that the body of a generic function can be written exactly once.</li>
+<li><strong>"Then I can call <code>.map</code> on a <code>Kind</code> directly."</strong> No: <code>Kind</code> is a marker interface and has no methods. We always go through a <code>Functor&lt;F&gt;</code> instance, which is the thing that actually knows how to map inside <code>F</code>.</li>
 </ul>
 </div>
 </div>
-<hr />
-<h3 id="the-functor-laws"><a class="header" href="#the-functor-laws">The Functor Laws</a></h3>
-<p>For a <code>Functor</code> implementation to be lawful, it must obey two simple rules. These ensure that the <code>map</code> operation is predictable and doesn't have unexpected side effects.</p>
-<ol>
-<li>
-<p><strong>Identity Law</strong>: Mapping with the identity function (<code>x -&gt; x</code>) should change nothing.</p>
-<pre><code class="language-java">functor.map(x -&gt; x, fa); // This must be equivalent to fa
-</code></pre>
-</li>
-<li>
-<p><strong>Composition Law</strong>: Mapping with two functions composed together is the same as mapping with each function one after the other.</p>
-<pre><code class="language-java">Function&lt;A, B&gt; f = ...;
-Function&lt;B, C&gt; g = ...;
-
-// This...
-functor.map(g.compose(f), fa);
-
-// ...must be equivalent to this:
-functor.map(g, functor.map(f, fa));
-</code></pre>
-</li>
-</ol>
-<p>These laws ensure that <code>map</code> is only about transformation and preserves the structure of the data type.</p>
-<hr />
-<h3 id="practical-example-mapping-over-optional-and-list"><a class="header" href="#practical-example-mapping-over-optional-and-list">Practical Example: Mapping over <code>Optional</code> and <code>List</code></a></h3>
-<p>Let's see how we can use the <code>Functor</code> instances for <code>Optional</code> and <code>List</code> to apply the same logic to different data structures.</p>
-<pre><code class="language-java">import org.higherkindedj.hkt.Kind;
-import org.higherkindedj.hkt.list.ListFunctor;
-import org.higherkindedj.hkt.list.ListKind;
-import org.higherkindedj.hkt.optional.OptionalFunctor;
-import org.higherkindedj.hkt.optional.OptionalKind;
-import java.util.List;
-import java.util.Optional;
-import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
-import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL;
-
-
-// Our function that we want to apply
-Function&lt;String, Integer&gt; stringLength = String::length;
-
-// --- Scenario 1: Mapping over an Optional ---
-Functor&lt;OptionalKind.Witness&gt; optionalFunctor = OptionalFunctor.INSTANCE;
-
-Kind&lt;OptionalKind.Witness, String&gt; optionalWithValue = OPTIONAL.widen(Optional.of("Hello"));
-Kind&lt;OptionalKind.Witness, String&gt; optionalEmpty = OPTIONAL.widen(Optional.empty());
-
-Kind&lt;OptionalKind.Witness, Integer&gt; lengthWithValue = optionalFunctor.map(stringLength, optionalWithValue);
-Kind&lt;OptionalKind.Witness, Integer&gt; lengthEmpty = optionalFunctor.map(stringLength, optionalEmpty);
-
-// Result: Optional[5]
-System.out.println(OPTIONAL.narrow(lengthWithValue));
-// Result: Optional.empty
-System.out.println(OPTIONAL.narrow(lengthEmpty));
-
-
-// --- Scenario 2: Mapping over a List ---
-Functor&lt;ListKind.Witness&gt; listFunctor = ListFunctor.INSTANCE;
-
-Kind&lt;ListKind.Witness, String&gt; listOfStrings = LIST.widen(List.of("one", "two", "three"));
-
-Kind&lt;ListKind.Witness, Integer&gt; listOfLengths = listFunctor.map(stringLength, listOfStrings);
-
-// Result: [3, 3, 5]
-System.out.println(LIST.narrow(listOfLengths));
-</code></pre>
-<p>The <code>Functor</code> provides a consistent API for transformation, regardless of the underlying data structure. This is the first and most essential step on the path to more powerful abstractions like <code>Applicative</code> and <code>Monad</code>.</p>
 <hr />
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
@@ -395,10 +407,10 @@ System.out.println(LIST.narrow(listOfLengths));
 </div>
 <div>
 <ul>
-<li><strong><code>map</code> transforms values inside a container</strong> without changing the container's structure</li>
-<li><strong>One interface, many types</strong>: the same <code>map</code> operation works with Optional, List, Either, IO, and more</li>
-<li><strong>Functor laws</strong> (identity and composition) guarantee predictable, side-effect-free transformations</li>
-<li><strong>Functor is the foundation</strong> that Applicative, Monad, and every other type class builds upon</li>
+<li><code>Functor</code> formalises the "anything with a sensible <code>map</code>" pattern that already lives in <code>Optional</code>, <code>List</code>, <code>CompletableFuture</code>, and most of the JDK</li>
+<li>The two laws (identity, composition) say "map transforms values, never the container"</li>
+<li>A <code>Functor&lt;F&gt;</code> instance lets us write generic code that works for every supported container without conditionals</li>
+<li>It is the first rung of the type-class ladder; everything else in this section either extends it or stands beside it</li>
 </ul>
 </div>
 </div>
@@ -414,6 +426,7 @@ System.out.println(LIST.narrow(listOfLengths));
 <li><a href="applicative.html">Applicative</a> - The next step up: combining independent computations</li>
 <li><a href="monad.html">Monad</a> - Sequencing dependent computations with <code>flatMap</code></li>
 <li><a href="bifunctor.html">Bifunctor</a> - Mapping over types with two parameters</li>
+<li><a href="../hkts/one_line_six_layers.html">One Line, Six Layers</a> - Where this fits in the wider Foundations picture</li>
 </ul>
 </div>
 </div>
