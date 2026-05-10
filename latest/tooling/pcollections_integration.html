@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Traversal Generator Plugins - Higher-Kinded-J: Composable Effects and Advanced Optics for Java</title>
+        <title>PCollections Integration - Higher-Kinded-J: Composable Effects and Advanced Optics for Java</title>
 
 
         <!-- Custom HTML head -->
@@ -21,7 +21,7 @@
 
         <meta name="keywords" content="Higher-Kinded Types, Higher-Kinded-J, HKT, Java, Optics, Lens, Prism, Traversal, Iso, Affine, Focus DSL, Effect Path API, Functional Programming, Monad, Functor, Applicative, EitherPath, MaybePath, TryPath, ValidationPath, Java Records, Sealed Interface, Error Handling, Immutable Data">
         
-        <meta property="og:title" content="Traversal Generator Plugins - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
+        <meta property="og:title" content="PCollections Integration - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
             <meta property="og:description" content="The most comprehensive functional programming library for Java. Unify error handling, optional values, and immutable data navigation with the Effect Path API and Focus DSL. Features advanced optics with code generation for Java records, filtered traversals, indexed optics, and seamless Spring Boot integration.">
         <meta property="og:type" content="website">
         <meta property="og:url" content="https://higher-kinded-j.github.io/">
@@ -32,7 +32,7 @@
         <meta property="og:locale" content="en_GB">
         
         <meta name="twitter:card" content="summary_large_image">
-        <meta name="twitter:title" content="Traversal Generator Plugins - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
+        <meta name="twitter:title" content="PCollections Integration - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
         <meta name="twitter:description" content="Unifying Composable Effects and Advanced Optics for Java. Effect Path API, Focus DSL, and the most comprehensive optics implementation in the Java ecosystem.">
         <meta name="twitter:image" content="https://higher-kinded-j.github.io/preview.png">
         <meta name="twitter:image:alt" content="Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
@@ -169,7 +169,7 @@
                         <a href="https://github.com/higher-kinded-j/higher-kinded-j" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/higher-kinded-j/higher-kinded-j/edit/main/hkj-book/src/tooling/generator_plugins.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/higher-kinded-j/higher-kinded-j/edit/main/hkj-book/src/tooling/pcollections_integration.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -265,7 +265,7 @@
 }
 
 </style>
-<h1 id="traversal-generator-plugins"><a class="header" href="#traversal-generator-plugins">Traversal Generator Plugins</a></h1>
+<h1 id="pcollections-integration"><a class="header" href="#pcollections-integration">PCollections Integration</a></h1>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -275,272 +275,141 @@
 </div>
 <div>
 <ul>
-<li>Which container types <code>@GenerateTraversals</code> supports out of the box</li>
-<li>How to enable third-party collection support (Eclipse Collections, Guava, Vavr, Apache Commons)</li>
-<li>How the plugin discovery mechanism works</li>
-<li>How to write your own generator for a custom container type</li>
+<li>How PCollections persistent collections plug into Higher-Kinded-J via the existing <code>ListKind</code></li>
+<li>The performance characteristics of <code>PVector</code> versus <code>ArrayList</code> through the HKT pipeline</li>
+<li>Which operations amortise PCollections' iteration cost and which expose it</li>
+<li>How to add PCollections to your own project as an opt-in dependency</li>
 </ul>
 </div>
 </div>
+<p><a href="https://pcollections.org/">PCollections</a> is a small, lightweight library of persistent immutable
+data structures whose types implement the standard <code>java.util</code> interfaces. <code>PVector</code> implements
+<code>List</code>, <code>PStack</code> implements <code>List</code>, <code>PSet</code> implements <code>Set</code>, and so on. That <code>java.util</code>
+compatibility makes PCollections a particularly easy fit for Higher-Kinded-J: any <code>PVector</code> or
+<code>PStack</code> can be widened directly into the existing <code>ListKind</code> and processed through <code>ListMonad</code>,
+<code>ListTraverse</code>, and <code>ListSelective</code> with no production code changes.</p>
+<p>This page describes the Phase 1 integration: a purely additive set of tests, benchmarks, and
+documentation that validate the compatibility hypothesis. No new HKT types or instances are
+introduced. Phase 2 adds optics generator plugins for <code>PVector</code>, <code>PStack</code>, <code>PSet</code>, <code>PBag</code>, and
+<code>PMap</code>; Phase 3 adds dedicated <code>Kind</code>/<code>Witness</code> types so persistent collections survive the entire
+HKT pipeline.</p>
 <hr />
-<h2 id="what-are-generator-plugins"><a class="header" href="#what-are-generator-plugins">What Are Generator Plugins?</a></h2>
-<p>When you annotate a record with <code>@GenerateTraversals</code>, the annotation processor needs to know <em>how</em> to traverse each field's container type. A <code>List&lt;String&gt;</code> field requires different generated code than an <code>Optional&lt;String&gt;</code> or an <code>Either&lt;Error, String&gt;</code>.</p>
-<p>Each container type is handled by a <strong>generator plugin</strong>: a small class that implements the <code>TraversableGenerator</code> SPI (Service Provider Interface). The processor discovers these plugins at compile time via Java's <code>ServiceLoader</code> and delegates code generation to whichever plugin claims support for the field's type.</p>
-<p>Higher-Kinded-J ships 23 generator plugins covering JDK types, HKJ core types, and four popular third-party collection libraries.</p>
-<hr />
-<h2 id="supported-types-at-a-glance"><a class="header" href="#supported-types-at-a-glance">Supported Types at a Glance</a></h2>
-<h3 id="jdk-standard-library-always-available"><a class="header" href="#jdk-standard-library-always-available">JDK Standard Library (Always Available)</a></h3>
-<p>These generators are always active. No additional dependencies are required.</p>
-<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Focus</th><th>Behaviour</th></tr></thead><tbody>
-<tr><td><code>List&lt;A&gt;</code></td><td>Each element</td><td>Traverses all elements via <code>Traversals.traverseList()</code></td></tr>
-<tr><td><code>Set&lt;A&gt;</code></td><td>Each element</td><td>Converts to list, traverses, converts back</td></tr>
-<tr><td><code>Optional&lt;A&gt;</code></td><td>0 or 1 element</td><td>Applies function if present; returns unchanged if empty</td></tr>
-<tr><td><code>Map&lt;K, V&gt;</code></td><td>Each value</td><td>Traverses values whilst preserving keys</td></tr>
-<tr><td><code>A[]</code></td><td>Each element</td><td>Converts to list, traverses, converts back to array</td></tr>
-</tbody></table>
-</div>
-<h3 id="hkj-core-types-always-available"><a class="header" href="#hkj-core-types-always-available">HKJ Core Types (Always Available)</a></h3>
-<p>These types are part of <code>hkj-core</code>, which is always on your classpath.</p>
-<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Focus</th><th>Behaviour</th></tr></thead><tbody>
-<tr><td><code>Maybe&lt;A&gt;</code></td><td>0 or 1 element</td><td>Applies function to <code>Just</code>; passes through <code>Nothing</code></td></tr>
-<tr><td><code>Either&lt;L, R&gt;</code></td><td>Right value</td><td>Applies function to <code>Right</code>; passes through <code>Left</code></td></tr>
-<tr><td><code>Try&lt;A&gt;</code></td><td>Success value</td><td>Applies function to <code>Success</code>; passes through <code>Failure</code></td></tr>
-<tr><td><code>Validated&lt;E, A&gt;</code></td><td>Valid value</td><td>Applies function to <code>Valid</code>; passes through <code>Invalid</code></td></tr>
-</tbody></table>
-</div>
-<h3 id="third-party-libraries-add-to-your-dependencies"><a class="header" href="#third-party-libraries-add-to-your-dependencies">Third-Party Libraries (Add to Your Dependencies)</a></h3>
-<p>Generator plugins for third-party libraries activate automatically when the library is on the annotation processor's classpath. Simply add the library as a dependency; no further configuration is needed.</p>
-<h4 id="eclipse-collections"><a class="header" href="#eclipse-collections">Eclipse Collections</a></h4>
-<pre><code class="language-kotlin">dependencies {
-    implementation("org.eclipse.collections:eclipse-collections:13.0.0")
-}
-</code></pre>
-<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Notes</th></tr></thead><tbody>
-<tr><td><code>ImmutableList&lt;A&gt;</code></td><td></td></tr>
-<tr><td><code>ImmutableSet&lt;A&gt;</code></td><td></td></tr>
-<tr><td><code>ImmutableBag&lt;A&gt;</code></td><td></td></tr>
-<tr><td><code>ImmutableSortedSet&lt;A&gt;</code></td><td>Preserves natural ordering</td></tr>
-<tr><td><code>MutableList&lt;A&gt;</code></td><td></td></tr>
-<tr><td><code>MutableSet&lt;A&gt;</code></td><td></td></tr>
-<tr><td><code>MutableBag&lt;A&gt;</code></td><td></td></tr>
-<tr><td><code>MutableSortedSet&lt;A&gt;</code></td><td>Preserves natural ordering</td></tr>
-</tbody></table>
-</div>
-<h4 id="google-guava"><a class="header" href="#google-guava">Google Guava</a></h4>
-<pre><code class="language-kotlin">dependencies {
-    implementation("com.google.guava:guava:33.5.0-jre")
-}
-</code></pre>
-<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Notes</th></tr></thead><tbody>
-<tr><td><code>ImmutableList&lt;A&gt;</code></td><td>Uses <code>ImmutableList.copyOf()</code> for reconstruction</td></tr>
-<tr><td><code>ImmutableSet&lt;A&gt;</code></td><td>Uses <code>ImmutableSet.copyOf()</code> for reconstruction</td></tr>
-</tbody></table>
-</div>
-<h4 id="vavr"><a class="header" href="#vavr">Vavr</a></h4>
-<pre><code class="language-kotlin">dependencies {
-    implementation("io.vavr:vavr:1.0.1")
-}
-</code></pre>
-<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Notes</th></tr></thead><tbody>
-<tr><td><code>io.vavr.collection.List&lt;A&gt;</code></td><td></td></tr>
-<tr><td><code>io.vavr.collection.Set&lt;A&gt;</code></td><td></td></tr>
-</tbody></table>
-</div>
-<h4 id="apache-commons-collections"><a class="header" href="#apache-commons-collections">Apache Commons Collections</a></h4>
-<pre><code class="language-kotlin">dependencies {
-    implementation("org.apache.commons:commons-collections4:4.5.0")
-}
-</code></pre>
-<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Notes</th></tr></thead><tbody>
-<tr><td><code>HashBag&lt;A&gt;</code></td><td></td></tr>
-<tr><td><code>UnmodifiableList&lt;A&gt;</code></td><td></td></tr>
+<h2 id="whats-in-phase-1"><a class="header" href="#whats-in-phase-1">What's in Phase 1</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Artefact</th><th>Location</th></tr></thead><tbody>
+<tr><td>Version pin</td><td><code>gradle/libs.versions.toml</code> (<code>pcollections = "5.0.0"</code>)</td></tr>
+<tr><td>Integration test</td><td><code>hkj-core/src/test/.../list/pcollections/PCollectionsListIntegrationTest.java</code></td></tr>
+<tr><td>jQwik property test</td><td><code>hkj-core/src/test/.../list/pcollections/PCollectionsListPropertyTest.java</code></td></tr>
+<tr><td>JMH benchmarks</td><td><code>hkj-benchmarks/src/jmh/.../PCollectionsHktBenchmark.java</code></td></tr>
+<tr><td>Runnable example</td><td><code>hkj-examples/.../basic/pcollections/PCollectionsExample.java</code></td></tr>
 </tbody></table>
 </div>
 <hr />
-<h2 id="using-third-party-types-with-generatetraversals"><a class="header" href="#using-third-party-types-with-generatetraversals">Using Third-Party Types with @GenerateTraversals</a></h2>
-<p>Once the library is on your classpath, usage is identical to JDK types:</p>
-<pre><code class="language-java">import org.eclipse.collections.api.list.ImmutableList;
-import org.higherkindedj.optics.annotation.GenerateTraversals;
-
-@GenerateTraversals
-public record Warehouse(
-    String name,
-    ImmutableList&lt;String&gt; products
-) {}
-
-// The processor generates a traversal for the 'products' field automatically.
-// Use it exactly like a List traversal:
-Warehouse updated = Traversals.modify(
-    WarehouseTraversals.products(),
-    String::toUpperCase,
-    warehouse
-);
-</code></pre>
-<hr />
-<h2 id="how-plugin-discovery-works"><a class="header" href="#how-plugin-discovery-works">How Plugin Discovery Works</a></h2>
-<p>The processor uses a three-layer mechanism to discover generators:</p>
-<ol>
-<li>
-<p><strong>SPI Interface</strong> -- <code>TraversableGenerator</code> in <code>hkj-processor</code> defines the contract. Any class implementing this interface can be discovered.</p>
-</li>
-<li>
-<p><strong>ServiceLoader</strong> -- At compile time, the <code>TraversalProcessor</code> calls <code>ServiceLoader.load(TraversableGenerator.class)</code> to find all registered implementations.</p>
-</li>
-<li>
-<p><strong>Avaje SPI</strong> -- Each generator class is annotated with <code>@ServiceProvider(TraversableGenerator.class)</code>. The <a href="https://avaje.io/spi/">Avaje SPI</a> annotation processor automatically generates the <code>META-INF/services</code> files and validates that the <code>module-info.java</code> <code>provides</code> clause is complete. A missing entry causes a compile error with a copy-pasteable fix.</p>
-</li>
-</ol>
-<pre><code>TraversalProcessor
-    │
-    ▼
-ServiceLoader.load(TraversableGenerator.class)
-    │
-    ├── ListGenerator         (supports List&lt;A&gt;)
-    ├── OptionalGenerator     (supports Optional&lt;A&gt;)
-    ├── EitherGenerator       (supports Either&lt;L, R&gt;)
-    ├── GuavaImmutableListGenerator  (supports ImmutableList&lt;A&gt;)
-    └── ... 18 more generators
-</code></pre>
-<p>For each record component, the processor iterates through all loaded generators and calls <code>supports(TypeMirror)</code>. The first generator that returns <code>true</code> handles code generation for that field.</p>
-<hr />
-<h2 id="writing-a-custom-generator"><a class="header" href="#writing-a-custom-generator">Writing a Custom Generator</a></h2>
-<p>If your project uses a container type that is not covered by the built-in plugins, you can write your own generator and register it as a service provider.</p>
-<h3 id="the-traversablegenerator-interface"><a class="header" href="#the-traversablegenerator-interface">The TraversableGenerator Interface</a></h3>
-<pre><code class="language-java">public interface TraversableGenerator {
-
-    /** Return true if this generator handles the given type. */
-    boolean supports(TypeMirror type);
-
-    /**
-     * Declares the cardinality of elements in this container type.
-     * Used by navigator generation to determine the correct path type:
-     *   ZERO_OR_ONE  → AffinePath  (Optional, Either, Try, Validated)
-     *   ZERO_OR_MORE → TraversalPath (List, Map, arrays, third-party collections)
-     *
-     * Default is ZERO_OR_MORE, which is correct for collection-like types.
-     */
-    default Cardinality getCardinality() {
-        return Cardinality.ZERO_OR_MORE;
-    }
-
-    /**
-     * Which type argument to focus on (0-indexed).
-     * Default is 0. Override to 1 for types like Either&lt;L, R&gt;
-     * where the traversal focuses on the second argument.
-     */
-    default int getFocusTypeArgumentIndex() {
-        return 0;
-    }
-
-    /**
-     * Generate the body of the modifyF method.
-     * Returns a Palantir JavaPoet CodeBlock.
-     */
-    CodeBlock generateModifyF(
-        RecordComponentElement component,
-        ClassName recordClassName,
-        List&lt;? extends RecordComponentElement&gt; allComponents);
+<h2 id="adding-pcollections-to-a-project-that-already-uses-higher-kinded-j"><a class="header" href="#adding-pcollections-to-a-project-that-already-uses-higher-kinded-j">Adding PCollections to a Project That Already Uses Higher-Kinded-J</a></h2>
+<p>PCollections is not a transitive dependency of <code>hkj-core</code>. Phase 1 wires it in only as a
+<code>testImplementation</code>. Application code that wants to use the integration must add it explicitly:</p>
+<pre><code class="language-kotlin">// build.gradle.kts
+dependencies {
+    implementation("org.pcollections:pcollections:5.0.0")
+    implementation("io.github.higher-kinded-j:hkj-core:&lt;version&gt;")
 }
 </code></pre>
-<div id="admonition-cardinality-and-navigator-generation" class="admonition admonish-note" role="note" aria-labelledby="admonition-cardinality-and-navigator-generation-title">
+<p>If you also use the Java module system, add <code>requires org.pcollections;</code> to your <code>module-info.java</code>.</p>
+<hr />
+<h2 id="using-pcollections-through-listkind"><a class="header" href="#using-pcollections-through-listkind">Using PCollections Through <code>ListKind</code></a></h2>
+<p>Because <code>PVector</code> and <code>PStack</code> are <code>java.util.List</code> instances, the existing <code>ListKindHelper.LIST</code>
+helper widens them with no special API:</p>
+<pre><code class="language-java">import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
+
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.list.ListKind;
+import org.higherkindedj.hkt.list.ListMonad;
+import org.pcollections.PVector;
+import org.pcollections.TreePVector;
+
+PVector&lt;Integer&gt; source = TreePVector.from(List.of(1, 2, 3));
+Kind&lt;ListKind.Witness, Integer&gt; kind = LIST.widen(source);
+
+Kind&lt;ListKind.Witness, Integer&gt; doubled = ListMonad.INSTANCE.map(x -&gt; x * 2, kind);
+List&lt;Integer&gt; result = LIST.narrow(doubled); // java.util.List, not PVector
+</code></pre>
+<p>The same code accepts a <code>PStack</code>, an <code>ArrayList</code>, or any other <code>List</code> implementation. The
+widen/narrow boundary is structural rather than nominal.</p>
+<hr />
+<h2 id="phase-1-caveat-persistent-type-is-not-preserved-end-to-end"><a class="header" href="#phase-1-caveat-persistent-type-is-not-preserved-end-to-end">Phase 1 Caveat: Persistent Type Is Not Preserved End-to-End</a></h2>
+<p><code>ListMonad.of</code> and the standard <code>map</code>/<code>flatMap</code> implementations produce <code>java.util.List</code>
+instances internally, typically <code>Collections.singletonList</code> or a fresh <code>ArrayList</code>. That means a
+pipeline of the form:</p>
+<pre><code class="language-java">PVector&lt;Integer&gt; in = TreePVector.from(...);
+Kind&lt;ListKind.Witness, Integer&gt; out = ListMonad.INSTANCE.map(x -&gt; x + 1, LIST.widen(in));
+List&lt;Integer&gt; narrowed = LIST.narrow(out); // not a PVector anymore
+</code></pre>
+<p>returns a JDK list, not a <code>PVector</code>. Round-tripping a <code>PVector</code> without any operation preserves
+the underlying instance (<code>narrowed == in</code>); only transformations widen back to <code>java.util.List</code>.
+Preserving the persistent type through the entire HKT pipeline is the goal of Phase 3.</p>
+<hr />
+<h2 id="performance-characteristics"><a class="header" href="#performance-characteristics">Performance Characteristics</a></h2>
+<p>The headline finding from <code>PCollectionsHktBenchmark</code> is that <strong>the widen/narrow boundary is free
+for both libraries</strong>, and PCollections pays a structural iteration tax that <strong>shrinks as the
+operation does more per-element work</strong>.</p>
+<p>Throughput at size 1000, in operations per microsecond (higher is better):</p>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th><code>ArrayList</code></th><th><code>PVector</code></th><th><code>PVector / ArrayList</code></th></tr></thead><tbody>
+<tr><td><code>widen</code> + <code>narrow</code></td><td>2.57 K</td><td>2.57 K</td><td>1.00</td></tr>
+<tr><td><code>traverse</code> (Optional applicative)</td><td>0.10</td><td>0.07</td><td>0.70</td></tr>
+<tr><td><code>map</code></td><td>0.34</td><td>0.13</td><td>0.38</td></tr>
+<tr><td><code>foldMap</code> (sum monoid)</td><td>0.44</td><td>0.14</td><td>0.32</td></tr>
+<tr><td><code>flatMap</code></td><td>0.07</td><td>0.02</td><td>0.29</td></tr>
+</tbody></table>
+</div>
+<p>Two observations are worth flagging:</p>
+<ul>
+<li><strong>The boundary is genuinely free.</strong> Both <code>widen + narrow</code> benchmarks hit the same throughput
+ceiling regardless of whether the underlying list is an <code>ArrayList</code> or a <code>TreePVector</code>,
+confirming that <code>ListHolder</code> does not defensive-copy.</li>
+<li><strong><code>traverse</code> is the narrowest gap, not the widest.</strong> Counterintuitively, the more "monadic" the
+operation, the smaller the PCollections overhead becomes. <code>traverse</code> dominates the per-element
+cost with applicative <code>map2</code> and <code>Kind</code> boxing, so the underlying iteration delta becomes a
+small fraction of total time. This is good news: the operation shapes Higher-Kinded-J users
+reach for most often are precisely the ones where PCollections costs least.</li>
+</ul>
+<p><code>flatMap</code> shows the widest gap because each call also allocates a fresh <code>TreePVector</code> inside the
+lambda. That reconstruction cost is part of the measurement, not pure iteration overhead.</p>
+<p>To reproduce:</p>
+<pre><code class="language-sh">./gradlew :hkj-benchmarks:jmh -Pincludes=".*PCollectionsHktBenchmark.*"
+./gradlew :hkj-benchmarks:benchmarkReport
+</code></pre>
+<p>The fast-feedback configuration (one fork, one warmup, one measurement iteration) leaves error
+bars as <code>NaN</code>. For numbers worth citing externally, use <code>-Pjmh.warmupIterations=2 -Pjmh.iterations=3</code>.</p>
+<hr />
+<h2 id="what-the-tests-cover"><a class="header" href="#what-the-tests-cover">What the Tests Cover</a></h2>
+<p><code>PCollectionsListIntegrationTest</code> exercises:</p>
+<ul>
+<li><code>widen</code>/<code>narrow</code> round-trips for <code>PVector</code> and <code>PStack</code>, including instance preservation</li>
+<li>Functor <code>map</code> over <code>PVector</code> and <code>PStack</code></li>
+<li>Monad <code>flatMap</code> and <code>ap</code>, mixing <code>PVector</code> and <code>PStack</code> inputs</li>
+<li><code>Traverse</code> with the <code>Optional</code> applicative, covering both success and short-circuit cases</li>
+<li><code>Foldable.foldMap</code> with the sum and string monoids</li>
+<li><code>Selective.select</code> over a <code>PVector</code> of <code>Choice</code> values</li>
+<li><code>Alternative</code> (<code>empty</code>, <code>orElse</code>) composing PCollections lists with each other</li>
+</ul>
+<p><code>PCollectionsListPropertyTest</code> uses jQwik to verify, across randomised inputs, that the standard
+laws hold for <code>PVector</code> widened through <code>ListKind</code>:</p>
+<ul>
+<li>Functor identity and composition</li>
+<li>Monad left identity, right identity, and associativity</li>
+<li>Foldable: <code>foldMap</code> matches <code>stream().sum()</code>, and is a monoid homomorphism over concatenation</li>
+</ul>
+<hr />
+<div id="admonition-see-example-code" class="admonition admonish-example" role="note" aria-labelledby="admonition-see-example-code-title">
 <div class="admonition-title">
-<div id="admonition-cardinality-and-navigator-generation-title">
-<p>Cardinality and Navigator Generation</p>
+<div id="admonition-see-example-code-title">
+<p>See Example Code</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-cardinality-and-navigator-generation"></a>
+<a class="admonition-anchor-link" href="#admonition-see-example-code"></a>
 </div>
 <div>
-<p>The <code>getCardinality()</code> method influences both <code>@GenerateTraversals</code> and <code>@GenerateFocus(generateNavigators = true)</code>. When the Focus processor generates navigator classes, it consults each SPI generator's cardinality to determine whether a field should produce an <code>AffinePath</code> (zero or one element) or a <code>TraversalPath</code> (zero or more elements). Without this, SPI-registered types would default to <code>FocusPath</code>, losing the correct widening semantics.</p>
+<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/pcollections/PCollectionsExample.java">PCollectionsExample.java</a></p>
 </div>
 </div>
-<h3 id="step-by-step-example"><a class="header" href="#step-by-step-example">Step-by-Step Example</a></h3>
-<p>Suppose you want to add traversal support for a custom <code>NonEmptyList&lt;A&gt;</code> type.</p>
-<p><strong>1. Create the generator class:</strong></p>
-<pre><code class="language-java">package com.example.generator;
-
-import com.palantir.javapoet.ClassName;
-import com.palantir.javapoet.CodeBlock;
-import io.avaje.spi.ServiceProvider;
-import java.util.List;
-import javax.lang.model.element.RecordComponentElement;
-import javax.lang.model.type.DeclaredType;
-import javax.lang.model.type.TypeMirror;
-import org.higherkindedj.optics.processing.generator.BaseTraversableGenerator;
-import org.higherkindedj.optics.processing.spi.TraversableGenerator;
-import org.higherkindedj.optics.util.Traversals;
-
-@ServiceProvider(TraversableGenerator.class)
-public class NonEmptyListGenerator extends BaseTraversableGenerator {
-
-    private static final String FQN = "com.example.NonEmptyList";
-
-    @Override
-    public boolean supports(final TypeMirror type) {
-        if (!(type instanceof DeclaredType declaredType)) return false;
-        return declaredType.asElement().toString().equals(FQN);
-    }
-
-    @Override
-    public CodeBlock generateModifyF(
-            final RecordComponentElement component,
-            final ClassName recordClassName,
-            final List&lt;? extends RecordComponentElement&gt; allComponents) {
-
-        final String componentName = component.getSimpleName().toString();
-        final String constructorArgs =
-            generateConstructorArgs(componentName, "newNonEmptyList", allComponents);
-
-        return CodeBlock.builder()
-            // Convert to java.util.List, traverse, convert back
-            .addStatement(
-                "final var javaList = source.$L().toList()", componentName)
-            .addStatement(
-                "final var effectOfList = $T.traverseList(javaList, f, applicative)",
-                Traversals.class)
-            .addStatement(
-                "final var effectOfNonEmptyList = applicative.map(list -&gt; com.example.NonEmptyList.of(list), effectOfList)")
-            .addStatement(
-                "return applicative.map(newNonEmptyList -&gt; new $T($L), effectOfNonEmptyList)",
-                recordClassName, constructorArgs)
-            .build();
-    }
-}
-</code></pre>
-<p><strong>2. Add the module-info.java provides clause:</strong></p>
-<pre><code class="language-java">module com.example.generators {
-    requires org.higherkindedj.processor;
-    requires com.palantir.javapoet;
-    requires java.compiler;
-    requires static io.avaje.spi;
-
-    provides org.higherkindedj.optics.processing.spi.TraversableGenerator
-        with com.example.generator.NonEmptyListGenerator;
-}
-</code></pre>
-<p><strong>3. Add Avaje SPI to your build:</strong></p>
-<pre><code class="language-kotlin">dependencies {
-    implementation("io.github.higher-kinded-j:hkj-processor:LATEST-VERSION")
-    implementation("com.palantir.javaformat:palantir-java-format:2.50.0")
-    compileOnly("io.avaje:avaje-spi-core:2.8")
-    annotationProcessor("io.avaje:avaje-spi-core:2.8")
-}
-</code></pre>
-<p><strong>4. Add your generator module to the annotation processor path in projects that use it:</strong></p>
-<pre><code class="language-kotlin">dependencies {
-    annotationProcessor("com.example:my-generators:1.0.0")
-}
-</code></pre>
-<p>The <code>TraversalProcessor</code> will now discover your <code>NonEmptyListGenerator</code> via <code>ServiceLoader</code> and generate traversals for any <code>NonEmptyList&lt;A&gt;</code> field.</p>
-<h3 id="implementation-tips"><a class="header" href="#implementation-tips">Implementation Tips</a></h3>
-<ul>
-<li><strong>Extend <code>BaseTraversableGenerator</code></strong> to inherit <code>getGenericTypeName()</code> and <code>generateConstructorArgs()</code> helper methods.</li>
-<li><strong>Use fully qualified names</strong> in <code>supports()</code> to avoid false matches with similarly named types.</li>
-<li><strong>Reuse <code>Traversals.traverseList()</code></strong> when your type can be converted to a <code>java.util.List</code>. Most third-party generators follow this pattern: convert to list, traverse, convert back.</li>
-<li><strong>Override <code>getFocusTypeArgumentIndex()</code></strong> if your type's traversal target is not the first type parameter (e.g. <code>Either&lt;L, R&gt;</code> focuses on index 1).</li>
-<li><strong>Override <code>getCardinality()</code></strong> to return <code>Cardinality.ZERO_OR_ONE</code> for optional-like types (e.g. <code>Either</code>, <code>Try</code>, <code>Validated</code>). The default <code>ZERO_OR_MORE</code> is correct for collection-like types and does not need overriding.</li>
-<li><strong>Write integration tests</strong> using Google's compile-testing library to verify generated code compiles and contains the expected statements.</li>
-</ul>
-<hr />
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
 <div id="admonition-key-takeaways-title">
@@ -550,11 +419,11 @@ public class NonEmptyListGenerator extends BaseTraversableGenerator {
 </div>
 <div>
 <ul>
-<li><strong>23 built-in generators</strong> cover JDK types, HKJ core types, Eclipse Collections, Guava, Vavr, and Apache Commons</li>
-<li><strong>Third-party support activates automatically</strong> when the library is on the classpath; no configuration required</li>
-<li><strong>The SPI is extensible</strong>: implement <code>TraversableGenerator</code>, register it with <code>@ServiceProvider</code>, and the processor discovers it at compile time</li>
-<li><strong>Most generators follow a common pattern</strong>: convert to <code>java.util.List</code>, traverse with <code>Traversals.traverseList()</code>, convert back to the original type</li>
-<li><strong>Cardinality drives navigator widening</strong>: <code>ZERO_OR_ONE</code> produces <code>AffinePath</code>; <code>ZERO_OR_MORE</code> produces <code>TraversalPath</code> in generated navigators</li>
+<li><strong><code>PVector</code> and <code>PStack</code> work through <code>ListKind</code> with no production code changes</strong>, because they implement <code>java.util.List</code></li>
+<li><strong>The widen/narrow boundary is free</strong>, with no defensive copying in either direction</li>
+<li><strong>PCollections pays a 2 to 3 times iteration tax</strong> on <code>map</code>, <code>flatMap</code>, and <code>foldMap</code> compared to <code>ArrayList</code></li>
+<li><strong>The tax shrinks for richer operations</strong>: <code>traverse</code> is only 30% slower because per-element applicative work dominates</li>
+<li><strong>Operations return <code>java.util.List</code></strong>, not the original persistent type. Phase 3 is where end-to-end type preservation lands</li>
 </ul>
 </div>
 </div>
@@ -567,25 +436,25 @@ public class NonEmptyListGenerator extends BaseTraversableGenerator {
 </div>
 <div>
 <ul>
-<li><a href="../optics/traversals.html">Traversals</a> - Using generated traversals in practice</li>
-<li><a href="../optics/common_data_structure_traversals.html">Common Data Structures</a> - Traversals for Optional, Map, and Tuple types</li>
-<li><a href="gradle_plugin.html">Build Plugins</a> - The build plugin adds <code>hkj-processor-plugins</code> to your annotation processor path automatically</li>
+<li><a href="../benchmarks.html">Benchmarks and Performance</a> - The full benchmark suite and how to read its output</li>
+<li><a href="generator_plugins.html">Traversal Generator Plugins</a> - Phase 2 will add PCollections support to <code>@GenerateTraversals</code></li>
+<li><a href="../monads/list_monad.html">List Type Class Instances</a> - The instances PCollections piggy-backs on</li>
 </ul>
 </div>
 </div>
 <hr />
-<p><strong>Previous:</strong> <a href="diagnostics.html">Diagnostics</a>
-<strong>Next:</strong> <a href="pcollections_integration.html">PCollections Integration</a></p>
+<p><strong>Previous:</strong> <a href="generator_plugins.html">Traversal Generator Plugins</a>
+<strong>Next:</strong> <a href="claude_code_skills.html">Claude Code Skills</a></p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../tooling/diagnostics.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../tooling/generator_plugins.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../tooling/pcollections_integration.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../tooling/claude_code_skills.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -595,11 +464,11 @@ public class NonEmptyListGenerator extends BaseTraversableGenerator {
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../tooling/diagnostics.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../tooling/generator_plugins.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../tooling/pcollections_integration.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../tooling/claude_code_skills.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

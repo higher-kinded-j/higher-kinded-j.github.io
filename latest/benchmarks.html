@@ -367,13 +367,15 @@ EitherBenchmark.leftMap                    thrpt   20  89.123 ± 1.234  ops/us
 <p><strong>Score</strong> is the measured throughput. <strong>Error</strong> is the 99.9% confidence interval. If the error is larger than ~30% of the score, the result is noisy — increase warmup or measurement iterations.</p>
 <h3 id="what-to-look-for"><a class="header" href="#what-to-look-for">What to Look For</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Signal</th><th>Meaning</th></tr></thead><tbody>
-<tr><td>Left/Nothing operations 5-10x faster than Right/Just</td><td>Instance reuse is working</td></tr>
+<tr><td>Left/Nothing operations 5-40x faster than Right/Just</td><td>Instance reuse is working</td></tr>
 <tr><td>VTask ~10-30% slower than IO for simple ops</td><td>Expected virtual thread overhead</td></tr>
+<tr><td>VTask blocking I/O 10x+ faster than platform threads at scale</td><td>Virtual thread scheduler scaling</td></tr>
 <tr><td>Deep chain (50+ steps) completes without error</td><td>Stack safety is intact</td></tr>
 <tr><td>VStream slower than Java Stream</td><td>Expected; virtual thread + pull overhead</td></tr>
 <tr><td>parEvalMap scales with concurrency for I/O</td><td>Parallel pipeline working correctly</td></tr>
 <tr><td>Scope joiners similar speed to Par.all</td><td>Minimal Scope abstraction cost</td></tr>
 <tr><td>Wrapper overhead &lt; 15%</td><td>Acceptable Path wrapper cost</td></tr>
+<tr><td>PVector via ListKind 30-70% the throughput of ArrayList</td><td>Persistent collection iteration tax</td></tr>
 </tbody></table>
 </div>
 <h3 id="warning-signs"><a class="header" href="#warning-signs">Warning Signs</a></h3>
@@ -393,17 +395,22 @@ EitherBenchmark.leftMap                    thrpt   20  89.123 ± 1.234  ops/us
 <tr><td><code>leftMap</code> vs <code>rightMap</code></td><td>Left 5-10x faster</td></tr>
 <tr><td><code>nothingMap</code> vs <code>justMap</code></td><td>Nothing 5-10x faster</td></tr>
 <tr><td><code>leftLongChain</code> vs <code>rightLongChain</code></td><td>Left 10-50x faster</td></tr>
+<tr><td><code>constructNothing</code> vs <code>constructJust</code></td><td>Singleton reuse can reach 30-40x</td></tr>
 </tbody></table>
 </div>
+<p>The "construct" pair is the strongest signal that allocation, not branching, dominates the gap. <code>constructNothing</code> returns the cached singleton, whereas <code>constructJust</code> allocates a fresh wrapper. On hot paths producing many <code>Just</code> or <code>Right</code> values, that allocation cost is real.</p>
 <h3 id="vtask"><a class="header" href="#vtask">VTask</a></h3>
-<p>Virtual thread overhead is the dominant cost for simple operations. For real workloads involving I/O, this overhead is negligible.</p>
+<p>Virtual thread overhead is the dominant cost for simple operations. For real workloads involving I/O, this overhead is negligible, and the scheduling story flips dramatically in VTask's favour.</p>
 <div class="table-wrapper"><table><thead><tr><th>Comparison</th><th>Expected</th></tr></thead><tbody>
 <tr><td>Construction (succeed, delay)</td><td>Very fast (~100+ ops/us)</td></tr>
 <tr><td>VTask vs IO (simple execution)</td><td>VTask ~10-30% slower</td></tr>
 <tr><td>Deep chains (50+)</td><td>Completes without error</td></tr>
-<tr><td>High concurrency (1000+ tasks)</td><td>VTask scales better than platform threads</td></tr>
+<tr><td>Blocking I/O at concurrency 10</td><td>Roughly equivalent to platform threads</td></tr>
+<tr><td>Blocking I/O at concurrency 100</td><td>VTask ~3-4x faster</td></tr>
+<tr><td>Blocking I/O at concurrency 1000</td><td>VTask 15-20x faster</td></tr>
 </tbody></table>
 </div>
+<p>The blocking I/O numbers come from <code>VTaskVsPlatformThreadsBenchmark</code>. Platform throughput collapses as concurrency grows because OS threads become the bottleneck; virtual thread throughput stays roughly flat because the scheduler parks blocked carriers freely. This is the strongest single argument for VTask in I/O-bound workloads.</p>
 <h3 id="vstream"><a class="header" href="#vstream">VStream</a></h3>
 <p>VStream's pull-based model adds overhead per element compared to Java Stream's push model, but provides laziness, virtual thread execution, and error recovery that Java Stream cannot.</p>
 <div class="table-wrapper"><table><thead><tr><th>Comparison</th><th>Expected</th></tr></thead><tbody>
@@ -421,6 +428,24 @@ EitherBenchmark.leftMap                    thrpt   20  89.123 ± 1.234  ops/us
 <tr><td>ForPath vs direct chaining</td><td>10-25%</td></tr>
 </tbody></table>
 </div>
+<h3 id="pcollections-via-listkind"><a class="header" href="#pcollections-via-listkind">PCollections via <code>ListKind</code></a></h3>
+<p><code>PCollectionsHktBenchmark</code> measures <code>PVector</code> against <code>ArrayList</code> when both are processed through the standard <code>ListMonad</code>/<code>ListTraverse</code> pipeline. The widen/narrow boundary itself is free; the cost lives in iteration.</p>
+<div class="table-wrapper"><table><thead><tr><th>Comparison</th><th>Expected Ratio</th></tr></thead><tbody>
+<tr><td><code>widenNarrow</code> PVector vs ArrayList</td><td>Indistinguishable, both at the JMH ceiling</td></tr>
+<tr><td><code>map</code> / <code>flatMap</code> / <code>foldMap</code> PVector vs ArrayList</td><td>PVector 30-40% the throughput</td></tr>
+<tr><td><code>traverse</code> PVector vs ArrayList</td><td>PVector ~70% the throughput</td></tr>
+</tbody></table>
+</div>
+<p>The traverse case is the headline result. The more applicative work an operation does per element, the smaller the gap, because applicative <code>map2</code> and <code>Kind</code> boxing dominate the underlying iteration cost. See <a href="tooling/pcollections_integration.html">PCollections Integration</a> for the full table and methodology.</p>
+<h3 id="free-monad"><a class="header" href="#free-monad">Free Monad</a></h3>
+<p><code>Free</code> trades raw speed for program-as-data: a <code>Free</code> programme can be inspected, transformed, or interpreted multiple ways before it is run. That flexibility costs at least three orders of magnitude versus direct function composition.</p>
+<div class="table-wrapper"><table><thead><tr><th>Comparison</th><th>Expected Ratio</th></tr></thead><tbody>
+<tr><td><code>directComposition</code> vs <code>deepChainExecution</code></td><td>Direct ~3-4 orders of magnitude faster</td></tr>
+<tr><td><code>pureTrampolineIntegration</code> vs <code>flatMappedTrampolineIntegration</code></td><td>Pure ~100x faster</td></tr>
+<tr><td><code>programConstruction</code> vs <code>sequentialInterpretation</code></td><td>Construction far cheaper than interpretation</td></tr>
+</tbody></table>
+</div>
+<p>If a workload is on a hot path and does not benefit from inspection or alternative interpreters, prefer direct composition. <code>Free</code> shines when the same programme is interpreted multiple ways, when the structure is analysed before execution, or when the alternatives would require substantial duplication.</p>
 <hr />
 <h2 id="benchmark-assertion-tests"><a class="header" href="#benchmark-assertion-tests">Benchmark Assertion Tests</a></h2>
 <p>The benchmark suite includes automated assertion tests that validate performance characteristics after each benchmark run. These are not just "did it finish?" checks — they verify relative performance, overhead ratios, and sanity bounds.</p>
@@ -504,10 +529,11 @@ EitherBenchmark.leftMap                    thrpt   20  89.123 ± 1.234  ops/us
 <hr />
 <h2 id="when-overhead-matters-and-when-it-doesnt"><a class="header" href="#when-overhead-matters-and-when-it-doesnt">When Overhead Matters (and When It Doesn't)</a></h2>
 <p>The benchmarks consistently show that abstraction overhead is measured in <strong>nanoseconds</strong>. Real-world operations — database queries, HTTP calls, file reads — are measured in <strong>milliseconds</strong>. The overhead is three to four orders of magnitude smaller than any I/O operation.</p>
-<p>Abstraction overhead matters in exactly two scenarios:</p>
+<p>Abstraction overhead matters in exactly three scenarios:</p>
 <ol>
-<li><strong>Tight computational loops</strong> processing millions of items per second with no I/O — use primitives directly</li>
-<li><strong>Very long chains</strong> (hundreds of steps) creating GC pressure — break into named submethods</li>
+<li><strong>Tight computational loops</strong> processing millions of items per second with no I/O. Use primitives directly.</li>
+<li><strong>Very long chains</strong> (hundreds of steps) creating GC pressure. Break into named submethods.</li>
+<li><strong>Reflexive parallelism on trivial work.</strong> <code>VTaskParBenchmark</code> shows <code>par*</code> variants running thousands of times slower than their sequential equivalents when the per-task work is negligible. Forking, joining, and synchronising all cost more than a few-nanosecond computation. Reach for <code>Par.zip</code>, <code>Par.map2</code>, or <code>Scope</code> only when each branch does enough work to amortise the structured-concurrency cost.</li>
 </ol>
 <p>For everything else, the type safety, composability, and testability benefits far outweigh the cost.</p>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
