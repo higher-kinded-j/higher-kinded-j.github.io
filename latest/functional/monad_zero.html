@@ -277,6 +277,7 @@
 <ul>
 <li>How MonadZero combines Monad and Alternative capabilities</li>
 <li>The role of <code>zero()</code> as an absorbing element in monadic sequences</li>
+<li>Filtering directly with <code>MonadZero.filter(predicate, ma)</code></li>
 <li>Enabling filtering in for-comprehensions with <code>when()</code></li>
 <li>Practical examples using List, Maybe, and Optional</li>
 <li>Writing generic functions for monads with failure semantics</li>
@@ -324,6 +325,12 @@ var result = For.from(monad, list1)
     @Override
     default &lt;A&gt; Kind&lt;F, A&gt; empty() {
         return zero();
+    }
+
+    // Derived from flatMap + of / zero; overridden by List and Stream
+    // for an O(n) single-pass implementation.
+    default &lt;A&gt; Kind&lt;F, A&gt; filter(Predicate&lt;? super A&gt; predicate, Kind&lt;F, A&gt; ma) {
+        return flatMap(a -&gt; predicate.test(a) ? of(a) : zero(), ma);
     }
 }
 </code></pre>
@@ -373,15 +380,27 @@ System.out.println("Result: " + narrow);
 </tbody></table>
 </div>
 <hr />
+<h2 id="filtering-directly-with-filter"><a class="header" href="#filtering-directly-with-filter">Filtering Directly with <code>filter</code></a></h2>
+<p><code>MonadZero</code> also exposes <code>filter(predicate, ma)</code> so you don't need a for-comprehension just to drop unwanted elements. The argument order matches <code>Monad.flatMap</code> (predicate first, then the monadic value), not the instance-method style of <code>Stream.filter</code> / <code>Optional.filter</code>:</p>
+<pre><code class="language-java">// List: keep positives
+MonadZero&lt;ListKind.Witness&gt; lz = ListMonad.INSTANCE;
+Kind&lt;ListKind.Witness, Integer&gt; positives =
+    lz.filter(x -&gt; x &gt; 0, LIST.widen(List.of(-1, 2, -3, 4)));   // [2, 4]
+
+// Maybe: keep even values
+MonadZero&lt;MaybeKind.Witness&gt; mz = MaybeMonad.INSTANCE;
+mz.filter(x -&gt; x % 2 == 0, mz.of(4));   // Just(4)
+mz.filter(x -&gt; x % 2 == 0, mz.of(3));   // Nothing
+</code></pre>
+<p>The default implementation is derived from <code>flatMap</code> + <code>of</code> / <code>zero</code> and adds no new algebraic obligations:</p>
+<pre><code>filter(p, ma)  ≡  flatMap(a -&gt; p.test(a) ? of(a) : zero(), ma)
+</code></pre>
+<p><code>ListMonad</code> and <code>StreamMonad</code> override <code>filter</code> to avoid the per-element singleton/empty allocations the derived form would produce — <code>ListMonad</code> walks once into a single result list, <code>StreamMonad</code> delegates to <code>Stream.filter</code> to preserve laziness.</p>
+<hr />
 <h2 id="writing-generic-functions"><a class="header" href="#writing-generic-functions">Writing Generic Functions</a></h2>
-<p><code>MonadZero</code> allows you to write generic functions that work over any monad with a concept of "emptiness":</p>
-<pre><code class="language-java">// A generic "filter" that works with List, Maybe, Optional, or Stream
-public static &lt;F, A&gt; Kind&lt;F, A&gt; filterM(
-    MonadZero&lt;F&gt; mz, Kind&lt;F, A&gt; fa, Predicate&lt;A&gt; predicate) {
-    return mz.flatMap(
-        a -&gt; predicate.test(a) ? mz.of(a) : mz.zero(),
-        fa
-    );
+<p><code>MonadZero</code> lets you write generic functions that work over any monad with a concept of "emptiness". Since <code>filter</code> is now part of the interface, generic filtering is just a method call:</p>
+<pre><code class="language-java">public static &lt;F, A extends Number&gt; Kind&lt;F, A&gt; keepPositive(MonadZero&lt;F&gt; mz, Kind&lt;F, A&gt; fa) {
+    return mz.filter(a -&gt; a.doubleValue() &gt; 0, fa);
 }
 </code></pre>
 <hr />
@@ -395,7 +414,8 @@ public static &lt;F, A&gt; Kind&lt;F, A&gt; filterM(
 <div>
 <ul>
 <li><strong><code>zero()</code> is the absorbing element</strong> that terminates a computational path, like multiplying by zero</li>
-<li><strong><code>.when()</code> in for-comprehensions</strong> is the primary use case, enabling mid-chain filtering</li>
+<li><strong><code>filter(predicate, ma)</code></strong> drops values that fail the predicate by short-circuiting to <code>zero()</code></li>
+<li><strong><code>.when()</code> in for-comprehensions</strong> is built on <code>filter</code> and is the idiomatic form for mid-chain guards</li>
 <li><strong>Requires <code>MonadZero</code></strong>, not just <code>Monad</code>; use <code>For.from(monadZero, ...)</code> to unlock filtering</li>
 <li><strong>Works uniformly</strong> across List, Maybe, Optional, and Stream</li>
 </ul>
