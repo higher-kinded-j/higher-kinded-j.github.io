@@ -265,7 +265,7 @@
 }
 
 </style>
-<h1 id="compile-time-checks-catching-path-mismatches-early"><a class="header" href="#compile-time-checks-catching-path-mismatches-early">Compile-Time Checks: Catching Path Mismatches Early</a></h1>
+<h1 id="compile-time-checks-the-hkj-checker"><a class="header" href="#compile-time-checks-the-hkj-checker">Compile-Time Checks: the HKJ Checker</a></h1>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -275,153 +275,128 @@
 </div>
 <div>
 <ul>
-<li>Why Path type mismatches are dangerous and hard to catch in tests</li>
-<li>How the HKJ compile-time checker detects mismatches before runtime</li>
-<li>Which methods and Path types the checker covers</li>
-<li>Known limitations and the no-false-positives policy</li>
+<li>Every check the HKJ compile-time checker performs, and what each catches</li>
+<li>How to configure (disable / change severity) individual checks</li>
+<li>The javac-plugin-only boundary, and the no-false-positives policy</li>
 </ul>
 </div>
 </div>
+<p>The HKJ checker is a <code>javac</code> compiler plugin (<code>hkj-checker</code>) that catches
+Higher-Kinded-J mistakes during compilation instead of at runtime — or,
+for the silent ones, instead of never. It is the <strong>authoritative
+reference</strong> for what is detected; the per-feature <em>Common Compiler
+Errors</em> chapters cross-link here.</p>
 <hr />
-<h2 id="the-problem"><a class="header" href="#the-problem">The Problem</a></h2>
-<p>Each Path type can only chain with the same type. This code compiles without errors:</p>
-<pre><code class="language-java">MaybePath&lt;Integer&gt; result = Path.just(1)
-    .via(n -&gt; Path.io(() -&gt; n + 1));    // returns IOPath, not MaybePath
+<h2 id="why-a-checker"><a class="header" href="#why-a-checker">Why a checker</a></h2>
+<p>Many HKJ mistakes are <em>silent</em>: the code type-checks (generics erasure
+hides the problem) and only fails at runtime — or, worse, carries the
+wrong value silently. A representative example:</p>
+<pre><code class="language-java">MaybePath&lt;Integer&gt; r = Path.just(1).via(n -&gt; Path.io(() -&gt; n + 1)); // IOPath, not MaybePath
 </code></pre>
-<p>But at runtime it throws <code>IllegalArgumentException</code>:</p>
-<pre><code>java.lang.IllegalArgumentException: Type mismatch in via():
-    expected MaybePath but mapper returned IOPath.
-    Each Path type can only chain with the same type.
-    Use conversion methods (toEitherPath, toMaybePath, etc.) to change types.
-</code></pre>
-<p>This class of bug is particularly insidious because:</p>
-<ul>
-<li>The code compiles successfully</li>
-<li>It passes type checking (generics erasure hides the mismatch)</li>
-<li>It only fails at runtime when the specific code path executes</li>
-<li>In branching logic, the mismatch may lurk in a rarely-tested branch</li>
-</ul>
-<hr />
-<h2 id="the-solution"><a class="header" href="#the-solution">The Solution</a></h2>
-<p>The HKJ checker is a javac compiler plugin that detects Path type mismatches during compilation. With the Gradle plugin, it is enabled by default:</p>
-<pre><code class="language-gradle">plugins {
-    id("io.github.higher-kinded-j.hkj") version "0.3.7-SNAPSHOT"
-}
-</code></pre>
-<p>Now the same code produces a compile-time error:</p>
-<pre><code>error: Path type mismatch in via(): expected MaybePath but received IOPath.
-    Each Path type can only chain with the same type.
-    Use conversion methods (toEitherPath, toMaybePath, etc.) to change types.
-    .via(n -&gt; Path.io(() -&gt; n + 1));
-                   ^
-</code></pre>
-<p>The fix is to convert at the boundary:</p>
-<pre><code class="language-java">MaybePath&lt;Integer&gt; result = Path.just(1)
-    .via(n -&gt; Path.io(() -&gt; n + 1).toMaybePath());    // explicit conversion
-</code></pre>
-<hr />
-<h2 id="what-the-checker-detects"><a class="header" href="#what-the-checker-detects">What the Checker Detects</a></h2>
-<p>The checker inspects calls to Path composition methods and verifies that the receiver and argument resolve to the same Path family.</p>
-<div class="table-wrapper"><table><thead><tr><th>Method</th><th>What Is Checked</th></tr></thead><tbody>
-<tr><td><code>via(Function)</code></td><td>Return type of the function matches the receiver's Path type</td></tr>
-<tr><td><code>then(Supplier)</code></td><td>Return type of the supplier matches the receiver's Path type</td></tr>
-<tr><td><code>zipWith(Combinable, BiFunction)</code></td><td>Type of the first argument matches the receiver's Path type</td></tr>
-<tr><td><code>zipWith3(Combinable, Combinable, TriFunction)</code></td><td>Types of both <code>Combinable</code> arguments match the receiver</td></tr>
-<tr><td><code>recoverWith(Function)</code></td><td>Return type of the recovery function matches the receiver's Path type</td></tr>
-<tr><td><code>orElse(Supplier)</code></td><td>Return type of the supplier matches the receiver's Path type</td></tr>
-</tbody></table>
-</div>
-<hr />
-<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
-<p>The checker is a standard <code>com.sun.source.util.Plugin</code> that hooks into the Java compiler's <code>ANALYZE</code> phase:</p>
-<ol>
-<li><strong>Registration</strong> -- The <code>HKJCheckerPlugin</code> registers a <code>TaskListener</code> that fires after type attribution is complete</li>
-<li><strong>Tree scanning</strong> -- A <code>TreeScanner</code> visits every method invocation in the compilation unit</li>
-<li><strong>Method matching</strong> -- The scanner identifies calls to <code>via</code>, <code>then</code>, <code>zipWith</code>, <code>recoverWith</code>, and <code>orElse</code></li>
-<li><strong>Type resolution</strong> -- Using the compiler's type information, it resolves the concrete Path types of the receiver and argument</li>
-<li><strong>Family comparison</strong> -- If both types are concrete Path types, it checks they belong to the same family</li>
-<li><strong>Diagnostic reporting</strong> -- Mismatches are reported as compiler errors at the exact source location</li>
-</ol>
-<p>The checker runs as part of normal compilation. There is no separate build step or additional tool to invoke.</p>
-<hr />
-<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
-<h3 id="enabling-default"><a class="header" href="#enabling-default">Enabling (Default)</a></h3>
-<p>The Gradle plugin enables the checker by default. No configuration is needed:</p>
-<pre><code class="language-gradle">plugins {
-    id("io.github.higher-kinded-j.hkj") version "0.3.7-SNAPSHOT"
-}
-</code></pre>
-<h3 id="disabling"><a class="header" href="#disabling">Disabling</a></h3>
-<p>To disable compile-time checks:</p>
-<pre><code class="language-gradle">hkj {
-    checks {
-        pathTypeMismatch = false
-    }
-}
-</code></pre>
-<h3 id="maven-plugin"><a class="header" href="#maven-plugin">Maven Plugin</a></h3>
-<p>The Maven plugin also enables the checker by default:</p>
-<pre><code class="language-xml">&lt;plugin&gt;
-    &lt;groupId&gt;io.github.higher-kinded-j&lt;/groupId&gt;
-    &lt;artifactId&gt;hkj-maven-plugin&lt;/artifactId&gt;
-    &lt;version&gt;0.3.7-SNAPSHOT&lt;/version&gt;
-    &lt;extensions&gt;true&lt;/extensions&gt;
-&lt;/plugin&gt;
-</code></pre>
-<p>To disable:</p>
-<pre><code class="language-xml">&lt;configuration&gt;
-    &lt;pathTypeMismatch&gt;false&lt;/pathTypeMismatch&gt;
-&lt;/configuration&gt;
-</code></pre>
-<h3 id="manual-setup-without-build-plugins"><a class="header" href="#manual-setup-without-build-plugins">Manual Setup (Without Build Plugins)</a></h3>
-<p><strong>Gradle:</strong></p>
-<pre><code class="language-gradle">dependencies {
-    annotationProcessor("io.github.higher-kinded-j:hkj-checker:0.3.7-SNAPSHOT")
-}
-
-tasks.withType&lt;JavaCompile&gt;().configureEach {
-    options.compilerArgs.add("-Xplugin:HKJChecker")
-}
-</code></pre>
-<p><strong>Maven:</strong></p>
-<pre><code class="language-xml">&lt;plugin&gt;
-    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
-    &lt;artifactId&gt;maven-compiler-plugin&lt;/artifactId&gt;
-    &lt;configuration&gt;
-        &lt;annotationProcessorPaths&gt;
-            &lt;path&gt;
-                &lt;groupId&gt;io.github.higher-kinded-j&lt;/groupId&gt;
-                &lt;artifactId&gt;hkj-checker&lt;/artifactId&gt;
-                &lt;version&gt;0.3.7-SNAPSHOT&lt;/version&gt;
-            &lt;/path&gt;
-        &lt;/annotationProcessorPaths&gt;
-        &lt;compilerArgs&gt;
-            &lt;arg&gt;-Xplugin:HKJChecker&lt;/arg&gt;
-        &lt;/compilerArgs&gt;
-    &lt;/configuration&gt;
-&lt;/plugin&gt;
-</code></pre>
-<hr />
-<h2 id="limitations"><a class="header" href="#limitations">Limitations</a></h2>
-<p>The checker follows a strict <strong>no-false-positives policy</strong>. It is better to miss a real mismatch than to report a false error.</p>
-<div id="admonition-cases-the-checker-cannot-detect" class="admonition admonish-warning" role="note" aria-labelledby="admonition-cases-the-checker-cannot-detect-title">
+<p>This compiles, then throws <code>IllegalArgumentException</code> at runtime. The
+checker turns this class of bug into a compile-time diagnostic.</p>
+<div id="admonition-javac-plugin-only-boundary" class="admonition admonish-warning" role="note" aria-labelledby="admonition-javac-plugin-only-boundary-title">
 <div class="admonition-title">
-<div id="admonition-cases-the-checker-cannot-detect-title">
-<p>Cases the Checker Cannot Detect</p>
+<div id="admonition-javac-plugin-only-boundary-title">
+<p>javac-plugin-only boundary</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-cases-the-checker-cannot-detect"></a>
+<a class="admonition-anchor-link" href="#admonition-javac-plugin-only-boundary"></a>
 </div>
 <div>
-<ul>
-<li><strong>Generic type parameters</strong> -- When a method returns <code>T</code> where <code>T</code> extends a Path type, the concrete type may not be resolvable at compile time</li>
-<li><strong>Complex lambda inference</strong> -- Deeply nested lambdas or method references with ambiguous return types may prevent type resolution</li>
-<li><strong>Indirect construction</strong> -- Path instances created through helper methods, factories, or dependency injection are not tracked</li>
-<li><strong>Runtime polymorphism</strong> -- When the Path type is determined by a runtime condition (e.g., a method that returns different Path types based on input)</li>
-</ul>
+<p>The checker runs inside <code>javac</code>, driven by the HKJ Gradle/Maven plugin
+(or a manual <code>-Xplugin:HKJChecker</code>). <strong>IDEs and non-<code>javac</code> compilers
+do not run it</strong> — there you still see only the raw compiler message (or
+nothing, for the silent cases). The <em>Common Compiler Errors</em> chapters
+remain the reference for that audience; this page is the reference for
+what the checker adds on top in a plugin-driven build/CI.</p>
 </div>
 </div>
-<p>In these cases, the checker silently skips the check. Runtime type checking in the Path implementations provides a safety net for cases the compiler cannot catch.</p>
 <hr />
+<h2 id="what-the-checker-detects"><a class="header" href="#what-the-checker-detects">What the checker detects</a></h2>
+<p>Each check has an id (used for configuration). <strong>Default</strong> is the
+severity when nothing is configured; <em>warn-default</em> checks are the
+"sole signal over javac-accepted code" ones, kept at warning during
+soak.</p>
+<div class="table-wrapper"><table><thead><tr><th>Check id</th><th>Detects</th><th>Default</th><th>Companion to a javac error?</th></tr></thead><tbody>
+<tr><td><code>path-type-mismatch</code></td><td>Different Path types mixed in <code>via</code>/<code>then</code>/<code>zipWith</code>/<code>zipWith3</code>/<code>recoverWith</code>/<code>orElse</code></td><td>error</td><td>No — sole signal (else runtime <code>IllegalArgumentException</code>)</td></tr>
+<tr><td><code>effect-composition</code></td><td><code>Interpreters.combine()</code> called with an unsupported arity</td><td>error</td><td>Companion</td></tr>
+<tr><td><code>transformer-missing-monad</code></td><td>Zero-arg construction of <code>EitherT</code>/<code>OptionalT</code>/<code>MaybeT</code>/<code>ReaderT</code>/<code>StateT</code>/<code>WriterTMonad</code> (the outer <code>Monad&lt;F&gt;</code> — and <code>Monoid&lt;W&gt;</code> for WriterT — is required)</td><td>error</td><td>Companion</td></tr>
+<tr><td><code>free-switch-exhaustive</code></td><td>A <code>switch</code> over <code>Free</code> matching <code>Pure</code>/<code>Suspend</code>/<code>FlatMapped</code> but missing <code>HandleError</code>/<code>Ap</code></td><td>error</td><td>Companion</td></tr>
+<tr><td><code>discarded-effect</code></td><td>A lazy effect (<code>Path</code>/<code>IO</code>/<code>Free</code>, the <code>Chainable</code> hierarchy) built then dropped as a bare statement — a silent no-op</td><td>error</td><td>No — sole signal</td></tr>
+<tr><td><code>state-t-mapt-arity</code></td><td><code>StateT.mapT(f)</code> missing the leading <code>Monad&lt;G&gt;</code> (only <code>StateT.mapT</code> takes it)</td><td>error</td><td>Companion</td></tr>
+<tr><td><code>error-type-mismatch</code></td><td>An Either chain step whose error type <code>E</code> differs from the chain's and is silently erased through <code>Chainable&lt;B&gt;</code> (latent <code>ClassCastException</code>)</td><td><strong>warn</strong></td><td>No — sole signal</td></tr>
+<tr><td><code>kind-value-narrow</code></td><td><code>.value()</code> on a bare <code>Kind</code> (it is on the concrete transformer; narrow first)</td><td>error</td><td>Companion</td></tr>
+<tr><td><code>witness-arity</code></td><td>A higher-kinded witness (type parameter or class) not <code>WitnessArity</code>-bounded, used as <code>Kind</code>/<code>Kind2</code>/<code>Monad</code>/<code>Functor</code>/<code>Applicative</code></td><td>error</td><td>Companion</td></tr>
+<tr><td><code>via-non-path</code></td><td><code>via</code>/<code>flatMap</code>/<code>then</code> given a function that returns a plain value instead of a Path (use <code>map</code>)</td><td>error</td><td>Companion</td></tr>
+<tr><td><code>map-nests-effect</code></td><td><code>map</code> given a function that returns the <strong>same</strong> Path type — silently nests the effect; you meant <code>via</code></td><td><strong>warn</strong></td><td>No — sole signal</td></tr>
+<tr><td><code>migration-nudge</code></td><td><code>Free.liftF</code>/<code>Free.suspend</code> (→ FreePath/<code>*Ops</code>) and <code>InjectInstances.injectLeft/injectRight/injectRightThen</code> (→ <code>@ComposeEffects</code>) — valid code, an ergonomics nudge</td><td><strong>warn</strong></td><td>No — advisory</td></tr>
+</tbody></table>
+</div>
+<p>"Companion" checks add an actionable HKJ message beside <code>javac</code>'s own
+cryptic error. "Sole signal" / "advisory" checks are the only
+compile-time signal (the code otherwise compiles), which is why the
+heuristic and advisory ones default to <em>warn</em>.</p>
+<hr />
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<p>Checks are configured through the plugin argument string. <code>javac</code>
+splits <code>-Xplugin</code> on whitespace into the plugin name and its arguments:</p>
+<pre><code>-Xplugin:HKJChecker disable=&lt;id&gt;[,&lt;id&gt;...] severity=error|warn severity:&lt;id&gt;=error|warn
+</code></pre>
+<ul>
+<li><code>disable=&lt;id&gt;[,&lt;id&gt;...]</code> — turn the listed checks off entirely (e.g.
+<code>disable=map-nests-effect,discarded-effect</code>).</li>
+<li><code>severity=error|warn</code> — the global default for the error-default
+checks (default <code>error</code>). It does <strong>not</strong> silently promote the
+warn-default checks (<code>error-type-mismatch</code>, <code>map-nests-effect</code>,
+<code>migration-nudge</code>) — those stay <code>warn</code> unless promoted explicitly.</li>
+<li><code>severity:&lt;id&gt;=error|warn</code> — override one check. Wins over the global
+default and over a check's built-in default, so a team can promote a
+warn-default check, e.g. <code>severity:error-type-mismatch=error</code>, or
+downgrade a single error-default check.</li>
+</ul>
+<p>Resolution order for a check: an explicit <code>severity:&lt;id&gt;=…</code> override;
+else the warn-default checks stay <code>warn</code>; else the global <code>severity</code>.</p>
+<p>Unknown ids and unparseable values are ignored rather than failing the
+build — a typo in a compiler argument must never break compilation.</p>
+<p>The HKJ Gradle/Maven plugin enables the checker by default and passes
+this argument through; see <a href="gradle_plugin.html">Build Plugins</a>. Manual
+setup without the build plugin:</p>
+<p><strong>Gradle</strong></p>
+<pre><code class="language-gradle">dependencies {
+    annotationProcessor("io.github.higher-kinded-j:hkj-checker:&lt;version&gt;")
+}
+tasks.withType&lt;JavaCompile&gt;().configureEach {
+    options.compilerArgs.add("-Xplugin:HKJChecker disable=effect-composition")
+}
+</code></pre>
+<p><strong>Maven</strong></p>
+<pre><code class="language-xml">&lt;annotationProcessorPaths&gt;
+  &lt;path&gt;
+    &lt;groupId&gt;io.github.higher-kinded-j&lt;/groupId&gt;
+    &lt;artifactId&gt;hkj-checker&lt;/artifactId&gt;
+    &lt;version&gt;${hkj.version}&lt;/version&gt;
+  &lt;/path&gt;
+&lt;/annotationProcessorPaths&gt;
+&lt;compilerArgs&gt;
+  &lt;arg&gt;-Xplugin:HKJChecker severity=warn&lt;/arg&gt;
+&lt;/compilerArgs&gt;
+</code></pre>
+<hr />
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How it works</a></h2>
+<p>A standard <code>com.sun.source.util.Plugin</code> hooks the <code>ANALYZE</code> phase (after
+type attribution). For each compilation unit a tree scanner runs the
+enabled checks, resolving types via the public <code>javax.lang.model</code>
+utilities (or, for the original mismatch check, javac's attributed
+types) and emitting diagnostics at the exact source location. It is
+part of normal compilation — no separate build step.</p>
+<hr />
+<h2 id="no-false-positives"><a class="header" href="#no-false-positives">No false positives</a></h2>
+<p>The checker follows a strict <strong>no-false-positives policy</strong>: it is
+better to miss a real mistake than to report a false one. When a type
+cannot be resolved (type variables, wildcards, method references,
+indirect construction, runtime polymorphism) the check is <strong>skipped
+silently</strong>. The library's runtime checks remain the safety net for
+anything the compiler cannot see.</p>
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
 <div id="admonition-key-takeaways-title">
@@ -431,11 +406,12 @@ tasks.withType&lt;JavaCompile&gt;().configureEach {
 </div>
 <div>
 <ul>
-<li><strong>Path type mismatches</strong> compile successfully but fail at runtime, making them hard to catch in testing</li>
-<li><strong>The HKJ checker</strong> is a javac plugin that detects these mismatches during compilation</li>
-<li><strong>Enabled by default</strong> when using the HKJ Gradle or Maven plugin; no configuration needed</li>
-<li><strong>No false positives</strong> -- the checker only reports errors it is certain about</li>
-<li><strong>Runtime checks</strong> in the Path implementations catch anything the compile-time checker misses</li>
+<li>The checker catches 12 classes of HKJ mistake at compile time,
+including several that are otherwise entirely silent.</li>
+<li>Configure via <code>-Xplugin:HKJChecker disable=&lt;id&gt; severity=...</code>.</li>
+<li>javac-plugin-only: IDEs/non-javac builds still rely on the
+<em>Common Compiler Errors</em> chapters.</li>
+<li>No false positives — unresolved cases are skipped, not guessed.</li>
 </ul>
 </div>
 </div>
@@ -448,9 +424,11 @@ tasks.withType&lt;JavaCompile&gt;().configureEach {
 </div>
 <div>
 <ul>
-<li><a href="gradle_plugin.html">Build Plugins</a> - Plugin setup and configuration</li>
-<li><a href="../effect/conversions.html">Type Conversions</a> - How to convert between Path types</li>
-<li><a href="../effect/compiler_errors.html">Common Compiler Errors</a> - Other compile-time issues and fixes</li>
+<li><a href="gradle_plugin.html">Build Plugins</a> — plugin setup and configuration</li>
+<li><a href="../effect/compiler_errors.html">Effect Compiler Errors</a>,
+<a href="../transformers/common_errors.html">Transformer Compiler Errors</a>,
+<a href="../optics/compiler_errors.html">Optics Compiler Errors</a> — the
+per-feature references (and the IDE/non-plugin audience)</li>
 </ul>
 </div>
 </div>
