@@ -283,7 +283,7 @@
 <li>How the <code>Each</code> type class provides canonical traversals for container types</li>
 <li>Using <code>EachInstances</code> for Java collections (List, Set, Map, Optional, arrays, Stream, VStream, String)</li>
 <li>Using <code>EachExtensions</code> for HKT types (Maybe, Either, Try, Validated)</li>
-<li>Indexed traversal support via <code>eachWithIndex()</code> for position-aware operations</li>
+<li>Indexed traversal support via <code>EachIndexed.indexedTraversal()</code> for position-aware operations</li>
 <li>Integration with Focus DSL using <code>.each(Each)</code> method</li>
 <li>Creating custom <code>Each</code> instances for your own types</li>
 <li>When to use <code>Each</code> vs direct <code>Traversal</code> creation</li>
@@ -342,23 +342,35 @@ public interface Each&lt;S, A&gt; {
     // The canonical traversal for all elements
     Traversal&lt;S, A&gt; each();
 
-    // Optional: indexed traversal if the container supports it
-    default &lt;I&gt; Optional&lt;IndexedTraversal&lt;I, S, A&gt;&gt; eachWithIndex() {
-        return Optional.empty();
-    }
-
-    // Check if indexed access is supported
+    // Check if indexed access is supported (i.e. this is an EachIndexed)
     default boolean supportsIndexed() {
-        return eachWithIndex().isPresent();
+        return this instanceof EachIndexed&lt;?, ?, ?&gt;;
     }
 }
+
+// Containers with a meaningful index implement EachIndexed, which fixes the
+// index type I at the type level — no Optional, no cast.
+public interface EachIndexed&lt;I, S, A&gt; extends Each&lt;S, A&gt; {
+    IndexedTraversal&lt;I, S, A&gt; indexedTraversal();
+}
 </code></pre>
-<p>The interface is simple by design. Implement <code>each()</code> to provide a traversal; optionally implement <code>eachWithIndex()</code> if your container has meaningful indices.</p>
+<p>The interface is simple by design. Implement <code>each()</code> to provide a traversal; if your container has meaningful indices, implement <code>EachIndexed</code> and provide <code>indexedTraversal()</code> instead.</p>
+<div id="admonition-deprecated-eachwithindex" class="admonition admonish-warning" role="note" aria-labelledby="admonition-deprecated-eachwithindex-title">
+<div class="admonition-title">
+<div id="admonition-deprecated-eachwithindex-title">
+<p>Deprecated: eachWithIndex()</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-deprecated-eachwithindex"></a>
+</div>
+<div>
+<p>Earlier releases exposed <code>Each.eachWithIndex()</code>, which returned an <code>Optional&lt;IndexedTraversal&lt;I, S, A&gt;&gt;</code> and let the caller choose the index type <code>&lt;I&gt;</code> freely even though the real index type was fixed — a mismatched request compiled but failed at runtime with a <code>ClassCastException</code>. It is <strong>deprecated (for removal in 0.5.0)</strong> in favour of <code>EachIndexed.indexedTraversal()</code>, which fixes the index type at the type level and needs no <code>Optional</code> unwrap. Migrate by typing the variable as <code>EachIndexed</code> and calling <code>indexedTraversal()</code> directly.</p>
+</div>
+</div>
 <hr />
 <h2 id="available-each-instances"><a class="header" href="#available-each-instances">Available Each Instances</a></h2>
 <h3 id="standard-java-types-eachinstances"><a class="header" href="#standard-java-types-eachinstances">Standard Java Types (EachInstances)</a></h3>
 <pre><code>┌──────────────────────────────────────────────────────────────┐
-│  Type          │ each()  │ eachWithIndex() │ Index Type     │
+│  Type          │ each()  │  EachIndexed?   │ Index Type     │
 ├──────────────────────────────────────────────────────────────┤
 │  List&lt;A&gt;       │   ✓     │       ✓         │  Integer       │
 │  Set&lt;A&gt;        │   ✓     │       ✗         │     -          │
@@ -399,7 +411,7 @@ Each&lt;String, Character&gt; stringEach = EachInstances.stringCharsEach();
 <h3 id="hkt-types-eachextensions"><a class="header" href="#hkt-types-eachextensions">HKT Types (EachExtensions)</a></h3>
 <p>For Higher-Kinded-J core types, use <code>EachExtensions</code>:</p>
 <pre><code>┌──────────────────────────────────────────────────────────────┐
-│  Type            │ each()  │ eachWithIndex() │ Index Type   │
+│  Type            │ each()  │  EachIndexed?   │ Index Type   │
 ├──────────────────────────────────────────────────────────────┤
 │  Maybe&lt;A&gt;        │   ✓     │       ✗         │     -        │
 │  Either&lt;L, R&gt;    │   ✓     │       ✗         │     -        │
@@ -442,36 +454,34 @@ List&lt;String&gt; same = Traversals.set(traversal, "anonymous", names);
 // Result: ["anonymous", "anonymous", "anonymous"]
 </code></pre>
 <h3 id="using-indexed-traversal"><a class="header" href="#using-indexed-traversal">Using Indexed Traversal</a></h3>
-<p>When position matters, use <code>eachWithIndex()</code>:</p>
-<pre><code class="language-java">Each&lt;List&lt;String&gt;, String&gt; listEach = EachInstances.listEach();
+<p>When position matters, type the instance as <code>EachIndexed</code> and call <code>indexedTraversal()</code>. The index type (<code>Integer</code> for lists) is fixed at compile time:</p>
+<pre><code class="language-java">EachIndexed&lt;Integer, List&lt;String&gt;, String&gt; listEach = EachInstances.listEach();
+IndexedTraversal&lt;Integer, List&lt;String&gt;, String&gt; indexed = listEach.indexedTraversal();
 
-listEach.&lt;Integer&gt;eachWithIndex().ifPresent(indexed -&gt; {
-    List&lt;String&gt; items = List.of("apple", "banana", "cherry");
+List&lt;String&gt; items = List.of("apple", "banana", "cherry");
 
-    // Number each element
-    List&lt;String&gt; numbered = IndexedTraversals.imodify(
-        indexed,
-        (index, value) -&gt; (index + 1) + ". " + value,
-        items
-    );
-    // Result: ["1. apple", "2. banana", "3. cherry"]
-});
+// Number each element
+List&lt;String&gt; numbered = IndexedTraversals.imodify(
+    indexed,
+    (index, value) -&gt; (index + 1) + ". " + value,
+    items
+);
+// Result: ["1. apple", "2. banana", "3. cherry"]
 </code></pre>
 <h3 id="map-key-as-index"><a class="header" href="#map-key-as-index">Map Key as Index</a></h3>
-<p>For maps, the index is the key:</p>
-<pre><code class="language-java">Each&lt;Map&lt;String, Integer&gt;, Integer&gt; mapEach = EachInstances.mapValuesEach();
+<p>For maps, the index is the key, so the <code>EachIndexed</code> index type is <code>K</code>:</p>
+<pre><code class="language-java">EachIndexed&lt;String, Map&lt;String, Integer&gt;, Integer&gt; mapEach = EachInstances.mapValuesEach();
+IndexedTraversal&lt;String, Map&lt;String, Integer&gt;, Integer&gt; indexed = mapEach.indexedTraversal();
 
-mapEach.&lt;String&gt;eachWithIndex().ifPresent(indexed -&gt; {
-    Map&lt;String, Integer&gt; scores = Map.of("alice", 100, "bob", 85, "charlie", 92);
+Map&lt;String, Integer&gt; scores = Map.of("alice", 100, "bob", 85, "charlie", 92);
 
-    // Add key prefix to each value's string representation
-    Map&lt;String, String&gt; labelled = IndexedTraversals.imodify(
-        indexed,
-        (key, value) -&gt; key + ": " + value,
-        scores
-    );
-    // Result: {"alice": "alice: 100", "bob": "bob: 85", ...}
-});
+// Add key prefix to each value's string representation
+Map&lt;String, String&gt; labelled = IndexedTraversals.imodify(
+    indexed,
+    (key, value) -&gt; key + ": " + value,
+    scores
+);
+// Result: {"alice": "alice: 100", "bob": "bob: 85", ...}
 </code></pre>
 <hr />
 <h2 id="integration-with-focus-dsl"><a class="header" href="#integration-with-focus-dsl">Integration with Focus DSL</a></h2>
@@ -541,13 +551,13 @@ public static &lt;A&gt; Each&lt;Tree&lt;A&gt;, A&gt; treeEach() {
 Each&lt;MyContainer&lt;A&gt;, A&gt; each = Each.fromTraversal(existingTraversal);
 </code></pre>
 <h3 id="from-indexedtraversal"><a class="header" href="#from-indexedtraversal">From IndexedTraversal</a></h3>
-<p>If you have an <code>IndexedTraversal</code>, you get both methods:</p>
+<p>If you have an <code>IndexedTraversal</code>, <code>Each.fromIndexedTraversal</code> returns an <code>EachIndexed</code>, so you get both the element and indexed traversals with the index type preserved:</p>
 <pre><code class="language-java">IndexedTraversal&lt;Integer, MyList&lt;A&gt;, A&gt; indexed = ...;
-Each&lt;MyList&lt;A&gt;, A&gt; each = Each.fromIndexedTraversal(indexed);
+EachIndexed&lt;Integer, MyList&lt;A&gt;, A&gt; each = Each.fromIndexedTraversal(indexed);
 
 // Both work
 Traversal&lt;MyList&lt;A&gt;, A&gt; trav = each.each();
-Optional&lt;IndexedTraversal&lt;Integer, MyList&lt;A&gt;, A&gt;&gt; iTrav = each.eachWithIndex();
+IndexedTraversal&lt;Integer, MyList&lt;A&gt;, A&gt; iTrav = each.indexedTraversal();
 </code></pre>
 <hr />
 <h2 id="each-vs-traverse"><a class="header" href="#each-vs-traverse">Each vs Traverse</a></h2>
@@ -574,18 +584,17 @@ Validated&lt;List&lt;String&gt;, List&lt;Order&gt;&gt; result = allOrders.modify
 );
 </code></pre>
 <h3 id="conditional-modification-with-index"><a class="header" href="#conditional-modification-with-index">Conditional Modification with Index</a></h3>
-<pre><code class="language-java">Each&lt;List&lt;Product&gt;, Product&gt; productEach = EachInstances.listEach();
+<pre><code class="language-java">EachIndexed&lt;Integer, List&lt;Product&gt;, Product&gt; productEach = EachInstances.listEach();
+IndexedTraversal&lt;Integer, List&lt;Product&gt;, Product&gt; indexed = productEach.indexedTraversal();
 
-productEach.&lt;Integer&gt;eachWithIndex().ifPresent(indexed -&gt; {
-    // Apply discount to even-indexed products
-    List&lt;Product&gt; discounted = IndexedTraversals.imodify(
-        indexed,
-        (index, product) -&gt; index % 2 == 0
-            ? product.withPrice(product.price() * 0.9)
-            : product,
-        products
-    );
-});
+// Apply discount to even-indexed products
+List&lt;Product&gt; discounted = IndexedTraversals.imodify(
+    indexed,
+    (index, product) -&gt; index % 2 == 0
+        ? product.withPrice(product.price() * 0.9)
+        : product,
+    products
+);
 </code></pre>
 <h3 id="nested-container-navigation"><a class="header" href="#nested-container-navigation">Nested Container Navigation</a></h3>
 <pre><code class="language-java">// User -&gt; List&lt;Project&gt; -&gt; Map&lt;String, Task&gt;
@@ -629,7 +638,7 @@ User updated = allTasks.modifyAll(Task::markReviewed, user);
 <li><strong>Each&lt;S, A&gt;</strong> provides a canonical <code>Traversal&lt;S, A&gt;</code> for any container type</li>
 <li><strong>EachInstances</strong> covers Java collections: List, Set, Map, Optional, arrays, Stream, VStream, String</li>
 <li><strong>EachExtensions</strong> covers HKT types: Maybe, Either, Try, Validated</li>
-<li><strong>eachWithIndex()</strong> returns an <code>IndexedTraversal</code> when the container supports meaningful indices</li>
+<li><strong>EachIndexed.indexedTraversal()</strong> returns an <code>IndexedTraversal</code> when the container supports meaningful indices (<code>eachWithIndex()</code> is deprecated for removal in 0.5.0)</li>
 <li><strong>Focus DSL integration</strong> via <code>.each(Each)</code> enables fluent navigation through custom containers</li>
 <li><strong>Each.fromTraversal()</strong> and <strong>Each.fromIndexedTraversal()</strong> wrap existing optics</li>
 </ul>
