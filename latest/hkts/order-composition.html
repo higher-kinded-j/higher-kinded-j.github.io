@@ -379,22 +379,27 @@ public String getUserFriendlyMessage(OrderError error) {
             .toState((address, customer, order) -&gt;
                 ProcessingState.initial(address, customer, order))
 
-            // Phase 2 (Enrich): named field access via ForState + lenses
+            // Phase 2 (Enrich): named field access via ForState + generated lenses
             .fromThen(s -&gt; lift(reserveInventory(s.order().orderId(), s.order().lines())),
-                reservationLens)
+                ProcessingStateLenses.reservation())
             .fromThen(s -&gt; lift(applyDiscounts(s.order(), s.customer())),
-                discountLens)
+                ProcessingStateLenses.discount())
             .fromThen(s -&gt; lift(processPayment(s.order(), s.discount())),
-                paymentLens)
+                ProcessingStateLenses.payment())
             .fromThen(s -&gt; lift(createShipment(s.order(), s.address())),
-                shipmentLens)
+                ProcessingStateLenses.shipment())
             .fromThen(s -&gt; lift(sendNotifications(s.order(), s.customer(), s.discount())),
-                notificationLens)
+                ProcessingStateLenses.notification())
             .yield(OrderWorkflow::toOrderResult);
 
     return Path.either(EITHER.narrow(result));
 }
 </code></pre>
+<p>In the current example, <code>process</code> first runs <strong>accumulating</strong> field validation: <code>validateRequest</code>
+collects every malformed field at once via <code>ValidationPath.zipWithAccum</code>, converts to <code>EitherPath</code>,
+and only then delegates to the <code>For</code> → <code>ForState</code> pipeline above (factored out as <code>processValidated</code>).
+The composition pattern is unchanged — the validation front door just reports all input errors
+together rather than one per round-trip.</p>
 <h3 id="two-phase-design"><a class="header" href="#two-phase-design">Two-Phase Design</a></h3>
 <p>The workflow has a natural two-phase shape:</p>
 <ol>
@@ -420,7 +425,8 @@ public String getUserFriendlyMessage(OrderError error) {
 </div>
 <h3 id="named-state-replaces-tuple-positions"><a class="header" href="#named-state-replaces-tuple-positions">Named State Replaces Tuple Positions</a></h3>
 <p>The <code>ProcessingState</code> record gives every intermediate value a name:</p>
-<pre><code class="language-java">record ProcessingState(
+<pre><code class="language-java">@GenerateLenses
+public record ProcessingState(
     ValidatedShippingAddress address,
     Customer customer,
     ValidatedOrder order,
@@ -438,24 +444,28 @@ public String getUserFriendlyMessage(OrderError error) {
 </code></pre>
 <p>After <code>toState()</code>, the <code>fromThen()</code> steps access earlier results by name — <code>s.order()</code>, <code>s.customer()</code>, <code>s.discount()</code> — instead of by tuple position. This makes the code self-documenting: you can read the workflow without a position reference table.</p>
 <h3 id="lenses-connect-forstate-to-the-state-record"><a class="header" href="#lenses-connect-forstate-to-the-state-record">Lenses Connect ForState to the State Record</a></h3>
-<p>Each <code>fromThen(function, lens)</code> call runs a monadic operation and stores the result via a lens:</p>
-<pre><code class="language-java">// In production: @GenerateLenses on ProcessingState generates these automatically
-static final Lens&lt;ProcessingState, DiscountResult&gt; discountLens =
-    Lens.of(
-        ProcessingState::discount,
-        (s, v) -&gt; new ProcessingState(
-            s.address(), s.customer(), s.order(), s.reservation(),
-            v, s.payment(), s.shipment(), s.notification()));
+<p>Each <code>fromThen(function, lens)</code> call runs a monadic operation and stores the result via a lens.
+Because <code>ProcessingState</code> is annotated <code>@GenerateLenses</code>, the processor generates one lens per field
+— <code>ProcessingStateLenses.reservation()</code>, <code>ProcessingStateLenses.discount()</code>, … — so the workflow
+above never hand-writes a lens. Each generated lens is just a getter/setter pair;
+<code>ProcessingStateLenses.discount()</code> is equivalent to:</p>
+<pre><code class="language-java">Lens.of(
+    ProcessingState::discount,
+    (s, v) -&gt; new ProcessingState(
+        s.address(), s.customer(), s.order(), s.reservation(),
+        v, s.payment(), s.shipment(), s.notification()));
 </code></pre>
-<div id="admonition-use-generatelenses-in-production" class="admonition admonish-tip" role="note" aria-labelledby="admonition-use-generatelenses-in-production-title">
+<div id="admonition-generatelenses-removes-the-boilerplate" class="admonition admonish-tip" role="note" aria-labelledby="admonition-generatelenses-removes-the-boilerplate-title">
 <div class="admonition-title">
-<div id="admonition-use-generatelenses-in-production-title">
-<p>Use @GenerateLenses in production</p>
+<div id="admonition-generatelenses-removes-the-boilerplate-title">
+<p>@GenerateLenses removes the boilerplate</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-use-generatelenses-in-production"></a>
+<a class="admonition-anchor-link" href="#admonition-generatelenses-removes-the-boilerplate"></a>
 </div>
 <div>
-<p>Annotate your state record with <code>@GenerateLenses</code> and the annotation processor generates all lenses automatically. The manual definitions shown here are for clarity.</p>
+<p>Annotating the state record with <code>@GenerateLenses</code> generates all five enrich-phase lenses
+automatically — the <code>Lens.of(...)</code> form above is shown only to illustrate what each generated lens
+does. The example workflow calls <code>ProcessingStateLenses.discount()</code> and friends directly.</p>
 </div>
 </div>
 <h3 id="kind-lifting"><a class="header" href="#kind-lifting">Kind Lifting</a></h3>
@@ -521,7 +531,7 @@ private Either&lt;OrderError, PaymentConfirmation&gt; processPayment(
             Either::right);
 }
 </code></pre>
-<p>The <code>fold()</code> method handles both cases: on error, it recovers with a "no notification" result; on success, it passes through. The <code>ForState</code> step that calls this method via <code>fromThen()</code> will store the result via <code>notificationLens</code> either way.</p>
+<p>The <code>fold()</code> method handles both cases: on error, it recovers with a "no notification" result; on success, it passes through. The <code>ForState</code> step that calls this method via <code>fromThen()</code> will store the result via <code>ProcessingStateLenses.notification()</code> either way.</p>
 <h3 id="recovery-options"><a class="header" href="#recovery-options">Recovery Options</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Method</th><th>Use Case</th></tr></thead><tbody>
 <tr><td><code>fold(leftFn, rightFn)</code></td><td>Pattern-match both cases of an Either</td></tr>
