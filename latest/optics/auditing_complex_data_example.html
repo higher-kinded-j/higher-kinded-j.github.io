@@ -482,38 +482,27 @@ List&lt;byte[]&gt; passwords = Traversals.getAll(finalAuditor, someConfig);
 <hr />
 <h2 id="taking-it-further"><a class="header" href="#taking-it-further">Taking It Further</a></h2>
 <p>This example is just the beginning. Here are some ideas for extending this solution into a real-world application:</p>
-<h3 id="1-safe-decoding-with-validated"><a class="header" href="#1-safe-decoding-with-validated">1. <strong>Safe Decoding with <code>Validated</code></strong></a></h3>
-<p>The <code>Base64.getDecoder().decode()</code> can throw an <code>IllegalArgumentException</code>. Instead of an <code>Iso</code>, create an <code>AffineTraversal</code> (an optional <code>Prism</code>) that returns a <code>Validated&lt;String, byte[]&gt;</code>, separating successes from failures gracefully.</p>
-<pre><code class="language-java">public static final Prism&lt;String, byte[]&gt; SAFE_BASE64_PRISM = Prism.of(
+<h3 id="1-safe-decoding-with-a-validatedprism"><a class="header" href="#1-safe-decoding-with-a-validatedprism">1. <strong>Safe Decoding with a <code>ValidatedPrism</code></strong></a></h3>
+<p><code>Base64.getDecoder().decode()</code> can throw an <code>IllegalArgumentException</code>. A plain <code>Prism</code> can make the decode safe, but its match is an <code>Optional</code> — it <strong>throws the reason away</strong>, forcing the call site to reconstruct it. This is exactly the boundary <a href="validated_prism.html"><code>ValidatedPrism</code></a> names: the parse carries its reasons, and the build (Base64 encode) is genuinely total and faithful, so both round-trip laws hold:</p>
+<pre><code class="language-java">public static final ValidatedPrism&lt;String, byte[]&gt; SAFE_BASE64 = ValidatedPrism.of(
     encoded -&gt; {
         try {
-            return Optional.of(Base64.getDecoder().decode(encoded));
+            return Validated.validNel(Base64.getDecoder().decode(encoded));
         } catch (IllegalArgumentException e) {
-            return Optional.empty();
+            return Validated.invalidNel(FieldError.of("invalid base64: " + encoded));
         }
     },
     bytes -&gt; Base64.getEncoder().encodeToString(bytes)
 );
 
-// Use in a traversal that accumulates both successes and failures
-public static AuditResult auditWithErrorReporting(AppConfig config) {
-    var validatedApplicative = Instances.validated(Semigroups.list());
-  
-    Traversal&lt;AppConfig, String&gt; base64Strings = /* ... path to base64 strings ... */;
-  
-    Validated&lt;List&lt;String&gt;, List&lt;byte[]&gt;&gt; result = VALIDATED.narrow(
-        base64Strings.modifyF(
-            encoded -&gt; SAFE_BASE64_PRISM.getOptional(encoded)
-                .map(bytes -&gt; VALIDATED.widen(Validated.valid(bytes)))
-                .orElse(VALIDATED.widen(Validated.invalid(List.of("Invalid base64: " + encoded)))),
-            config,
-            validatedApplicative
-        )
-    );
-  
-    return new AuditResult(result);
-}
+// The reason now lives where the failure happens - no reconstruction at the call site:
+Validated&lt;NonEmptyList&lt;FieldError&gt;, byte[]&gt; decoded = SAFE_BASE64.parse(encodedValue);
+ValidationPath&lt;NonEmptyList&lt;FieldError&gt;, byte[]&gt; railway = SAFE_BASE64.parsePath(encodedValue);
+
+// Need the reason-less form for composing into the audit traversal? Forget on demand:
+Traversal&lt;AppConfig, byte[]&gt; lossy = base64Strings.andThen(SAFE_BASE64.toPrism().asTraversal());
 </code></pre>
+<p>To audit a whole config and report <strong>every</strong> bad entry at once, parse each string through <code>SAFE_BASE64.parse</code> and accumulate the results with the <a href="../monads/validated_assembly.html">assembly builders</a> — sibling accumulation is their job; <code>ValidatedPrism</code> supplies the located leaf.</p>
 <h3 id="2-data-migration-with-modify"><a class="header" href="#2-data-migration-with-modify">2. <strong>Data Migration with <code>modify</code></strong></a></h3>
 <p>What if you need to re-encrypt all passwords with a new algorithm? The same <code>finalAuditor</code> optic can be used with a modify function from the <code>Traversals</code> utility class. You'd write a function <code>byte[] -&gt; byte[]</code> and apply it:</p>
 <pre><code class="language-java">// A function that re-encrypts the raw password bytes
