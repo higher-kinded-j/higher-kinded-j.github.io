@@ -452,51 +452,52 @@ Optional&lt;String&gt; maybeUrl = urls.stream().findFirst();
 <h3 id="problem-5"><a class="header" href="#problem-5">Problem</a></h3>
 <p>You need to validate multiple fields and accumulate all errors.</p>
 <h3 id="solution-5"><a class="header" href="#solution-5">Solution</a></h3>
-<pre><code class="language-java">import static org.higherkindedj.optics.fluent.OpticOps.modifyAllValidated;
+<p>Use the <code>Edits</code> builder: each field becomes a fallible edit, every incoming value is validated independently, and <strong>all</strong> failures are reported at once, located by field:</p>
+<pre><code class="language-java">import static org.higherkindedj.optics.edit.Edit.parseIfPresent;
 
 record Registration(String email, String password, int age) {}
 
-// Traversals for each field
-Traversal&lt;Registration, String&gt; emailTraversal =
-    RegistrationLenses.email().asTraversal();
-Traversal&lt;Registration, String&gt; passwordTraversal =
-    RegistrationLenses.password().asTraversal();
-Traversal&lt;Registration, Integer&gt; ageTraversal =
-    RegistrationLenses.age().asTraversal();
+FocusPath&lt;Registration, String&gt; emailPath = FocusPath.of(RegistrationLenses.email());
+FocusPath&lt;Registration, String&gt; passwordPath = FocusPath.of(RegistrationLenses.password());
+FocusPath&lt;Registration, Integer&gt; agePath = FocusPath.of(RegistrationLenses.age());
 
-// Validation functions
-Function&lt;String, Validated&lt;List&lt;String&gt;, String&gt;&gt; validateEmail = email -&gt;
+// Leaf validators stay plain - no path parameter, no error-list plumbing
+Function&lt;String, Validated&lt;NonEmptyList&lt;FieldError&gt;, String&gt;&gt; validateEmail = email -&gt;
     email.contains("@")
-        ? Validated.valid(email)
-        : Validated.invalid(List.of("Invalid email format"));
+        ? Validated.validNel(email)
+        : Validated.invalidNel(FieldError.of("invalid email format"));
 
-Function&lt;String, Validated&lt;List&lt;String&gt;, String&gt;&gt; validatePassword = password -&gt;
+Function&lt;String, Validated&lt;NonEmptyList&lt;FieldError&gt;, String&gt;&gt; validatePassword = password -&gt;
     password.length() &gt;= 8
-        ? Validated.valid(password)
-        : Validated.invalid(List.of("Password must be at least 8 characters"));
+        ? Validated.validNel(password)
+        : Validated.invalidNel(FieldError.of("must be at least 8 characters"));
 
-Function&lt;Integer, Validated&lt;List&lt;String&gt;, Integer&gt;&gt; validateAge = age -&gt;
+Function&lt;Integer, Validated&lt;NonEmptyList&lt;FieldError&gt;, Integer&gt;&gt; validateAge = age -&gt;
     age &gt;= 18
-        ? Validated.valid(age)
-        : Validated.invalid(List.of("Must be 18 or older"));
+        ? Validated.validNel(age)
+        : Validated.invalidNel(FieldError.of("must be 18 or older"));
 
-// Combine validations
-public Validated&lt;List&lt;String&gt;, Registration&gt; validateRegistration(Registration reg) {
-    Validated&lt;List&lt;String&gt;, Registration&gt; emailResult =
-        modifyAllValidated(emailTraversal, validateEmail, reg);
-    Validated&lt;List&lt;String&gt;, Registration&gt; passwordResult =
-        modifyAllValidated(passwordTraversal, validatePassword, reg);
-    Validated&lt;List&lt;String&gt;, Registration&gt; ageResult =
-        modifyAllValidated(ageTraversal, validateAge, reg);
-
-    // Combine all validations
-    return emailResult.flatMap(r1 -&gt;
-        passwordResult.flatMap(r2 -&gt;
-            ageResult
-        )
-    );
+public Validated&lt;NonEmptyList&lt;FieldError&gt;, Registration&gt; validateRegistration(Registration reg) {
+    return Edits.accumulate(
+            parseIfPresent(emailPath,    reg.email(),    validateEmail).at("email"),
+            parseIfPresent(passwordPath, reg.password(), validatePassword).at("password"),
+            parseIfPresent(agePath,      reg.age(),      validateAge).at("age"))
+        .apply(reg);
 }
+// Invalid(NonEmptyList[email: invalid email format, password: must be at least 8 characters])
+// - every bad field reported at once, located, in edit order
 </code></pre>
+<div id="admonition-why-not-flatmap" class="admonition admonish-warning" role="note" aria-labelledby="admonition-why-not-flatmap-title">
+<div class="admonition-title">
+<div id="admonition-why-not-flatmap-title">
+<p>Why not flatMap?</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-why-not-flatmap"></a>
+</div>
+<div>
+<p>Chaining per-field <code>Validated</code> results with <code>flatMap</code> short-circuits: the first failure hides all the others, and earlier writes are discarded. <code>Edits.accumulate</code> validates every field independently and applies every write in one pass — see <a href="multi_edit.html">Multi-Edit and Sparse Updates</a>.</p>
+</div>
+</div>
 <hr />
 <h2 id="recipe-7-transforming-nested-collections"><a class="header" href="#recipe-7-transforming-nested-collections">Recipe 7: Transforming Nested Collections</a></h2>
 <h3 id="problem-6"><a class="header" href="#problem-6">Problem</a></h3>

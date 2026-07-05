@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Accumulating Assembly - Higher-Kinded-J: Composable Effects and Advanced Optics for Java</title>
+        <title>Multi-Edit and Sparse Updates - Higher-Kinded-J: Composable Effects and Advanced Optics for Java</title>
 
 
         <!-- Custom HTML head -->
@@ -21,7 +21,7 @@
 
         <meta name="keywords" content="Higher-Kinded Types, Higher-Kinded-J, HKT, Java, Optics, Lens, Prism, Traversal, Iso, Affine, Focus DSL, Effect Path API, Functional Programming, Monad, Functor, Applicative, EitherPath, MaybePath, TryPath, ValidationPath, Java Records, Sealed Interface, Error Handling, Immutable Data">
         
-        <meta property="og:title" content="Accumulating Assembly - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
+        <meta property="og:title" content="Multi-Edit and Sparse Updates - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
             <meta property="og:description" content="The most comprehensive functional programming library for Java. Unify error handling, optional values, and immutable data navigation with the Effect Path API and Focus DSL. Features advanced optics with code generation for Java records, filtered traversals, indexed optics, and seamless Spring Boot integration.">
         <meta property="og:type" content="website">
         <meta property="og:url" content="https://higher-kinded-j.github.io/">
@@ -32,7 +32,7 @@
         <meta property="og:locale" content="en_GB">
         
         <meta name="twitter:card" content="summary_large_image">
-        <meta name="twitter:title" content="Accumulating Assembly - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
+        <meta name="twitter:title" content="Multi-Edit and Sparse Updates - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
         <meta name="twitter:description" content="Unifying Composable Effects and Advanced Optics for Java. Effect Path API, Focus DSL, and the most comprehensive optics implementation in the Java ecosystem.">
         <meta name="twitter:image" content="https://higher-kinded-j.github.io/preview.png">
         <meta name="twitter:image:alt" content="Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
@@ -169,7 +169,7 @@
                         <a href="https://github.com/higher-kinded-j/higher-kinded-j" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/higher-kinded-j/higher-kinded-j/edit/main/hkj-book/src/monads/validated_assembly.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/higher-kinded-j/higher-kinded-j/edit/main/hkj-book/src/optics/multi_edit.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -265,165 +265,99 @@
 }
 
 </style>
-<h1 id="accumulating-assembly"><a class="header" href="#accumulating-assembly">Accumulating Assembly:</a></h1>
-<h2 id="building-a-record-from-n-validated-fields"><a class="header" href="#building-a-record-from-n-validated-fields"><em>Building a Record from N Validated Fields</em></a></h2>
-<div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
-<div class="admonition-title">
-<div id="admonition-what-youll-learn-title">
-<p>What You'll Learn</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-what-youll-learn"></a>
-</div>
-<div>
-<ul>
-<li>Assembling a record from independently validated fields with <code>Validated.fields()</code> and <code>Validated.accumulate()</code>: every error reported at once, no <code>Semigroup</code> argument, no arity wall, no <code>Kind</code></li>
-<li>How <code>field(label, value)</code> attaches a path to each error, and how nesting composes paths (<code>address.zip</code>)</li>
-<li>The guarantee that errors emerge in field-declaration order</li>
-<li>The same assembly shape on all three carriers: <code>Validated</code> (strict), <code>ValidationPath</code> (railway), and <code>EitherOrBoth</code> (tolerant, value keeps flowing)</li>
-<li>When to reach for the builder versus <code>zipWithAccum</code> or the <code>mapN</code> family</li>
-</ul>
-</div>
-</div>
-<div id="admonition-see-example-code" class="admonition admonish-example" role="note" aria-labelledby="admonition-see-example-code-title">
-<div class="admonition-title">
-<div id="admonition-see-example-code-title">
-<p>See Example Code:</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-see-example-code"></a>
-</div>
-<div>
-<p><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/validated/ValidatedAssemblyExample.java">ValidatedAssemblyExample.java</a></p>
-</div>
-</div>
-<h2 id="the-problem-assembling-n-fields-was-the-hard-part"><a class="header" href="#the-problem-assembling-n-fields-was-the-hard-part">The Problem: Assembling N Fields Was the Hard Part</a></h2>
-<p><a href="validated_monad.html">Validated</a> accumulates errors, and <a href="nonemptylist_monad.html">NonEmptyList</a> gives the errors an honest carrier. But the everyday task (a request DTO becomes a domain aggregate; a raw config becomes a settings object) is assembling a record from N validated fields, and until now that meant choosing between:</p>
-<pre><code class="language-java">// The HKT-generic form: capped at map5, and every call passes the Semigroup by hand.
-ValidatedMonad&lt;List&lt;String&gt;&gt; validatedMonad = Instances.validated(Semigroups.list());
-Kind&lt;ValidatedKind.Witness&lt;List&lt;String&gt;&gt;, User&gt; user =
-    validatedMonad.map3(nameKind, emailKind, ageKind, User::new);
-</code></pre>
-<ul>
-<li><strong>An arity wall.</strong> <code>map2..map5</code> stop at five fields; <code>zipWithAccum</code> is binary and <code>zipWith3Accum</code> ternary.</li>
-<li><strong>Ceremony.</strong> The <code>Kind</code> wrappers and the explicit <code>Semigroup</code> argument surface exactly when you want the least friction.</li>
-<li><strong>Unlocated errors.</strong> An accumulated failure is a flat list; nothing says <em>which field</em> each error belongs to.</li>
-</ul>
-<p>The staged assembly builder removes all three at once.</p>
-<hr />
-<h2 id="the-front-door-fields"><a class="header" href="#the-front-door-fields">The Front Door: <code>fields()</code></a></h2>
-<p><code>Validated.fields()</code> opens a labelled assembly over <code>NonEmptyList&lt;FieldError&gt;</code>. Each <code>field(label, value)</code> adds one validated field; <code>apply(...)</code> completes the assembly with a constructor reference or lambda of exactly the accumulated arity:</p>
-<pre><code class="language-java">Validated&lt;NonEmptyList&lt;FieldError&gt;, User&gt; user =
-    Validated.fields()
-        .field("name", parseName(dto.name()))     // Validated&lt;NonEmptyList&lt;FieldError&gt;, Name&gt;
-        .field("email", parseEmail(dto.email()))
-        .field("age", parseAge(dto.age()))
-        .apply(User::new);                        // (Name, Email, Age) -&gt; User
-
-// Invalid(NonEmptyList[email: not an email address, age: not a number]) - name was fine.
-</code></pre>
-<p>Three guarantees, all by construction:</p>
-<ul>
-<li><strong>Every bad field is reported at once.</strong> Nothing short-circuits; accumulation is <code>NonEmptyList</code> concatenation.</li>
-<li><strong>Errors are located.</strong> <code>field("email", ...)</code> prepends <code>"email"</code> onto each error's path via <code>FieldError.at</code>, so consumers can render <code>"email: not an email address"</code> or map errors onto form fields.</li>
-<li><strong>Errors emerge in field-declaration order.</strong> The order of <code>field(...)</code> calls is the order of the errors, which makes downstream output (an HTTP 422 body, a CLI report) deterministic.</li>
-</ul>
-<p>A leaf validator creates unlabelled errors with <code>FieldError.of("message")</code>; the assembly attaches the location. <code>FieldError</code> is a small record (<code>path</code> segments plus a <code>message</code>) with a <code>pathString()</code> such as <code>"address.zip"</code>.</p>
-<h3 id="nesting-composes"><a class="header" href="#nesting-composes">Nesting Composes</a></h3>
-<p>Because <code>at()</code> <em>prepends</em>, assembling a sub-record under an outer label prefixes all its inner paths:</p>
-<pre><code class="language-java">Validated&lt;NonEmptyList&lt;FieldError&gt;, Address&gt; address =
-    Validated.fields()
-        .field("street", parseStreet(raw.street()))
-        .field("zip", parseZip(raw.zip()))          // fails: "zip: not a postcode"
-        .apply(Address::new);
-
-Validated&lt;NonEmptyList&lt;FieldError&gt;, Customer&gt; customer =
-    Validated.fields()
-        .field("name", parseName(raw.name()))
-        .field("address", address)                  // prefixes: "address.zip: not a postcode"
-        .apply(Customer::new);
-</code></pre>
-<p>This also doubles as the escape hatch for very wide records: <code>apply</code> overloads exist up to arity 12 (matching the shipped <code>Function3..Function12</code>); a record with more fields nests a sub-record per group, which usually improves the domain model anyway.</p>
-<hr />
-<h2 id="the-generic-flavour-accumulate"><a class="header" href="#the-generic-flavour-accumulate">The Generic Flavour: <code>accumulate()</code></a></h2>
-<p>When your error type is not <code>FieldError</code>, <code>accumulate()</code> gives the same open-arity assembly for any payload <code>X</code>, carried as <code>NonEmptyList&lt;X&gt;</code>. Fields join with <code>and(value)</code>:</p>
-<pre><code class="language-java">Validated&lt;NonEmptyList&lt;ConfigError&gt;, Settings&gt; settings =
-    Validated.accumulate()
-        .and(parseHost(raw.host()))
-        .and(parsePort(raw.port()))
-        .apply(Settings::new);
-</code></pre>
-<p>There is still no <code>Semigroup</code> argument: the carrier is fixed to <code>NonEmptyList</code>, and accumulation is concatenation.</p>
-<div id="admonition-two-inference-notes" class="admonition admonish-note" role="note" aria-labelledby="admonition-two-inference-notes-title">
-<div class="admonition-title">
-<div id="admonition-two-inference-notes-title">
-<p>Two inference notes</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-two-inference-notes"></a>
-</div>
-<div>
-<ul>
-<li><strong>Inline literals need a type witness.</strong> A chained stage receives no target typing, so an inline factory call such as <code>.field("age", Validated.invalidNel(FieldError.of("bad")))</code> infers <code>Object</code> and the compile error surfaces later, at <code>apply</code>. Write <code>Validated.&lt;FieldError, Integer&gt;invalidNel(...)</code> for inline literals; values with declared types (the results of leaf validators) need no witness.</li>
-<li><strong>Error payloads are invariant.</strong> Leaves typed with a subtype of a sealed error hierarchy (<code>Validated&lt;NonEmptyList&lt;PortError&gt;, A&gt;</code>) do not widen automatically to the assembly's payload (<code>ConfigError</code>). Widen at the leaf: <code>parsePort(raw).mapError(nel -&gt; nel.map(e -&gt; (ConfigError) e))</code>, or have leaf validators return the hierarchy's root type directly.</li>
-</ul>
-</div>
-</div>
-<hr />
-<h2 id="one-shape-three-carriers"><a class="header" href="#one-shape-three-carriers">One Shape, Three Carriers</a></h2>
-<p>The same two entry points exist on each carrier, so the assembly reads identically whichever error strategy the surrounding code uses:</p>
-<div class="table-wrapper"><table><thead><tr><th>Carrier</th><th>Entries</th><th>Result</th><th>Behaviour</th></tr></thead><tbody>
-<tr><td><code>Validated</code></td><td><code>Validated.fields()</code> / <code>Validated.accumulate()</code></td><td><code>Validated&lt;NonEmptyList&lt;E&gt;, R&gt;</code></td><td>strict: any invalid field fails the assembly, all errors kept</td></tr>
-<tr><td><code>ValidationPath</code></td><td><code>Path.fields()</code> / <code>Path.accumulate()</code></td><td><code>ValidationPath&lt;NonEmptyList&lt;E&gt;, R&gt;</code></td><td>the railway flavour; composes onward with <code>via</code>, <code>zipWithAccum</code>, <code>recover</code></td></tr>
-<tr><td><code>EitherOrBoth</code></td><td><code>EitherOrBoth.fields()</code> / <code>EitherOrBoth.accumulate()</code></td><td><code>EitherOrBoth&lt;NonEmptyList&lt;E&gt;, R&gt;</code></td><td>tolerant: warnings accumulate (<code>Both</code>) while the value keeps flowing; any <code>Left</code> dominates, still keeping every warning</td></tr>
+<h1 id="multi-edit-and-sparse-updates"><a class="header" href="#multi-edit-and-sparse-updates">Multi-Edit and Sparse Updates</a></h1>
+<p><em>Apply N independent edits at different paths in one reusable operation — including the sparse, all-errors-at-once REST <code>PATCH</code> shape.</em></p>
+<p>Optics edit one path at a time: <code>FocusPath.set</code>, <code>Setter.modify</code>. The everyday case of applying <strong>several independent edits</strong> — tidy the email, trim the SKU, bump the quantity — previously meant hand-threading the result through a chain of reassignments, wrapping each optional field in an <code>if</code>, and reporting only the first bad value.</p>
+<p>The <code>org.higherkindedj.optics.edit</code> package folds all of that into two entry points:</p>
+<div class="table-wrapper"><table><thead><tr><th>Entry point</th><th>Accepts</th><th>Returns</th></tr></thead><tbody>
+<tr><td><code>Edits.combine(...)</code></td><td>pure edits only (compile-time)</td><td>one <code>Update&lt;S&gt;</code></td></tr>
+<tr><td><code>Edits.accumulate(...)</code></td><td>pure and fallible edits mixed</td><td>an accumulated patch: apply it to get <code>Validated&lt;NonEmptyList&lt;FieldError&gt;, S&gt;</code></td></tr>
 </tbody></table>
 </div>
-<p>The tolerant flavour is the natural fit for lenient config parsing:</p>
-<pre><code class="language-java">EitherOrBoth&lt;NonEmptyList&lt;String&gt;, Config&gt; cfg =
-    EitherOrBoth.accumulate()
-        .and(parsePortLenient(raw.port()))       // Both("port defaulted", 8080)
-        .and(parseTimeoutLenient(raw.timeout())) // Right(30)
-        .apply(Config::new);
-// Both(NonEmptyList[port defaulted], Config[port=8080, timeout=30])
-</code></pre>
-<p>Under the hood every stage transition delegates to the existing accumulation primitives: <code>Validated.ap</code> with <code>NonEmptyList.semigroup()</code>, <code>ValidationPath.zipWithAccum</code>, and <code>EitherOrBoth.zipWithAccum</code>. The builder introduces no second accumulation mechanism.</p>
-<hr />
-<h2 id="generating-the-companion-generateassembly"><a class="header" href="#generating-the-companion-generateassembly">Generating the Companion: <code>@GenerateAssembly</code></a></h2>
-<p>For records you own, the annotation processor generates a per-record companion that removes the three remaining failure modes of the hand-written chain: labels come from the component names (typo-proof, rename-safe), field order cannot be wrong (named, order-enforcing stage methods), and there is no arity ceiling (the generator emits exact arity, even past 12).</p>
-<pre><code class="language-java">@GenerateAssembly
-record User(String name, String email, int age) {}
+<p>The sealed hierarchy is what makes that split compile-time safe:</p>
+<pre><code>    FallibleEdit&lt;S&gt;            may fail: carries Validated&lt;NEL&lt;FieldError&gt;, Update&lt;S&gt;&gt;
+        ▲       ▲
+        │       └── FallibleEdit.Parsed     the fallible leaf   (from parseIfPresent)
+        │
+    Edit&lt;S&gt;                    cannot fail: carries the Update&lt;S&gt; directly
+        ▲
+        └────────── Edit.Infallible         the infallible leaf (from set / modify / …IfPresent)
 
-Validated&lt;NonEmptyList&lt;FieldError&gt;, User&gt; user =
-    UserAssembly.fields()
-        .name(parseName(dto.name()))      // label "name" attached automatically
-        .email(parseEmail(dto.email()))
-        .age(parseAge(dto.age()))
-        .assemble();                       // canonical constructor baked in
+    Edits.combine(Edit&lt;S&gt;...)          ← only pure edits fit: a FallibleEdit is a compile error
+    Edits.accumulate(FallibleEdit&lt;S&gt;...) ← both fit: a pure edit is one that always validates
 </code></pre>
-<p>A component whose type is itself annotated accepts its sub-companion's result directly, and the outer component name prefixes the inner paths (<code>address.zip</code>). The companion lives in the record's package, named <code>&lt;Record&gt;Assembly</code>; for a nested record the enclosing simple names are joined (<code>Outer.Inner</code> gives <code>OuterInnerAssembly</code>). Under the hood the companion merges through the same <code>Validated.ap</code> / <code>NonEmptyList.semigroup()</code> primitives as the builder, so the two agree on every input. Generic records are not supported; use the hand-written <code>fields()</code> builder for records you cannot annotate.</p>
-<hr />
-<h2 id="choosing-the-right-tool"><a class="header" href="#choosing-the-right-tool">Choosing the Right Tool</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>You are combining...</th><th>Reach for</th></tr></thead><tbody>
-<tr><td>N independent fields into a record</td><td><code>fields()</code> / <code>accumulate()</code></td></tr>
-<tr><td>N validated fields into an <strong>existing</strong> value (sparse update / <code>PATCH</code>)</td><td><a href="../optics/multi_edit.html"><code>Edits.accumulate</code></a></td></tr>
-<tr><td>A record you own, assembled in many places</td><td><a href="#generating-the-companion-generateassembly"><code>@GenerateAssembly</code></a></td></tr>
-<tr><td>Two or three values, inline, no labels needed</td><td><code>zipWithAccum</code> / <code>zipWith3Accum</code> on the Path types, or <code>EitherOrBoth.zipWithAccum</code></td></tr>
-<tr><td>Values inside generic <code>Kind</code>-polymorphic code</td><td>the <code>Applicative</code> <code>mapN</code> family</td></tr>
-<tr><td>Steps where later ones depend on earlier results</td><td><code>flatMap</code> / <code>via</code> (short-circuiting, by design)</td></tr>
-</tbody></table>
-</div><div id="admonition-testing-located-errors" class="admonition admonish-tip" role="note" aria-labelledby="admonition-testing-located-errors-title">
+<h2 id="pure-multi-edit-editscombine"><a class="header" href="#pure-multi-edit-editscombine">Pure multi-edit: <code>Edits.combine</code></a></h2>
+<p>Each <code>Edit</code> factory pairs an optic (a <code>FocusPath</code> or a <code>Setter</code>) with a value or function. <code>combine</code> folds them — via the <a href="../functional/semigroup_and_monoid.html"><code>Update</code> monoid</a> — into one named, reusable transformation:</p>
+<pre><code class="language-java">import static org.higherkindedj.optics.edit.Edit.*;
+
+Update&lt;Order&gt; normalise = Edits.combine(
+    modify(EMAIL, String::toLowerCase),
+    modify(SKU,   String::trim));
+
+Order a = normalise.apply(orderA);
+Order b = normalise.andThen(applyDiscount).apply(orderB);   // Update composes further
+</code></pre>
+<p>Only pure <code>Edit</code>s fit <code>combine</code>'s signature — a fallible edit is rejected <strong>at compile time</strong>, so validation failures can never be silently dropped.</p>
+<h2 id="sparse-updates-absent-means-leave-it-alone"><a class="header" href="#sparse-updates-absent-means-leave-it-alone">Sparse updates: absent means "leave it alone"</a></h2>
+<p>The <code>…IfPresent</code> factories treat <code>null</code> as <em>absent</em>: the edit contributes the identity update, so a sparse request DTO lands one-to-one with no <code>if</code> ceremony:</p>
+<pre><code class="language-java">setIfPresent(ORDER_NUMBER, req.orderNumber())              // null -&gt; no-op
+modifyIfPresent(QUANTITY, req.qtyDelta(), (delta, qty) -&gt; qty + delta)
+</code></pre>
+<p>Each request field maps to exactly one slot; an absent field simply contributes nothing to the fold:</p>
+<pre><code>    PatchRequest { email: "a@b.example",   sku: null,        qtyDelta: 3 }
+                          │                     │                  │
+                          ▼                     ▼                  ▼
+                    write email             identity           qty += 3
+                          └─────────────────────┼──────────────────┘
+                                                ▼
+                  order' — email and quantity changed, sku untouched
+</code></pre>
+<div id="admonition-absent-and-null-are-deliberately-the-same" class="admonition admonish-warning" role="note" aria-labelledby="admonition-absent-and-null-are-deliberately-the-same-title">
 <div class="admonition-title">
-<div id="admonition-testing-located-errors-title">
-<p>Testing located errors</p>
+<div id="admonition-absent-and-null-are-deliberately-the-same-title">
+<p>Absent and null are deliberately the same</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-testing-located-errors"></a>
+<a class="admonition-anchor-link" href="#admonition-absent-and-null-are-deliberately-the-same"></a>
 </div>
 <div>
-<p><code>hkj-test</code> ships <code>assertThatFieldError</code> alongside <code>assertThatValidated</code>:</p>
-<pre><code class="language-java">assertThatFieldError(FieldError.of("not a postcode").at("zip").at("address"))
-    .hasPath("address.zip")
-    .hasSegments("address", "zip")
-    .hasMessageContaining("postcode");
+<p>A sparse edit cannot <em>clear</em> a field: <code>setIfPresent(path, null)</code> means "no change requested", not "set to null". This suits non-null domain models; if a field must be clearable, model the cleared state explicitly (e.g. <code>Maybe</code>) and <code>set</code> it. The functions given to <code>modifyIfPresent</code>/<code>parseIfPresent</code> are never invoked with <code>null</code>.</p>
+</div>
+</div>
+<h2 id="validated-patch-editsaccumulate"><a class="header" href="#validated-patch-editsaccumulate">Validated PATCH: <code>Edits.accumulate</code></a></h2>
+<p><code>parseIfPresent</code> parses the incoming value first — and <code>.at(label)</code> locates any failure, exactly as <code>FieldError.at</code> composes paths. <code>accumulate</code> validates <strong>every</strong> edit independently and reports <strong>all</strong> bad fields at once:</p>
+<pre><code class="language-java">Validated&lt;NonEmptyList&lt;FieldError&gt;, Order&gt; updated =
+    Edits.accumulate(
+            setIfPresent(ORDER_NUMBER, req.orderNumber()),
+            parseIfPresent(EMAIL, req.email(), Email::parse).at("email"),
+            modifyIfPresent(QUANTITY, req.qtyDelta(), (delta, qty) -&gt; qty + delta))
+        .apply(order);
+// Invalid(NEL[ "email: not an address" ]) — or Valid(order') with only the present fields changed
 </code></pre>
-</div>
-</div>
+<p>Errors accumulate in edit order on the <code>NonEmptyList</code> channel, exactly like the <a href="../monads/validated_assembly.html">accumulating assembly</a> — but as a homogeneous fold, so there is <strong>no arity ceiling</strong>. For the railway, <code>applyPath(order)</code> is the <code>ValidationPath</code> twin of <code>apply(order)</code>, and <code>toValidated()</code> exposes the folded <code>Update</code> itself for reuse.</p>
+<h2 id="semantics-validate-everything-then-write-once"><a class="header" href="#semantics-validate-everything-then-write-once">Semantics: validate everything, then write once</a></h2>
+<p>An accumulated patch works in two phases:</p>
+<ol>
+<li><strong>Validate</strong> — each edit's incoming value is checked independently. Validation never sees a source, which is what makes accumulation sound <em>and</em> lets one patch apply to many sources.</li>
+<li><strong>Apply</strong> — only if every edit validated, the writes run as a single left-to-right fold.</li>
+</ol>
+<pre><code>  Phase 1 — validate every edit independently (no source involved)
+
+    setIfPresent(SKU, null)     parseIfPresent(EMAIL, raw)      modifyIfPresent(QTY, 3)
+             │                            │                             │
+      absent → identity              parser runs                 present → write
+             │                            │                             │
+        Valid(no-op)          Valid(write) or Invalid(errors)      Valid(write)
+             └────────────────────────────┼─────────────────────────────┘
+                                          │
+                        all Valid?  ──────┴──────  any Invalid?
+                             │                          │
+  Phase 2 — one              ▼                          ▼
+  left-to-right fold   Valid(order')          Invalid(NEL[ email: … ])
+  of the writes        only the present       every bad field, located,
+                       fields changed         in edit order — no writes run
+</code></pre>
+<p>Application order is observable only when paths overlap: disjoint paths commute; an edit at an overlapping path sees the previous edit's result (a <code>modify</code> reads the <em>current</em> value at application time). Genuinely coupled fields belong in one atomic edit — see <a href="coupled_fields.html">Coupled Fields</a> and <code>Lens.paired</code>.</p>
+<hr />
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
 <div id="admonition-key-takeaways-title">
@@ -433,12 +367,23 @@ Validated&lt;NonEmptyList&lt;FieldError&gt;, User&gt; user =
 </div>
 <div>
 <ul>
-<li><code>fields()</code> assembles a record from N validated fields with located errors; <code>accumulate()</code> is the generic-payload twin.</li>
-<li>No <code>Semigroup</code> argument, no <code>Kind</code>, no arity wall up to 12; wider records nest sub-records.</li>
-<li>Errors always emerge in field-declaration order.</li>
-<li>Nesting prepends the outer label: <code>"address.zip"</code>.</li>
-<li>The same shape exists on <code>Validated</code>, <code>ValidationPath</code> (via <code>Path</code>), and <code>EitherOrBoth</code> (tolerant).</li>
+<li><strong><code>Edits.combine</code></strong> folds pure edits into one reusable <code>Update&lt;S&gt;</code>; compile-time purity</li>
+<li><strong><code>…IfPresent</code> + null-as-absent</strong> gives sparse updates with no <code>if</code> ceremony — absent contributes the monoid identity</li>
+<li><strong><code>Edits.accumulate</code></strong> validates every edit independently and reports all located failures at once, in edit order, with no arity ceiling</li>
+<li><strong>Two phases</strong>: validation is source-independent; writes run left-to-right only when everything validated</li>
+<li><strong>Overlapping paths see earlier writes</strong>; coupled fields should be one atomic edit (<code>Lens.paired</code>)</li>
 </ul>
+</div>
+</div>
+<div id="admonition-hands-on-learning" class="admonition admonish-info" role="note" aria-labelledby="admonition-hands-on-learning-title">
+<div class="admonition-title">
+<div id="admonition-hands-on-learning-title">
+<p>Hands-On Learning</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-hands-on-learning"></a>
+</div>
+<div>
+<p>Practice the whole model in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial24_MultiEdit.java">Tutorial 24: Multi-Edit and Sparse Updates</a> (5 exercises, ~12 minutes) — pure folds, sparse patches, and the all-errors-at-once validated PATCH.</p>
 </div>
 </div>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
@@ -450,28 +395,25 @@ Validated&lt;NonEmptyList&lt;FieldError&gt;, User&gt; user =
 </div>
 <div>
 <ul>
-<li><a href="validated_monad.html">Validated</a>: the underlying strict accumulating type</li>
-<li><a href="nonemptylist_monad.html">NonEmptyList</a>: the error carrier the builder is fixed to</li>
-<li><a href="either_or_both_monad.html">EitherOrBoth</a>: the tolerant carrier</li>
-<li><a href="../effect/path_validation.html">ValidationPath</a>: the railway validation API</li>
-<li><a href="../functional/applicative.html">Applicative</a>: the <code>mapN</code> family for <code>Kind</code>-generic code</li>
-<li><a href="../optics/multi_edit.html">Multi-Edit and Sparse Updates</a>: the same all-errors-at-once model for <em>updating</em> existing values</li>
+<li><a href="../functional/semigroup_and_monoid.html">Semigroup and Monoid</a> - The <code>Update</code> monoid that powers <code>combine</code></li>
+<li><a href="../monads/validated_assembly.html">Accumulating Assembly</a> - The same all-errors-at-once model for <em>constructing</em> values</li>
+<li><a href="coupled_fields.html">Coupled Fields</a> - Atomic updates of interdependent fields</li>
 </ul>
 </div>
 </div>
 <hr />
-<p><strong>Previous:</strong> <a href="validated_monad.html">Validated</a>
-<strong>Next:</strong> <a href="vtask_monad.html">VTask</a></p>
+<p><strong>Previous:</strong> <a href="core_type_integration.html">Core Type Integration</a>
+<strong>Next:</strong> <a href="optics_extensions.html">Optics Extensions</a></p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../monads/validated_monad.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../optics/core_type_integration.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../monads/vtask_monad.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../optics/optics_extensions.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -481,11 +423,11 @@ Validated&lt;NonEmptyList&lt;FieldError&gt;, User&gt; user =
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../monads/validated_monad.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../optics/core_type_integration.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../monads/vtask_monad.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../optics/optics_extensions.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
