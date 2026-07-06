@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Validated Prisms - Higher-Kinded-J: Composable Effects and Advanced Optics for Java</title>
+        <title>Record Mapping - Higher-Kinded-J: Composable Effects and Advanced Optics for Java</title>
 
 
         <!-- Custom HTML head -->
@@ -21,7 +21,7 @@
 
         <meta name="keywords" content="Higher-Kinded Types, Higher-Kinded-J, HKT, Java, Optics, Lens, Prism, Traversal, Iso, Affine, Focus DSL, Effect Path API, Functional Programming, Monad, Functor, Applicative, EitherPath, MaybePath, TryPath, ValidationPath, Java Records, Sealed Interface, Error Handling, Immutable Data">
         
-        <meta property="og:title" content="Validated Prisms - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
+        <meta property="og:title" content="Record Mapping - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
             <meta property="og:description" content="The most comprehensive functional programming library for Java. Unify error handling, optional values, and immutable data navigation with the Effect Path API and Focus DSL. Features advanced optics with code generation for Java records, filtered traversals, indexed optics, and seamless Spring Boot integration.">
         <meta property="og:type" content="website">
         <meta property="og:url" content="https://higher-kinded-j.github.io/">
@@ -32,7 +32,7 @@
         <meta property="og:locale" content="en_GB">
         
         <meta name="twitter:card" content="summary_large_image">
-        <meta name="twitter:title" content="Validated Prisms - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
+        <meta name="twitter:title" content="Record Mapping - Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
         <meta name="twitter:description" content="Unifying Composable Effects and Advanced Optics for Java. Effect Path API, Focus DSL, and the most comprehensive optics implementation in the Java ecosystem.">
         <meta name="twitter:image" content="https://higher-kinded-j.github.io/preview.png">
         <meta name="twitter:image:alt" content="Higher-Kinded-J: Composable Effects and Advanced Optics for Java">
@@ -169,7 +169,7 @@
                         <a href="https://github.com/higher-kinded-j/higher-kinded-j" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/higher-kinded-j/higher-kinded-j/edit/main/hkj-book/src/optics/validated_prism.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/higher-kinded-j/higher-kinded-j/edit/main/hkj-book/src/optics/record_mapping.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -265,75 +265,104 @@
 }
 
 </style>
-<h1 id="validated-prisms"><a class="header" href="#validated-prisms">Validated Prisms</a></h1>
-<p><em>The smart-constructor optic: a <code>Prism</code> whose match says <strong>why not</strong> — and all the reasons at once.</em></p>
-<p>A <code>Prism&lt;S, A&gt;</code>'s match answers yes/no (<code>Optional</code>). That is the wrong shape for a <strong>validated boundary</strong> — the "parse, don't validate" pattern where an unvalidated wire value becomes an always-valid domain value. The forward direction wants <em>reasons</em> (<code>"not an email"</code>), located and accumulated; the backward direction is <em>total</em> (a valid domain value always renders). <code>ValidatedPrism</code> encodes exactly that asymmetry:</p>
-<pre><code class="language-java">import org.higherkindedj.optics.validated.ValidatedPrism;
+<h1 id="record-mapping"><a class="header" href="#record-mapping">Record Mapping</a></h1>
+<p><em>One interface, both directions: a total <code>build</code> from domain to DTO, and an accumulating, located <code>parse</code> back.</em></p>
+<p>Every service boundary maps between a rich domain record and a flat wire DTO. Hand-written mappers drift; reflection-based mappers fail at runtime and know nothing about validation. <code>@GenerateMapping</code> derives the mapping <strong>at compile time, reflection-free</strong>, from an interface you own — and because the fallible direction returns <code>Validated&lt;NonEmptyList&lt;FieldError&gt;, Domain&gt;</code>, a bad DTO reports <strong>every</strong> bad field at once, each located by name.</p>
+<pre><code class="language-java">import org.higherkindedj.optics.annotations.GenerateMapping;
+import org.higherkindedj.optics.annotations.MappingSpec;
 
-ValidatedPrism&lt;String, EmailAddress&gt; email = ValidatedPrism.of(
-    EmailAddress::parse,      // String -&gt; Validated&lt;NonEmptyList&lt;FieldError&gt;, EmailAddress&gt;
-    EmailAddress::value);     // EmailAddress -&gt; String   (total)
+@GenerateMapping
+public interface PersonMapping extends MappingSpec&lt;Person, PersonDto&gt; {}
 
-Validated&lt;NonEmptyList&lt;FieldError&gt;, EmailAddress&gt; parsed = email.parse("  NOPE ");
-
-EmailAddress addr = /* a valid domain value */;
-String rendered = email.build(addr);              // always succeeds
-
-ValidationPath&lt;NonEmptyList&lt;FieldError&gt;, EmailAddress&gt; railway =
-    email.parsePath("ada@corp.example");
+// Same-named, same-typed components match automatically:
+PersonDto dto   = PersonMappingImpl.INSTANCE.build(person);      // total
+Validated&lt;NonEmptyList&lt;FieldError&gt;, Person&gt; back =
+    PersonMappingImpl.INSTANCE.parse(dto);                       // accumulating, located
 </code></pre>
-<h2 id="composition-nesting-short-circuits-siblings-accumulate"><a class="header" href="#composition-nesting-short-circuits-siblings-accumulate">Composition: nesting short-circuits, siblings accumulate</a></h2>
-<p><code>andThen</code> goes <em>deeper into structure</em>, so it <strong>short-circuits</strong> — you cannot parse the inner value if the outer parse failed. To report every bad field of a record at once, parse each field with its own prism and assemble the <em>siblings</em> with <a href="../monads/validated_assembly.html"><code>fields()</code> / <code>accumulate()</code></a> or the <a href="multi_edit.html"><code>Edits</code> builder</a>. This is the same split <code>ValidationPath</code> draws between <code>via</code> and sibling accumulation.</p>
-<p>Only compositions that preserve the <strong>total build</strong> yield a <code>ValidatedPrism</code>:</p>
-<div class="table-wrapper"><table><thead><tr><th>Compose with</th><th>Result</th><th>Notes</th></tr></thead><tbody>
-<tr><td><code>ValidatedPrism&lt;A, B&gt;</code></td><td><code>ValidatedPrism&lt;S, B&gt;</code></td><td>parse short-circuits; build composes</td></tr>
-<tr><td><code>Iso&lt;A, B&gt;</code></td><td><code>ValidatedPrism&lt;S, B&gt;</code></td><td>parse maps through; build round-trips</td></tr>
-<tr><td><code>Prism&lt;A, B&gt;</code> + a <code>FieldError</code> reason</td><td><code>ValidatedPrism&lt;S, B&gt;</code></td><td>the reason speaks for the prism's empty case</td></tr>
-<tr><td><code>Lens&lt;A, B&gt;</code></td><td>— deliberately absent</td><td>a lens needs a base to write into, so no total <code>B -&gt; S</code> build exists</td></tr>
+<p>The generated class is <code>&lt;Spec&gt;Impl</code> beside the spec, used through its <code>INSTANCE</code> constant. A spec nested in an outer class joins the enclosing simple names — <code>Shop.CustomerMapping</code> generates <code>ShopCustomerMappingImpl</code>.</p>
+<h2 id="validated-leaves"><a class="header" href="#validated-leaves">Validated leaves</a></h2>
+<p>Where the two sides differ in type, the boundary conversion is a <a href="validated_prism.html"><code>ValidatedPrism</code></a> supplied as a <strong>zero-parameter <code>default</code> method named after the domain component</strong>:</p>
+<pre><code class="language-java">@GenerateMapping
+public interface CustomerMapping extends MappingSpec&lt;Customer, CustomerDto&gt; {
+  default ValidatedPrism&lt;String, EmailAddress&gt; email() {   // wire first, domain second
+    return EmailCodecs.EMAIL;
+  }
+}
+
+CustomerMappingImpl.INSTANCE.parse(new CustomerDto("Bob", "not-an-email"));
+// Invalid(NonEmptyList[email: not an email address])
+</code></pre>
+<div id="admonition-a-leaf-beats-an-identity-match" class="admonition admonish-tip" role="note" aria-labelledby="admonition-a-leaf-beats-an-identity-match-title">
+<div class="admonition-title">
+<div id="admonition-a-leaf-beats-an-identity-match-title">
+<p>A leaf beats an identity match</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-a-leaf-beats-an-identity-match"></a>
+</div>
+<div>
+<p>An explicit leaf wins even when the two component types are identical, so a <code>ValidatedPrism&lt;String, String&gt;</code> can validate or normalise a field the types alone would copy verbatim.</p>
+</div>
+</div>
+<h2 id="renames--mapfield"><a class="header" href="#renames--mapfield">Renames — <code>@MapField</code></a></h2>
+<p>A rename is an abstract method named after the <em>domain</em> component, with <code>to</code> naming the <em>wire</em> component:</p>
+<pre><code class="language-java">@GenerateMapping
+public interface PersonMapping extends MappingSpec&lt;Person, PersonDto&gt; {
+  @MapField(to = "fullName")
+  String name();          // Person.name &lt;-&gt; PersonDto.fullName
+}
+</code></pre>
+<p>Each wire component takes exactly one domain source — colliding renames are compile errors, not surprises.</p>
+<h2 id="nesting-containers-and-recursion"><a class="header" href="#nesting-containers-and-recursion">Nesting, containers, and recursion</a></h2>
+<p>A component pair mapped by <strong>another spec in the same compilation</strong> nests automatically, and <code>List</code>/<code>Optional</code> components lift through the element's leaf or spec. Failures compose into dotted paths:</p>
+<pre><code class="language-java">public record Invoice(String id, Customer customer) {}
+public record InvoiceDto(String id, CustomerDto customer) {}
+
+@GenerateMapping
+public interface InvoiceMapping extends MappingSpec&lt;Invoice, InvoiceDto&gt; {}
+
+InvoiceMappingImpl.INSTANCE.parse(new InvoiceDto("INV-2", new CustomerDto("Bob", "nope")));
+// Invalid(NonEmptyList[customer.email: not an email address])
+</code></pre>
+<p>Because nesting is <em>delegation</em> (each spec's Impl exposes <code>asValidatedPrism()</code>, so a whole mapping plugs in wherever a leaf does), recursion terminates by construction — a self-referential <code>Tree(String value, List&lt;Tree&gt; children)</code> maps with an empty spec and round-trips any finite tree.</p>
+<h2 id="sealed-hierarchies"><a class="header" href="#sealed-hierarchies">Sealed hierarchies</a></h2>
+<p>A <code>MappingSpec</code> over two <strong>sealed interfaces</strong> dispatches over the permitted subtype pairs, one spec per pair, exhaustively in both directions:</p>
+<pre><code class="language-java">@GenerateMapping public interface CardMapping extends MappingSpec&lt;Card, CardDto&gt; {}
+@GenerateMapping public interface BankMapping extends MappingSpec&lt;Bank, BankDto&gt; {}
+@GenerateMapping public interface PaymentMapping extends MappingSpec&lt;Payment, PaymentDto&gt; {}
+
+// generated PaymentMappingImpl.build:
+//   return switch (domain) {
+//     case Card v -&gt; CardMappingImpl.INSTANCE.build(v);
+//     case Bank v -&gt; BankMappingImpl.INSTANCE.build(v);
+//   };
+</code></pre>
+<p>A domain subtype without a spec, or a wire subtype nothing produces, is a compile error — the dispatch cannot be partial.</p>
+<h2 id="the-emission-tiers--truthful-types"><a class="header" href="#the-emission-tiers--truthful-types">The emission tiers — truthful types</a></h2>
+<p>The field correspondences select what the Impl can lawfully offer; nothing is fabricated:</p>
+<div class="table-wrapper"><table><thead><tr><th>Spec shape</th><th>Generated surface</th></tr></thead><tbody>
+<tr><td>All components identity-matched (lossless)</td><td><code>build</code>, total <code>parse</code>, <strong><code>asIso()</code></strong></td></tr>
+<tr><td>Any fallible leaf or nested spec</td><td><code>build</code>, accumulating <code>parse</code> — no <code>asIso</code></td></tr>
+<tr><td>Wire record with <em>fewer</em> components (lossy projection)</td><td><code>build</code> + <strong><code>asLens()</code></strong> whose <code>set</code> writes the projected components back — <strong>no <code>parse</code></strong> (the dropped components cannot be reconstructed)</td></tr>
+<tr><td>Every parse-capable mapping</td><td><strong><code>asValidatedPrism()</code></strong> — the mapping as a leaf, so it nests and lifts</td></tr>
 </tbody></table>
 </div>
-<h2 id="bridging-the-lattice"><a class="header" href="#bridging-the-lattice">Bridging the lattice</a></h2>
-<ul>
-<li><code>ValidatedPrism.fromIso(iso)</code> — a parse that never fails.</li>
-<li><code>ValidatedPrism.fromPrism(prism, reason)</code> — lift a plain prism by supplying the reason its <code>Optional.empty</code> cannot express.</li>
-<li><code>toPrism()</code> / <code>toAffine()</code> — forget the reasons (the affine's <code>set</code> leaves non-parsing sources unchanged, preserving the affine laws).</li>
-</ul>
-<h2 id="laws"><a class="header" href="#laws">Laws</a></h2>
-<p>A lawful validated boundary satisfies both round trips, verified with <a href="../tooling/test_assertions.html"><code>ValidatedPrismLaws</code></a> from <code>hkj-test</code>:</p>
-<pre><code class="language-java">ValidatedPrismLaws.assertValidatedPrismLaws(email, "ada@corp.example", "not-an-email");
-// parse-build: parse(build(a)) == Valid(a)
-// build-parse: parse(s) == Valid(a)  =&gt;  build(a) == s   (no lossy parse-normalise)
+<pre><code class="language-java">public record Employee(String name, String department, int age) {}
+public record EmployeeCardDto(String name, String department) {}
+
+@GenerateMapping
+public interface EmployeeCardMapping extends MappingSpec&lt;Employee, EmployeeCardDto&gt; {}
+
+Lens&lt;Employee, EmployeeCardDto&gt; badge = EmployeeCardMappingImpl.INSTANCE.asLens();
+Employee moved = badge.set(new EmployeeCardDto("Ada", "Platform"), employee);
+// department written back, age kept — a lawful lens, not a fake inverse
 </code></pre>
-<p>The section law is the sharp one: a prism whose <code>build</code> normalises (zero-padding, trimming) breaks it — normalise in <code>parse</code>, render faithfully in <code>build</code>.</p>
-<hr />
-<div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
-<div class="admonition-title">
-<div id="admonition-key-takeaways-title">
-<p>Key Takeaways</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-key-takeaways"></a>
-</div>
-<div>
+<h2 id="diagnostics-and-limits"><a class="header" href="#diagnostics-and-limits">Diagnostics and limits</a></h2>
+<p>Every rejection follows the processor's what/why/fix standard — the message states what is wrong, why the mapper needs it, and the code to write. Current limits, each with its own diagnostic:</p>
 <ul>
-<li><strong><code>parse</code> is fallible and accumulating</strong> (<code>Validated&lt;NonEmptyList&lt;FieldError&gt;, A&gt;</code>); <strong><code>build</code> is total</strong> — the parse-don't-validate asymmetry as an optic</li>
-<li><strong>Nesting short-circuits; siblings accumulate</strong> via the assembly builders or <code>Edits</code></li>
-<li><strong>Only build-preserving compositions exist</strong>: <code>ValidatedPrism</code>, <code>Iso</code>, and <code>Prism</code>-with-a-reason; <code>Lens</code> deliberately not</li>
-<li><strong>Both round-trip laws are published</strong> in <code>hkj-test</code>; the section law forbids lossy build-normalisation</li>
-<li><strong><code>parsePath</code> lands on the railway</strong> (<code>ValidationPath</code>) directly</li>
+<li><code>parse</code> is assembled with <a href="../monads/validated_assembly.html"><code>Validated.fields()</code></a>, which locates up to <strong>12 components</strong> — group larger records into nested records, which nest through their own specs.</li>
+<li>Nested and sealed resolution sees specs <strong>in the same compilation</strong>, and a spec extends <code>MappingSpec</code> and nothing else — inherited renames/leaves arrive with the full mapper.</li>
+<li>Projections are identity-only (a leaf would make the write-back fallible), and generic types, <code>Map</code> value lifting and derived wire fields arrive with the full mapper.</li>
 </ul>
-</div>
-</div>
-<div id="admonition-hands-on-learning" class="admonition admonish-info" role="note" aria-labelledby="admonition-hands-on-learning-title">
-<div class="admonition-title">
-<div id="admonition-hands-on-learning-title">
-<p>Hands-On Learning</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-hands-on-learning"></a>
-</div>
-<div>
-<p>Practice the boundary in <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial25_ValidatedPrism.java">Tutorial 25: ValidatedPrism</a> (3 exercises, ~10 minutes), and see the runnable <a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/ValidatedPrismExample.java"><code>ValidatedPrismExample</code></a>.</p>
-</div>
-</div>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
 <div class="admonition-title">
 <div id="admonition-see-also-title">
@@ -343,26 +372,26 @@ ValidationPath&lt;NonEmptyList&lt;FieldError&gt;, EmailAddress&gt; railway =
 </div>
 <div>
 <ul>
-<li><a href="prisms.html">Prisms</a> - The yes/no match this type upgrades</li>
-<li><a href="../monads/validated_assembly.html">Accumulating Assembly</a> - Sibling-field accumulation for multi-field parses</li>
-<li><a href="multi_edit.html">Multi-Edit and Sparse Updates</a> - The update-side counterpart</li>
-<li><a href="record_mapping.html">Record Mapping</a> - <code>@GenerateMapping</code> derives whole-record <code>parse</code>/<code>build</code> from these leaves</li>
+<li><a href="validated_prism.html">Validated Prisms</a> - The leaf optic every fallible correspondence is built from</li>
+<li><a href="../monads/validated_assembly.html">Accumulating Assembly</a> - The <code>fields()</code> builder behind the generated <code>parse</code></li>
+<li><a href="multi_edit.html">Multi-Edit and Sparse Updates</a> - The update-side counterpart at the same boundary</li>
+<li><code>GenerateMappingExample</code> in <code>hkj-examples</code> - every feature on this page, runnable</li>
 </ul>
 </div>
 </div>
 <hr />
-<p><strong>Previous:</strong> <a href="prism_toolkit.html">Prism Toolkit</a>
-<strong>Next:</strong> <a href="affine.html">Affines</a></p>
+<p><strong>Previous:</strong> <a href="focus_external_bridging.html">Focus DSL with External Libraries</a>
+<strong>Next:</strong> <a href="kind_field_support.html">Kind Field Support</a></p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../optics/prism_toolkit.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../optics/focus_external_bridging.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../optics/affine.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../optics/kind_field_support.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -372,11 +401,11 @@ ValidationPath&lt;NonEmptyList&lt;FieldError&gt;, EmailAddress&gt; railway =
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../optics/prism_toolkit.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../optics/focus_external_bridging.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../optics/affine.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../optics/kind_field_support.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
