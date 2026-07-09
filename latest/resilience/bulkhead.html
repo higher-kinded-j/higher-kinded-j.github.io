@@ -279,6 +279,7 @@
 <li>How to configure concurrency limits, wait queues, and fairness</li>
 <li>The distinction between Bulkhead and VStreamPar</li>
 <li>How to protect VTask operations with concurrency limiting</li>
+<li>How to chain <code>withBulkhead</code> on Path carriers, with typed rejections on the railway</li>
 </ul>
 </div>
 </div>
@@ -348,6 +349,29 @@ Result result = protectedQuery.run();
         throw (ex instanceof RuntimeException re) ? re : new RuntimeException(ex);
     });
 </code></pre>
+<h2 id="path-native-bulkheads"><a class="header" href="#path-native-bulkheads">Path-Native Bulkheads</a></h2>
+<p>The lazy Path carriers chain bulkhead protection directly:</p>
+<pre><code class="language-java">IOPath&lt;Result&gt; guarded = Path.io(() -&gt; database.query(sql))
+    .withBulkhead(dbBulkhead);
+
+VTaskPath&lt;Result&gt; guardedAsync = Path.vtask(() -&gt; database.query(sql))
+    .withBulkhead(dbBulkhead);
+</code></pre>
+<p>On the typed-error carriers, the typed overload keeps a rejected execution on the typed channel: <code>BulkheadFullException</code> becomes a <code>Left</code> instead of a thrown exception or defect.</p>
+<pre><code class="language-java">// VResultPath: instance combinator, rejection lands as a Left
+VResultPath&lt;OrderError, Reservation&gt; guarded =
+    reserveInventory(order)
+        .withBulkhead(
+            inventoryBulkhead,
+            full -&gt; OrderError.SystemError.fromException("Inventory service busy", full));
+
+// EitherPath is eager, so the combinator is static and takes the step as a Supplier
+EitherPath&lt;OrderError, Reservation&gt; reserved = EitherPath.withBulkhead(
+    () -&gt; reserveInventory(order),
+    inventoryBulkhead,
+    full -&gt; OrderError.SystemError.fromException("Inventory service busy", full));
+</code></pre>
+<p>Without the <code>onFull</code> argument, <code>BulkheadFullException</code> propagates as-is.</p>
 <h2 id="bulkhead-vs-vstreampar"><a class="header" href="#bulkhead-vs-vstreampar">Bulkhead vs VStreamPar</a></h2>
 <p>Both limit concurrency, but at different scopes:</p>
 <div class="table-wrapper"><table><thead><tr><th></th><th>Bulkhead</th><th>VStreamPar</th></tr></thead><tbody>

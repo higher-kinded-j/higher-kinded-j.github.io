@@ -266,7 +266,7 @@
 
 </style>
 <h1 id="order-workflow-concurrency-and-scale"><a class="header" href="#order-workflow-concurrency-and-scale">Order Workflow: Concurrency and Scale</a></h1>
-<p>This page covers patterns for scaling the order workflow: context propagation with <code>ScopedValue</code>, structured concurrency with <code>Scope</code>, resource management with <code>Resource</code>, and virtual thread execution with <code>VTaskPath</code>.</p>
+<p>This page covers patterns for scaling the order workflow: context propagation with <code>ScopedValue</code>, racing warehouses with <code>VResultPath.firstSuccess</code>, outcome-aware compensation with <code>VResultPath.bracketOutcome</code>, and virtual thread execution on the typed async railway <code>VResultPath</code>.</p>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -277,9 +277,9 @@
 <div>
 <ul>
 <li>Propagating cross-cutting concerns (trace IDs, tenant isolation, deadlines) with <code>Context</code></li>
-<li>Running parallel operations with proper cancellation using <code>Scope</code></li>
-<li>Ensuring resource cleanup with the bracket pattern via <code>Resource</code></li>
-<li>Scaling to millions of concurrent orders with virtual threads via <code>VTaskPath</code></li>
+<li>Racing parallel operations with typed errors using <code>VResultPath.firstSuccess</code></li>
+<li>Deciding confirm-versus-release compensation from the outcome with <code>bracketOutcome</code></li>
+<li>Scaling to millions of concurrent orders with the typed async railway <code>VResultPath</code></li>
 <li>Adapting these patterns to your own domain</li>
 </ul>
 </div>
@@ -293,7 +293,7 @@
 </div>
 <div>
 <ul>
-<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/EnhancedOrderWorkflow.java">EnhancedOrderWorkflow.java</a> - Full implementation with Context, Scope, Resource, VTaskPath</li>
+<li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/EnhancedOrderWorkflow.java">EnhancedOrderWorkflow.java</a> - Full implementation with Context, VResultPath, firstSuccess, and bracketOutcome</li>
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/context/OrderContext.java">OrderContext.java</a> - Scoped value keys</li>
 <li><a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/runner/EnhancedOrderWorkflowDemo.java">EnhancedOrderWorkflowDemo.java</a> - Demo runner</li>
 </ul>
@@ -334,69 +334,96 @@ public static boolean isDeadlineExceeded() {
     return DEADLINE.isBound() &amp;&amp; Instant.now().isAfter(DEADLINE.get());
 }
 </code></pre>
-<hr />
-<h2 id="structured-concurrency-with-scope"><a class="header" href="#structured-concurrency-with-scope">Structured Concurrency with Scope</a></h2>
-<p>Parallel operations with proper cancellation and timeout handling:</p>
-<pre><code class="language-java">// Race inventory checks across multiple warehouses
-VTask&lt;InventoryReservation&gt; result = Scope.&lt;InventoryReservation&gt;anySucceed()
-    .timeout(Duration.ofSeconds(10))
-    .fork(warehouse1.reserve(orderId, lines))
-    .fork(warehouse2.reserve(orderId, lines))
-    .fork(warehouse3.reserve(orderId, lines))
-    .join();
-</code></pre>
-<div class="table-wrapper"><table><thead><tr><th>Pattern</th><th>Use Case</th></tr></thead><tbody>
-<tr><td><code>allSucceed()</code></td><td>Wait for all tasks; fail if any fails</td></tr>
-<tr><td><code>anySucceed()</code></td><td>First success wins; cancel others</td></tr>
-<tr><td><code>accumulating()</code></td><td>Collect all results, including errors</td></tr>
-</tbody></table>
-</div>
-<p>Context values propagate to all forked tasks automatically. When using <code>Scope</code> within a <code>ScopedValue.where()</code> block, each forked task inherits the trace ID, tenant ID, and deadline without explicit passing.</p>
-<h3 id="example-parallel-inventory-check"><a class="header" href="#example-parallel-inventory-check">Example: Parallel Inventory Check</a></h3>
-<pre><code class="language-java">public VTaskPath&lt;Either&lt;OrderError, InventoryReservation&gt;&gt; reserveInventoryParallel(
-    OrderId orderId, List&lt;ValidatedOrderLine&gt; lines) {
-
-    VTask&lt;InventoryReservation&gt; warehouse1 = VTask.of(() -&gt; {
-        logSync("Checking warehouse 1 [trace=" + OrderContext.shortTraceId() + "]");
-        return inventoryService.reserve(orderId, lines)
-            .fold(e -&gt; { throw new ReservationException(e); }, r -&gt; r);
+<p>On the typed railway, "fail fast" means a typed <code>Left</code>, not a thrown exception. The workflow checks the deadline as an ordinary step, and a <code>Left</code> here short-circuits everything after it:</p>
+<pre><code class="language-java">private VResultPath&lt;OrderError, Unit&gt; checkDeadline(String operation) {
+    return Path.vresultDefer(() -&gt; {
+        if (OrderContext.isDeadlineExceeded()) {
+            return Either.left(SystemError.timeout(operation));
+        }
+        return Either.right(Unit.INSTANCE);
     });
-
-    VTask&lt;InventoryReservation&gt; warehouse2 = VTask.of(() -&gt; {
-        logSync("Checking warehouse 2 [trace=" + OrderContext.shortTraceId() + "]");
-        return inventoryService.reserve(orderId, lines)
-            .fold(e -&gt; { throw new ReservationException(e); }, r -&gt; r);
-    });
-
-    // Race all warehouses - first to succeed wins
-    VTask&lt;InventoryReservation&gt; raceResult = Scope.&lt;InventoryReservation&gt;anySucceed()
-        .timeout(getRemainingTimeout())
-        .fork(warehouse1)
-        .fork(warehouse2)
-        .join();
-
-    return Path.vtask(() -&gt; raceResult.runSafe()
-        .foldFailureFirst(e -&gt; Either.left(toOrderError(e)), Either::right));
 }
 </code></pre>
 <hr />
-<h2 id="resource-management-with-resource"><a class="header" href="#resource-management-with-resource">Resource Management with Resource</a></h2>
-<p>The bracket pattern ensures cleanup even when operations fail:</p>
-<pre><code class="language-java">// Create a managed reservation
-Resource&lt;InventoryReservation&gt; reservationResource = Resource.make(
-    () -&gt; inventoryService.reserve(orderId, lines),  // Acquire
-    res -&gt; inventoryService.releaseReservation(res.reservationId())  // Release
-);
-
-// Use with guaranteed cleanup
-VTask&lt;OrderResult&gt; result = reservationResource.use(reservation -&gt;
-    processPayment(order, reservation)
-        .map(payment -&gt; buildResult(order, reservation, payment))
-);
+<h2 id="structured-concurrency-with-firstsuccess"><a class="header" href="#structured-concurrency-with-firstsuccess">Structured Concurrency with firstSuccess</a></h2>
+<p>Parallel operations with proper cancellation, timeout handling, and typed failures kept in the value channel:</p>
+<pre><code class="language-java">// Race inventory reservations across multiple warehouses
+VResultPath&lt;OrderError, InventoryReservation&gt; result =
+    VResultPath.firstSuccess(List.of(warehouse1, warehouse2, warehouse3))
+        .mapError(NonEmptyList::head)
+        .withTimeout(Duration.ofSeconds(10), () -&gt; SystemError.timeout("inventory race"));
 </code></pre>
-<p>Resources are released in reverse order of acquisition (LIFO), and cleanup runs even if the computation fails or is cancelled.</p>
-<h3 id="combining-resources"><a class="header" href="#combining-resources">Combining Resources</a></h3>
-<p>Multiple resources can be combined with guaranteed cleanup ordering:</p>
+<div class="table-wrapper"><table><thead><tr><th>Combinator</th><th>Use Case</th></tr></thead><tbody>
+<tr><td><code>firstSuccess(candidates)</code></td><td>First <code>Right</code> wins and cancels the rest; typed failures are collected, and only when every candidate fails does the race fail with all of them</td></tr>
+<tr><td><code>allSucceed(tasks)</code></td><td>Wait for all tasks; the first typed failure cancels the rest (fail-fast)</td></tr>
+<tr><td><code>allSucceedAccumulating(tasks)</code></td><td>Run everything to completion; collect every typed failure at once</td></tr>
+<tr><td><code>withTimeout(duration, onTimeout)</code></td><td>Overrunning the deadline becomes the designated typed error, on the railway</td></tr>
+</tbody></table>
+</div>
+<p>A warehouse failing with a typed <code>Left</code> does not abort the race; errors stay in the value channel rather than being thrown and caught. Under the hood these combinators run on the same <code>Scope</code>/<code>ScopeJoiner</code> substrate documented in <a href="../monads/vtask_scope.html">Structured Concurrency</a>; reach for raw <code>Scope</code> directly when your tasks have no typed error channel.</p>
+<p>Context values propagate to all forked tasks automatically. Each racing candidate inherits the trace ID, tenant ID, and deadline without explicit passing.</p>
+<h3 id="example-parallel-inventory-check"><a class="header" href="#example-parallel-inventory-check">Example: Parallel Inventory Check</a></h3>
+<pre><code class="language-java">public VResultPath&lt;OrderError, InventoryReservation&gt; reserveInventoryParallel(
+    OrderId orderId, List&lt;ValidatedOrderLine&gt; lines) {
+
+    // Each candidate automatically inherits the scoped values (traceId, tenantId, etc.).
+    var candidates =
+        List.of(
+            warehouseReservation(1, Duration.ofMillis(50), orderId, lines),
+            warehouseReservation(2, Duration.ofMillis(75), orderId, lines),
+            warehouseReservation(3, Duration.ofMillis(100), orderId, lines));
+
+    // Race all warehouses - first Right wins; all-Left surfaces the first warehouse's error.
+    return VResultPath.firstSuccess(candidates)
+        .peekLeft(errors -&gt; logSync("All warehouses failed: " + errors.toJavaList()))
+        .mapError(NonEmptyList::head)
+        .withTimeout(
+            getRemainingTimeout(), () -&gt; SystemError.timeout("parallel inventory reservation"));
+}
+
+private VResultPath&lt;OrderError, InventoryReservation&gt; warehouseReservation(
+    int warehouse, Duration latency, OrderId orderId, List&lt;ValidatedOrderLine&gt; lines) {
+    return Path.vresult(
+        VTask.of(() -&gt; {
+            logSync("Checking warehouse " + warehouse
+                + " [trace=" + OrderContext.shortTraceId() + "]");
+            Thread.sleep(latency.toMillis()); // Simulate network latency
+            return inventoryService.reserve(orderId, lines);
+        }));
+}
+</code></pre>
+<p>Three moves on the error channel do all the work:</p>
+<ul>
+<li><code>peekLeft</code> observes the collected failures (a <code>NonEmptyList&lt;OrderError&gt;</code>, in candidate order) without changing tracks (here, logging that every warehouse failed)</li>
+<li><code>mapError(NonEmptyList::head)</code> collapses the collected errors back to the workflow's single <code>OrderError</code>, surfacing the first</li>
+<li><code>withTimeout</code> bounds the whole race by the remaining deadline; overrunning becomes a typed <code>SystemError.timeout</code>, not a <code>TimeoutException</code></li>
+</ul>
+<hr />
+<h2 id="outcome-aware-compensation-with-bracketoutcome"><a class="header" href="#outcome-aware-compensation-with-bracketoutcome">Outcome-Aware Compensation with bracketOutcome</a></h2>
+<p>The bracket pattern ensures cleanup even when operations fail. <code>VResultPath.bracketOutcome</code> goes further: the release action <em>sees</em> the <code>Either</code> outcome of the use phase, so confirm-versus-release is decided from the result rather than a mutable flag:</p>
+<pre><code class="language-java">private VResultPath&lt;OrderError, OrderResult&gt; processWithReservation(
+    ValidatedOrder order, Customer customer) {
+
+    return VResultPath.bracketOutcome(
+        // Acquire: reserve inventory; a Left skips use and release entirely.
+        Path.vresultDefer(() -&gt; inventoryService.reserve(order.orderId(), order.lines())),
+        // Use: discount -&gt; payment -&gt; shipment -&gt; notification.
+        reservation -&gt; processAfterReservation(order, customer, reservation),
+        // Release: decide confirm-versus-release from the outcome.
+        (reservation, outcome) -&gt;
+            outcome.fold(
+                _ -&gt; VTask.exec(() -&gt; {
+                    logSync("Releasing reservation " + reservation.reservationId());
+                    inventoryService.releaseReservation(reservation.reservationId());
+                }),
+                _ -&gt; VTask.exec(
+                    () -&gt; inventoryService.confirmReservation(reservation.reservationId()))),
+        defect -&gt; SystemError.fromException("Order processing failed", defect));
+}
+</code></pre>
+<p>Release <em>always</em> runs and receives the <code>Either</code> outcome: a <code>Right</code> confirms the reservation, a <code>Left</code> releases it. There is no mutable "confirmed" flag. A defect (a thrown exception) inside the use phase is first typed through the final <code>onDefect</code> argument (here as a <code>SystemError</code>), so the release always observes a real outcome, and the reservation is released.</p>
+<h3 id="general-purpose-resource"><a class="header" href="#general-purpose-resource">General-Purpose Resource</a></h3>
+<p>For AutoCloseable-style acquisition where the release does not depend on the outcome, the generic <code>Resource</code> bracket remains available, and multiple resources combine with guaranteed cleanup ordering:</p>
 <pre><code class="language-java">Resource&lt;Connection&gt; dbResource = Resource.fromAutoCloseable(
     () -&gt; connectionPool.getConnection()
 );
@@ -410,32 +437,49 @@ VTask&lt;List&lt;Order&gt;&gt; orders = stmtResource.use(stmt -&gt;
     VTask.of(() -&gt; executeQuery(stmt))
 );
 </code></pre>
+<p>Resources are released in reverse order of acquisition (LIFO), and cleanup runs even if the computation fails or is cancelled.</p>
 <hr />
-<h2 id="virtual-thread-execution-with-vtaskpath"><a class="header" href="#virtual-thread-execution-with-vtaskpath">Virtual Thread Execution with VTaskPath</a></h2>
-<p>Scale to millions of concurrent orders using virtual threads:</p>
-<pre><code class="language-java">// VTaskPath operations are lazy - they describe computation
-VTaskPath&lt;Either&lt;OrderError, OrderResult&gt;&gt; workflow =
+<h2 id="the-typed-async-railway-with-vresultpath"><a class="header" href="#the-typed-async-railway-with-vresultpath">The Typed Async Railway with VResultPath</a></h2>
+<p>Scale to millions of concurrent orders using virtual threads. The workflow's shape is <code>VTask&lt;Either&lt;OrderError, A&gt;&gt;</code> (async work that can fail with a typed domain error), and <code>VResultPath</code> is that stack as a first-class railway, with no <code>Kind</code> widening, transformer, or hand-carried <code>Either</code>:</p>
+<pre><code class="language-java">// VResultPath operations are lazy - they describe computation
+VResultPath&lt;OrderError, OrderResult&gt; workflow =
     validateShippingAddress(request.shippingAddress())
-        .via(addr -&gt; lookupCustomer(customerId))
-        .via(customer -&gt; processOrder(customer, addr));
+        .via(address -&gt;
+            lookupAndValidateCustomer(customerId)
+                .via(customer -&gt;
+                    buildValidatedOrder(orderId, request, customer, address)
+                        .via(order -&gt; processWithReservation(order, customer))));
 
-// Execute on a virtual thread
+// Execute on a virtual thread at the boundary
 Try&lt;Either&lt;OrderError, OrderResult&gt;&gt; result = workflow.run().runSafe();
 </code></pre>
-<p>Virtual threads are managed by the JVM and can handle blocking operations (database calls, HTTP requests) without consuming platform threads.</p>
+<p><code>via</code> chains dependent steps on the success channel; a <code>Left</code> from any step short-circuits the rest. Steps nest only where a later step still needs an earlier binding (the address and customer both feed the order build). Virtual threads are managed by the JVM and can handle blocking operations (database calls, HTTP requests) without consuming platform threads.</p>
 <h3 id="converting-between-effect-types"><a class="header" href="#converting-between-effect-types">Converting Between Effect Types</a></h3>
-<p><code>VTaskPath</code> integrates with the Effect Path API:</p>
-<pre><code class="language-java">// Create a VTaskPath from a computation
-VTaskPath&lt;String&gt; fetch = Path.vtask(() -&gt; httpClient.get(url));
+<p><code>VResultPath</code> integrates with the rest of the Effect Path API:</p>
+<pre><code class="language-java">// Defer a computation that decides the Either itself
+VResultPath&lt;OrderError, ValidatedShippingAddress&gt; step =
+    Path.vresultDefer(() -&gt; shippingService.validateAddress(address));
 
-// Convert existing Either to VTaskPath
-VTaskPath&lt;Either&lt;Error, Data&gt;&gt; wrapped = Path.vtaskPure(existingEither);
+// Lift an existing carrier or a decided Either
+VResultPath&lt;OrderError, Data&gt; lifted = Path.vresult(vtaskOfEither);
+VResultPath&lt;OrderError, Data&gt; decided = Path.vresultEither(either);
 
-// Chain VTaskPath operations
-VTaskPath&lt;Either&lt;Error, Result&gt;&gt; pipeline = fetch
-    .map(String::toUpperCase)
-    .via(s -&gt; Path.vtask(() -&gt; process(s)));
+// Pure values on either channel
+VResultPath&lt;OrderError, Unit&gt; ok = Path.vresultRight(Unit.INSTANCE);
+VResultPath&lt;OrderError, Unit&gt; failed = Path.vresultLeft(SystemError.timeout("order.start"));
 </code></pre>
+<p>VTask-native resilience composes on the <code>VTaskPath</code> layer and lifts into the typed railway:</p>
+<pre><code class="language-java">private VResultPath&lt;OrderError, Customer&gt; lookupAndValidateCustomer(CustomerId customerId) {
+    return Path.vresult(
+        Path.vtask(() -&gt;
+                customerService.findById(customerId)
+                    .flatMap(customerService::validateEligibility))
+            .withCircuitBreaker(customerLookupBreaker)
+            .withRetry(customerLookupRetry)
+            .run());
+}
+</code></pre>
+<p>Retry engages only when the lookup <em>throws</em> (a transient infrastructure failure); a business <code>Left</code> such as customer-not-found is returned as-is and never retried.</p>
 <hr />
 <h2 id="adapting-these-patterns-to-your-domain"><a class="header" href="#adapting-these-patterns-to-your-domain">Adapting These Patterns to Your Domain</a></h2>
 <h3 id="step-1-define-your-error-hierarchy"><a class="header" href="#step-1-define-your-error-hierarchy">Step 1: Define Your Error Hierarchy</a></h3>
@@ -470,31 +514,46 @@ public Either&lt;MyDomainError, User&gt; findUser(String id) {
         .map(this::buildResult);
 }
 </code></pre>
+<p>When the steps are asynchronous, the same railway is <a href="../effect/path_vresult.html"><code>VResultPath</code></a>: swap <code>Path.either(...)</code> for <code>Path.vresultDefer(...)</code> and the shape of the code does not change.</p>
 <h3 id="step-4-add-resilience-gradually"><a class="header" href="#step-4-add-resilience-gradually">Step 4: Add Resilience Gradually</a></h3>
-<p>Start simple, add resilience as needed:</p>
+<p>Start simple, add resilience as needed. <code>EitherPath</code> is eager, so its resilience combinators are static and take the step as a <code>Supplier</code>: resilience wraps the <em>computation</em>, not the finished result.</p>
 <pre><code class="language-java">// Start with basic composition
 var result = workflow.process(request);
 
-// Add timeout when integrating external services
-var withTimeout = Resilience.withTimeout(result, Duration.ofSeconds(30), "process");
+// Add a typed timeout when integrating external services: the timeout
+// arrives as a Left, not a thrown TimeoutException
+var withTimeout = EitherPath.withTimeout(
+    () -&gt; workflow.process(request),
+    Duration.ofSeconds(30),
+    () -&gt; SystemError.timeout("process"));
 
-// Add retry for transient failures
-var resilient = Resilience.withRetry(withTimeout, RetryPolicy.defaults());
+// Add railway-aware retry for transient failures. A business Left is never
+// retried; the predicate opts selected transient errors in. Only wrap steps
+// that are safe to re-run.
+var resilient = EitherPath.withRetry(
+    () -&gt; EitherPath.withTimeout(
+        () -&gt; workflow.process(request),
+        Duration.ofSeconds(30),
+        () -&gt; SystemError.timeout("process")),
+    error -&gt; error instanceof SystemError,
+    RetryPolicy.exponentialBackoffWithJitter(3, Duration.ofMillis(200)));
 </code></pre>
+<p>On the async railway the same vocabulary chains as instance methods: <code>VResultPath</code> carries <code>withRetry(retryOn, policy)</code>, <code>withTimeout(duration, onTimeout)</code>, <code>withCircuitBreaker</code>, and <code>withBulkhead</code> directly.</p>
 <h3 id="step-5-add-concurrency-for-scale"><a class="header" href="#step-5-add-concurrency-for-scale">Step 5: Add Concurrency for Scale</a></h3>
-<p>When you need to scale, add context propagation and structured concurrency:</p>
+<p>When you need to scale, add context propagation and typed structured concurrency:</p>
 <pre><code class="language-java">// Wrap entry point with context
 ScopedValue
     .where(OrderContext.TRACE_ID, traceId)
     .where(OrderContext.DEADLINE, deadline)
     .run(() -&gt; workflow.process(request));
 
-// Use Scope for parallel operations
-VTask&lt;List&lt;Result&gt;&gt; parallel = Scope.&lt;Result&gt;allSucceed()
-    .timeout(remainingTime())
-    .fork(operation1)
-    .fork(operation2)
-    .join();
+// Race alternatives - typed failures stay in the value channel
+VResultPath&lt;NonEmptyList&lt;MyDomainError&gt;, Result&gt; fastest =
+    VResultPath.firstSuccess(List.of(primary, replica, cache));
+
+// Or require every operation to succeed (fail-fast)
+VResultPath&lt;MyDomainError, List&lt;Result&gt;&gt; all =
+    VResultPath.allSucceed(List.of(operation1, operation2));
 </code></pre>
 <hr />
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
@@ -507,9 +566,9 @@ VTask&lt;List&lt;Result&gt;&gt; parallel = Scope.&lt;Result&gt;allSucceed()
 <div>
 <ul>
 <li><strong>Context propagation</strong> with <code>ScopedValue</code> enables implicit trace IDs, tenant isolation, and deadlines</li>
-<li><strong>Structured concurrency</strong> with <code>Scope</code> provides parallel operations with proper cancellation and timeout</li>
-<li><strong>Resource management</strong> with <code>Resource</code> ensures cleanup via the bracket pattern</li>
-<li><strong>Virtual threads</strong> with <code>VTaskPath</code> enable scaling to millions of concurrent operations</li>
+<li><strong>Typed racing</strong> with <code>VResultPath.firstSuccess</code> keeps failures in the value channel: the first <code>Right</code> wins, and only an all-fail surfaces every error</li>
+<li><strong>Outcome-aware compensation</strong> with <code>bracketOutcome</code> decides confirm-versus-release from the <code>Either</code> result, not a mutable flag</li>
+<li><strong>Virtual threads</strong> with <code>VResultPath</code> enable scaling to millions of concurrent operations without giving up typed errors</li>
 <li><strong>Gradual adoption</strong> allows you to start simple and add concurrency patterns as needs grow</li>
 </ul>
 </div>
@@ -524,8 +583,9 @@ VTask&lt;List&lt;Result&gt;&gt; parallel = Scope.&lt;Result&gt;allSucceed()
 </div>
 <div>
 <ul>
+<li><a href="../effect/path_vresult.html">VResultPath</a> - Async work with a typed domain error</li>
 <li><a href="../effect/path_vtask.html">VTaskPath</a> - Virtual thread effect type</li>
-<li><a href="../monads/vtask_scope.html">Structured Concurrency</a> - Scope patterns</li>
+<li><a href="../monads/vtask_scope.html">Structured Concurrency</a> - The Scope substrate beneath <code>firstSuccess</code></li>
 <li><a href="../monads/vtask_resource.html">Resource Management</a> - Resource patterns</li>
 <li><a href="../effect/effect_path_overview.html">Effect Path Overview</a> - The railway model</li>
 </ul>

@@ -278,6 +278,7 @@
 <li>How the circuit breaker state machine works (CLOSED, OPEN, HALF_OPEN)</li>
 <li>How to configure failure thresholds, recovery timeouts, and call timeouts</li>
 <li>How to protect VTask operations with a shared circuit breaker</li>
+<li>How to chain <code>withCircuitBreaker</code> on Path carriers, and why a <code>Left</code> never trips the circuit</li>
 <li>How to use fallbacks when the circuit is open</li>
 <li>How to monitor circuit breaker health via metrics</li>
 </ul>
@@ -370,6 +371,30 @@ VTask&lt;BigDecimal&gt; getBalance = paymentBreaker.protect(
         return "unknown";
     });
 </code></pre>
+<h2 id="path-native-circuit-breakers"><a class="header" href="#path-native-circuit-breakers">Path-Native Circuit Breakers</a></h2>
+<p>The lazy Path carriers chain breaker protection directly, with the same shareable breaker:</p>
+<pre><code class="language-java">IOPath&lt;String&gt; guarded = Path.io(() -&gt; paymentService.getStatus(orderId))
+    .withCircuitBreaker(paymentBreaker);
+
+VTaskPath&lt;String&gt; guardedAsync = Path.vtask(() -&gt; paymentService.getStatus(orderId))
+    .withCircuitBreaker(paymentBreaker);
+</code></pre>
+<p>On the typed-error carriers the breaker is railway-aware: a <code>Left</code> is a <em>successfully computed value</em> (the service answered, just not with a <code>Right</code>), so it does <strong>not</strong> count as a breaker failure. Only thrown exceptions (defects) trip the circuit. A stream of "customer not found" responses will never open the circuit; a stream of connection resets will.</p>
+<p>The typed overloads keep an open-circuit rejection on the typed channel instead of surfacing <code>CircuitOpenException</code>:</p>
+<pre><code class="language-java">// VResultPath: instance combinator, rejection lands as a Left
+VResultPath&lt;OrderError, Reservation&gt; guarded =
+    reserveInventory(order)
+        .withCircuitBreaker(
+            inventoryBreaker,
+            open -&gt; OrderError.SystemError.circuitBreakerOpen("inventory"));
+
+// EitherPath is eager, so the combinator is static and takes the step as a Supplier
+EitherPath&lt;OrderError, Reservation&gt; reserved = EitherPath.withCircuitBreaker(
+    () -&gt; reserveInventory(order),
+    inventoryBreaker,
+    open -&gt; OrderError.SystemError.circuitBreakerOpen("inventory"));
+</code></pre>
+<p>Without the <code>onOpen</code> argument, the rejection propagates as-is: a thrown <code>CircuitOpenException</code> on <code>EitherPath</code>, a defect on the <code>VTask</code> failure channel for <code>VResultPath</code>.</p>
 <h2 id="metrics"><a class="header" href="#metrics">Metrics</a></h2>
 <pre><code class="language-java">CircuitBreakerMetrics m = breaker.metrics();
 

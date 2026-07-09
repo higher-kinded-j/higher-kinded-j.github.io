@@ -279,7 +279,8 @@
 <li>When to use fixed, exponential, linear, or jittered delays</li>
 <li>How to filter retries by exception type</li>
 <li>How to monitor retry attempts with <code>RetryEvent</code></li>
-<li>How retry integrates with <code>VTask</code>, <code>IOPath</code>, and <code>VTaskPath</code></li>
+<li>How retry integrates with <code>VTask</code> and every Path carrier (<code>IOPath</code>, <code>VTaskPath</code>, <code>VResultPath</code>, and the eager <code>EitherPath</code>)</li>
+<li>Why a business <code>Left</code> is never retried, and how to opt selected transient typed errors in</li>
 </ul>
 </div>
 </div>
@@ -409,15 +410,61 @@ VTask&lt;String&gt; resilient2 = Retry.retryTask(
     RetryPolicy.exponentialBackoff(3, Duration.ofSeconds(1)),
     lastError -&gt; VTask.of(() -&gt; backupService.get(url)));
 </code></pre>
-<h3 id="iopath-and-vtaskpath-integration"><a class="header" href="#iopath-and-vtaskpath-integration">IOPath and VTaskPath Integration</a></h3>
+<h3 id="path-native-retry"><a class="header" href="#path-native-retry">Path-Native Retry</a></h3>
+<p>Retry wraps a <strong>computation</strong>. On the lazy Path carriers (where the computation has not yet run), <code>withRetry</code> chains as an instance method:</p>
 <pre><code class="language-java">// IOPath
-IOPath&lt;Response&gt; resilient = IOPath.delay(() -&gt; httpClient.get(url))
+IOPath&lt;Response&gt; resilient = Path.io(() -&gt; httpClient.get(url))
     .withRetry(RetryPolicy.exponentialBackoff(3, Duration.ofSeconds(1)));
 
-// VTaskPath (once Path API integration is complete)
+// VTaskPath
 VTaskPath&lt;Response&gt; resilient = Path.vtask(() -&gt; httpClient.get(url))
     .withRetry(RetryPolicy.exponentialBackoff(3, Duration.ofSeconds(1)));
+
+// VResultPath: async with a typed error channel
+VResultPath&lt;OrderError, Reservation&gt; resilient =
+    Path.vresultDefer(() -&gt; inventoryService.reserve(order))
+        .withRetry(RetryPolicy.exponentialBackoffWithJitter(3, Duration.ofMillis(200)));
 </code></pre>
+<p><code>EitherPath</code> is an <em>eager</em> carrier: by the time an instance exists, the computation has already run, so an instance-chained retry would have nothing left to protect. On <code>EitherPath</code> the same <code>with*</code> vocabulary is therefore <strong>static</strong>, taking the step as a <code>Supplier</code>, applied at the point where the computation still exists:</p>
+<pre><code class="language-java">EitherPath&lt;OrderError, Reservation&gt; reserved =
+    EitherPath.withRetry(() -&gt; reserveInventory(order), policy);
+
+// Typically inline, inside a chain:
+pipeline.via(order -&gt; EitherPath.withRetry(() -&gt; reserveInventory(order), policy));
+</code></pre>
+<h3 id="railway-aware-retry-on-typed-carriers"><a class="header" href="#railway-aware-retry-on-typed-carriers">Railway-Aware Retry on Typed Carriers</a></h3>
+<p>On the typed-error carriers (<code>EitherPath</code> and <code>VResultPath</code>) retry understands the railway. The default overload retries <strong>thrown exceptions only</strong>: a <code>Left</code> is a business decision, not a fault ("card declined" is an answer, and asking again will not change it), so it is returned as-is and never retried.</p>
+<p>Some typed errors <em>are</em> transient, though (a <code>SystemError</code> wrapping a connection reset, say). The typed overload lets a predicate opt those in:</p>
+<pre><code class="language-java">// Instance form on VResultPath
+VResultPath&lt;OrderError, Reservation&gt; resilient =
+    reserveInventory(order)
+        .withRetry(error -&gt; error instanceof OrderError.SystemError, policy);
+
+// Static form on the eager EitherPath
+EitherPath&lt;OrderError, Reservation&gt; reserved = EitherPath.withRetry(
+    () -&gt; reserveInventory(order),
+    error -&gt; error instanceof OrderError.SystemError,
+    policy);
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Outcome of an attempt</th><th>Behaviour</th></tr></thead><tbody>
+<tr><td><code>Right</code></td><td>Returned; no retry</td></tr>
+<tr><td><code>Left</code> the predicate does not select</td><td>Returned immediately; business errors are values</td></tr>
+<tr><td><code>Left</code> the predicate selects</td><td>Retried per the policy; on exhaustion the <strong>last <code>Left</code></strong> is returned, keeping the error on the typed channel</td></tr>
+<tr><td>Thrown exception matching the policy's predicate</td><td>Retried; on exhaustion <code>RetryExhaustedException</code> is thrown</td></tr>
+</tbody></table>
+</div>
+<p>Internally both typed carriers share a single railway-aware retry lowering, so <code>EitherPath</code> and <code>VResultPath</code> behave identically; the only difference is eager-static versus lazy-instance.</p>
+<div id="admonition-never-retry-a-non-idempotent-step" class="admonition admonish-warning" role="note" aria-labelledby="admonition-never-retry-a-non-idempotent-step-title">
+<div class="admonition-title">
+<div id="admonition-never-retry-a-non-idempotent-step-title">
+<p>Never Retry a Non-Idempotent Step</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-never-retry-a-non-idempotent-step"></a>
+</div>
+<div>
+<p>Retry re-invokes the whole step. Wrapping a step with side effects that must happen at most once (a payment, an email, an inventory <em>commit</em>) risks performing them twice: an attempt can succeed remotely and still throw on the way back. Confine retry to idempotent steps (reads, validations, reservations that can safely be re-issued) and run everything else exactly once. See <a href="combined.html#path-native-resilience-per-step-protection">Combined Patterns</a> for a worked per-step example.</p>
+</div>
+</div>
 <hr />
 <h2 id="handling-exhausted-retries"><a class="header" href="#handling-exhausted-retries">Handling Exhausted Retries</a></h2>
 <p>When all attempts fail, <code>RetryExhaustedException</code> is thrown with the last failure as its cause:</p>
@@ -459,7 +506,9 @@ VTaskPath&lt;Response&gt; resilient = Path.vtask(() -&gt; httpClient.get(url))
 <tr><td>Custom predicate</td><td><code>.retryIf(ex -&gt; ...)</code></td></tr>
 <tr><td>Monitor retries</td><td><code>.onRetry(event -&gt; ...)</code></td></tr>
 <tr><td>Apply to VTask</td><td><code>Retry.retryTask(task, policy)</code></td></tr>
-<tr><td>Apply to IOPath</td><td><code>path.withRetry(policy)</code></td></tr>
+<tr><td>Apply to IOPath / VTaskPath / VResultPath</td><td><code>path.withRetry(policy)</code></td></tr>
+<tr><td>Wrap an eager EitherPath step</td><td><code>EitherPath.withRetry(() -&gt; step(), policy)</code></td></tr>
+<tr><td>Railway-aware typed retry</td><td><code>path.withRetry(retryOn, policy)</code> / <code>EitherPath.withRetry(() -&gt; step(), retryOn, policy)</code></td></tr>
 <tr><td>Simple retry</td><td><code>Retry.retryTask(task, 3)</code></td></tr>
 <tr><td>Retry with fallback</td><td><code>Retry.retryTaskWithFallback(task, policy, fallbackFn)</code></td></tr>
 <tr><td>Retry with recovery</td><td><code>Retry.retryTaskWithRecovery(task, policy, recoveryFn)</code></td></tr>
