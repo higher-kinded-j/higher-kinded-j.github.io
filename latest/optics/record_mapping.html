@@ -384,6 +384,44 @@ public interface ProfileCardAssembly {
 // Invalid(NonEmptyList[customer.email: not an email address])
 </code></pre>
 <p>Ambiguity (two sources carrying the component) and unfilled components are compile errors, and the return type must tell the truth: fallible fills demand the <code>Validated</code> return; an identity-only merge must declare the plain target.</p>
+<h2 id="generating-error-envelopes-generateerrorenvelope"><a class="header" href="#generating-error-envelopes-generateerrorenvelope">Generating error envelopes: <code>@GenerateErrorEnvelope</code></a></h2>
+<p>The third generator in the family targets the other end of the boundary: the typed domain error a fallible mapping produces. A sealed error hierarchy re-declares the same envelope (<code>code</code>, <code>message</code>, <code>timestamp</code>, <code>context</code>) on every variant, and <code>context</code> is usually an untyped <code>Map&lt;String, Object&gt;</code>. <code>@GenerateErrorEnvelope</code> supplies the envelope and types the context, so each variant declares only its domain-specific components plus one <code>ErrorEnvelope&lt;C&gt;</code> component:</p>
+<pre><code class="language-java">// The context is records-as-schema: nullable components, an all-absent default.
+record OrderErrorContext(@Nullable OrderId orderId, @Nullable TraceId traceId) {}
+
+@GenerateErrorEnvelope
+public sealed interface OrderError {
+  ErrorEnvelope&lt;OrderErrorContext&gt; envelope();          // declared once
+
+  record OutOfStock(List&lt;ProductId&gt; products, ErrorEnvelope&lt;OrderErrorContext&gt; envelope)
+      implements OrderError {}
+  record PaymentDeclined(CardRef card, ErrorEnvelope&lt;OrderErrorContext&gt; envelope)
+      implements OrderError {}
+}
+</code></pre>
+<div id="admonition-two-senses-of-context" class="admonition admonish-note" role="note" aria-labelledby="admonition-two-senses-of-context-title">
+<div class="admonition-title">
+<div id="admonition-two-senses-of-context-title">
+<p>Two senses of 'context'</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-two-senses-of-context"></a>
+</div>
+<div>
+<p>The <em>typed context</em> here is diagnostic metadata attached to an error value: a records-as-schema type such as <code>OrderErrorContext</code>. It is unrelated to the <a href="../effect/effect_contexts_error.html"><code>ErrorContext</code></a> effect type, which is a composable IO-plus-<code>Either</code> computation. This page's context is data carried on an error; that one is a way of running effects.</p>
+</div>
+</div>
+<p>For <code>OrderError</code> the processor generates <code>OrderErrors</code>: a factory per variant (<code>code</code> is the UPPER_SNAKE variant name, <code>message</code> its humanised form, the timestamp read from a <code>TimeSource</code>, so an overload takes one explicitly and the convenience uses <code>TimeSource.system()</code>), a fluent <code>context()</code> builder over the context record's components, and an <code>editContext(error, edit)</code> wither that rebuilds the concrete variant through an exhaustive switch. Add a one-line default so the wither reads as an instance method, and construction plus enrichment matches the shape you would hand-write:</p>
+<pre><code class="language-java">default OrderError editContext(UnaryOperator&lt;OrderErrors.ContextBuilder&gt; edit) {
+  return OrderErrors.editContext(this, edit);
+}
+
+OrderError error = OrderErrors.outOfStock(products)                 // typed factory
+    .editContext(ctx -&gt; ctx.orderId(orderId).traceId(traceId));     // typed context, not map.put
+</code></pre>
+<p>The context type is discovered <strong>structurally</strong> from the <code>ErrorEnvelope</code> component's type argument, never a class literal, and every variant must agree on it. The rules, each a what/why/fix diagnostic: the hierarchy and its variants and the context record must be non-generic; permitted variants must be records (a nested sealed sub-hierarchy is rejected with a flatten-it fix, not recursed into); and the context record's components must be nullable reference types (primitives are rejected at compile time, because the all-absent context holds <code>null</code>; a null-rejecting compact constructor cannot be detected by the processor, so keep the context a plain nullable data carrier).</p>
+<p>The two example hierarchies show the spread of the win on purpose. <code>MarketError</code> is fine-grained: each variant is a single failure mode with its own typed fields (<code>FeedDisconnected</code>, <code>RiskLimitBreached</code>, <code>StaleData</code>), so its generated <code>MarketErrors</code> factories carry everything and no hand-written construction remains. <code>OrderError</code> is coarser: variants such as <code>CustomerError</code> and <code>InventoryError</code> group several codes (<code>CUSTOMER_NOT_FOUND</code> and <code>CUSTOMER_SUSPENDED</code>; <code>OUT_OF_STOCK</code>, <code>RESERVATION_FAILED</code>, <code>PARTIAL_STOCK</code>) because a downstream <code>switch</code> presents failures by category, and one generated factory per variant derives only one code. Those variants keep a hand-written factory per code, each calling the canonical constructor with <code>ErrorEnvelope.of(...)</code> and the generated builder.</p>
+<p>Either way the repeated envelope and the untyped <code>Map&lt;String, Object&gt;</code> are gone; the fully-generated factories are the extra a fine-grained hierarchy earns. So the design guidance is about the <em>hierarchy</em>, not the annotation: reach for fine-grained variants when each failure mode is genuinely distinct, and group them when a boundary treats a whole category uniformly, accepting a hand-written factory per code as the price of that grouping.</p>
+<p>Two verbs keep the two operations distinct: <code>ErrorEnvelope.withContext(D)</code> is the record wither that <strong>replaces</strong> the context (and may change its type), while the generated <code>editContext(error, edit)</code> <strong>transforms</strong> the existing context through the builder, seeded from the current value. Reach for <code>withContext</code> to set a context, <code>editContext</code> to enrich one.</p>
 <h2 id="diagnostics-and-limits"><a class="header" href="#diagnostics-and-limits">Diagnostics and limits</a></h2>
 <p>Every rejection follows the processor's what/why/fix standard — the message states what is wrong, why the mapper needs it, and the code to write. Current limits, each with its own diagnostic:</p>
 <ul>
