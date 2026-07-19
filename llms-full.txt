@@ -37129,7 +37129,68 @@ The overloads follow the tiers:
 A spec with a derived field *and* a fallible leaf is better served by the fallible overload, given a parseable wire value whose derived components match what `build` would produce (this keeps the no-parse check). Reserve the domain-sample overload for total-parse mappings, where no wire value can fail.
 
 ~~~admonish tip title="Mapping types you don't own"
-The annotation sits on *your* spec interface, never on the mapped types, so third-party records and sealed hierarchies from compiled libraries map without being annotatable: `interface VendorOrderMapping extends MappingSpec<com.vendor.OrderRecord, OrderDto> {}` works today. Bean-shaped foreign types (getter/setter DTOs) are the one un-owned shape that the mapping processor does not currently support.
+The annotation sits on *your* spec interface, never on the mapped types, so third-party records, sealed hierarchies, and bean-shaped DTOs from compiled libraries map without being annotatable: `interface VendorOrderMapping extends MappingSpec<com.vendor.OrderRecord, OrderDto> {}` works today. Bean-shaped wire types (getter/setter DTOs) are covered too; see [Bean-shaped wire targets](#bean-shaped-wire-targets) below.
+~~~
+
+---
+
+## Bean-shaped wire targets
+
+The wire side need not be a record. A **bean** (a mutable class with a no-args constructor and getters/setters, or an immutable one with a builder) maps the same way, with the same features (renames, leaves, derived fields, container lifting, nesting). Only *how* the wire is read and written changes: `build` fills through setters or a builder, and `parse` reads through getters.
+
+``` java
+// A generated, mutable getter/setter DTO - not a record, so not annotatable. The spec still sits
+// on your interface, never on the bean, so a third-party bean maps without being touched.
+class ContactBean {
+  private String name;
+  private String email;
+
+  public String getName() {
+    return name;
+  }
+
+  public void setName(String name) {
+    this.name = name;
+  }
+
+  public String getEmail() {
+    return email;
+  }
+
+  public void setEmail(String email) {
+    this.email = email;
+  }
+}
+
+@GenerateMapping
+interface ContactMapping extends MappingSpec<Customer, ContactBean> {
+  // build() writes through setters; parse() reads through getters, null-guarded and located.
+  default ValidatedPrism<String, EmailAddress> email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+```
+
+``` java
+    Customer ada = new Customer("Ada", new EmailAddress("ada@corp.example"));
+    ContactBean bean =
+        ContactMappingImpl.INSTANCE.build(ada); // new ContactBean(); setName; setEmail
+    Validated<NonEmptyList<FieldError>, Customer> fromBean =
+        ContactMappingImpl.INSTANCE.parse(bean);
+    // A null bean property parses to a located FieldError, e.g. [email: must not be null].
+```
+
+The design decisions worth knowing:
+
+- **Null is located, never thrown.** An unset bean property is `null`, and a leaf's `parse` rejects `null`. So every reference-typed read is null-guarded: a `null` becomes a located `FieldError` (`must not be null`) under the field's label, and `parse` stays total and accumulating. A `null` never reaches a leaf. Primitive reads are never null and need no guard.
+- **Honest tiers.** Those null guards make reference components fallible, so a bean mapping withholds `asIso()` automatically; an all-primitive bean (whose reads can never be null) still earns it. Nesting is unaffected: a bean mapping exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it.
+- **Construction strategy** is detected from the bean's shape, tried in order: a public no-args constructor with `setX` setters (and, for a getter-only `List`, the JAXB convention `getItems().addAll(...)`); then a static `builder()`/`newBuilder()` whose setters fill it and whose `build()` yields the wire. A bean that fits neither gets a what/why/fix diagnostic.
+- **Optionality bridges through `null`.** Beans never declare `Optional`, so a domain `Optional<T>` maps to a nullable bean property `T`: empty bridges to absent (`build` skips the write, leaving the property unset; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf.
+- **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the *wire* may be bean-shaped; a bean domain gets a diagnostic.
+
+~~~admonish note title="Not yet: bean projections and read-only beans"
+A bean *projection* (a bean with fewer properties than the domain) with a reference property, and read-only (parse-only) or write-only (build-only) beans, are follow-ons. An all-primitive bean projection maps as a lawful `asLens()` today; a reference-typed one is reported with a pointer to the planned validated-`patch` tier rather than emitting an unlawful lens.
 ~~~
 
 ---
@@ -87927,6 +87988,10 @@ _Breaking changes / migration:_
 - **`hkj.security.validated-user-details` now defaults to `false`** and the bean starts empty (sample accounts moved to `ValidatedUserDetailsService.withSampleUsers()`). It is a `UserDetailsService`, so once unique it becomes the application-wide user store — enabling it without registering accounts fails every login. Enable it only when you will populate it.
 - **A JWT whose authorities claim is missing or malformed is now rejected with `BadCredentialsException` (HTTP 401)** rather than authenticating with empty authorities. If your IdP legitimately issues role-less tokens, set `hkj.security.reject-missing-authorities-claim: false` to restore lenient handling for the missing-claim case (a malformed claim is always rejected).
 - **Effect-boundary interpreter resolution now fails fast at startup** on an ambiguous match (two equally-specific eligible interpreters for one algebra) or when the only interpreter for an algebra is gated behind an inactive `@Interpreter(profile = ...)`. Both were previously silent scan-order selections.
+
+**Bean-shaped `@GenerateMapping` wire targets ([#628](https://github.com/higher-kinded-j/higher-kinded-j/issues/628))**
+
+`@GenerateMapping` now maps a record domain to a **bean-shaped wire**, not only a record: a mutable class with a no-args constructor and getters/setters, or an immutable one with a builder (`builder()`/`newBuilder()`), with the JAXB getter-only collection convention (`getItems().addAll(...)`) also recognised. The full feature set carries over: renames, leaves, derived fields, `List`/`Optional`/`Map` lifting, and nesting both ways. Because an unset bean property is `null`, every reference-typed `parse` read is null-guarded into a located `FieldError`, so `parse` stays total and accumulating; those guards make `asIso()` truthful only for an all-primitive bean. A domain `Optional<T>` bridges to a nullable bean property `T` (empty to absent). See [Bean-shaped wire targets](optics/record_mapping.md#bean-shaped-wire-targets). The validated-`patch` projection tier, read-only/write-only bean tiers, and Optional-through-nested-spec bridging remain follow-ons.
 
 ---
 
