@@ -36909,6 +36909,10 @@ The two directions have different shapes, and that asymmetry runs through the wh
 
 The generated class is `<Spec>Impl` beside the spec, used through its `INSTANCE` constant. A spec nested in an outer class joins the enclosing simple names: `Shop.CustomerMapping` generates `ShopCustomerMappingImpl`.
 
+~~~admonish tip title="At the Spring boundary: one 422, every bad field by path"
+In a Spring controller the parse result needs no wrapping: return it as-is and `hkj-spring` renders an `Invalid` as one **422 Unprocessable Content** response listing every located `FieldError` by path. See [the 422 leg](../spring/spring_boot_integration.md#the-422-leg): the "leg" is the response route an all-`FieldError` payload travels at the Spring boundary, in the railway sense.
+~~~
+
 ---
 
 ## Validated leaves
@@ -82082,7 +82086,7 @@ public class UserController {
 
 That's it! The starter auto-configures everything:
 - EitherPath to HTTP response conversion with automatic status code mapping
-- ValidationPath to HTTP response with error accumulation
+- ValidationPath to HTTP response with error accumulation (located `FieldError` payloads render as one 422 listing every bad field by path)
 - MaybePath, TryPath, and IOPath handlers for optional, exception-capturing, and deferred computations
 - CompletableFuturePath support for async operations
 - VTaskPath support for virtual thread async via DeferredResult
@@ -82203,7 +82207,7 @@ public sealed interface DomainError permits
     AuthenticationError {}  // -> 401 via heuristic
 ```
 
-For status codes outside the heuristic table (409 Conflict, 422 Unprocessable Entity, 429 Too Many Requests, 503 Service Unavailable), add explicit entries to `hkj.web.error-status-mappings`:
+For status codes outside the heuristic table (409 Conflict, 422 Unprocessable Content, 429 Too Many Requests, 503 Service Unavailable), add explicit entries to `hkj.web.error-status-mappings`:
 
 ```yaml
 hkj:
@@ -82253,6 +82257,7 @@ public Validated<List<ValidationError>, User> createUser(@RequestBody UserReques
 **Response Mapping:**
 - `Valid(user)` → HTTP 200 with the value unwrapped as JSON: `{"id": "1", "email": "alice@example.com", ...}`
 - `Invalid(errors)` → HTTP 400 with JSON: `{"valid": false, "errors": [{"field": "email", "message": "Invalid format"}, ...], "errorCount": 2}`
+- `Invalid(errors)` where every error is a located `FieldError` → HTTP 422 with each error rendered by path ([the 422 leg](#the-422-leg) below)
 
 #### Validation Example
 
@@ -82308,8 +82313,42 @@ public ValidationPath<NonEmptyList<ValidationError>, User> validateAndCreate(Use
 }
 ```
 
-See the [Effect Path API](../effect/path_types.md) for `Path.accumulate()` and its labelled sibling `Path.fields()`.
+See the [Effect Path API](../effect/path_types.md) for `Path.accumulate()` and its labelled sibling `Path.fields()`. Note that `Path.fields()` fixes the error channel to `NonEmptyList<FieldError>`, so its invalid responses take [the 422 leg](#the-422-leg) below.
 ~~~
+
+#### The 422 leg: located field errors, one response {#the-422-leg}
+
+A *leg* is one of the routes a value returned from a controller can travel to become an HTTP response: a segment of the [railway](../glossary/effect-paths.md#railway-oriented-programming) journey, as in a leg of a relay. A `Left(DomainError)` travels the **Either leg** to its mapped error status; a generic `Invalid` travels the standard **validation leg** to 400. This section describes a third: the leg an all-`FieldError` payload takes to a 422, chosen (like a railway switch) by the shape of the value itself.
+
+A [`@GenerateMapping`](../optics/record_mapping.md) spec's `parse` returns `Validated<NonEmptyList<FieldError>, Domain>`: every bad field reported at once, each located by a structured path. (`FieldError` here is HKJ's `org.higherkindedj.hkt.validated.FieldError`, not Spring's `org.springframework.validation.FieldError`.) A controller returns it directly, with no service call and no error wrapping:
+
+```java
+@PostMapping("/parse")
+public Validated<NonEmptyList<FieldError>, User> parseUser(@RequestBody UserDto dto) {
+    return UserMappingImpl.INSTANCE.parse(dto);
+}
+```
+
+When an `Invalid` payload consists **entirely** of located `FieldError`s, the handler switches to `hkj.web.validation-field-error-status` (default **422 Unprocessable Content**, formerly named "Unprocessable Entity") and renders each error by path:
+
+```json
+{
+  "valid": false,
+  "errors": [
+    { "path": "email",       "segments": ["email"],          "message": "not a valid email address" },
+    { "path": "address.zip", "segments": ["address", "zip"], "message": "must be 5 digits" }
+  ],
+  "errorCount": 2
+}
+```
+
+`path` is the dot-joined display key (`FieldError.pathString()`); `segments` is the exact structured location. The distinction matters: a map key containing a dot is indistinguishable from nesting in the rendered `path` (`attributes."a.b".email` vs deeper nesting), so structured consumers should read `segments`, which stays exact. An unlabelled error renders `"path": ""` and `"segments": []`; treat it as object-level.
+
+The leg is selected purely by payload shape, so **any** all-`FieldError` payload takes it: `Path.fields()` assemblies, `@GenerateAssembly` results and hand-built `NonEmptyList<FieldError>`s included, not just a mapper `parse`. A pre-existing `Path.fields()` endpoint therefore moves from 400 to 422 on upgrade; set `hkj.web.validation-field-error-status: 400` to restore the old status.
+
+Mixed, empty or non-`FieldError` payloads keep the generic rendering and `hkj.web.validation-invalid-status` (default 400): nothing to enable, nothing else affected.
+
+The example module's `POST /api/users/parse` endpoint shows the full leg; its PATCH sibling deliberately stays on the Either leg because a PATCH mixes not-found with validation, and one `Either` channel carries both.
 
 **Key Difference from Either:**
 - `Either` short-circuits on first error (fail-fast)
@@ -82552,7 +82591,7 @@ hkj:
       default-error-status: 500          # Fallback for unmapped Left values
     error-status-mappings:
       MfaAlreadyEnrolledError: 409       # Conflict
-      PaymentDeclinedError: 422          # Unprocessable Entity
+      PaymentDeclinedError: 422          # Unprocessable Content
       MfaThrottledError: 429             # Too Many Requests
       ScheduledMaintenanceError: 503     # Service Unavailable
 ```
@@ -82672,6 +82711,8 @@ hkj:
     vstream-path-enabled: true              # Enable VStreamPath handler (default: true)
     either-or-both-path-enabled: true       # Enable EitherOrBothPath handler (default: true)
     free-path-enabled: true                 # Enable FreePath handler (default: true)
+    validation-invalid-status: 400          # Status for generic validation errors (default: 400)
+    validation-field-error-status: 422      # Status for FieldError-shaped validation errors (default: 422)
     either:
       default-error-status: 400             # Default HTTP status for unmapped Left errors
 ```
@@ -85135,7 +85176,7 @@ Core data structures and the effect types built on them.
 
 The Effect Path API and the Free-monad effect-handler machinery.
 
-[BoundSet](glossary/effect-paths.md#boundset), [@ComposeEffects](glossary/effect-paths.md#composeeffects), [Continuation-Passing Style (CPS)](glossary/effect-paths.md#continuation-passing-style-cps), [Effect](glossary/effect-paths.md#effect), [Effect Algebra](glossary/effect-paths.md#effect-algebra), [Effect Path](glossary/effect-paths.md#effect-path), [Effect-Optics Bridge](glossary/effect-paths.md#effect-optics-bridge), [@EffectAlgebra](glossary/effect-paths.md#effectalgebra), [EitherF](glossary/effect-paths.md#eitherf), [foldMap](glossary/effect-paths.md#foldmap), [Free Monad](glossary/effect-paths.md#free-monad), [Inject](glossary/effect-paths.md#inject), [Interpreter (Effect Handler)](glossary/effect-paths.md#interpreter-effect-handler), [mapK](glossary/effect-paths.md#mapk), [Path](glossary/effect-paths.md#path), [ProgramAnalyser](glossary/effect-paths.md#programanalyser), [Railway-Oriented Programming](glossary/effect-paths.md#railway-oriented-programming), [recover](glossary/effect-paths.md#recover), [via](glossary/effect-paths.md#via), [VResultPath](glossary/effect-paths.md#vresultpath)
+[BoundSet](glossary/effect-paths.md#boundset), [@ComposeEffects](glossary/effect-paths.md#composeeffects), [Continuation-Passing Style (CPS)](glossary/effect-paths.md#continuation-passing-style-cps), [Effect](glossary/effect-paths.md#effect), [Effect Algebra](glossary/effect-paths.md#effect-algebra), [Effect Path](glossary/effect-paths.md#effect-path), [Effect-Optics Bridge](glossary/effect-paths.md#effect-optics-bridge), [@EffectAlgebra](glossary/effect-paths.md#effectalgebra), [EitherF](glossary/effect-paths.md#eitherf), [foldMap](glossary/effect-paths.md#foldmap), [Free Monad](glossary/effect-paths.md#free-monad), [Inject](glossary/effect-paths.md#inject), [Interpreter (Effect Handler)](glossary/effect-paths.md#interpreter-effect-handler), [Leg](glossary/effect-paths.md#leg), [mapK](glossary/effect-paths.md#mapk), [Path](glossary/effect-paths.md#path), [ProgramAnalyser](glossary/effect-paths.md#programanalyser), [Railway-Oriented Programming](glossary/effect-paths.md#railway-oriented-programming), [recover](glossary/effect-paths.md#recover), [via](glossary/effect-paths.md#via), [VResultPath](glossary/effect-paths.md#vresultpath)
 
 ## [Optics, Validation & Mapping](glossary/optics.md)
 
@@ -86961,6 +87002,14 @@ public class IOConsoleInterpreter extends ConsoleOpInterpreter<IOKind.Witness> {
 
 ---
 
+## Leg
+
+**Definition:** One of the routes a value can travel through a railway-modelled computation: a segment of the journey, as in a leg of a relay. Used especially at the Spring boundary, where each distinct route from a controller's return value to an HTTP response is a named leg: a `Left(DomainError)` travels the *Either leg* to its mapped error status, a generic `Invalid` travels the *validation leg* to 400, and an `Invalid` made entirely of located `FieldError`s takes [the 422 leg](../spring/spring_boot_integration.md#the-422-leg): one response naming every bad field. Which leg a response travels is decided by the value's shape, like a railway switch routing a train.
+
+**Related:** [Railway-Oriented Programming](#railway-oriented-programming)
+
+---
+
 ## mapK
 
 **Definition:** A method on each effect algebra record that composes the continuation function with a new transformation. The generated Functor delegates to `mapK` rather than using unsafe casts. Analogous to `Stream.map` but applied to a single instruction rather than a collection.
@@ -88100,6 +88149,16 @@ _Breaking changes / migration:_
 **Bean-shaped `@GenerateMapping` wire targets ([#628](https://github.com/higher-kinded-j/higher-kinded-j/issues/628))**
 
 `@GenerateMapping` now maps a record domain to a **bean-shaped wire**, not only a record: a mutable class with a no-args constructor and getters/setters, or an immutable one with a builder (`builder()`/`newBuilder()`), with the JAXB getter-only collection convention (`getItems().addAll(...)`) also recognised. The full feature set carries over: renames, leaves, derived fields, `List`/`Optional`/`Map` lifting, and nesting both ways. Because an unset bean property is `null`, every reference-typed `parse` read is null-guarded into a located `FieldError`, so `parse` stays total and accumulating; those guards make `asIso()` truthful only for an all-primitive bean. A domain `Optional<T>` bridges to a nullable bean property `T` (empty to absent). See [Bean-shaped wire targets](optics/record_mapping.md#bean-shaped-wire-targets). The validated-`patch` projection tier, read-only/write-only bean tiers, and Optional-through-nested-spec bridging remain follow-ons.
+
+**Sparse PATCH write-back: `UpdateSpec` ([#645](https://github.com/higher-kinded-j/higher-kinded-j/issues/645))**
+
+`@GenerateMapping` gains a sparse sibling of the full mapping: a spec extending `UpdateSpec<Domain, Wire>` (bean wire only) generates `Edits.Accumulated<Domain> updateFrom(Wire)`, the REST PATCH contract as a validated fold. A `null` bean property means absent, leave unchanged; a present property is set, or parsed through its leaf into a located `FieldError`, with every invalid present field reported at once and the writes applied only if all validate. Coverage is one-sided (every wire property needs a domain target, while unmapped domain components such as an `id` simply never change), a present nested or container value replaces its component wholesale, and shapes that cannot honour the null-as-absent contract (record wires, primitive properties, `Optional`-bridged components, sealed hierarchies) are rejected with what/why/fix diagnostics. The sparse tier is law-checked through a `MappingLaws` overload (identity on the all-null wire, idempotence, composition under `Edits.combine`), and the example app gains a worked `PATCH /api/users/{id}` endpoint ([#647](https://github.com/higher-kinded-j/higher-kinded-j/pull/647)). See [Sparse PATCH write-back](optics/record_mapping.md#sparse-patch-write-back-updatespec).
+
+**The 422 leg: one response, every bad field by path ([#627](https://github.com/higher-kinded-j/higher-kinded-j/issues/627))**
+
+A Spring controller returning a fallible mapper `parse` result (`Validated<NonEmptyList<FieldError>, Domain>`, directly or via `ValidationPath`) now renders as a single **422 Unprocessable Content** response listing every bad field: each error carries the dot-joined display `path`, the exact `segments`, and the `message`, honouring the dotted-key caveat (a key containing a dot is only ambiguous in the rendered `path`; `segments` stays lossless). The leg is selected purely by payload shape (an `Invalid` made entirely of located `FieldError`s), so `Path.fields()` assemblies and `@GenerateAssembly` results take it too; mixed, empty or other payloads keep the generic rendering. The status is configurable via `hkj.web.validation-field-error-status`, and the example app gains a `POST /api/users/parse` showcase over a bean-shaped wire DTO, where an absent field becomes a located `"must not be null"` error rather than an exception. See [The 422 leg](spring/spring_boot_integration.md#the-422-leg).
+
+_Behaviour change:_ a pre-existing endpoint returning an all-`FieldError` payload moves from 400 to **422** on upgrade; set `hkj.web.validation-field-error-status: 400` to restore the old status. In the same change, tests and examples adopt Spring Framework 7's `HttpStatus.UNPROCESSABLE_CONTENT` (the RFC 9110 rename; `UNPROCESSABLE_ENTITY` is deprecated).
 
 ---
 
