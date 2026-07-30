@@ -156,7 +156,7 @@ For services with complex domain workflows, Higher-Kinded-J provides algebraic-e
 
 The boundary between your domain records and the wire is usually hand-written mappers or a reflective bean-mapper. Higher-Kinded-J turns it into compile-time codegen that never loses an error:
 
-* **[`@GenerateMapping`](optics/record_mapping.md)** generates a total `build` **and** an accumulating `parse` returning `Validated<NonEmptyList<FieldError>, T>`; every emission tier is law-checked against `hkj-test`
+* **[`@GenerateMapping`](optics/record_mapping.md)** maps a record domain to the wire both ways, whatever the wire's shape: record or bean-shaped (getters/setters or builder) DTOs, generic records, sealed hierarchies, with shared mix-in vocabularies across specs. A total `build` out; an accumulating `parse` back returning `Validated<NonEmptyList<FieldError>, T>`; and both PATCH styles as write-backs (a dense validated `patch`, a sparse null-as-absent `updateFrom`). One null doctrine throughout: a missing value is a located error (`customer.email: must not be null`, `emails.1: ...`), never an exception. Every emission tier is law-checked against `hkj-test` and pinned by golden files
 * **[`@GenerateMerge`](optics/record_mapping.md)** assembles one target record from several source records, filling each component by name
 * **[Open-arity accumulating assembly](monads/validated_assembly.md)** (`fields()` / `accumulate()` / `@GenerateAssembly`) builds a record from N independently-validated fields, collecting every error in declaration order with no `Semigroup` ceremony
 * **[`@GenerateErrorEnvelope`](optics/record_mapping.md#generating-error-envelopes-generateerrorenvelope)** gives a sealed error hierarchy a typed context record (records-as-schema, not `Map<String, Object>`) with deterministic timestamps from a `TimeSource`
@@ -173,7 +173,7 @@ You don't need to learn an esoteric functional library to feel the benefit. Each
 |-------------|---------------------|---------------------------|
 | Nested `Optional`, thrown exceptions, and validation that stops at the first error | the standard library | one railway vocabulary (`map` / `via` / `recover`) across absence, typed errors, async, and **accumulating** validation |
 | `Option` / `Either` / `Try` from **Vavr** | the FP library most Java developers know | the same core types **plus** higher-kinded abstraction, a full optics suite, monad transformers, and an effect system, built natively on modern Java (records, sealed types, virtual threads), where Vavr keeps a Java 8 foundation |
-| **MapStruct** / ModelMapper for DTO↔domain mapping | annotation-driven mappers | `@GenerateMapping` with a total `build` **and** an accumulating `parse` that reports every bad field, law-checked at compile time |
+| **MapStruct** / ModelMapper for DTO↔domain mapping | annotation-driven mappers | `@GenerateMapping` over record, bean-shaped and generic wires: a total `build`, an accumulating `parse` that reports every bad field (nulls located, never an NPE), and generated PATCH write-backs, all law-checked by the build's test suite |
 | **Resilience4j** annotations for retry / circuit-breaker / bulkhead | AOP-style resilience | the same policies as composable path combinators (`withRetry` / `withCircuitBreaker` / `withBulkhead`) that treat a business `Left` as a value, never as a failure to retry |
 | Hand-written `wither` / copy-constructor updates on records | manual boilerplate | generated lenses, prisms, and traversals: the most comprehensive optics available for Java |
 
@@ -271,6 +271,7 @@ Building enterprise applications with Spring Boot? The **hkj-spring-boot-starter
 * **Return Functional Types from Controllers:** Use `Either<Error, Data>`, `Validated<Errors, Data>`, and `CompletableFuturePath` as return types with automatic HTTP response conversion.
 * **Eliminate Exception Handling Boilerplate:** No more try-catch blocks or `@ExceptionHandler` methods; errors are explicit in your return types.
 * **Compose Operations Naturally:** Chain operations with `map` and `via` whilst preserving type safety and error information.
+* **Render Validation as One 422:** A mapper `parse` or `patch` result returned from a controller (or an `updateFrom` update applied first, via `.applyPath(current)`) renders as one response listing every bad field by path, status `hkj.web.validation-field-error-status` (default 422); no exception handler, no manual error DTO.
 * **Call Other Services Safely:** Generate declarative HTTP clients with `@HkjHttpClient` that return `EitherPath`/`VTaskPath` and decode the response back into a typed error, keeping the error channel intact across services.
 * **Accumulate Validation Errors:** Use `Validated` to collect **all** validation errors in a single request, improving user experience.
 * **Handle Async Operations:** Use `CompletableFuturePath` to compose asynchronous operations seamlessly.
@@ -17133,9 +17134,10 @@ External types like `LocalDate`, Jackson's `JsonNode`, JOOQ records, and Protobu
 | Annotation | Apply to | Generates | When to reach for it |
 |---|---|---|---|
 | [`@GenerateMapping`](record_mapping.md) | interface extending `MappingSpec<Domain, Wire>` | `XMappingImpl` with a total `build` and an accumulating, located `parse` | Bidirectional boundary mapping with validation: every bad field reported at once |
+| [`@GenerateMapping`](record_mapping.md#sparse-patch-write-back-updatespec) | interface extending `UpdateSpec<Domain, Wire>` (bean wire) | `XMappingImpl` with only `updateFrom(Wire) : Edits.Accumulated<Domain>` | Sparse PATCH write-back: fold the present (non-null) request fields into an update, leave the absent ones |
 | [`@MapField(to = "...")`](record_mapping.md) | abstract method on the spec, named after the domain component | a rename in both directions | Domain and wire components with different names |
 
-Leaves, nesting, `List`/`Optional` lifting, sealed dispatch and the `asIso()`/`asLens()` tiers are covered in [Record Mapping](record_mapping.md).
+Leaves, nesting, `List`/`Optional` lifting, sealed dispatch, the `asIso()`/`asLens()` tiers, and the sparse `UpdateSpec` tier are covered in [Record Mapping](record_mapping.md).
 
 ---
 
@@ -17198,6 +17200,7 @@ For compile-time path-type checking, see [Compile-Time Checks](../tooling/compil
 | An external sealed/enum (in a library) | Prisms for its variants | `@ImportOptics` |
 | `JsonNode`, JOOQ records, anything tricky | Custom optics with copy strategy | `@ImportOptics` on an `OpticsSpec` interface + spec-method hints |
 | A domain record and a wire DTO | Map both ways, with validation | `@GenerateMapping` on a `MappingSpec` interface |
+| A domain record and a PATCH request bean | Fold the present fields into an update, leave the absent ones | `@GenerateMapping` on an `UpdateSpec` interface |
 
 ---
 
@@ -19124,6 +19127,14 @@ The second law is the subtle one. If `build` changes the value as it renders (ze
 ~~~admonish info title="Hands-On Learning"
 Practice the boundary in [Tutorial 25: ValidatedPrism](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial25_ValidatedPrism.java) (3 exercises, ~10 minutes), and see the runnable [`ValidatedPrismExample`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/ValidatedPrismExample.java).
 ~~~
+
+## The bulk forms: `parseAll` and `parseValues`
+
+One prism lifts over whole containers. `parseAll(List<? extends S>)` parses every element and accumulates **every** failure, each located by its index — a plain positional segment, so a bad second element under a field labelled `emails` renders as `emails.1: not an email address` (through a nested spec, `customers.1.email: ...`). `parseValues(Map<K, ? extends S>)` parses a map's values the same way, each failure located by its key (`attributes.en: ...`); keys pass through untouched.
+
+The [null doctrine](record_mapping.md#record-mapping) reaches inside both: a `null` element or map value is a located, accumulating `must not be null` at its index or key, never an exception. Three edges stay the caller's `NullPointerException`, by contract: a `null` list or map itself, and a `null` map *key* — a structurally broken map, not a wrong value. The build direction (`buildAll`, `buildValues`) is total like `build` and rejects nulls outright.
+
+(Bracketed index rendering — `emails[1]` — is deliberately deferred to the future sealed path-segment model; today's paths are flat dotted segments, and the positional segment matches the map-key grammar.)
 
 ~~~admonish tip title="See Also"
 - [Prisms](prisms.md) - The yes/no match this type upgrades
@@ -36869,7 +36880,7 @@ Every service boundary maps between a rich domain record and a flat wire DTO. Ha
 - How `@GenerateMapping` derives a compile-time, reflection-free mapper from an interface you own: a total `build` and an accumulating, field-located `parse`
 - Handling type-differing fields with `ValidatedPrism` leaves, renaming components with `@MapField`, and how nesting, containers, and recursion compose into dotted error paths
 - Dispatching a mapping over two sealed hierarchies, exhaustively in both directions
-- Reading the emission tiers so the generated surface (`asIso`, `asLens`, `asValidatedPrism`) only ever offers what the field correspondences can lawfully support
+- Reading the emission tiers so the generated surface (`asIso`, `asLens`, the validated `patch`, `asValidatedPrism`) only ever offers what the field correspondences can lawfully support
 - Assembling one target from several sources with `@GenerateMerge`
 - Typing an error's diagnostic context, and retiring the untyped `Map<String, Object>`, with `@GenerateErrorEnvelope`
 ~~~
@@ -36906,6 +36917,12 @@ The two directions have different shapes, and that asymmetry runs through the wh
 ```
 
 The generated class is `<Spec>Impl` beside the spec, used through its `INSTANCE` constant. A spec nested in an outer class joins the enclosing simple names: `Shop.CustomerMapping` generates `ShopCustomerMappingImpl`.
+
+**One null doctrine, both wire shapes.** A JSON binder leaves a missing property `null` (on a record component just as on an unset bean property), so every reference-typed `parse` read is null-guarded: a `null` component is a located `FieldError` (`must not be null`) that accumulates with every other bad field, never an exception, and it locates through nesting (`customer.name: must not be null`). A `null` never reaches a leaf's prism. The doctrine reaches inside containers too, identity-copied ones included: a `null` element or map value locates by its index or key (`emails.1: must not be null`), whether the container lifts through a leaf ([`parseAll`/`parseValues`](validated_prism.md#the-bulk-forms-parseall-and-parsevalues)) or copies by identity (`tags.1: must not be null`); the index is a plain positional segment, matching the map-key grammar. An identity container still copies by reference; the scan only locates nulls, it never rebuilds. What stays the caller's error (`NullPointerException`): a `null` *wire* itself, and a `null` map *key* (a structurally broken map, not a wrong value); a `null` container *component* is guarded like any reference read (`emails: must not be null`); only calling the bulk forms directly with a `null` list or map is the caller's error. Absence-as-a-meaning remains exclusively the [sparse `UpdateSpec` tier](#sparse-patch-write-back-updatespec)'s: a record cannot express absence, it can only be wrong.
+
+~~~admonish tip title="At the Spring boundary: one 422, every bad field by path"
+In a Spring controller the parse result needs no wrapping: return it as-is and `hkj-spring` renders an `Invalid` as one **422 Unprocessable Content** response listing every located `FieldError` by path. See [the 422 leg](../spring/spring_boot_integration.md#the-422-leg): the "leg" is the response route an all-`FieldError` payload travels at the Spring boundary, in the railway sense.
+~~~
 
 ---
 
@@ -36953,6 +36970,8 @@ interface PersonCardMapping extends MappingSpec<Person, PersonCardDto> {
 
 Each wire component takes exactly one domain source; colliding renames are compile errors, not surprises.
 
+Located error paths use **domain** component names, renames included: a wire sending `fullName` gets its errors at `name`. Every path in the system (nesting, containers, the sparse tier's labels) is domain-named, so paths stay mutually consistent and stable under wire refactors; a client mapping errors back onto its own payload keys must apply the rename in reverse.
+
 ---
 
 ## Derived wire fields
@@ -36984,12 +37003,12 @@ The two directions are asymmetric: `build` computes the derived component, `pars
   Profile(first, last) ──▶ ProfileDto(first, last, displayName)
                                                    ▲
              displayName() : Getter<Profile,String>│  first + " " + last
-                                                    └── computed, not copied
+                                                   └── computed, not copied
 
   parse : ignores the derived component (it is derivable)
   ────────────────────────────────────────────────────────────────
   ProfileDto(first, last, displayName) ──▶ Valid(Profile(first, last))
-                          displayName ──┘ dropped, never read
+                          └── displayName dropped, never read
 ```
 
 `build` fills the component by applying the getter to the whole domain value. `parse` **ignores** it: the data is derivable, so parse stays total and accumulating over the remaining components. (A mapping whose only extra is a derived field is *total-parse*: the accumulating parse still runs, it simply cannot fail.)
@@ -36999,7 +37018,9 @@ The optic is a `Getter` because a derived field is single-valued, exactly one fo
 **How the two `default` families are told apart.** Leaves are named after *domain* components and return `ValidatedPrism`; derived fields are named after *wire-only* components and return `Getter`. The processor matches the two differently:
 
 - A zero-parameter `default` returning `Getter` is *always* claimed as a derived field, and validated as one. So give getter-shaped utility helpers a parameter or a different return type, or they will be mistaken for derived fields.
-- A `default` returning `ValidatedPrism` is matched by name; an unmatched one stays an inert helper.
+- A `default` returning `ValidatedPrism` is matched by name against the domain's components, and a *locally declared* leaf **must** match: an unmatched local leaf is a compile error with a nearest-name hint (`leaf 'emial' names no component of Customer. Did you mean 'email()'?`), because a silently inert leaf would silently stop validating that field. Prism-returning helpers belong in `private` or `static` methods, which are never leaf-shaped.
+- *Inherited* mix-in leaves that match nothing stay inert by design: a shared vocabulary may carry leaves for components only some extending specs have.
+- On a **sealed** mapping, locally declared leaves and derived fields are rejected outright (a dispatch has no components); inherited vocabulary stays inert there too.
 
 Four shapes are rejected, each with a what/why/fix diagnostic:
 
@@ -37009,6 +37030,53 @@ Four shapes are rejected, each with a what/why/fix diagnostic:
 - a `@MapField` rename targeting a component a derived field already fills.
 
 **Derived fields and the emission tiers.** A spec with any derived field never emits `asIso()`: the wire round trip recomputes the derived component, so it is an identity only for wire values that were already consistent. Combining a derived field with a projection (a wire otherwise smaller than the domain) is rejected too, because the projection's `asLens()` write-back could never honour a component that `build` recomputes.
+
+---
+
+## Shared vocabulary: mix-in interfaces
+
+The same rename or the same leaf tends to recur across an API's specs: every wire calls it `fullName`, every email parses the same way. Move the shared members onto a **plain interface** and extend it alongside `MappingSpec`:
+
+``` java
+// Plain vocabulary - not a spec itself. Any spec whose records share these
+// shapes extends it alongside MappingSpec.
+interface ContactVocabulary {
+  @MapField(to = "fullName")
+  String name();
+
+  default ValidatedPrism<String, EmailAddress> email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+record Client(String name, EmailAddress email) {}
+
+record ClientDto(String fullName, String email) {}
+
+@GenerateMapping
+interface ClientMapping extends ContactVocabulary, MappingSpec<Client, ClientDto> {}
+
+record Supplier(String name, EmailAddress email, String phone) {}
+
+record SupplierDto(String fullName, String email, String phone) {}
+
+@GenerateMapping
+interface SupplierMapping extends ContactVocabulary, MappingSpec<Supplier, SupplierDto> {}
+
+
+    // One vocabulary, two mappings - the inherited rename and leaf apply to both:
+    ClientMappingImpl.INSTANCE.parse(new ClientDto("Ada Lovelace", "ada@example.org"));
+    SupplierMappingImpl.INSTANCE.parse(new SupplierDto("Acme Ltd", "sales@acme.example", "01"));
+```
+
+An inherited member counts exactly as if it were declared on the spec: renames, leaves *and* derived fields, collected across the whole hierarchy (a mix-in may extend further mix-ins, and a diamond counts once). Precedence is **Java's own**: a member re-declared on the spec (or on a nearer mix-in) hides the one it overrides, and conflicting inherited `default` methods are already a javac error before the processor runs. The one case javac leaves open, unrelated mix-ins both declaring the same *abstract* rename (override-equivalent abstracts may coexist, JLS 9.4.1), folds into a single rename when the targets agree and is rejected with a diagnostic naming both interfaces when they conflict. Interface `static` helpers are not inherited (JLS 8.4.8), so factory methods on a mix-in stay inert.
+
+Two shapes are rejected, each naming the offender:
+
+- a mix-in that **is itself a mapping spec** (directly or transitively extends `MappingSpec`/`UpdateSpec`): a mix-in shares vocabulary, a spec generates an Impl, and inheriting one spec from another would conflate the two;
+- a **generic** mix-in: inherited member types are read as declared, and substituting them under an instantiation is not supported yet.
+
+Diagnostics about an inherited member name its declaring interface, `abstract method 'bogus' (inherited from 'BrokenVocabulary') is neither a rename nor a leaf`, so the fix points at the right file. Mix-ins compose with the rest of the feature: [threaded generic specs](#generic-records-concrete-threaded-and-element-mapped) can extend (non-generic) mix-ins, and [`UpdateSpec`](#sparse-patch-write-back-updatespec) mappings inherit vocabulary the same way. `@GenerateMerge` specs still declare everything directly.
 
 ---
 
@@ -37031,7 +37099,7 @@ interface InvoiceMapping extends MappingSpec<Invoice, InvoiceDto> {}
 
 Containers lift the same way:
 
-- `List` and `Optional` components lift through the element's leaf or spec.
+- `List` and `Optional` components lift through the element's leaf or spec; each failing list element is located by its index, so a bad second element reports as `emails.1` (`customers.1.email` through a nested spec).
 - `Map` components lift their **values**; keys pass through untouched, and each entry's failures are located by its key, so a bad value under key `en` reports as `attributes.en.email`.
 
 Because nesting is *delegation* (each spec's `Impl` exposes `asValidatedPrism()`, so a whole mapping plugs in wherever a leaf does), recursion terminates by construction: a self-referential `Tree(String value, List<Tree> children)` maps with an empty spec and round-trips any finite tree.
@@ -37080,16 +37148,97 @@ A domain subtype without a spec, or a wire subtype nothing produces, is a compil
 
 ---
 
+## Generic records: concrete, threaded, and element-mapped
+
+A generic record maps two ways. As a **concrete instantiation**, name the type arguments in the spec and every component classifies under that substitution, so the whole toolkit (leaves, nesting, containers, the null doctrine, index location) applies unchanged:
+
+``` java
+record Page<T>(List<T> items, int total) {}
+
+record PageDto<T>(List<T> items, int total) {}
+
+@GenerateMapping
+interface CustomerPageMapping extends MappingSpec<Page<Customer>, PageDto<CustomerDto>> {}
+
+
+    CustomerPageMappingImpl.INSTANCE.parse(
+        new PageDto<>(
+            List.of(new CustomerDto("Ada", "ada@corp.example"), new CustomerDto("Bob", "nope")),
+            2));
+    // Invalid(NonEmptyList[items.1.email: not an email address])
+```
+
+An instantiated mapping registers like any other, so `Report(Page<Customer> results)` nests it automatically. A threaded spec nests too: a use site's type arguments unify against the spec's declared pair, so `Report(Page<String> results)` resolves `PageMapping<T>` as `PageMappingImpl.<String>instance()`, and a generic outer spec may thread its own variable straight through.
+
+As a **threaded spec**, declare the spec generic in its own type parameters and one mapping serves every instantiation. Same-variable elements copy by identity under the null-element scan (a `null` element is `items.1: must not be null`, never a smuggled null), and the whole surface (`build`, `parse`, `asIso` on a lossless pair) is generic:
+
+``` java
+@GenerateMapping
+interface PageMapping<T> extends MappingSpec<Page<T>, PageDto<T>> {}
+
+// one Impl for every T: PageMappingImpl.<String>instance(), .<Integer>instance(), ...
+
+
+    // One generic Impl serves every instantiation; identity elements copy through.
+    Page<String> tags = new Page<>(List.of("fp", "hkt"), 2);
+    PageDto<String> tagsDto = PageMappingImpl.<String>instance().build(tags);
+    Validated<NonEmptyList<FieldError>, Page<Integer>> counts =
+        PageMappingImpl.<Integer>instance().parse(new PageDto<>(List.of(1, 2, 3), 3));
+```
+
+A generic Impl cannot carry a typed static `INSTANCE`, so it follows the library's generic-singleton convention (`EitherMonad.instance()`): one stateless cached instance behind `PageMappingImpl.instance()`. Multi-parameter and bounded specs thread too (`ResultMapping<E, A>`, `RankedMapping<T extends Number>`), and a same-typed `default` leaf (`ValidatedPrism<T, T>`) still routes elements.
+
+In assignment context the witness is inferred, so plain `instance()` reads naturally; the explicit `PageMappingImpl.<String>instance()` form is only needed where Java cannot infer:
+
+``` java
+PageMapping<String> tags = PageMappingImpl.instance();   // witness inferred
+```
+
+The three access shapes are one rule, not three conventions: *how much state does the Impl carry?*
+
+| Spec shape | Access | Why |
+|---|---|---|
+| Concrete | `XImpl.INSTANCE` | stateless, monomorphic: a plain constant |
+| Threaded generic | `XImpl.<T>instance()` | stateless but generic: a typed constant is impossible, so the cached singleton sits behind a generic accessor (the `EitherMonad.instance()` convention) |
+| Element-mapped | `XImpl.of(prisms)` | carries its leaf prisms as state: every call is a fresh, immutable instance |
+
+The third form is **element-mapped**: thread the two sides under *different* variables (`Page<T> ↔ PageDto<TDto>`) and declare the element mapping as an **abstract leaf**. Nothing on the spec can parse a `TDto` into a `T`, so the generated Impl defers it: each abstract leaf becomes a constructor-supplied field behind a public `of(...)` factory, one `ValidatedPrism` per leaf in declaration order:
+
+``` java
+// The element mapping is deliberately open: an abstract leaf, supplied at of(...) time.
+@GenerateMapping
+interface CodecPageMapping<T, TDto> extends MappingSpec<Page<T>, PageDto<TDto>> {
+  ValidatedPrism<TDto, T> items();
+}
+
+
+    // One spec, any element codec: each abstract leaf arrives as a prism through of(...).
+    Validated<NonEmptyList<FieldError>, Page<EmailAddress>> mail =
+        CodecPageMappingImpl.of(EmailCodecs.EMAIL)
+            .parse(new PageDto<>(List.of("ada@example.org", "nope"), 2));
+    // Invalid(NonEmptyList[items.1: not an email address])
+```
+
+The Impl carries the prisms as state, so there is no singleton in either spelling: every `of(...)` call is a fresh, immutable instance. Element-mapped mappings nest as **compositions**: a use site whose pair unifies against one resolves each element pair in turn, through a leaf on the using spec named after the component (single-leaf specs; a spec with several abstract leaves resolves each pair through the registry), or recursively through another registered mapping, and emits `CodecPageMappingImpl.of(entries()).asValidatedPrism()` in place. Failures locate through the whole composed path (`entries.items.1: not an email address`); an unresolvable element pair is a compile error naming the pair and both levers.
+
+Boundaries: generic mappings are **record-to-record only** (bean-shaped wires and `UpdateSpec` mappings stay concrete); raw uses (including raw *nested* arguments) and wildcards are diagnosed, while array arguments (`Page<String[]>`) are concrete, map fine, and unify structurally at nested use sites. An abstract leaf belongs to a generic spec: on a concrete or sealed one it is diagnosed, since nothing defers its parser.
+
+---
+
 ## The emission tiers: truthful types
 
 The field correspondences select what the Impl can lawfully offer; nothing is fabricated:
 
 | Spec shape | Generated surface |
 |---|---|
-| All components identity-matched (lossless) | `build`, total `parse`, **`asIso()`** |
+| All components identity-matched (lossless) | `build`, guarded `parse`, **`asIso()`** |
 | Any fallible leaf, nested spec or derived field | `build`, accumulating `parse`, no `asIso` |
-| Wire record with *fewer* components (lossy projection) | `build` + **`asLens()`** whose `set` writes the projected components back, **no `parse`** (the dropped components cannot be reconstructed) |
+| Wire record with *fewer* components, all identity (lossy projection) | `build` + **`asLens()`** whose `set` writes the projected components back, **no `parse`** (the dropped components cannot be reconstructed) |
+| Wire record with fewer components **and** any fallible correspondence | `build` + a validated **`patch(domain, wire)`** write-back, no `asLens` and no `parse`, [below](#leaf-carrying-projections-the-validated-patch) |
 | Every parse-capable mapping | **`asValidatedPrism()`**: the mapping as a leaf, so it nests and lifts |
+| A spec extending **`UpdateSpec`** (opt-in, bean wire) | only **`updateFrom(Wire)`**: a sparse PATCH fold, [below](#sparse-patch-write-back-updatespec) |
+
+Two honesty notes on the lossless row. "Guarded" because even a lossless record `parse` can fail on a hostile binding (a null reference component, or a null element inside an identity container, is a located invalid); the parse-iso coherence law is scoped accordingly. And `asIso().reverseGet` is a second, *unguarded* wire-to-domain direction: it exists for lawful in-memory round trips, so never feed a freshly bound wire to `reverseGet`; locating its nulls is `parse`'s job.
 
 ``` java
 record Employee(String name, String department, int age) {}
@@ -37123,14 +37272,219 @@ The overloads follow the tiers:
 
 - **Lossless mapping:** pass `asIso()` plus `asValidatedPrism()` to check the iso laws, both round trips, and the coherence between the two surfaces.
 - **Projection:** pass `asLens()` with a domain value and two wire values.
+- **Validated patch (leaf-carrying projection):** pass the `patch` and `build` method references, a domain value, and a parsing and a non-parsing wire value ([below](#leaf-carrying-projections-the-validated-patch)).
 - **Fallible tier:** pass `asValidatedPrism()` with a parsing and a non-parsing wire value.
 - **Derived-field (total-parse) mapping:** `build` recomputes what `parse` ignores, so only the non-derived components round-trip. The domain-sample overload `assertMappingLaws(prism, domainValue)` asserts exactly that and nothing stronger.
+- **Sparse-update (`UpdateSpec`) mapping:** pass the `updateFrom` method reference, a domain value, and an all-absent, a valid and an invalid wire to check the identity, idempotence and validation laws ([below](#sparse-patch-write-back-updatespec)).
 
 A spec with a derived field *and* a fallible leaf is better served by the fallible overload, given a parseable wire value whose derived components match what `build` would produce (this keeps the no-parse check). Reserve the domain-sample overload for total-parse mappings, where no wire value can fail.
 
 ~~~admonish tip title="Mapping types you don't own"
-The annotation sits on *your* spec interface, never on the mapped types, so third-party records and sealed hierarchies from compiled libraries map without being annotatable: `interface VendorOrderMapping extends MappingSpec<com.vendor.OrderRecord, OrderDto> {}` works today. Bean-shaped foreign types (getter/setter DTOs) are the one un-owned shape that the mapping processor does not currently support.
+The annotation sits on *your* spec interface, never on the mapped types, so third-party records, sealed hierarchies, and bean-shaped DTOs from compiled libraries map without being annotatable: `interface VendorOrderMapping extends MappingSpec<com.vendor.OrderRecord, OrderDto> {}` works today. Bean-shaped wire types (getter/setter DTOs) are covered too; see [Bean-shaped wire targets](#bean-shaped-wire-targets) below.
 ~~~
+
+---
+
+## Leaf-carrying projections: the validated `patch`
+
+A projection that also *validates or normalises* a field (a leaf on a projected component) has no lawful total lens: the write-back can fail. Instead of refusing to generate, the mapping emits the **validated `patch` tier**: the total `build` stays, and the write-back returns `Validated`:
+
+``` java
+record Subscriber(String id, EmailAddress email, int age) {}
+
+record SubscriberDetailsDto(String email, int age) {}
+
+@GenerateMapping
+interface SubscriberDetailsMapping extends MappingSpec<Subscriber, SubscriberDetailsDto> {
+  default ValidatedPrism<String, EmailAddress> email() {
+    return ValidatedPrism.of(
+        raw ->
+            raw.contains("@")
+                ? Validated.validNel(new EmailAddress(raw))
+                : Validated.invalidNel(FieldError.of("not an email address")),
+        EmailAddress::value);
+  }
+}
+
+```
+
+`patch(domain, wire)` writes every projected component onto the domain, validating each one: every bad field is reported at once, located under its component name, and the unprojected components are read from the domain argument, so they survive untouched by construction:
+
+``` java
+    Subscriber subscriber = new Subscriber("7", new EmailAddress("ada@corp.example"), 36);
+
+    // The projected components validate and write back; the unprojected id survives untouched.
+    Validated<NonEmptyList<FieldError>, Subscriber> renewed =
+        SubscriberDetailsMappingImpl.INSTANCE.patch(
+            subscriber, new SubscriberDetailsDto("grace@corp.example", 37));
+    // Valid(Subscriber[id=7, email=EmailAddress[value=grace@corp.example], age=37])
+
+    // Dense semantics: every projected field applies - a null is a located error, never absence.
+    SubscriberDetailsMappingImpl.INSTANCE.patch(subscriber, new SubscriberDetailsDto(null, 37));
+    // Invalid(NonEmptyList[email: must not be null])
+```
+
+~~~admonish warning title="Dense, not sparse: patch is the opposite of updateFrom"
+`patch` applies **every** projected component: a `null` reference read becomes a located `FieldError` (`must not be null`), never "leave unchanged". The REST-PATCH contract (null means absent, keep the current value) is the [sparse `UpdateSpec` tier](#sparse-patch-write-back-updatespec) on a bean wire; this tier is its dense, record-shaped complement for writing a validated sub-view onto a bigger record.
+~~~
+
+Everything the full tier resolves is available on the projected components: explicit leaves (beating identity, so a `ValidatedPrism<X, X>` can normalise), nested specs (failures compose into dotted paths), and `List`/`Optional`/`Map` lifting. Nulls locate through the nesting too: a nested wire value delegates to the nested spec's `parse`, whose reference legs carry the same guard, so `patch(customer, new CustomerPatchDto(new AddressDto(null)))` reports `address.zip: must not be null` instead of throwing. Only derived fields stay rejected, and the wire shares `parse`'s 16-component ceiling. At the Spring boundary the result is already [the 422 leg](../spring/spring_boot_integration.md#the-422-leg)'s shape: return it as-is. Like every tier, this one is law-checked:
+
+``` java
+    MappingLaws.assertMappingLaws(
+        SubscriberDetailsMappingImpl.INSTANCE::patch,
+        SubscriberDetailsMappingImpl.INSTANCE::build,
+        new Subscriber("7", new EmailAddress("ada@example.org"), 36), // the current value
+        new SubscriberDetailsDto("grace@example.org", 41), // parses and changes the domain
+        new SubscriberDetailsDto("not-an-email", 36)); // located failure
+```
+
+The patch laws are projection identity (`patch(d, build(d)) == Valid(d)`), idempotence, and located validation. `build` after `patch` is deliberately not a law: a normalising leaf rewrites the wire form by design, the same weakening as the fallible full tier.
+
+---
+
+## Bean-shaped wire targets
+
+The wire side need not be a record. A **bean** (a mutable class with a no-args constructor and getters/setters, or an immutable one with a builder) maps the same way, with the same features (renames, leaves, derived fields, container lifting, nesting). Only *how* the wire is read and written changes: `build` fills through setters or a builder, and `parse` reads through getters.
+
+``` java
+// A generated, mutable getter/setter DTO - not a record, so not annotatable. The spec still sits
+// on your interface, never on the bean, so a third-party bean maps without being touched.
+class ContactBean {
+  private String name;
+  private String email;
+
+  public String getName() {
+    return name;
+  }
+
+  public void setName(String name) {
+    this.name = name;
+  }
+
+  public String getEmail() {
+    return email;
+  }
+
+  public void setEmail(String email) {
+    this.email = email;
+  }
+}
+
+@GenerateMapping
+interface ContactMapping extends MappingSpec<Customer, ContactBean> {
+  // build() writes through setters; parse() reads through getters, null-guarded and located.
+  default ValidatedPrism<String, EmailAddress> email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+```
+
+``` java
+    Customer ada = new Customer("Ada", new EmailAddress("ada@corp.example"));
+    ContactBean bean =
+        ContactMappingImpl.INSTANCE.build(ada); // new ContactBean(); setName; setEmail
+    Validated<NonEmptyList<FieldError>, Customer> fromBean =
+        ContactMappingImpl.INSTANCE.parse(bean);
+    // A null bean property parses to a located FieldError, e.g. [email: must not be null].
+```
+
+The design decisions worth knowing:
+
+- **Null is located, never thrown — like every wire.** The null guard is universal ([one doctrine](#record-mapping), both shapes), so a `null` property read becomes a located `FieldError` (`must not be null`) exactly as on a record wire. What is bean-*specific* is why nulls are expected at all: an unset property is a representable, ordinary state of a mutable bean, not just a hostile binding.
+- **Honest tiers.** Because an unset property is ordinary, a bean's guarded reference reads count as fallible and the mapping withholds `asIso()` automatically; an all-primitive bean (whose reads can never be null) still earns it. A record wire's guards exist for hostile bindings only, so a lossless record mapping keeps `asIso()`, with the parse-iso coherence law scoped to wires whose reference components are non-null. Nesting is unaffected: a bean mapping exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it.
+- **Construction strategy** is detected from the bean's shape, tried in order: a public no-args constructor with `setX` setters (and, for a getter-only `List`, the JAXB convention `getItems().addAll(...)`); then a static `builder()`/`newBuilder()` whose setters fill it and whose `build()` yields the wire. A bean that fits neither gets a what/why/fix diagnostic.
+- **Optionality bridges through `null`.** Beans never declare `Optional`, so a domain `Optional<T>` maps to a nullable bean property `T`: empty bridges to absent (`build` skips the write, leaving the property unset; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf.
+- **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the *wire* may be bean-shaped; a bean domain gets a diagnostic.
+
+~~~admonish note title="Not yet: bean projections and read-only beans"
+A bean *projection* (a bean with fewer properties than the domain) with a reference property, and read-only (parse-only) or write-only (build-only) beans, are follow-ons. An all-primitive bean projection maps as a lawful `asLens()` today; a reference-typed one is reported with a pointer to the [validated-`patch` tier](#leaf-carrying-projections-the-validated-patch), which ships for record wires; the bean flavour remains a follow-on.
+~~~
+
+---
+
+## Sparse PATCH write-back: `UpdateSpec`
+
+A `parse` reads a null bean property as **broken data** - a located `FieldError`. But a REST `PATCH` body means the opposite: the client sends only the fields it wants to change, and every other property of the bound request arrives `null`, meaning *not provided, leave unchanged*. The two meanings of `null` are a property of the DTO's contract, not something the mapper can infer, so sparse semantics are an **explicit opt-in**: the spec extends `UpdateSpec<Domain, Wire>` instead of `MappingSpec`.
+
+``` java
+// A PATCH request bean. Here null means "not provided, leave unchanged" - the opposite of the bean
+// parse above, where null is broken data. That contract is opted into by extending UpdateSpec.
+class ContactPatchBean {
+  private String name;
+  private String email;
+
+  public String getName() {
+    return name;
+  }
+
+  public void setName(String name) {
+    this.name = name;
+  }
+
+  public String getEmail() {
+    return email;
+  }
+
+  public void setEmail(String email) {
+    this.email = email;
+  }
+}
+
+@GenerateMapping
+interface ContactPatchMapping extends UpdateSpec<Customer, ContactPatchBean> {
+  // Generates only updateFrom(ContactPatchBean) : Edits.Accumulated<Customer> - no build/parse/as*.
+  // A present field is set (email parsed through its leaf, located on failure); an absent (null)
+  // one is skipped, so the domain's current value survives.
+  default ValidatedPrism<String, EmailAddress> email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+```
+
+The Impl exposes a *single* method, `updateFrom(Wire) : Edits.Accumulated<Domain>` - no `build`, `parse`, or `as*` tier (a sparse mapping is not a projection of information, and an all-null wire is *valid*, not a total parse). It folds the present properties into an [`Update<Domain>`](multi_edit.md), leaving the absent ones alone:
+
+``` java
+    Customer current = new Customer("Ada", new EmailAddress("ada@corp.example"));
+
+    ContactPatchBean patch = new ContactPatchBean();
+    patch.setName("Ada Lovelace"); // email left null: not provided, keep the current one
+
+    Edits.Accumulated<Customer> update = ContactPatchMappingImpl.INSTANCE.updateFrom(patch);
+    Validated<NonEmptyList<FieldError>, Customer> patched = update.apply(current);
+    // Valid(Customer[name=Ada Lovelace, email=ada@corp.example]) - only the name changed
+```
+
+- **Present and valid** → the field is set, or parsed through its leaf, and folded in.
+- **Present and invalid** → a located `FieldError`, accumulating as usual: sparseness never weakens validation of what *was* sent. `Edits.Accumulated` also offers `applyPath(current)` to drop straight onto the [validation railway](../effect/path_validation.md), so a controller answers with every error at once instead of persisting a partial write (an all-`FieldError` payload takes [the 422 leg](../spring/spring_boot_integration.md#the-422-leg): `hkj.web.validation-field-error-status`, default 422).
+- **Absent (null)** → skipped; the domain's current value survives.
+
+The return type is exactly what a hand-written [`Edits.accumulate(...)`](multi_edit.md) PATCH builder produces, so the two compose and the same consumption story (`apply`, `applyPath`, `toValidated`) carries over.
+
+The rules that keep the contract honest:
+
+- **A primitive wire property is rejected.** A primitive is always present (its default), so it can never carry the null-as-absent signal; use the wrapper type (`Integer`, `Boolean`). This is *forced*, not a style choice: an all-absent body must fold to the identity update, which a primitive would break.
+- **A domain `Optional<T>` component is rejected.** Under null-as-absent, `null` already means "leave unchanged", so "set to empty" has no encoding (and a null-clears rule would be JSON Merge Patch's opposite contract). Model the field as a nested record or a sentinel instead.
+- **A record wire is rejected.** A record component is always present, so absence is inexpressible - sparse PATCH is a bean-only shape.
+- **A sealed hierarchy is rejected**, on either side: dispatch has no sparse meaning (an absent property cannot choose a subtype to patch).
+- **A container whose elements need mapping** (`List<AddressDto>` wire against `List<Address>` domain) **is rejected**: element lifting is a dense concern. The workaround the diagnostic offers is a whole-container leaf (`ValidatedPrism<List<AddressDto>, List<Address>>`), which replaces wholesale through your prism.
+- **Coverage is one-sided.** Every wire property maps to a domain component, but a domain component with *no* wire property is simply never changed: a PATCH DTO deliberately covers a subset.
+- **A same-typed nested record, `List` or `Map` replaces wholesale** through identity, elements included, unscanned: the sparse tier writes what was sent, it does not validate identity values. A nested record whose wire differs is patched wholesale through its own full mapping spec. Deep merge is out of scope.
+
+The sparse tier is law-checked like every other, through the same `MappingLaws` harness:
+
+``` java
+    MappingLaws.assertMappingLaws(
+        ContactPatchMappingImpl.INSTANCE::updateFrom,
+        new Customer("Ada", new EmailAddress("ada@example.org")), // the current value
+        patch(null, null), // all-absent   -> identity
+        patch("Grace", "grace@example.org"), // present valid -> changes the domain
+        patch(null, "not-an-email")); // present invalid -> located failure
+```
+
+Identity (an all-absent wire is the identity update), idempotence (applying the same patch twice equals applying it once - which holds because the generated edits *set* and *parse*, never *modify*), and validation (a present invalid field fails).
 
 ---
 
@@ -37176,6 +37530,8 @@ interface ProfileCardAssembly {
 ```
 
 Ambiguity (two sources carrying the component) and unfilled components are compile errors, and the return type must tell the truth: fallible fills demand the `Validated` return; an identity-only merge must declare the plain target.
+
+The fallible path carries the [same null doctrine as `parse`](#record-mapping): every reference-typed source-component read is null-guarded, so a null component is a located, accumulated `FieldError` (`must not be null`), never an exception — a null source *argument* stays the caller's `NullPointerException`. A plain-return merge is total *by its declaration*: nulls flow through to the target constructor exactly as `build` copies them. (The return type follows the fills, so the guard cannot be bought by declaration alone — an identity-only merge that wants it should add a normalising `ValidatedPrism<X, X>` leaf, which makes the merge fallible and brings the `Validated` return with it.)
 
 ---
 
@@ -37247,9 +37603,9 @@ Two verbs keep the two operations distinct: `ErrorEnvelope.withContext(D)` is th
 Every rejection follows the processor's what/why/fix standard: the message states what is wrong, why the mapper needs it, and the code to write. Current limits, each with its own diagnostic:
 
 - `parse` is assembled with [`Validated.fields()`](../monads/validated_assembly.md), which locates up to **16 components**; group larger records into nested records, which nest through their own specs.
-- Nested and sealed resolution sees specs **in the same compilation**, and a spec extends `MappingSpec` and nothing else; inherited renames/leaves arrive with the full mapper.
+- Nested and sealed resolution sees specs **in the same compilation**. A spec extends `MappingSpec` directly, plus any plain [mix-in interfaces](#shared-vocabulary-mix-in-interfaces); a mix-in that is itself a mapping spec, or a generic one, is diagnosed.
 - `Map` components lift values only: keys are identity, so differing key types, raw `Map`s and wildcard type arguments are compile errors.
-- Projections are identity-only (a leaf would make the write-back fallible) and cannot carry derived fields (the write-back could never honour a recomputed component); generic types arrive with the full mapper.
+- A projection with any fallible correspondence emits the [validated `patch`](#leaf-carrying-projections-the-validated-patch) write-back rather than `asLens()`; projections cannot carry derived fields (the write-back could never honour a recomputed component); generic records map as concrete instantiations, threaded specs or element-mapped specs ([above](#generic-records-concrete-threaded-and-element-mapped)), all three nestable; generic mappings stay record-to-record only.
 
 ~~~admonish tip title="See Also"
 - [Validated Prisms](validated_prism.md) - The leaf optic every fallible correspondence is built from
@@ -40222,6 +40578,10 @@ A path from a `@GenerateFocus` companion carries its record-component name as a 
 
 For the railway, `applyPath(order)` is the `ValidationPath` twin of `apply(order)`, and `toValidated()` exposes the folded `Update` itself for reuse.
 
+~~~admonish tip title="Generate this when the shape is regular"
+When the request DTO's fields line up one-to-one with a domain record — the common REST PATCH case — you need not hand-write the fold at all: `@GenerateMapping` on an [`UpdateSpec<Domain, Wire>`](record_mapping.md#sparse-patch-write-back-updatespec) generates exactly this `Edits.accumulate` over the present fields, as `updateFrom(wire) : Edits.Accumulated<Domain>` (the same `apply`/`applyPath`/`toValidated` surface). Reach for the hand-written `Edits` here when the edits are irregular — a `qtyDelta` that *modifies*, coupled fields, a computed target; reach for `UpdateSpec` when each present field maps to one slot.
+~~~
+
 ---
 
 ## How the split stays compile-time safe
@@ -40288,6 +40648,7 @@ Practice the whole model in [Tutorial 24: Multi-Edit and Sparse Updates](https:/
 - [Semigroup and Monoid](../functional/semigroup_and_monoid.md) - The `Update` monoid that powers `combine`
 - [Accumulating Assembly](../monads/validated_assembly.md) - The same all-errors-at-once model for *constructing* values
 - [Coupled Fields](coupled_fields.md) - Atomic updates of interdependent fields
+- [Record Mapping — sparse PATCH (`UpdateSpec`)](record_mapping.md#sparse-patch-write-back-updatespec) - Generate this `Edits.accumulate` fold when the DTO maps one-to-one
 ~~~
 
 ---
@@ -81791,7 +82152,7 @@ If you use Spring's dependency injection and wonder how `ReaderPath` compares, s
 ## _Bringing Type-Safe Error Handling to Your REST APIs_
 
 ~~~admonish info title="What You'll Learn"
-- How to use Either, Validated, Maybe, Try, IO, CompletableFuture, VTask, VStream, and Free as Spring controller return types (via their Path wrappers)
+- How to use Either, Validated, Maybe, Try, IO, CompletableFuture, VTask, VStream, EitherOrBoth, and Free as Spring controller return types (via their Path wrappers)
 - Zero-configuration setup with the hkj-spring-boot-starter
 - Virtual thread integration with VTaskPath (async) and VStreamPath (SSE streaming)
 - Automatic JSON serialisation with customisable formats
@@ -81930,11 +82291,12 @@ public class UserController {
 
 That's it! The starter auto-configures everything:
 - EitherPath to HTTP response conversion with automatic status code mapping
-- ValidationPath to HTTP response with error accumulation
+- ValidationPath to HTTP response with error accumulation (located `FieldError` payloads render as one 422 listing every bad field by path)
 - MaybePath, TryPath, and IOPath handlers for optional, exception-capturing, and deferred computations
 - CompletableFuturePath support for async operations
 - VTaskPath support for virtual thread async via DeferredResult
 - VStreamPath support for SSE streaming on virtual threads
+- EitherOrBothPath support for success-with-warnings responses (warnings in the `X-Hkj-Warnings` header)
 - FreePath support for Free-monad programs interpreted through `EffectBoundary`
 - `@ResponseStatus` honoured on handler methods to override the default success status
 - JSON serialisation for functional types
@@ -82019,8 +82381,10 @@ public class UserController {
 ```
 
 **Response Mapping:**
-- `Right(user)` → HTTP 200 with JSON: `{"id": "1", "email": "alice@example.com", ...}`
-- `Left(UserNotFoundError)` → HTTP 404 with JSON: `{"success": false, "error": {"type": "UserNotFoundError", ...}}`
+- `Right(user)` → HTTP 200 with the value unwrapped as JSON: `{"id": "1", "email": "alice@example.com", ...}`
+- `Left(UserNotFoundError)` → HTTP 404 with the error wrapped in an envelope: `{"success": false, "error": {"userId": "999", ...}}`
+
+The error object inside the envelope is the error record serialised as-is — there is no automatic `type` discriminator. If your clients need one, add it to the error type with Jackson's `@JsonTypeInfo(use = Id.NAME, ...)` on the sealed interface.
 
 #### Error Type to HTTP Status Mapping {#error-type-http-status-mapping}
 
@@ -82048,7 +82412,7 @@ public sealed interface DomainError permits
     AuthenticationError {}  // -> 401 via heuristic
 ```
 
-For status codes outside the heuristic table (409 Conflict, 422 Unprocessable Entity, 429 Too Many Requests, 503 Service Unavailable), add explicit entries to `hkj.web.error-status-mappings`:
+For status codes outside the heuristic table (409 Conflict, 422 Unprocessable Content, 429 Too Many Requests, 503 Service Unavailable), add explicit entries to `hkj.web.error-status-mappings`:
 
 ```yaml
 hkj:
@@ -82096,43 +82460,100 @@ public Validated<List<ValidationError>, User> createUser(@RequestBody UserReques
 ```
 
 **Response Mapping:**
-- `Valid(user)` → HTTP 200 with JSON: `{"id": "1", "email": "alice@example.com", ...}`
-- `Invalid(errors)` → HTTP 400 with JSON: `{"success": false, "errors": [{"field": "email", "message": "Invalid format"}, ...]}`
+- `Valid(user)` → HTTP 200 with the value unwrapped as JSON: `{"id": "1", "email": "alice@example.com", ...}`
+- `Invalid(errors)` → HTTP 400 with JSON: `{"valid": false, "errors": [{"field": "email", "message": "Invalid format"}, ...], "errorCount": 2}`
+- `Invalid(errors)` where every error is a located `FieldError` → HTTP 422 with each error rendered by path ([the 422 leg](#the-422-leg) below)
 
 #### Validation Example
+
+Individual field checks each return a `Validated`; the applicative for `Validated` (with a list semigroup for the error channel) combines them so that **every** failing check is reported:
 
 ```java
 @Service
 public class UserService {
 
     public Validated<List<ValidationError>, User> validateAndCreate(UserRequest request) {
-        return Validated.validateAll(
-            validateEmail(request.email()),
-            validateName(request.firstName()),
-            validateName(request.lastName())
-        ).map(tuple -> new User(
-            UUID.randomUUID().toString(),
-            tuple._1(),  // email
-            tuple._2(),  // firstName
-            tuple._3()   // lastName
-        ));
+        Applicative<ValidatedKind.Witness<List<ValidationError>>> applicative =
+            ValidatedMonad.instance(Semigroups.list());
+
+        var result = applicative.map3(
+            VALIDATED.widen(validateEmail(request.email())),
+            VALIDATED.widen(validateName("firstName", request.firstName())),
+            VALIDATED.widen(validateName("lastName", request.lastName())),
+            (email, firstName, lastName) ->
+                new User(UUID.randomUUID().toString(), email, firstName, lastName));
+
+        return VALIDATED.narrow(result);
     }
 
-    private Validated<ValidationError, String> validateEmail(String email) {
+    private Validated<List<ValidationError>, String> validateEmail(String email) {
         if (email == null || !email.contains("@")) {
-            return Validated.invalid(new ValidationError("email", "Invalid email format"));
+            return Validated.invalid(List.of(new ValidationError("email", "Invalid email format")));
         }
         return Validated.valid(email);
     }
 
-    private Validated<ValidationError, String> validateName(String name) {
+    private Validated<List<ValidationError>, String> validateName(String field, String name) {
         if (name == null || name.trim().isEmpty()) {
-            return Validated.invalid(new ValidationError("name", "Name cannot be empty"));
+            return Validated.invalid(List.of(new ValidationError(field, "Name cannot be empty")));
         }
         return Validated.valid(name);
     }
 }
 ```
+
+This mirrors `UserService.validateAndCreate` in the example module. (`VALIDATED` is the `ValidatedKindHelper.VALIDATED` widening/narrowing helper.)
+
+~~~admonish tip title="Prefer the Path builders for new code"
+The `ValidationPath` accumulating builders avoid the widen/narrow ceremony entirely — controllers can return `ValidationPath` directly and the same handler applies. Each field validator returns `ValidationPath<NonEmptyList<ValidationError>, String>` (built with `Path.validNel` / `Path.invalidNel`):
+
+```java
+public ValidationPath<NonEmptyList<ValidationError>, User> validateAndCreate(UserRequest request) {
+    return Path.accumulate()
+        .and(validateEmail(request.email()))
+        .and(validateName("firstName", request.firstName()))
+        .and(validateName("lastName", request.lastName()))
+        .apply((email, firstName, lastName) ->
+            new User(UUID.randomUUID().toString(), email, firstName, lastName));
+}
+```
+
+See the [Effect Path API](../effect/path_types.md) for `Path.accumulate()` and its labelled sibling `Path.fields()`. Note that `Path.fields()` fixes the error channel to `NonEmptyList<FieldError>`, so its invalid responses take [the 422 leg](#the-422-leg) below.
+~~~
+
+#### The 422 leg: located field errors, one response {#the-422-leg}
+
+A *leg* is one of the routes a value returned from a controller can travel to become an HTTP response: a segment of the [railway](../glossary/effect-paths.md#railway-oriented-programming) journey, as in a leg of a relay. A `Left(DomainError)` travels the **Either leg** to its mapped error status; a generic `Invalid` travels the standard **validation leg** to 400. This section describes a third: the leg an all-`FieldError` payload takes to a 422, chosen (like a railway switch) by the shape of the value itself.
+
+A [`@GenerateMapping`](../optics/record_mapping.md) spec's `parse` returns `Validated<NonEmptyList<FieldError>, Domain>`: every bad field reported at once, each located by a structured path. (`FieldError` here is HKJ's `org.higherkindedj.hkt.validated.FieldError`, not Spring's `org.springframework.validation.FieldError`.) A controller returns it directly, with no service call and no error wrapping:
+
+```java
+@PostMapping("/parse")
+public Validated<NonEmptyList<FieldError>, User> parseUser(@RequestBody UserDto dto) {
+    return UserMappingImpl.INSTANCE.parse(dto);
+}
+```
+
+When an `Invalid` payload consists **entirely** of located `FieldError`s, the handler switches to `hkj.web.validation-field-error-status` (default **422 Unprocessable Content**, formerly named "Unprocessable Entity") and renders each error by path:
+
+```json
+{
+  "valid": false,
+  "errors": [
+    { "path": "email",       "segments": ["email"],          "message": "not a valid email address" },
+    { "path": "address.zip", "segments": ["address", "zip"], "message": "must be 5 digits" }
+  ],
+  "errorCount": 2
+}
+```
+
+`path` is the dot-joined display key (`FieldError.pathString()`); `segments` is the exact structured location. Paths use **domain** component names: under a `@MapField(to = "fullName")` rename the client that sent `fullName` receives its error at `name`, so a client mapping errors onto its own payload keys must apply the rename in reverse. The distinction matters: a map key containing a dot is indistinguishable from nesting in the rendered `path` (`attributes."a.b".email` vs deeper nesting), so structured consumers should read `segments`, which stays exact. An unlabelled error renders `"path": ""` and `"segments": []`; treat it as object-level.
+
+The leg is selected purely by payload shape, so **any** all-`FieldError` payload takes it: `Path.fields()` assemblies, `@GenerateAssembly` results and hand-built `NonEmptyList<FieldError>`s included, not just a mapper `parse`. A pre-existing `Path.fields()` endpoint therefore moves from 400 to 422 on upgrade; set `hkj.web.validation-field-error-status: 400` to restore the old status.
+
+Mixed, empty or non-`FieldError` payloads keep the generic rendering and `hkj.web.validation-invalid-status` (default 400): nothing to enable, nothing else affected.
+
+The example module's `POST /api/users/parse` endpoint shows the full leg; its PATCH sibling deliberately stays on the Either leg because a PATCH mixes not-found with validation, and one `Either` channel carries both.
 
 **Key Difference from Either:**
 - `Either` short-circuits on first error (fail-fast)
@@ -82221,7 +82642,7 @@ public VTaskPath<EnrichedUser> getEnrichedUser(@PathVariable String id) {
     VTask<Profile> profileTask = VTask.of(() -> fetchProfile(id));
     VTask<OrderSummary> ordersTask = VTask.of(() -> fetchOrders(id));
 
-    return Path.vtask(
+    return Path.vtaskPath(
         Scope.<Object>allSucceed()
             .fork(userTask)
             .fork(profileTask)
@@ -82280,6 +82701,44 @@ public VStreamPath<TickEvent> streamTicks(@RequestParam(defaultValue = "10") int
 
 ---
 
+### 6. EitherOrBoth: Success with Warnings {#eitherorboth-success-with-warnings}
+
+`EitherOrBoth<W, A>` is the inclusive-or: a computation that fails with warnings (`Left`), succeeds cleanly (`Right`), or **succeeds while also carrying non-fatal warnings** (`Both`). Controllers can return either the raw `EitherOrBoth` or its Path wrapper `EitherOrBothPath` — both are handled by `EitherOrBothPathReturnValueHandler`.
+
+#### Basic Usage
+
+```java
+@PostMapping("/imports")
+public EitherOrBothPath<NonEmptyList<ImportWarning>, ImportSummary> importBatch(
+        @RequestBody ImportRequest request) {
+    return importService.importBatch(request);
+}
+```
+
+**Response Mapping (three branches, not two):**
+
+| Result | Status | Body | Extra |
+|--------|--------|------|-------|
+| `Right(value)` | success status (200, or `@ResponseStatus` on the handler) | the value, unwrapped | — |
+| `Both(warnings, value)` | the **same** success status | the value, unwrapped | warnings JSON-encoded into the `X-Hkj-Warnings` response header |
+| `Left(warnings)` | resolved by `ErrorStatusCodeStrategy` (same as `EitherPath`) | `{"success": false, "error": <warnings>}` | `HttpHeaderCarrier` headers applied if implemented |
+
+The `Both` branch is the point: warnings are never silently dropped, but the success body stays the bare value, so clients that ignore the header see exactly the same response as a clean success. Clients that care read `X-Hkj-Warnings` and parse the JSON array.
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Hkj-Warnings: [{"row":17,"message":"duplicate SKU skipped"}]
+
+{"imported": 240, "skipped": 1}
+```
+
+Disable the handler with `hkj.web.either-or-both-path-enabled: false` (default: `true`).
+
+See [EitherOrBoth](../monads/either_or_both_monad.md) for the type itself, including `zipWithAccum` for combining independent checks whilst accumulating warnings.
+
+---
+
 ## HTTP Status Codes {#http-status-codes}
 
 Every Effect Path return-value handler resolves the success and error status codes independently, so the same controller method can map typed successes and typed failures to different HTTP responses.
@@ -82316,7 +82775,7 @@ public class OrderController {
 }
 ```
 
-All nine Effect Path handlers honour `@ResponseStatus` consistently.
+All ten Effect Path handlers honour `@ResponseStatus` consistently.
 
 ### Error Status Mapping
 
@@ -82337,7 +82796,7 @@ hkj:
       default-error-status: 500          # Fallback for unmapped Left values
     error-status-mappings:
       MfaAlreadyEnrolledError: 409       # Conflict
-      PaymentDeclinedError: 422          # Unprocessable Entity
+      PaymentDeclinedError: 422          # Unprocessable Content
       MfaThrottledError: 429             # Too Many Requests
       ScheduledMaintenanceError: 503     # Service Unavailable
 ```
@@ -82375,7 +82834,7 @@ public record MfaThrottledError(int retryAfterSeconds)
 }
 ```
 
-The headers are applied by the `EitherPath`, `TryPath`, `ValidationPath`, `IOPath`, `CompletableFuturePath`, `VTaskPath`, and `FreePath` return-value handlers before the JSON body is written. Internally the headers are added (not set), so multi-valued headers such as `WWW-Authenticate`, `Set-Cookie`, and `Link` accumulate as separate header lines, matching the HTTP grammar; upstream headers set by filters or interceptors are also preserved. For collection-typed payloads (such as `ValidationPath` `Invalid` values), every element that implements `HttpHeaderCarrier` contributes; values accumulate. For single-valued headers like `Retry-After`, the carrier should ensure the value appears at most once across all payload elements.
+The headers are applied by the `EitherPath`, `EitherOrBothPath`, `TryPath`, `ValidationPath`, `IOPath`, `CompletableFuturePath`, `VTaskPath`, and `FreePath` return-value handlers before the JSON body is written. Internally the headers are added (not set), so multi-valued headers such as `WWW-Authenticate`, `Set-Cookie`, and `Link` accumulate as separate header lines, matching the HTTP grammar; upstream headers set by filters or interceptors are also preserved. For collection-typed payloads (such as `ValidationPath` `Invalid` values), every element that implements `HttpHeaderCarrier` contributes; values accumulate. For single-valued headers like `Retry-After`, the carrier should ensure the value appears at most once across all payload elements.
 
 `VStreamPath` does not honour `HttpHeaderCarrier`, because the response status and headers are committed before the first SSE event. Set required headers via a servlet filter or controller advice before the stream begins.
 
@@ -82393,56 +82852,50 @@ The example module contains a [`ErrorStatusFixtureController`](https://github.co
 
 ## JSON Serialisation {#json-serialisation}
 
-The starter provides flexible JSON serialisation for functional types.
+Two different mechanisms produce JSON for functional types, and it matters which one applies:
 
-### Configuration
+### Top-level return values (the handlers)
 
-Configure serialisation format in `application.yml`:
+When a controller returns a functional type directly, the return-value handler shapes the response:
+
+- **Success values are unwrapped.** `Right(user)`, `Valid(user)`, a completed `CompletableFuturePath<User>`, etc. all produce the bare value as the body: `{"id": "1", "email": "alice@example.com"}` — no envelope.
+- **Either errors** produce `{"success": false, "error": <error record serialised as-is>}`.
+- **Validated errors** produce `{"valid": false, "errors": [...], "errorCount": n}`.
+- **EitherOrBoth `Both`** produces the unwrapped value plus the `X-Hkj-Warnings` header (see [above](#eitherorboth-success-with-warnings)).
+
+### Nested values (the Jackson module)
+
+When an `Either`, `Validated`, `EitherOrBoth`, or `NonEmptyList` appears **inside** a DTO (for example a batch result containing `List<Either<DomainError, User>>`), the `HkjJacksonModule` serialises it with a tagged shape:
+
+```json
+// Nested Either.right(user)
+{"isRight": true, "right": {"id": "1", "email": "alice@example.com"}}
+
+// Nested Either.left(error)
+{"isRight": false, "left": {"userId": "999"}}
+
+// Nested Validated
+{"valid": true, "value": ...}
+{"valid": false, "errors": [...]}
+
+// Nested EitherOrBoth
+{"kind": "right", "right": ...}
+{"kind": "both", "left": [...warnings...], "right": ...}
+```
+
+These shapes are fixed — there is no format-toggle property. The only Jackson-related switch is:
 
 ```yaml
 hkj:
   json:
-    custom-serializers-enabled: true  # Enable custom serialisers (default: true)
-    either-format: TAGGED             # TAGGED or SIMPLE
-    validated-format: TAGGED          # TAGGED or SIMPLE
-    maybe-format: TAGGED              # TAGGED or SIMPLE
+    custom-serializers-enabled: true  # Register HkjJacksonModule (default: true)
 ```
 
-~~~admonish note title="Property prefix vs. actuator key"
-The configuration prefix is `hkj.json.*`. The actuator endpoint at `/actuator/hkj` reports the same values under the `"jackson"` key for backward compatibility with earlier releases.
+~~~admonish warning title="No Maybe or Try Jackson support"
+The Jackson module covers `Either`, `Validated`, `EitherOrBoth`, and `NonEmptyList`. `Maybe` and `Try` have **no** nested-serialisation support — return them at the top level (where the handlers apply) or convert them to a supported type before embedding them in a DTO.
 ~~~
 
-### Serialisation Formats
-
-#### TAGGED (Default)
-
-Wraps the value with metadata indicating success/failure:
-
-```json
-// Right(user)
-{
-  "success": true,
-  "value": {
-    "id": "1",
-    "email": "alice@example.com"
-  }
-}
-
-// Left(error)
-{
-  "success": false,
-  "error": {
-    "type": "UserNotFoundError",
-    "userId": "999"
-  }
-}
-```
-
-#### SIMPLE
-
-Compact form without the discriminator metadata, suitable for clients that already infer success and failure from the HTTP status code.
-
-For complete serialisation details, including the exact field names produced for each format, see [hkj-spring/JACKSON_SERIALIZATION.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/JACKSON_SERIALIZATION.md).
+For complete serialisation details, see [hkj-spring/JACKSON_SERIALIZATION.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/JACKSON_SERIALIZATION.md).
 
 ---
 
@@ -82454,14 +82907,17 @@ For complete serialisation details, including the exact field names produced for
 hkj:
   web:
     either-path-enabled: true               # Enable EitherPath handler (default: true)
-    validated-path-enabled: true            # Enable ValidationPath handler (default: true)
+    validation-path-enabled: true           # Enable ValidationPath handler (default: true)
     maybe-path-enabled: true                # Enable MaybePath handler (default: true)
     try-path-enabled: true                  # Enable TryPath handler (default: true)
     io-path-enabled: true                   # Enable IOPath handler (default: true)
     completable-future-path-enabled: true   # Enable CompletableFuturePath handler (default: true)
     vtask-path-enabled: true                # Enable VTaskPath handler (default: true)
     vstream-path-enabled: true              # Enable VStreamPath handler (default: true)
+    either-or-both-path-enabled: true       # Enable EitherOrBothPath handler (default: true)
     free-path-enabled: true                 # Enable FreePath handler (default: true)
+    validation-invalid-status: 400          # Status for generic validation errors (default: 400)
+    validation-field-error-status: 422      # Status for FieldError-shaped validation errors (default: 422)
     either:
       default-error-status: 400             # Default HTTP status for unmapped Left errors
 ```
@@ -82470,16 +82926,27 @@ The canonical key for the EitherPath default error status is `hkj.web.either.def
 
 ### Async Executor Configuration
 
-For CompletableFuturePath operations, configure the async thread pool:
+The starter does **not** create or configure a thread pool for `CompletableFuturePath` operations — your application defines its own executor bean and passes it to `CompletableFuture.supplyAsync(...)` in the service layer. The example module's `AsyncConfig` shows the pattern:
 
-```yaml
-hkj:
-  async:
-    core-pool-size: 10                 # Minimum threads
-    max-pool-size: 20                  # Maximum threads
-    queue-capacity: 100                # Queue size before rejection
-    thread-name-prefix: "hkj-async-"   # Thread naming pattern
+```java
+@Configuration
+@EnableAsync
+public class AsyncConfig {
+
+    @Bean(name = "hkjAsyncExecutor")
+    public Executor hkjAsyncExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(20);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("hkj-async-");
+        executor.initialize();
+        return executor;
+    }
+}
 ```
+
+Naming the bean `hkjAsyncExecutor` also lights up the optional async-executor health indicator (see [Monitoring](#monitoring-with-spring-boot-actuator)). The one async property the starter does read is `hkj.async.default-timeout-ms` (default: 30000), the response timeout for `CompletableFuturePath` requests.
 
 ### Virtual Thread Configuration
 
@@ -82644,53 +83111,46 @@ The hkj-spring-boot-starter provides optional Spring Security integration with f
 hkj:
   security:
     enabled: true                       # Enable functional security (default: false)
-    validated-user-details: true        # Use Validated for user loading
     either-authentication: true         # Use Either for authentication
     either-authorization: true          # Use Either for authorisation
+    # Opt-in (default: false). Only enable when you will register accounts: once it is the sole
+    # UserDetailsService bean, Spring Security adopts it as the application-wide user store — and it
+    # starts EMPTY, so enabling it without adding users fails every form/basic login.
+    # validated-user-details: true
 ```
 
 ### Functional User Details Service
 
-Use `Validated` to accumulate authentication errors:
+`ValidatedUserDetailsService` validates the username with `Validated`, accumulating **all** format errors (too short *and* illegal characters, not just the first) before looking the user up. It starts **empty** — register accounts explicitly:
 
 ```java
-@Service
-public class CustomUserDetailsService implements ValidatedUserDetailsService {
-
-    @Override
-    public Validated<List<SecurityError>, UserDetails> loadUserByUsername(String username) {
-        return Validated.validateAll(
-            validateUsername(username),
-            validateAccountStatus(username),
-            validateCredentials(username)
-        ).map(tuple -> new User(
-            tuple._1(),  // username
-            tuple._2(),  // password
-            tuple._3()   // authorities
-        ));
-
-        // Returns ALL validation errors at once
-        // e.g., "Username too short" + "Account locked"
-    }
+@Bean
+public UserDetailsService userDetailsService(PasswordEncoder encoder) {
+    var service = new ValidatedUserDetailsService();
+    service.addUser(User.builder()
+        .username("alice")
+        .password(encoder.encode(secret))
+        .roles("USER")
+        .build());
+    return service;
 }
 ```
 
+~~~admonish warning title="Sample users are opt-in, demos only"
+`ValidatedUserDetailsService.withSampleUsers()` returns an instance pre-populated with well-known accounts (`admin`/`admin123`, `user`/`user123`, `disabled`/`disabled123`) using plaintext `{noop}` passwords. It exists for demos and tests — never use it in production. The no-argument constructor registers **no** users.
+~~~
+
 ### Functional Authentication
 
-Use `Either` for JWT authentication with typed errors:
+`EitherAuthenticationConverter` converts JWTs to `Authentication` using `Either` internally. A **malformed** authorities claim (wrong type, or a collection with a non-string element) always folds the `Left` into a thrown `BadCredentialsException`, so such a token is **rejected** (HTTP 401) — it never produces an authenticated token. A **missing** claim is rejected the same way only while `hkj.security.reject-missing-authorities-claim` stays `true` (the default); set it to `false` to allow legitimately role-less tokens (e.g. client-credentials) to authenticate with empty authorities:
 
 ```java
-@Component
-public class JwtAuthenticationConverter {
-
-    public Either<AuthenticationError, Authentication> convert(Jwt jwt) {
-        return extractUsername(jwt)
-            .flatMap(this::validateToken)
-            .flatMap(this::extractAuthorities)
-            .map(authorities -> new JwtAuthenticationToken(jwt, authorities));
-
-        // Short-circuits on first error
-    }
+@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http.oauth2ResourceServer(oauth2 -> oauth2
+        .jwt(jwt -> jwt
+            .jwtAuthenticationConverter(new EitherAuthenticationConverter())));
+    return http.build();
 }
 ```
 
@@ -82707,18 +83167,19 @@ Track functional programming patterns in production with built-in Actuator integ
 ```yaml
 hkj:
   actuator:
-    metrics:
-      enabled: true                     # Enable metrics tracking
-    health:
-      async-executor:
-        enabled: true                   # Monitor CompletableFuturePath thread pool
+    metrics-enabled: true               # Enable metrics tracking (default: true)
 
 management:
+  health:
+    hkj-async:
+      enabled: true                     # Async executor health indicator (default: true)
   endpoints:
     web:
       exposure:
         include: health,info,metrics,hkj
 ```
+
+The `hkj-async` health indicator only registers when your application defines an `Executor` bean named `hkjAsyncExecutor` (see [Async Executor Configuration](#async-executor-configuration)) — without that bean there is nothing to monitor. Any `Executor` is accepted: a `ThreadPoolTaskExecutor` reports full pool statistics, while other types (e.g. a virtual-thread executor) report `UP` with a `type` detail (or `DOWN` if shut down).
 
 ### Available Metrics
 
@@ -82726,10 +83187,10 @@ The starter automatically tracks:
 
 - **EitherPath metrics:** Success/error counts and rates
 - **ValidationPath metrics:** Valid/invalid counts and error distributions
-- **CompletableFuturePath metrics:** Async operation durations and success rates
 - **VTaskPath metrics:** Virtual thread execution durations and success rates
 - **VStreamPath metrics:** Stream completion counts and element distribution
-- **Thread pool health:** Active threads, queue size, saturation
+- **EffectBoundary metrics:** Free-program execution counts and durations (via `ObservableEffectBoundary`)
+- **Thread pool health:** Active threads, queue size, saturation (requires a `hkjAsyncExecutor` bean)
 
 ### Custom HKJ Endpoint
 
@@ -82739,42 +83200,63 @@ Access functional programming metrics via the custom actuator endpoint:
 curl http://localhost:8080/actuator/hkj
 ```
 
-Response:
+Response (metric keys are `either`, `validated`, `eitherT`, `vtask`, and `vstream`):
 ```json
 {
   "configuration": {
     "web": {
       "eitherPathEnabled": true,
-      "validatedPathEnabled": true,
-      "completableFuturePathEnabled": true
+      "maybePathEnabled": true,
+      "tryPathEnabled": true,
+      "validationPathEnabled": true,
+      "ioPathEnabled": true,
+      "completableFuturePathEnabled": true,
+      "vtaskPathEnabled": true,
+      "vstreamPathEnabled": true,
+      "eitherOrBothPathEnabled": true,
+      "freePathEnabled": true,
+      "defaultErrorStatus": 400
     },
     "jackson": {
-      "eitherFormat": "TAGGED",
-      "validatedFormat": "TAGGED"
+      "customSerializersEnabled": true
     }
   },
   "metrics": {
-    "eitherPath": {
+    "either": {
       "successCount": 1547,
       "errorCount": 123,
       "totalCount": 1670,
       "successRate": 0.926
     },
-    "validationPath": {
+    "validated": {
       "validCount": 892,
       "invalidCount": 45,
       "totalCount": 937,
       "validRate": 0.952
     },
-    "completableFuturePath": {
+    "eitherT": {
       "successCount": 234,
       "errorCount": 12,
       "totalCount": 246,
       "successRate": 0.951
+    },
+    "vtask": {
+      "successCount": 340,
+      "errorCount": 15,
+      "totalCount": 355,
+      "successRate": 0.958
+    },
+    "vstream": {
+      "successCount": 120,
+      "errorCount": 5,
+      "totalCount": 125,
+      "successRate": 0.960
     }
   }
 }
 ```
+
+(The `eitherT` key and its `hkj.either_t.*` Micrometer meters are a legacy async-metrics surface retained for dashboard compatibility; the actively recorded handler metrics are `either`, `validated`, `vtask`, and `vstream`.)
 
 ### Prometheus Integration
 
@@ -82782,24 +83264,25 @@ Export metrics to Prometheus for monitoring and alerting:
 
 ```yaml
 management:
-  metrics:
-    export:
-      prometheus:
+  prometheus:
+    metrics:
+      export:
         enabled: true
 ```
 
-Example Prometheus queries:
+The Micrometer meter names are `hkj.either.invocations`, `hkj.validated.invocations`, `hkj.either_t.invocations`, `hkj.either_t.async.duration`, `hkj.vtask.invocations`, `hkj.vtask.duration`, and `hkj.vstream.invocations` (Prometheus renders the dots as underscores):
+
 ```promql
 # EitherPath error rate
-rate(hkj_either_path_invocations_total{result="error"}[5m])
+rate(hkj_either_invocations_total{result="error"}[5m])
 
-# CompletableFuturePath p95 latency
+# VTaskPath p95 latency
 histogram_quantile(0.95,
-  rate(hkj_completable_future_path_async_duration_seconds_bucket[5m]))
+  rate(hkj_vtask_duration_seconds_bucket[5m]))
 
 # ValidationPath success rate
-sum(rate(hkj_validation_path_invocations_total{result="valid"}[5m]))
-  / sum(rate(hkj_validation_path_invocations_total[5m]))
+sum(rate(hkj_validated_invocations_total{result="valid"}[5m]))
+  / sum(rate(hkj_validated_invocations_total[5m]))
 ```
 
 For complete Actuator integration details, see [hkj-spring/ACTUATOR.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/ACTUATOR.md).
@@ -82824,9 +83307,9 @@ class UserControllerTest {
     void shouldReturn200ForExistingUser() throws Exception {
         mockMvc.perform(get("/api/users/1"))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.success").value(true))
-            .andExpect(jsonPath("$.value.id").value("1"))
-            .andExpect(jsonPath("$.value.email").value("alice@example.com"));
+            // Success bodies are unwrapped — no envelope fields
+            .andExpect(jsonPath("$.id").value("1"))
+            .andExpect(jsonPath("$.email").value("alice@example.com"));
     }
 
     @Test
@@ -82834,7 +83317,8 @@ class UserControllerTest {
         mockMvc.perform(get("/api/users/999"))
             .andExpect(status().isNotFound())
             .andExpect(jsonPath("$.success").value(false))
-            .andExpect(jsonPath("$.error.type").value("UserNotFoundError"));
+            // The error record is embedded as-is — assert on its own fields
+            .andExpect(jsonPath("$.error.userId").value("999"));
     }
 }
 ```
@@ -82856,9 +83340,9 @@ void shouldAccumulateValidationErrors() throws Exception {
             .contentType(MediaType.APPLICATION_JSON)
             .content(invalidRequest))
         .andExpect(status().isBadRequest())
-        .andExpect(jsonPath("$.success").value(false))
+        .andExpect(jsonPath("$.valid").value(false))
         .andExpect(jsonPath("$.errors").isArray())
-        .andExpect(jsonPath("$.errors.length()").value(3));  // All errors returned
+        .andExpect(jsonPath("$.errorCount").value(3));  // All errors returned
 }
 ```
 
@@ -82896,11 +83380,11 @@ class UserControllerWebMvcSliceTest {
     @Test
     void shouldReturn200ForExistingUser() throws Exception {
         when(userService.findById("1"))
-            .thenReturn(Either.right(new User("1", "alice@example.com")));
+            .thenReturn(Either.right(new User("1", "alice@example.com", "Alice", "Smith")));
 
         mockMvc.perform(get("/api/users/1"))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.value.id").value("1"));
+            .andExpect(jsonPath("$.id").value("1"));
     }
 
     @Test
@@ -82914,7 +83398,7 @@ class UserControllerWebMvcSliceTest {
 }
 ```
 
-The three imports activate EitherPath/ValidationPath/Maybe/Try/IO/CompletableFuture/VTask/VStream/Free return-value handling, Jackson modules for functional types, and the error-status mapper; everything a controller slice needs. For integration-style tests covering the full stack, prefer `@SpringBootTest @AutoConfigureMockMvc` as shown above.
+The three imports activate EitherPath/ValidationPath/Maybe/Try/IO/CompletableFuture/VTask/VStream/EitherOrBoth/Free return-value handling, Jackson modules for functional types, and the error-status mapper; everything a controller slice needs. For integration-style tests covering the full stack, prefer `@SpringBootTest @AutoConfigureMockMvc` as shown above.
 
 ### Unit Testing Services
 
@@ -82996,7 +83480,7 @@ public class HkjWebMvcAutoConfiguration implements WebMvcConfigurer {
 ```
 
 Auto-configuration activates when:
-- `higher-kinded-j-core` is on the classpath
+- `hkj-core` is on the classpath
 - Spring Web MVC is present
 - Application is a servlet web app
 
@@ -83004,22 +83488,23 @@ Auto-configuration activates when:
 
 Each functional type has a dedicated handler:
 
-1. **EitherPathReturnValueHandler:** Converts `EitherPath<L, R>` to HTTP responses
-2. **ValidationPathReturnValueHandler:** Converts `ValidationPath<E, A>` to HTTP responses
+1. **EitherPathReturnValueHandler:** Converts `EitherPath<L, R>` (and raw `Either`) to HTTP responses
+2. **ValidationPathReturnValueHandler:** Converts `ValidationPath<E, A>` (and raw `Validated`) to HTTP responses
 3. **MaybePathReturnValueHandler:** Converts `MaybePath<A>`, mapping `Just` to `200` and `Nothing` to `404`
 4. **TryPathReturnValueHandler:** Converts `TryPath<A>`, mapping `Success` to `200` and `Failure` to an error response
 5. **IOPathReturnValueHandler:** Executes `IOPath<A>` and writes the captured result
 6. **CompletableFuturePathReturnValueHandler:** Unwraps `CompletableFuturePath<A>` for async processing
 7. **VTaskPathReturnValueHandler:** Executes `VTaskPath<A>` on virtual threads via `DeferredResult`
 8. **VStreamPathReturnValueHandler:** Streams `VStreamPath<A>` as SSE events on virtual threads
-9. **FreePathReturnValueHandler:** Interprets `FreePath<F, A>` via the registered `EffectBoundary` bean
+9. **EitherOrBothPathReturnValueHandler:** Converts `EitherOrBothPath<W, A>` (and raw `EitherOrBoth`), surfacing `Both` warnings in the `X-Hkj-Warnings` header
+10. **FreePathReturnValueHandler:** Interprets `FreePath<F, A>` via the registered `EffectBoundary` bean
 
 Supporting collaborators:
 
 - **`SuccessStatusResolver`:** Reads `@ResponseStatus` on the handler method (with controller-class fallback and meta-annotation support) so each handler can override its default success status.
 - **`ErrorStatusCodeStrategy`:** Functional interface invoked once per error response. The default `DefaultErrorStatusCodeStrategy` consults `hkj.web.error-status-mappings` first, then falls back to `ErrorStatusCodeMapper`'s tokenised heuristics, then to `hkj.web.either.default-error-status`. Replace the bean to inject custom logic (for example, status that depends on an error's field values).
 - **`ErrorStatusCodeMapper`:** Token-aware heuristic resolver used by the default strategy. Exposed as a static helper so custom strategies can delegate to the same logic.
-- **`HttpHeaderCarrier`:** Mix-in interface that lets `Left`-side error payloads add response headers (`Retry-After`, `WWW-Authenticate`, and similar) to the outgoing response. Honoured by every error-bearing handler except `VStreamPath`.
+- **`HttpHeaderCarrier`:** Mix-in interface that lets `Left`-side error payloads add response headers (`Retry-After`, `WWW-Authenticate`, and similar) to the outgoing response. Honoured by every error-bearing handler except `VStreamPath` and `MaybePath` (which has no error payload).
 
 Handlers are registered automatically and integrated seamlessly with Spring's request processing lifecycle.
 
@@ -83449,7 +83934,7 @@ A generic `@HkjHttpClient` interface is supported **codegen-only**: the native i
 - Converting exception-throwing methods to Either
 - Replacing `@ExceptionHandler` methods with automatic response conversion
 - Migrating validation logic to Validated
-- Converting async operations to EitherT
+- Converting async operations to CompletableFuturePath and VTaskPath
 - Maintaining backwards compatibility during migration
 - Common migration patterns and pitfalls to avoid
 ~~~
@@ -83772,50 +84257,54 @@ public record ValidationError(String field, String message) {
 @Service
 public class UserService {
 
-    public Validated<List<ValidationError>, User> validateAndCreate(UserRequest request) {
-        return Validated.validateAll(
-            validateEmail(request.email()),
-            validateFirstName(request.firstName()),
-            validateLastName(request.lastName()),
-            validateUniqueEmail(request.email())
-        ).map(tuple -> createUser(
-            tuple._1(),  // validated email
-            tuple._2(),  // validated firstName
-            tuple._3(),  // validated lastName
-            tuple._4()   // uniqueness confirmed
-        ));
+    public ValidationPath<NonEmptyList<ValidationError>, User> validateAndCreate(
+            UserRequest request) {
+        return Path.accumulate()
+            .and(validateEmail(request.email()))
+            .and(validateFirstName(request.firstName()))
+            .and(validateLastName(request.lastName()))
+            .and(validateUniqueEmail(request.email()))
+            .apply((email, firstName, lastName, uniqueEmail) ->
+                createUser(email, firstName, lastName));
     }
 
-    private Validated<ValidationError, String> validateEmail(String email) {
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateEmail(String email) {
         if (email == null || !email.matches("^[A-Za-z0-9+_.-]+@(.+)$")) {
-            return Validated.invalid(
+            return Path.invalidNel(
                 new ValidationError("email", "Invalid email format"));
         }
-        return Validated.valid(email);
+        return Path.validNel(email);
     }
 
-    private Validated<ValidationError, String> validateFirstName(String name) {
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateFirstName(String name) {
         if (name == null || name.trim().length() < 2) {
-            return Validated.invalid(
+            return Path.invalidNel(
                 new ValidationError("firstName", "First name must be at least 2 characters"));
         }
-        return Validated.valid(name);
+        return Path.validNel(name);
     }
 
-    private Validated<ValidationError, String> validateLastName(String name) {
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateLastName(String name) {
         if (name == null || name.trim().length() < 2) {
-            return Validated.invalid(
+            return Path.invalidNel(
                 new ValidationError("lastName", "Last name must be at least 2 characters"));
         }
-        return Validated.valid(name);
+        return Path.validNel(name);
     }
 
-    private Validated<ValidationError, String> validateUniqueEmail(String email) {
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateUniqueEmail(String email) {
+        // accumulate() runs every validator independently, so this one must not query the
+        // repository for a syntactically invalid email: existsByEmail(null) could throw and turn a
+        // bad request into a 500. validateEmail already reports the format error, so skip the
+        // uniqueness check for malformed input.
+        if (email == null || !email.matches("^[A-Za-z0-9+_.-]+@(.+)$")) {
+            return Path.validNel(email);
+        }
         if (userRepository.existsByEmail(email)) {
-            return Validated.invalid(
+            return Path.invalidNel(
                 new ValidationError("email", "Email already exists"));
         }
-        return Validated.valid(email);
+        return Path.validNel(email);
     }
 }
 
@@ -83824,16 +84313,20 @@ public class UserService {
 public class UserController {
 
     @PostMapping
-    public Validated<List<ValidationError>, User> createUser(@RequestBody UserRequest request) {
+    public ValidationPath<NonEmptyList<ValidationError>, User> createUser(
+            @RequestBody UserRequest request) {
         return userService.validateAndCreate(request);
     }
 
     // No @ExceptionHandler needed!
     // Framework converts:
-    // - Valid(user) → 200 OK with user JSON
-    // - Invalid(errors) → 400 Bad Request with ALL validation errors
+    // - Valid(user) → 200 OK with user JSON (unwrapped)
+    // - Invalid(errors) → 400 Bad Request with ALL validation errors:
+    //   {"valid": false, "errors": [...], "errorCount": n}
 }
 ```
+
+`Path.accumulate()` opens an open-arity accumulating assembly: each `.and(...)` adds an independently validated field, and `.apply(...)` builds the result only when every field is valid — otherwise **all** errors are collected, in declaration order. Raw `Validated<List<ValidationError>, User>` works as a return type too (the same handler accepts it); the example module's `UserService.validateAndCreate` shows that style using `ValidatedMonad.instance(Semigroups.list())` with `Applicative.map3`.
 
 **Why it helps:**
 - ✅ Returns **all** validation errors at once
@@ -83843,38 +84336,39 @@ public class UserController {
 
 ### Migration Steps
 
-**Step 1:** Extract validation logic into individual `Validated` functions
+**Step 1:** Extract validation logic into individual single-field validators
 
 ```java
-private Validated<ValidationError, String> validateEmail(String email) {
-    // validation logic
+private ValidationPath<NonEmptyList<ValidationError>, String> validateEmail(String email) {
+    // validation logic: Path.validNel(email) or Path.invalidNel(error)
 }
 ```
 
-**Step 2:** Compose validations with `Validated.validateAll()`
+**Step 2:** Compose validations with `Path.accumulate()`
 
 ```java
-public Validated<List<ValidationError>, User> validateAndCreate(UserRequest request) {
-    return Validated.validateAll(
-        validateEmail(request.email()),
-        validateName(request.name())
-        // ... more validations
-    ).map(tuple -> createUser(...));
+public ValidationPath<NonEmptyList<ValidationError>, User> validateAndCreate(UserRequest request) {
+    return Path.accumulate()
+        .and(validateEmail(request.email()))
+        .and(validateName(request.name()))
+        // ... more fields
+        .apply((email, name) -> createUser(email, name));
 }
 ```
 
-**Step 3:** Return `Validated` from controller
+**Step 3:** Return the `ValidationPath` from the controller
 
 ```java
 @PostMapping
-public Validated<List<ValidationError>, User> createUser(@RequestBody UserRequest request) {
+public ValidationPath<NonEmptyList<ValidationError>, User> createUser(
+        @RequestBody UserRequest request) {
     return userService.validateAndCreate(request);
 }
 ```
 
 ---
 
-## Pattern 4: Async Exceptions to EitherT
+## Pattern 4: Async Exceptions to CompletableFuturePath
 
 ### Before: CompletableFuture with Exception Handling
 
@@ -83931,94 +84425,101 @@ public class OrderController {
 - Error handling scattered across `.handle()` and `.exceptionally()`
 - Type safety lost
 
-### After: EitherT for Async + Typed Errors
+### After: CompletableFuturePath Composition
+
+`CompletableFuturePath` wraps the future in the Effect Path API, so the chain reads linearly with `via` (async bind) and `map`, and the return-value handler takes care of Spring's async request processing:
 
 ```java
 @Service
 public class AsyncOrderService {
 
-    public EitherT<CompletableFutureKind.Witness, OrderError, Order>
-    processOrderAsync(OrderRequest request) {
-
+    public CompletableFuturePath<Order> processOrderAsync(OrderRequest request) {
         return asyncUserService.findByIdAsync(request.userId())
-            .flatMap(user -> asyncInventoryService.checkStockAsync(request.items()))
-            .flatMap(stock -> {
+            .via(user -> asyncInventoryService.checkStockAsync(request.items()))
+            .via(stock -> {
                 if (!stock.isAvailable()) {
-                    return EitherT.leftT(
-                        CompletableFutureKindHelper.FUTURE,
-                        new OutOfStockError(stock.unavailableItems())
-                    );
+                    return Path.future(CompletableFuture.failedFuture(
+                        new OutOfStockException(stock.unavailableItems())));
                 }
-                return EitherT.rightT(CompletableFutureKindHelper.FUTURE, stock);
+                return asyncPaymentService.processPaymentAsync(request.payment());
             })
-            .flatMap(stock -> asyncPaymentService.processPaymentAsync(request.payment()))
             .map(payment -> createOrder(request, payment));
 
-        // Clean, composable, type-safe
-        // Short-circuits on first error
+        // Linear composition — the failure short-circuits the chain
     }
 }
 
 @RestController
 public class OrderController {
 
-    @GetMapping("/{id}/async")
-    public EitherT<CompletableFutureKind.Witness, OrderError, Order>
-    getOrder(@PathVariable String id) {
-
-        return asyncOrderService.getOrderAsync(id);
-        // Framework handles async → sync HTTP response conversion automatically
+    @PostMapping("/orders")
+    public CompletableFuturePath<Order> createOrder(@RequestBody OrderRequest request) {
+        return asyncOrderService.processOrderAsync(request);
+        // Framework handles async → HTTP response conversion via DeferredResult
     }
 }
 ```
 
 **Improvements:**
-- ✅ Type-safe error handling in async context
-- ✅ Clean composition with `flatMap`
-- ✅ Automatic short-circuiting on errors
-- ✅ Framework handles async processing
+- ✅ Clean, linear composition with `via`/`map` — no `.handle()` / `.exceptionally()` pyramid
+- ✅ Automatic short-circuiting on failure
+- ✅ Framework handles async processing (non-blocking request thread)
+
+~~~admonish warning title="Failure mapping is coarse-grained"
+`CompletableFuturePath` (and `VTaskPath`) carry failures as **exceptions**, not typed `Left` values. A failed future maps to the configured `hkj.web.async-failure-status` (default 500) — the per-error-class `ErrorStatusCodeStrategy` mapping does not apply, because by the time the handler sees the failure it is a `Throwable`. If an endpoint needs `Left(UserNotFoundError)` → 404 semantics, keep the typed `Either` at the boundary (a synchronous `Either` return, possibly computed off-thread inside the service) rather than folding the error into an exception. This mirrors `AsyncUserService` in the example module, where `UserNotFoundException` deliberately surfaces as the configured async failure status.
+~~~
 
 ### Migration Steps
 
-**Step 1:** Convert async methods to return `EitherT`
+**Step 1:** Convert async methods to return `CompletableFuturePath` with `Path.future`
 
 ```java
-public EitherT<CompletableFutureKind.Witness, DomainError, User>
-findByIdAsync(String id) {
+public CompletableFuturePath<User> findByIdAsync(String id) {
+    CompletableFuture<User> future = CompletableFuture.supplyAsync(
+        () -> repository.findById(id)
+                  .orElseThrow(() -> new UserNotFoundException(id)),
+        asyncExecutor);
 
-    CompletableFuture<Either<DomainError, User>> future =
-        CompletableFuture.supplyAsync(() -> {
-            return repository.findById(id)
-                .map(Either::<DomainError, User>right)
-                .orElseGet(() -> Either.left(new UserNotFoundError(id)));
-        });
-
-    return EitherT.fromKind(CompletableFutureKindHelper.FUTURE.widen(future));
+    return Path.future(future);
 }
 ```
 
-**Step 2:** Compose operations with `flatMap`
+**Step 2:** Compose operations with `via` and `map`
 
 ```java
-public EitherT<CompletableFutureKind.Witness, OrderError, Order>
-processOrderAsync(OrderRequest request) {
-
-    return asyncUserService.findByIdAsync(request.userId())
-        .flatMap(user -> asyncInventoryService.checkStockAsync(request.items()))
-        .flatMap(stock -> asyncPaymentService.processPaymentAsync(request.payment()))
+public CompletableFuturePath<Order> processOrderAsync(OrderRequest request) {
+    return findByIdAsync(request.userId())
+        .via(user -> checkStockAsync(request.items()))
+        .via(stock -> processPaymentAsync(request.payment()))
         .map(payment -> createOrder(request, payment));
 }
 ```
 
-**Step 3:** Return `EitherT` from controller
+**Step 3:** Return `CompletableFuturePath` from the controller
 
 ```java
 @GetMapping("/{id}/async")
-public EitherT<CompletableFutureKind.Witness, OrderError, Order>
-getOrder(@PathVariable String id) {
+public CompletableFuturePath<Order> getOrder(@PathVariable String id) {
     return asyncOrderService.getOrderAsync(id);
 }
 ```
+
+### Alternative: VTaskPath on Virtual Threads
+
+If you are on virtual threads, `VTaskPath` gives the same handler integration with no executor bean at all — the computation is deferred and runs on a virtual thread when the handler invokes it:
+
+```java
+public VTaskPath<User> findById(String id) {
+    return Path.vtask(() -> {
+            // Blocking calls are cheap on a virtual thread
+            return repository.findById(id)
+                .orElseThrow(() -> new UserNotFoundException(id));
+        })
+        .timeout(Duration.ofSeconds(5));
+}
+```
+
+The same failure-mapping caveat applies: a thrown exception maps to `hkj.web.vtask-failure-status` (default 500). See [VTaskPath](spring_boot_integration.md#vtaskpath-virtual-thread-async) for structured-concurrency fan-out with `Scope`.
 
 ---
 
@@ -84226,13 +84727,13 @@ public Either<ValidationError, User> validateUser(UserRequest request) {
     // Stops at first error!
 }
 
-// ✅ GOOD: Use Validated to accumulate all errors
-public Validated<List<ValidationError>, User> validateUser(UserRequest request) {
-    return Validated.validateAll(
-        validateEmail(request.email()),
-        validateName(request.name()),
-        validateAge(request.age())
-    ).map(tuple -> createUser(...));
+// ✅ GOOD: Accumulate all errors with Path.accumulate()
+public ValidationPath<NonEmptyList<ValidationError>, User> validateUser(UserRequest request) {
+    return Path.accumulate()
+        .and(validateEmail(request.email()))
+        .and(validateName(request.name()))
+        .and(validateAge(request.age()))
+        .apply((email, name, age) -> createUser(email, name, age));
     // Returns ALL errors!
 }
 ```
@@ -84244,7 +84745,7 @@ public Validated<List<ValidationError>, User> validateUser(UserRequest request) 
 When migrating an endpoint:
 
 - [ ] Define domain error types as sealed interface
-- [ ] Convert service methods to return Either/Validated/EitherT
+- [ ] Convert service methods to return Either/Validated/CompletableFuturePath/VTaskPath
 - [ ] Update controller methods to return functional types
 - [ ] Remove corresponding `@ExceptionHandler` methods
 - [ ] Update unit tests (no more exception mocking!)
@@ -84320,7 +84821,7 @@ The migration is straightforward and the benefits are immediate. Start with one 
 - [Spring Boot Integration](./spring_boot_integration.md) - Complete integration guide
 - [Either Monad](../monads/either_monad.md) - Either usage patterns
 - [Validated Monad](../monads/validated_monad.md) - Validation patterns
-- [EitherT Transformer](../transformers/eithert_transformer.md) - Async composition
+- [Effect Path API](../effect/path_types.md) - CompletableFuturePath, VTaskPath, and friends
 ~~~
 
 ---
@@ -84338,7 +84839,7 @@ The migration is straightforward and the benefits are immediate. Start with one 
 - The progressive adoption ladder, from a single `@Bean` to full `@EnableEffectBoundary` auto-wiring
 - Writing effect algebras as Spring-managed `@Interpreter` beans with dependency injection
 - Returning `FreePath` and `IOPath` from controllers with automatic HTTP response conversion
-- Testing effect programs purely with `TestBoundary` and recording interpreters
+- Testing effect programs purely with `TestBoundary` and stub interpreters
 - How this integrates with existing hkj-spring features (actuator, Jackson, error status mapping)
 ~~~
 
@@ -84361,7 +84862,7 @@ The **effect handler system** (Free monads, `@EffectAlgebra`, `Interpreters.comb
 
 ## The Bridge: How Free Connects to Existing Handlers
 
-The existing hkj-spring module has 8 return value handlers for *Path types. `EffectBoundary.runIO()` returns `IOPath<A>`, which the **existing** `IOPathReturnValueHandler` already handles:
+The existing hkj-spring module has nine return value handlers for *Path types (`FreePath` makes ten). `EffectBoundary.runIO()` returns `IOPath<A>`, which the **existing** `IOPathReturnValueHandler` already handles:
 
 ```
 FreePath<F, A>  ──foldMap──▸  GenericPath<IO.Witness, A>  ──narrow──▸  IOPath<A>
@@ -84383,7 +84884,7 @@ Each level uses patterns Spring developers already know. No level requires the p
 |-------|---------------|----------------|-----------------|
 | **0** | `Either<E,A>`, `IOPath<A>` from controllers | N/A | None (today) |
 | **1** | `EffectBoundary` bean + `boundary.runIO()` | Any `@Bean` | None (core only) |
-| **2** | Return `FreePath<F,A>` from controller | `CompletableFuture<T>` return | Handler #9 |
+| **2** | Return `FreePath<F,A>` from controller | `CompletableFuture<T>` return | Handler #10 |
 | **3** | `@Interpreter(MyOp.class)` on interpreter classes | `@Repository`, `@Service` | Stereotype |
 | **4** | `@EnableEffectBoundary({...})` on app class | `@EnableCaching` | Auto-config |
 | **5** | `@EffectTest(effects={...})` on test class | `@WebMvcTest` | Test slice |
@@ -84515,7 +85016,7 @@ public class StubGatewayInterpreter
 }
 ```
 
-Run with `--spring.profiles.active=test` and the stub interpreter is used automatically.
+An interpreter with a `profile` attribute is only **eligible** when that profile is active (the registrar filters candidates with `Environment.acceptsProfiles`); one with no `profile` is always eligible. A profile-restricted interpreter is more **specific** and shadows an unrestricted one — run with `--spring.profiles.active=test` and the stub is selected for `PaymentGatewayOp` even though the profile-less `StripeGatewayInterpreter` is still eligible. Only two or more interpreters at the *same* specificity (two unrestricted beans, or two active profiled beans) fail startup with a hard error naming the ambiguous algebra.
 
 ---
 
@@ -84537,12 +85038,13 @@ public class PaymentApplication {
 The `@EnableEffectBoundary` registrar:
 1. Reads the effect algebra class list from the annotation
 2. Resolves each to its generated `*Kind.Witness` type
-3. Scans for `@Interpreter`-annotated beans matching each algebra
+3. Scans for `@Interpreter`-annotated beans matching each algebra, filtering by active profile
 4. Constructs the `EitherF` nesting order automatically (left-to-right = outer-to-inner)
 5. Calls `Interpreters.combine()` with the discovered interpreters
-6. Registers `EffectBoundary<ComposedWitness>` as a singleton bean
-7. Registers individual `Bound<ComposedWitness>` beans for constructor injection in services
-8. Validates at startup: missing interpreter produces a clear error naming the unimplemented algebra
+6. Registers the single `effectBoundary` bean (`EffectBoundary<ComposedWitness>`) as a singleton
+7. Validates at startup: a missing interpreter — or two equally-specific eligible interpreters for one algebra — produces a clear error naming the offending algebra
+
+The registrar honours the `hkj.effect-boundary.enabled` master switch (default `true`); when set to `false`, no boundary bean is registered.
 
 This replaces `PaymentEffectsWiring.java` (284 lines) with **one annotation**.
 
@@ -84554,46 +85056,51 @@ This replaces `PaymentEffectsWiring.java` (284 lines) with **one annotation**.
 
 ### Pure Service Tests
 
+A stub interpreter targets `IdKind.Witness` and records what it was asked to do. This mirrors `OrderServicePureTest` in the effect-example module:
+
 ```java
-@DisplayName("OrderService Pure Tests")
+@DisplayName("OrderService Pure Tests (No Spring Context)")
 class OrderServicePureTest {
 
-    private final RecordingOrderInterpreter orderInterp =
-        new RecordingOrderInterpreter();
-    private final RecordingInventoryInterpreter inventoryInterp =
-        new RecordingInventoryInterpreter();
-    private final RecordingNotificationInterpreter notifInterp =
-        new RecordingNotificationInterpreter();
+    /** In-memory Id-targeting interpreter for pure testing. */
+    static class StubOrderInterpreter implements Natural<OrderOpKind.Witness, IdKind.Witness> {
+        private int ordersPlaced = 0;
 
-    private final TestBoundary<OrderEffects> boundary = TestBoundary.of(
-        Interpreters.combine(orderInterp, inventoryInterp, notifInterp));
+        @Override
+        public <A> Kind<IdKind.Witness, A> apply(Kind<OrderOpKind.Witness, A> fa) {
+            OrderOp<A> op = OrderOpKindHelper.ORDER_OP.narrow(fa);
+            return switch (op) {
+                case OrderOp.PlaceOrder<A> place -> {
+                    ordersPlaced++;
+                    yield Id.of(place.k().apply(OrderResult.confirmed("ORD-TEST-0001")));
+                }
+                case OrderOp.GetStatus<A> get ->
+                    Id.of(get.k().apply(OrderStatus.CONFIRMED));
+            };
+        }
+
+        int ordersPlaced() {
+            return ordersPlaced;
+        }
+    }
+
+    private final StubOrderInterpreter interpreter = new StubOrderInterpreter();
+    private final TestBoundary<OrderOpKind.Witness> boundary = TestBoundary.of(interpreter);
+    private final OrderService service = new OrderService();
 
     @Test
-    @DisplayName("Should reserve inventory before placing order")
-    void shouldReserveInventoryBeforePlacingOrder() {
+    @DisplayName("Should place order and return confirmed result")
+    void shouldPlaceOrder() {
         OrderResult result = boundary.run(
             service.placeOrder(new OrderRequest("C001", "ITEM-42", 2)));
 
         assertThat(result.status()).isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(inventoryInterp.reservations()).hasSize(1);
-        assertThat(notifInterp.sentNotifications()).hasSize(1);
-    }
-
-    @Test
-    @DisplayName("Should not place order when inventory unavailable")
-    void shouldNotPlaceOrderWhenInventoryUnavailable() {
-        inventoryInterp.setAvailableStock("ITEM-42", 0);
-
-        OrderResult result = boundary.run(
-            service.placeOrder(new OrderRequest("C001", "ITEM-42", 2)));
-
-        assertThat(result.status()).isEqualTo(OrderStatus.REJECTED);
-        assertThat(orderInterp.placedOrders()).isEmpty();
+        assertThat(interpreter.ordersPlaced()).isEqualTo(1);
     }
 }
 ```
 
-These tests run in milliseconds. The same `OrderService` program that runs against Stripe and PostgreSQL in production runs against in-memory stubs here, with no code changes.
+These tests run in milliseconds. The same `OrderService` program that runs against real infrastructure in production runs against in-memory stubs here, with no code changes. Composing several algebras works the same way — build the boundary with `TestBoundary.of(Interpreters.combine(orderStub, inventoryStub, notifyStub))`.
 
 ### @EffectTest Test Slice
 
@@ -84669,19 +85176,16 @@ hkj:
     either-path-enabled: true
     maybe-path-enabled: true
 
-    # New: FreePath handler
+    # FreePath handler
     free-path-enabled: true
     free-path-failure-status: 500
     free-path-include-exception-details: false
 
   effect-boundary:
-    enabled: true                     # master switch
-    startup-validation: true          # fail-fast if interpreters missing
-    interpreter-selection:            # config-driven interpreter switching
-      payment-gateway: stripe
-      fraud-check: ml-model
-      notification: email
+    enabled: true                     # master switch consulted by the registrar (default: true)
 ```
+
+Setting `hkj.effect-boundary.enabled: false` prevents the registrar from creating the boundary bean at all. Interpreter validation is always fail-fast: a missing or ambiguous interpreter is a startup error, not a warning — there is no property to relax it. Environment-specific interpreter switching is done with the `@Interpreter(profile = ...)` attribute (see [Level 3](#level-3-interpreters-as-spring-beans)), not with configuration keys.
 
 ---
 
@@ -84736,57 +85240,11 @@ These appear automatically in the `/actuator/metrics` endpoint alongside existin
 
 ---
 
-## Pure Tests with TestBoundary
-
-For unit tests that verify business logic without Spring or IO, `TestBoundary` interprets programs using the Id monad. Tests execute in milliseconds and are fully deterministic:
-
-```java
-@DisplayName("OrderService Pure Tests")
-class OrderServicePureTest {
-
-    private final StubOrderInterpreter interpreter = new StubOrderInterpreter();
-    private final TestBoundary<OrderEffects> boundary = TestBoundary.of(interpreter);
-
-    @Test
-    void shouldPlaceOrder() {
-        OrderResult result = boundary.run(
-            service.placeOrder(new OrderRequest("C001", "ITEM-42", 2)));
-
-        assertThat(result.status()).isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(interpreter.ordersPlaced()).isEqualTo(1);
-    }
-}
-```
-
-The stub interpreter targets `IdKind.Witness` instead of `IOKind.Witness`, returning pure `Id` values. The same `Free<F, A>` program that runs against real services in production runs against stubs here. Only the interpreter and boundary change; the program is identical.
-
-For integration tests that need Spring auto-configuration but not the web layer, use `@EffectTest(effects={...})` to auto-discover interpreters and register an `EffectBoundary` bean:
-
-```java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@EffectTest(effects = {OrderOp.class})
-class OrderServiceSpringTest {
-
-    @Autowired EffectBoundary<OrderOpKind.Witness> boundary;
-    @Autowired OrderService service;
-
-    @Test
-    void shouldProcessOrder() {
-        OrderResult result = boundary.run(service.placeOrder(request));
-        assertThat(result.status()).isEqualTo(OrderStatus.CONFIRMED);
-    }
-}
-```
-
-`@EffectTest` discovers `@Interpreter` beans matching each listed effect algebra, combines them, and registers the boundary. No manual wiring needed. When the `effects` parameter is empty, no automatic boundary registration occurs.
-
----
-
 ~~~admonish info title="Key Takeaways"
 * **EffectBoundary bridges Free monads into existing infrastructure.** `runIO()` returns `IOPath`, which the existing handler converts to HTTP responses. No parallel universe.
 * **Adoption is progressive.** Start with a single `@Bean`, then add `@Interpreter`, then `@EnableEffectBoundary`. Each level adds value independently.
 * **Interpreters become Spring beans.** They can inject repositories, HTTP clients, and configuration. Profile-based switching replaces manual test/prod wiring.
-* **Testing is pure and fast.** `TestBoundary` with recording interpreters runs programs in milliseconds with no Spring context, no IO, and full observability into what effects were executed.
+* **Testing is pure and fast.** `TestBoundary` with stub interpreters runs programs in milliseconds with no Spring context, no IO, and full observability into what effects were executed.
 * **The same program runs everywhere.** Production interprets into IO with real services. Tests interpret into Id with stubs. Auditing wraps interpreters with logging. The program itself never changes.
 ~~~
 
@@ -84923,7 +85381,7 @@ Core data structures and the effect types built on them.
 
 The Effect Path API and the Free-monad effect-handler machinery.
 
-[BoundSet](glossary/effect-paths.md#boundset), [@ComposeEffects](glossary/effect-paths.md#composeeffects), [Continuation-Passing Style (CPS)](glossary/effect-paths.md#continuation-passing-style-cps), [Effect](glossary/effect-paths.md#effect), [Effect Algebra](glossary/effect-paths.md#effect-algebra), [Effect Path](glossary/effect-paths.md#effect-path), [Effect-Optics Bridge](glossary/effect-paths.md#effect-optics-bridge), [@EffectAlgebra](glossary/effect-paths.md#effectalgebra), [EitherF](glossary/effect-paths.md#eitherf), [foldMap](glossary/effect-paths.md#foldmap), [Free Monad](glossary/effect-paths.md#free-monad), [Inject](glossary/effect-paths.md#inject), [Interpreter (Effect Handler)](glossary/effect-paths.md#interpreter-effect-handler), [mapK](glossary/effect-paths.md#mapk), [Path](glossary/effect-paths.md#path), [ProgramAnalyser](glossary/effect-paths.md#programanalyser), [Railway-Oriented Programming](glossary/effect-paths.md#railway-oriented-programming), [recover](glossary/effect-paths.md#recover), [via](glossary/effect-paths.md#via), [VResultPath](glossary/effect-paths.md#vresultpath)
+[BoundSet](glossary/effect-paths.md#boundset), [@ComposeEffects](glossary/effect-paths.md#composeeffects), [Continuation-Passing Style (CPS)](glossary/effect-paths.md#continuation-passing-style-cps), [Effect](glossary/effect-paths.md#effect), [Effect Algebra](glossary/effect-paths.md#effect-algebra), [Effect Path](glossary/effect-paths.md#effect-path), [Effect-Optics Bridge](glossary/effect-paths.md#effect-optics-bridge), [@EffectAlgebra](glossary/effect-paths.md#effectalgebra), [EitherF](glossary/effect-paths.md#eitherf), [foldMap](glossary/effect-paths.md#foldmap), [Free Monad](glossary/effect-paths.md#free-monad), [Inject](glossary/effect-paths.md#inject), [Interpreter (Effect Handler)](glossary/effect-paths.md#interpreter-effect-handler), [Leg](glossary/effect-paths.md#leg), [mapK](glossary/effect-paths.md#mapk), [Path](glossary/effect-paths.md#path), [ProgramAnalyser](glossary/effect-paths.md#programanalyser), [Railway-Oriented Programming](glossary/effect-paths.md#railway-oriented-programming), [recover](glossary/effect-paths.md#recover), [via](glossary/effect-paths.md#via), [VResultPath](glossary/effect-paths.md#vresultpath)
 
 ## [Optics, Validation & Mapping](glossary/optics.md)
 
@@ -86749,6 +87207,14 @@ public class IOConsoleInterpreter extends ConsoleOpInterpreter<IOKind.Witness> {
 
 ---
 
+## Leg
+
+**Definition:** One of the routes a value can travel through a railway-modelled computation: a segment of the journey, as in a leg of a relay. Used especially at the Spring boundary, where each distinct route from a controller's return value to an HTTP response is a named leg: a `Left(DomainError)` travels the *Either leg* to its mapped error status, a generic `Invalid` travels the *validation leg* to 400, and an `Invalid` made entirely of located `FieldError`s takes [the 422 leg](../spring/spring_boot_integration.md#the-422-leg): one response naming every bad field. Which leg a response travels is decided by the value's shape, like a railway switch routing a train.
+
+**Related:** [Railway-Oriented Programming](#railway-oriented-programming)
+
+---
+
 ## mapK
 
 **Definition:** A method on each effect algebra record that composes the continuation function with a new transformation. The generated Functor delegates to `mapK` rather than using unsafe casts. Analogous to `Stream.map` but applied to a single instruction rather than a collection.
@@ -87298,9 +87764,9 @@ Validated<NonEmptyList<FieldError>, Person> back =
     PersonMappingImpl.INSTANCE.parse(dto);                        // accumulating, located
 ```
 
-**Truthful emission tiers:** the generated mapper offers only what the shape supports: `asIso` when lossless, `asLens` when total one way, and the accumulating `parse` otherwise. Every tier is law-checked against the published `hkj-test` harness.
+**Truthful emission tiers:** the generated mapper offers only what the shape supports: `asIso` when lossless, `asLens` when total one way, and the accumulating `parse` otherwise. A spec extending [UpdateSpec](#updatespec) instead opts into the sparse PATCH tier (only `updateFrom`). Every tier is law-checked against the published `hkj-test` harness.
 
-**Related:** [Record Mapping](../optics/record_mapping.md), [ValidatedPrism](#validatedprism), [FieldError](#fielderror), [@GenerateMerge](#generatemerge)
+**Related:** [Record Mapping](../optics/record_mapping.md), [ValidatedPrism](#validatedprism), [FieldError](#fielderror), [@GenerateMerge](#generatemerge), [UpdateSpec](#updatespec)
 
 ---
 
@@ -87488,6 +87954,23 @@ Order discounted = orderItems.modify(
 ```
 
 **Related:** [Traversals Documentation](../optics/traversals.md)
+
+---
+
+## UpdateSpec
+
+**Definition:** The sparse-PATCH sibling of [MappingSpec](#generatemapping). Annotate an interface extending `UpdateSpec<Domain, Wire>` (with `@GenerateMapping`) to opt into the null-as-absent contract: a null bean property means *not provided, leave unchanged* rather than broken data. The processor generates a single method, `updateFrom(Wire) : Edits.Accumulated<Domain>` — no `build`, `parse`, or `as*` tier — folding the present (non-null) properties into an [Update](#edits) and skipping the absent ones. The wire must be bean-shaped; a primitive or `Optional`-typed component is rejected (neither can carry the absent signal). Present-but-invalid fields still fail, located and accumulating.
+
+**Example:**
+```java
+@GenerateMapping
+public interface UserPatchMapping extends UpdateSpec<User, UserPatchDto> {}
+
+Edits.Accumulated<User> patch = UserPatchMappingImpl.INSTANCE.updateFrom(dto);
+Validated<NonEmptyList<FieldError>, User> updated = patch.apply(current); // absent fields survive
+```
+
+**Related:** [Record Mapping](../optics/record_mapping.md#sparse-patch-write-back-updatespec), [@GenerateMapping](#generatemapping), [Edits](#edits)
 
 ---
 
@@ -87856,7 +88339,44 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 
 _In development. Release notes will be added here as changes land on `main`._
 
----
+This release completes the `@GenerateMapping` **mapper programme**: every wire shape a REST boundary throws at a record domain now maps through one spec convention, under one null doctrine, rendering as one 422 response.
+
+**The full mapper** ([#628](https://github.com/higher-kinded-j/higher-kinded-j/issues/628), [#645](https://github.com/higher-kinded-j/higher-kinded-j/issues/645), [#625](https://github.com/higher-kinded-j/higher-kinded-j/issues/625), [#624](https://github.com/higher-kinded-j/higher-kinded-j/issues/624), [#623](https://github.com/higher-kinded-j/higher-kinded-j/issues/623))
+
+- **Bean-shaped wires**: a mutable getter/setter class or a builder-constructed immutable one (JAXB getter-only collections included) maps like a record, with the full feature set (renames, leaves, derived fields, container lifting, nesting both ways) and a domain `Optional<T>` bridging to a nullable property. `asIso()` stays truthful: an all-primitive bean earns it, a reference-reading one does not. See [Bean-shaped wire targets](optics/record_mapping.md#bean-shaped-wire-targets).
+- **Sparse PATCH write-back**: a spec extending `UpdateSpec<D, W>` (bean wire only) generates `updateFrom(Wire) : Edits.Accumulated<Domain>`, the REST PATCH contract as a validated fold: null means keep, present values are set or parsed, every invalid present field reports at once, and shapes that cannot honour null-as-absent (record wires, primitives, `Optional` bridges, sealed hierarchies) are rejected. The example app gains a worked `PATCH /api/users/{id}` endpoint ([#647](https://github.com/higher-kinded-j/higher-kinded-j/pull/647)). See [Sparse PATCH write-back](optics/record_mapping.md#sparse-patch-write-back-updatespec).
+- **The validated `patch` tier**: a projection carrying fallible correspondences swaps `asLens()` for a dense `patch(domain, wire) : Validated<NonEmptyList<FieldError>, Domain>` write-back, validating every projected component at once while unprojected ones survive by construction. Deliberately the opposite of the sparse tier: `patch` treats a missing value as an error, `updateFrom` as keep-the-current-one. See [Leaf-carrying projections](optics/record_mapping.md#leaf-carrying-projections-the-validated-patch).
+- **Generic records, three ways, all nestable**: concrete instantiations (`MappingSpec<Page<User>, PageDto<UserDto>>`), threaded specs (one generic Impl behind `instance()`), and element-mapped specs (an abstract `ValidatedPrism<TDto, T>` leaf supplied through a generated `of(...)` factory), with use sites resolving by type-argument unification and composing `of(...)` in place. Record-to-record only; raw and wildcard uses are diagnosed. See [Generic records](optics/record_mapping.md#generic-records-concrete-threaded-and-element-mapped).
+- **Shared vocabulary**: specs may extend plain mix-in interfaces carrying renames, leaves and derived fields, collected with Java's own precedence and diagnosed with the declaring interface named. See [Shared vocabulary](optics/record_mapping.md#shared-vocabulary-mix-in-interfaces).
+- Every tier is law-checked through `MappingLaws` (including located-validation clauses on both write-backs) and pinned by per-tier golden Impls, so generator drift fails the build.
+
+**One null doctrine** ([#653](https://github.com/higher-kinded-j/higher-kinded-j/issues/653), [#659](https://github.com/higher-kinded-j/higher-kinded-j/issues/659), [#660](https://github.com/higher-kinded-j/higher-kinded-j/issues/660))
+
+A JSON binder leaves a missing property `null` on a record component just as on an unset bean property, so every reference-typed read on every accumulating surface (`parse` on both wire shapes, `patch`, fallible `@GenerateMerge` legs, `ValidatedPrism.parseAll`/`parseValues`) is guarded into a located, accumulating `FieldError` (`must not be null`), never an exception; failures locate through nesting and inside containers by index or key (`customer.name`, `emails.1`), identity-copied containers included. The caller-contract boundaries: a null wire, source argument or map key stays `requireNonNull`, and the total directions (`build`, `asLens().set`, `asIso().reverseGet`) stay unguarded by declaration. A lossless record mapping keeps `asIso()`, its guards covering hostile bindings only.
+
+_Behaviour changes against v0.4.8, all in the friendly direction but observable:_
+
+- `parse` and fallible `assemble` on null-carrying wires previously threw `NullPointerException`; they now return located `Invalid` (a 422 instead of a 500 at a Spring boundary). This includes null elements inside containers, which previously threw from the bulk forms or passed through identity copies unexamined.
+- List-element failures gain their index segment: `emails: not an email address` becomes `emails.1: not an email address` in 422 payloads (bracketed rendering stays deferred to the future path-segment model).
+- The generator is stricter about silent mistakes: a locally declared leaf naming no domain component is now a compile error with a nearest-name hint (`Did you mean 'email()'?`) instead of silently validating nothing; spec methods colliding with generated members are rejected ([#654](https://github.com/higher-kinded-j/higher-kinded-j/issues/654)); and a leaf on a projected component now takes effect (selecting the `patch` tier) instead of being silently ignored.
+
+**Spring: the 422 leg** ([#627](https://github.com/higher-kinded-j/higher-kinded-j/issues/627))
+
+A controller returning any all-located-`FieldError` `Invalid` (a mapper `parse`, `patch` or `updateFrom` result, a `Path.fields()` assembly, an `@GenerateAssembly` result) renders as a single **422 Unprocessable Content** response listing every bad field, each with its display `path`, lossless `segments` and `message`. The leg is chosen by payload shape alone; the status is configurable via `hkj.web.validation-field-error-status`. Paths use domain component names, renames included. See [The 422 leg](spring/spring_boot_integration.md#the-422-leg).
+
+_Behaviour change:_ a pre-existing endpoint returning an all-`FieldError` payload moves from 400 to **422** on upgrade; set `hkj.web.validation-field-error-status: 400` to restore it. Tests and examples adopt Spring Framework 7's `HttpStatus.UNPROCESSABLE_CONTENT` (the RFC 9110 rename).
+
+**hkj-spring hardening** ([#642](https://github.com/higher-kinded-j/higher-kinded-j/issues/642))
+
+A review pass fixed a security fail-open in the JWT converter, async-handler lifecycle defects, a Jackson contextual-binding bug, and dead configuration.
+
+_Breaking changes / migration:_
+
+- **SSE responses commit after the first stream element resolves**, so a stream failing at its start returns the configured `hkj.web.vstream-failure-status` instead of a broken `200`; `EventSource.onopen` fires on the first element, so long-idle streams should emit an early heartbeat.
+- **Removed dead `@ConfigurationProperties` surface** (source-breaking for programmatic-config consumers): `HkjProperties.Jackson.SerializationFormat` and the `*-format` accessors, `HkjProperties.Validation` (`hkj.validation.*`), the `hkj.async.executor-*` fields, `EffectConfig.startupValidation`/`interpreterSelection`, and `EitherAuthorizationManager.AuthorizationSuccess`. Delete the keys; none altered behaviour.
+- **`hkj.security.validated-user-details` defaults to `false`** and starts empty (sample accounts moved to `ValidatedUserDetailsService.withSampleUsers()`); enabling it without registering accounts fails every login.
+- **A JWT with a missing or malformed authorities claim is rejected (401)** instead of authenticating with empty authorities; set `hkj.security.reject-missing-authorities-claim: false` for lenient missing-claim handling.
+- **Effect-boundary interpreter resolution fails fast at startup** on ambiguous or profile-gated-away matches, previously silent scan-order selections.
 
 ### [v0.4.8](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.8) (17 July 2026)
 
