@@ -40740,6 +40740,42 @@ sealed interface OrderError {
 </div>
 <p>Two verbs keep the two operations distinct: <code>ErrorEnvelope.withContext(D)</code> is the record wither that <strong>replaces</strong> the context (and may change its type), while the generated <code>editContext(error, edit)</code> <strong>transforms</strong> the existing context through the builder, seeded from the current value. Reach for <code>withContext</code> to set a context, <code>editContext</code> to enrich one.</p>
 <hr />
+<div class="hkj-ct-mark" data-kind="new" data-run="start" data-since="v0.4.8"></div>
+<h2 id="injecting-and-testing-generated-mappings"><a class="header" href="#injecting-and-testing-generated-mappings">Injecting and testing generated mappings</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
+<p>A concrete or threaded Impl is a stateless pure function reached through statics (<code>INSTANCE</code>, <code>instance()</code>); an element-mapped Impl is an immutable value built by <code>of(...)</code>, carrying its element prisms. The spec interface deliberately declares nothing either way (<code>@Autowired UserMapping</code> injects nothing useful, by design). When you do want a Spring bean or a test double, register the <strong>surface you consume</strong>, per tier:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
+<div class="table-wrapper"><table><thead><tr><th>Tier surface</th><th>Injectable shape</th><th>From</th></tr></thead><tbody>
+<tr><td>parse-capable mapping</td><td><code>ValidatedPrism&lt;UserDto, User&gt;</code></td><td><code>UserMappingImpl.INSTANCE.asValidatedPrism()</code></td></tr>
+<tr><td>build only</td><td><code>Function&lt;User, UserDto&gt;</code></td><td><code>UserMappingImpl.INSTANCE::build</code></td></tr>
+<tr><td>validated <code>patch</code></td><td><code>BiFunction&lt;User, UserCardDto, Validated&lt;NonEmptyList&lt;FieldError&gt;, User&gt;&gt;</code></td><td><code>UserCardMappingImpl.INSTANCE::patch</code></td></tr>
+<tr><td>sparse <code>updateFrom</code></td><td><code>Function&lt;UserPatchDto, Edits.Accumulated&lt;User&gt;&gt;</code></td><td><code>UserPatchMappingImpl.INSTANCE::updateFrom</code></td></tr>
+</tbody></table>
+</div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
+<pre><code class="language-java">@Configuration
+class MappingConfiguration {
+  @Bean
+  ValidatedPrism&lt;UserDto, User&gt; userCodec() {
+    return UserMappingImpl.INSTANCE.asValidatedPrism();
+  }
+}
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
+<p>Spring resolves the full generic type, so codecs for different pairs coexist without ceremony; only two codecs for the <em>same</em> pair need a <code>@Qualifier</code>. An element-mapped Impl (<code>of(...)</code>) carries its prisms as state: construct it once, in the <code>@Bean</code> method.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
+<p><strong>Fakes are values, not mocks.</strong> <code>ValidatedPrism</code> is sealed, so it cannot be hand-implemented, and a mocking framework cannot mock it either (sealed types are unmockable). That is the design, not a limitation: a test double is two lines of <code>ValidatedPrism.of(...)</code>:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
+<pre><code class="language-java">@Bean
+ValidatedPrism&lt;UserDto, User&gt; userCodec() {
+  return ValidatedPrism.of(
+      dto -&gt; Validated.invalidNel(FieldError.of("rejected by the fake codec").at("email")),
+      user -&gt; new UserDto());
+}
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
+<p>The <a href="optics/../spring/spring_boot_integration.html">hkj-spring example app</a> demonstrates the seam end to end: <code>MappingConfiguration</code> registers the codec, <code>UserController</code>'s parse endpoint injects it, and <code>UserParseFakeCodecSliceTest</code> substitutes the fake above in a <code>@WebMvcTest</code> slice and asserts the located 422 it produces. The same controller's PATCH endpoint deliberately calls <code>UserPatchMappingImpl.INSTANCE</code> directly: injection buys substitution, not lifecycle, and a team comfortable calling the Impl directly (<code>INSTANCE</code>, <code>instance()</code>, or one shared <code>of(...)</code> instance) loses nothing.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.8"></div>
+<hr />
 <h2 id="diagnostics-and-limits"><a class="header" href="#diagnostics-and-limits">Diagnostics and limits</a></h2>
 <p>Every rejection follows the processor's what/why/fix standard: the message states what is wrong, why the mapper needs it, and the code to write. Current limits, each with its own diagnostic:</p>
 <div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJBIiwgImRpcmVjdGx5IiwgInBsdXMiLCAiYW55IiwgInBsYWluIiwgIm1peC1pbiIsICJpbnRlcmZhY2VzXSgjc2hhcmVkLXZvY2FidWxhcnktbWl4LWluLWludGVyZmFjZXMiLCAiYSIsICJtaXgtaW4iLCAidGhhdCIsICJpcyIsICJpdHNlbGYiLCAiYSIsICJtYXBwaW5nIiwgInNwZWMiLCAib3IiLCAiYSIsICJnZW5lcmljIiwgIm9uZSIsICJpcyIsICJkaWFnbm9zZWQiLCAiQSIsICJwcm9qZWN0aW9uIiwgIndpdGgiLCAiYW55IiwgImZhbGxpYmxlIiwgImNvcnJlc3BvbmRlbmNlIiwgImVtaXRzIiwgInZhbGlkYXRlZCIsICJwYXRjaGBdKCNsZWFmLWNhcnJ5aW5nLXByb2plY3Rpb25zLXRoZS12YWxpZGF0ZWQtcGF0Y2giLCAicmF0aGVyIiwgInRoYW4iLCAiYXNMZW5zIiwgInByb2plY3Rpb25zIiwgInJlY29yZHMiLCAibWFwIiwgImFzIiwgImNvbmNyZXRlIiwgImluc3RhbnRpYXRpb25zIiwgInRocmVhZGVkIiwgInNwZWNzIiwgIm9yIiwgImVsZW1lbnQtbWFwcGVkIiwgInNwZWNzIiwgImFib3ZlXSgjZ2VuZXJpYy1yZWNvcmRzLWNvbmNyZXRlLXRocmVhZGVkLWFuZC1lbGVtZW50LW1hcHBlZCIsICJhbGwiLCAidGhyZWUiLCAibmVzdGFibGUiLCAiZ2VuZXJpYyIsICJtYXBwaW5ncyIsICJzdGF5IiwgInJlY29yZC10by1yZWNvcmQiLCAib25seSJd" data-since="v0.4.8"></div>
@@ -94743,6 +94779,8 @@ public Validated&lt;NonEmptyList&lt;FieldError&gt;, User&gt; parseUser(@RequestB
   "errorCount": 2
 }
 </code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
+<p>To inject the mapping behind such an endpoint as a bean, or substitute a fake in a <code>@WebMvcTest</code> slice, see <a href="spring/../optics/record_mapping.html#injecting-and-testing-generated-mappings">Injecting and testing generated mappings</a>; the example app's <code>MappingConfiguration</code>, <code>UserController</code> and <code>UserParseFakeCodecSliceTest</code> demonstrate the pattern end to end.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
 <p><code>path</code> is the dot-joined display key (<code>FieldError.pathString()</code>); <code>segments</code> is the exact structured location. Paths use <strong>domain</strong> component names: under a <code>@MapField(to = "fullName")</code> rename the client that sent <code>fullName</code> receives its error at <code>name</code>, so a client mapping errors onto its own payload keys must apply the rename in reverse. The distinction matters: a map key containing a dot is indistinguishable from nesting in the rendered <code>path</code> (<code>attributes."a.b".email</code> vs deeper nesting), so structured consumers should read <code>segments</code>, which stays exact. An unlabelled error renders <code>"path": ""</code> and <code>"segments": []</code>; treat it as object-level.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.8"></div>
