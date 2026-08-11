@@ -19013,7 +19013,7 @@ _The smart-constructor optic: a `Prism` whose match says **why not**, and all th
 
 ~~~admonish info title="What You'll Learn"
 - Why a validated boundary needs a fallible, accumulating `parse` and a total `build`: the "parse, don't validate" asymmetry captured as an optic
-- Constructing a `ValidatedPrism` with `ValidatedPrism.of`, and landing on the railway with `parsePath`
+- Constructing a `ValidatedPrism` with `ValidatedPrism.of`, wrapping a throwing parser with the section law guarded via `ValidatedPrism.canonical`, and landing on the railway with `parsePath`
 - How composition splits: `andThen` short-circuits into structure while sibling fields accumulate every reason
 - Which compositions preserve the total build (`ValidatedPrism`, `Iso`, and `Prism`-with-a-reason) and why `Lens` cannot
 - Bridging the optic lattice with `fromIso`, `fromPrism`, `toPrism`, and `toAffine`
@@ -19114,7 +19114,30 @@ A lawful validated boundary satisfies both round trips, verified with [`Validate
 
 The second law is the subtle one, and it constrains the pair, not either direction alone: every accepted wire value must rebuild to exactly itself — `build(parse(s).get()) == s` whenever `s` parses. `build` is free to define the canonical spelling (zero-padded dates, lowercase hex); what the law demands is that `parse` accept exactly the spelling `build` renders. A normalising parse (trimming whitespace, folding case) accepts an `s` that `build` cannot reproduce, which is exactly the lossy round trip the law forbids. Pick the wire's canonical form — the one `build` renders — accept it alone, and reject every other spelling with a located error.
 
-The stock vocabulary in [`StandardCodecs`](record_mapping.md#standard-codecs) ships lawful codecs built this way for the standard families (identifiers, dates, enums, money), each accepting exactly the canonical form it renders.
+That discipline need not be hand-written. The natural way to write a codec — wrap a throwing JDK parser, render on the way out — silently violates the section law whenever the parser is more lenient than the renderer (`UUID.fromString` accepts uppercase; `toString` renders lowercase). `ValidatedPrism.canonical(message, parse, render)` builds the guard into the leaf: every accepted source is checked to render back to exactly itself, so the lenient parse is fine — the render defines the canon, and any spelling it cannot reproduce is a located rejection, never a silent normalisation. Any `RuntimeException` from the parse or the render inside the guard is the same located rejection, never an exception on wire input. The canonical form is whatever `render` says it is, so a wire whose canon differs from the JDK's is served lawfully:
+
+``` java
+  // An uppercase-UUID wire (SQL Server): the canonical form is THEIRS, lawfully
+  static final ValidatedPrism<String, UUID> UPPER_UUID =
+      ValidatedPrism.canonical(
+          "not an uppercase UUID",
+          UUID::fromString, // throwing parse, lenient is fine
+          uuid -> uuid.toString().toUpperCase(Locale.ROOT)); // render defines the canon
+
+```
+
+An overload takes a pre-built `FieldError` in place of the message, the same reason type `fromPrism` takes.
+
+Two obligations stay yours. The parse must accept what the render produces — a mismatched pair (render `dd/MM/uuuu`, parse `MM/dd/uuuu`) breaks the parse-build law *loudly*, as rejections. The subtler trap is a **non-injective render**, which the per-value guard cannot catch: with a two-digit-year date format, `build` renders 1926-07-28 as `26/07/28` — a perfectly parseable spelling, of *2026*-07-28. The guard, which only ever sees one value at a time, cannot object, and the parse-build law breaks silently. Check a custom canon with the laws:
+
+``` java
+    ValidatedPrismLaws.assertValidatedPrismLaws(
+        ValidatedPrismBook.UPPER_UUID,
+        "123E4567-E89B-12D3-A456-426614174000", // the canonical spelling parses
+        "123e4567-e89b-12d3-a456-426614174000"); // the one render cannot reproduce is rejected
+```
+
+The stock vocabulary in [`StandardCodecs`](record_mapping.md#standard-codecs) is built on this same factory: lawful codecs for the standard families (identifiers, dates, enums, money), each accepting exactly the canonical form it renders.
 
 ---
 
@@ -19123,6 +19146,7 @@ The stock vocabulary in [`StandardCodecs`](record_mapping.md#standard-codecs) sh
 * **Nesting short-circuits; siblings accumulate** via the assembly builders or `Edits`
 * **Only build-preserving compositions exist**: `ValidatedPrism`, `Iso`, and `Prism`-with-a-reason; `Lens` deliberately not
 * **Both round-trip laws are published** in `hkj-test`; the section law forbids lossy build-normalisation
+* **`canonical(message, parse, render)` guards the section law per value**: the render defines the canonical form and every spelling it cannot reproduce is rejected — that the parse accepts the renderings, injectively, stays your obligation (check with `ValidatedPrismLaws`)
 * **`parsePath` lands on the railway** (`ValidationPath`) directly
 ~~~
 
@@ -37031,21 +37055,20 @@ offsetDateTime(DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSXXX"))
 offsetDateTime(DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ssxxx"))
 ```
 
-The same move covers any differently-canonical wire. An uppercase-UUID producer (SQL Server) is not forbidden by the law — only accepting *both* cases through one leaf is. A hand-written leaf whose canonical form is uppercase stays lawful:
+The same move covers any differently-canonical wire. An uppercase-UUID producer (SQL Server) is not forbidden by the law — only accepting *both* cases through one leaf is. [`ValidatedPrism.canonical`](validated_prism.md#laws) supplies the guard such a leaf needs: the lenient, throwing `UUID.fromString` is fine, because the render defines the canon and the per-value guard rejects every spelling it cannot reproduce:
 
 ``` java
 default ValidatedPrism<String, UUID> id() {
-  return ValidatedPrism.of(
-      raw -> raw.equals(raw.toUpperCase(Locale.ROOT)) && isUuid(raw)
-          ? Validated.validNel(UUID.fromString(raw))
-          : Validated.invalidNel(FieldError.of("not an uppercase UUID")),
-      uuid -> uuid.toString().toUpperCase(Locale.ROOT));
+  return ValidatedPrism.canonical(
+      "not an uppercase UUID",
+      UUID::fromString,                                  // throwing parse, lenient is fine
+      uuid -> uuid.toString().toUpperCase(Locale.ROOT)); // render defines the canon
 }
 ```
 
 Two mechanical notes. The number and boolean codecs focus the **box types**: a `ValidatedPrism<String, int>` cannot exist, so an `int` component cannot take a leaf — declare it `Integer` (the mapper rejects the mismatch at compile time either way). And under the star import, a leaf whose component shares a factory's name (`currency`, `locale`, `uuid`) must qualify the call — `return StandardCodecs.currency();` — because the leaf method itself is the nearer `currency()` and an unqualified call recurses.
 
-Codecs are ordinary leaves: share them across specs through a [mix-in interface](#shared-vocabulary-mix-in-interfaces) delegating to the stock factories, and conversions the vocabulary does not cover stay hand-written `ValidatedPrism.of(...)` leaves. The processor never applies a codec implicitly; a conversion exists only where a spec declares it.
+Codecs are ordinary leaves: share them across specs through a [mix-in interface](#shared-vocabulary-mix-in-interfaces) delegating to the stock factories, and conversions the vocabulary does not cover stay hand-written leaves — `ValidatedPrism.canonical(...)` where a throwing parser and a render exist, `ValidatedPrism.of(...)` for full control. The processor never applies a codec implicitly; a conversion exists only where a spec declares it.
 
 ---
 
@@ -88198,7 +88221,7 @@ Validated<NonEmptyList<FieldError>, EmailAddress> parsed = email.parse("  NOPE "
 String rendered = email.build(addr);   // always succeeds
 ```
 
-**Composition:** nested composition short-circuits whilst sibling fields accumulate, so a whole record parses in one pass with every bad field reported. `ValidatedPrism.fromIso(iso)` is a parse that never fails; `ValidatedPrism.fromPrism(prism, reason)` lifts a plain prism by supplying the reason its empty case cannot express. Both round-trip laws ship as `ValidatedPrismLaws` in `hkj-test`.
+**Composition:** nested composition short-circuits whilst sibling fields accumulate, so a whole record parses in one pass with every bad field reported. `ValidatedPrism.canonical(message, parse, render)` wraps a throwing parser with the section law guarded per value — the render defines the canonical form and every spelling it cannot reproduce is a located rejection (an injective render stays your obligation); `ValidatedPrism.fromIso(iso)` is a parse that never fails; `ValidatedPrism.fromPrism(prism, reason)` lifts a plain prism by supplying the reason its empty case cannot express. Both round-trip laws ship as `ValidatedPrismLaws` in `hkj-test`.
 
 **Related:** [ValidatedPrism](../optics/validated_prism.md), [Prism](#prism), [FieldError](#fielderror), [Validated](data-effects.md#validated)
 
@@ -88532,6 +88555,7 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 _In development. Release notes will be added here as changes land on `main`._
 
 - **Mapper parse ceiling lifted** ([#670](https://github.com/higher-kinded-j/higher-kinded-j/issues/670)): `@GenerateMapping`'s `parse` and validated `patch`, and `@GenerateMerge`'s fallible merge, now assemble records wider than 16 components through chunked `Validated.fields()` ladders combined applicatively, so an externally fixed flat 20-30 field DTO maps without grouping into nested records. Error semantics are unchanged and law-checked at width: same located labels, same declaration-order accumulation. The only remaining width bound is the JVM's constructor parameter-slot limit on the record itself (254 components in practice, fewer with `long`/`double`), which javac enforces at the record declaration. The hand-written `fields()` ladder keeps its 16-field arity. See [Diagnostics and limits](optics/record_mapping.md#diagnostics-and-limits).
+- **Public canonical smart constructor** ([#690](https://github.com/higher-kinded-j/higher-kinded-j/issues/690)): `ValidatedPrism.canonical(message, parse, render)` (plus a `FieldError` overload) wraps a throwing parser and a total render with the build-parse section law guarded per value — an accepted source must render back to itself, so a spelling the render cannot reproduce is a located rejection, never a silent normalisation. Generic in the source type, it is the guard `StandardCodecs` uses internally, now public so a custom-canon codec (an uppercase-UUID wire, say) is lawful without hand-writing the check. See [Laws](optics/validated_prism.md#laws).
 - **Stock codec vocabulary** ([#671](https://github.com/higher-kinded-j/higher-kinded-j/issues/671)): `StandardCodecs` in hkj-core ships one `ValidatedPrism` factory per standard conversion family (`uuid`, `uri`, `localDate` with optional `DateTimeFormatter`, `instant`, `offsetDateTime`, `enumByName` naming the permitted constants, `bigDecimal`, `intFromString`/`longFromString`/`doubleFromString`, `booleanStrict`, `currency`, `locale`), so a typical DTO boundary maps without hand-written leaves. Every failure is a located, copy-worthy `FieldError` that feeds the 422 leg unchanged, and every codec accepts only the canonical form it renders, honouring the `ValidatedPrism` section law (rejections, never silent normalisations). See [Standard codecs](optics/record_mapping.md#standard-codecs).
 
 ### [v0.4.9](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.9) (31 July 2026)
