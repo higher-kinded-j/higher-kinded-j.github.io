@@ -81820,7 +81820,7 @@ soak.
 | `effect-composition` | `Interpreters.combine()` called with an unsupported arity | error | Companion |
 | `transformer-missing-monad` | Zero-arg construction of `EitherT`/`OptionalT`/`MaybeT`/`ReaderT`/`StateT`/`WriterTMonad` (the outer `Monad<F>`, and `Monoid<W>` for WriterT, is required) | error | Companion |
 | `free-switch-exhaustive` | A `switch` over `Free` matching `Pure`/`Suspend`/`FlatMapped` but missing `HandleError`/`Ap` | error | Companion |
-| `discarded-effect` | A lazy effect (`Path`/`IO`/`Free`, the `Chainable` hierarchy) built then dropped as a bare statement, a silent no-op | error | No: sole signal |
+| `discarded-effect` | A **deferred** path (`IOPath`/`VTaskPath`/`LazyPath`/`FreePath` — the `Deferred` capability) built then dropped as a bare statement, a silent no-op. Eager paths are out of scope: their work has already happened | error | No: sole signal |
 | `state-t-mapt-arity` | `StateT.mapT(f)` missing the leading `Monad<G>` (only `StateT.mapT` takes it) | error | Companion |
 | `error-type-mismatch` | An Either chain step whose error type `E` differs from the chain's and is silently erased through `Chainable<B>` (latent `ClassCastException`) | **warn** | No: sole signal |
 | `kind-value-narrow` | `.value()` on a bare `Kind` (it is on the concrete transformer; narrow first) | error | Companion |
@@ -81834,6 +81834,23 @@ soak.
 cryptic error. "Sole signal" / "advisory" checks are the only
 compile-time signal (the code otherwise compiles), which is why the
 heuristic and advisory ones default to *warn*.
+
+~~~admonish tip title="Eager and deferred paths"
+`discarded-effect` fires only on the `Deferred` capability, because only
+there is a dropped statement a no-op:
+
+```java
+Path.just(1).peek(log);      // MaybePath: eager — log() has already run
+Path.io(() -> 1).peek(log);  // IOPath: deferred — log() never runs
+```
+
+Both discard their result; only the second did nothing. `Deferred` is a
+sealed capability over `IOPath`, `VTaskPath`, `VResultPath`,
+`ReaderPath`, `WithStatePath`, `LazyPath`, `StreamPath`, `VStreamPath`,
+`TrampolinePath` and `FreePath`. `CompletableFuturePath` is excluded —
+its future is already in flight — and so is `GenericPath`, whose
+laziness depends on the `F` it wraps.
+~~~
 
 ~~~admonish info title="Generated sources are not checked"
 Every check is advice you are expected to act on, and nobody edits
@@ -81923,6 +81940,21 @@ generated code for a silent switch-off to be safe, so an HKJ opt-out is
 always spelled explicitly.
 
 ### Manual setup
+
+~~~admonish note title="HKJ compiles under its own checker"
+Every module in this repository compiles with `-Xplugin:HKJChecker`
+(`hkj-checker` itself excepted — it cannot run itself while being built,
+and its fixtures violate the checks on purpose). The repo sits at zero
+findings, and the `-Werror` ratchet makes a regression a build failure.
+
+That is not ceremony: the library is the checks' most demanding user, and
+two false positives — a `requireNonNull` guard read as a discarded
+effect, and eager paths judged by the deferred rule — survived precisely
+because the checker had never been pointed at this codebase. Deliberate
+exceptions are spelled `@SuppressWarnings("<check-id>")` on the narrowest
+enclosing declaration; the test suites carry them wherever a violation is
+the behaviour under test.
+~~~
 
 The HKJ Gradle/Maven plugin enables the checker by default and passes
 the `-Xplugin` argument through; see
@@ -89953,6 +89985,8 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 _In development. Release notes will be added here as changes land on `main`._
 
 - **The mapping documentation becomes its own chapter**: the record-mapping material moved from a single page under Optics into a dedicated [Mapping at the Boundary](mapping/ch_intro.md) chapter (basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing), opening with a problem-first introduction and closing with a compiled, law-checked capstone: [One 422, Every Bad Field](mapping/capstone.md). The old `optics/record_mapping.html` URL redirects to the new chapter.
+
+- **HKJ compiles under its own checker**: every module now builds with `-Xplugin:HKJChecker` (bar `hkj-checker` itself), at zero findings. Getting there fixed two false positives that had survived only because the checker had never been run over this codebase: a null guard such as `Objects.requireNonNull(path, "…")` was read as an effect built and dropped (it hands back the effect it was given — 101 sites in hkj-core alone), and `discarded-effect` judged every `Chainable` by the lazy-effect rule when `Chainable` is not uniformly lazy. The check now gates on a new sealed [`Deferred`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/main/java/org/higherkindedj/hkt/effect/capability/Deferred.java) capability covering the ten paths that actually defer, so `Path.just(1).peek(log)` — eager, `log` already ran — is no longer reported as a silent no-op, and a newly added path type has to choose a side. See [Compile-Time Checks](tooling/compile_checks.md).
 
 - **The checker stops flagging code that cannot act on it**: `hkj-checker` no longer reports on types annotated `org.higherkindedj.optics.annotations.Generated`, so `@EffectAlgebra`'s generated `*Ops` class is no longer told to use the generated `*Ops` smart constructors, and `@ComposeEffects`' generated Support class is no longer told to use `@ComposeEffects`. A single declaration now opts out with `@SuppressWarnings("<check-id>")`, or out of every check with `@SuppressWarnings("hkj-checker")` — until now `disable=` was project-wide and there was no way to accept one deliberate call site. Suppression is per check and accumulates outward-in; javac's blanket `"all"` is deliberately not honoured. A file with several top-level types is also now scanned once per type rather than once per type *per type*, which removes duplicated diagnostics. See [Compile-Time Checks](tooling/compile_checks.md#opting-out-one-declaration).
 
