@@ -328,7 +328,8 @@
 <ul>
 <li>Mapping bean-shaped wire types (setters, builders, JAXB lists) with the same features as records</li>
 <li>Why a bean mapping withholds <code>asIso()</code>, and how <code>Optional</code> bridges through <code>null</code></li>
-<li>Opting into sparse PATCH semantics with <code>UpdateSpec</code>: present fields fold in, absent fields leave the domain alone</li>
+<li>What PATCH and <em>sparse</em> PATCH actually mean, and why <code>null</code> is ambiguous in a PATCH body</li>
+<li>Opting into sparse semantics with <code>UpdateSpec</code>: present fields fold in, absent fields leave the domain alone</li>
 <li>The rules that keep the null-as-absent contract honest, and how containers patch through the element vocabulary</li>
 </ul>
 </div>
@@ -394,30 +395,47 @@ interface ContactMapping extends MappingSpec&lt;Customer, ContactBean&gt; {
 <p>The design decisions worth knowing:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <ul>
-<li><strong>Null is located, never thrown, like every wire.</strong> The null guard is universal (<a href="basics.html#null-doctrine">one doctrine</a>, both shapes), so a <code>null</code> property read is a located <code>FieldError</code> exactly as on a record wire. What is bean-<em>specific</em> is why nulls are expected at all: an unset property is a representable, ordinary state of a mutable bean, not just a hostile binding.</li>
+<li><strong>Null is located, never thrown, like every wire.</strong> The null guard is universal (<a href="basics.html#null-doctrine">one rule</a>, both shapes), so a <code>null</code> property read is a located <code>FieldError</code> exactly as on a record wire. What is bean-<em>specific</em> is why nulls are expected at all: an unset property is a representable, ordinary state of a mutable bean, not just a hostile binding.</li>
 <li><strong>Honest tiers.</strong> Because an unset property is ordinary, a bean's guarded reference reads count as fallible and the mapping withholds <code>asIso()</code> automatically; an all-primitive bean (whose reads can never be null) still earns it. A record wire's guards exist for hostile bindings only, so a lossless record mapping keeps <code>asIso()</code>, with the parse-iso coherence law scoped to wires whose reference components are non-null. Nesting is unaffected: a bean mapping exposes <code>asValidatedPrism()</code> like any other, so record specs nest it and containers lift it.</li>
 <li><strong>Construction strategy</strong> is detected from the bean's shape, tried in order: a public no-args constructor with <code>setX</code> setters (and, for a getter-only <code>List</code>, the JAXB convention <code>getItems().addAll(...)</code>); then a static <code>builder()</code>/<code>newBuilder()</code> whose setters fill it and whose <code>build()</code> yields the wire. A bean that fits neither gets a what/why/fix diagnostic.</li>
 <li><strong>Optionality bridges through <code>null</code>.</strong> On a full mapping, a domain <code>Optional&lt;T&gt;</code> maps to a nullable bean property <code>T</code> (bean conventions leave <code>Optional</code> off property types): empty bridges to absent (<code>build</code> skips the write, leaving the property unset; <code>parse</code> reads <code>Optional.ofNullable(...)</code>), and a present value still validates through its leaf. The <a href="#sparse-patch-write-back-updatespec">sparse tier</a> is the deliberate exception: there <code>null</code> already means "leave unchanged", so a PATCH bean encodes "set to empty" with an <code>Optional</code>-typed property instead.</li>
 <li><strong>The domain stays a record.</strong> <code>parse</code> assembles the domain through its canonical constructor, so only the <em>wire</em> may be bean-shaped; a bean domain gets a diagnostic.</li>
 </ul>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<div id="admonition-not-yet-bean-projections-and-read-only-beans" class="admonition admonish-note" role="note" aria-labelledby="admonition-not-yet-bean-projections-and-read-only-beans-title">
-<div class="admonition-title">
-<div id="admonition-not-yet-bean-projections-and-read-only-beans-title">
-<p>Not yet: bean projections and read-only beans</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-not-yet-bean-projections-and-read-only-beans"></a>
-</div>
-<div>
-<p>A bean <em>projection</em> (a bean with fewer properties than the domain) with a reference property, and read-only (parse-only) or write-only (build-only) beans, are follow-ons. An all-primitive bean projection maps as a lawful <code>asLens()</code> today; a reference-typed one is reported with a pointer to the <a href="tiers.html#leaf-carrying-projections-the-validated-patch">validated-<code>patch</code> tier</a>, which ships for record wires; the bean flavour remains a follow-on.</p>
-</div>
-</div>
+<p>Bean <em>projections</em> with reference properties and one-directional (parse-only or build-only) beans are not supported yet (<a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/702">#702</a>, <a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/703">#703</a>); an all-primitive bean projection maps as a lawful <code>asLens()</code> today.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<hr />
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<h2 id="what-patch-means"><a class="header" href="#what-patch-means">What PATCH actually means</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>Before the sparse tier, the contract it implements, because the whole design follows from it.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p><code>PUT</code> replaces a resource; <code>PATCH</code> edits one. A <strong>sparse</strong> PATCH body carries only the fields the client wants to change: <code>{"email": "new@example.com"}</code> means <em>change the email, touch nothing else</em>. That contract makes <code>null</code> ambiguous. When the bound request object reports <code>getName() == null</code>, did the client omit <code>name</code> (leave it unchanged), or send <code>"name": null</code> deliberately? A typical JSON binder produces the same object either way.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>So the same wire value carries opposite meanings in the two tiers:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<pre class="mermaid">flowchart TD
+    N[&quot;the bound request has&lt;br/&gt;name = null&quot;] --&gt; DQ{&quot;which contract&lt;br/&gt;does the DTO serve?&quot;}
+    DQ --&gt;|&quot;full parse or patch:&lt;br/&gt;dense, every field expected&quot;| DE[&quot;located FieldError:&lt;br/&gt;name: must not be null&quot;]
+    DQ --&gt;|&quot;UpdateSpec updateFrom:&lt;br/&gt;sparse, null means absent&quot;| SP[&quot;skipped: the domain's&lt;br/&gt;current name survives&quot;]
+
+    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef error fill:#e78284,stroke:#d20f39,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    class N wire
+    class DE error
+    class SP tier
+    class DQ decision
+</pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>Which reading applies is a fact about the endpoint's contract, not about the data, and not something a mapper can infer from the types. That is why sparse semantics are an <strong>explicit opt-in</strong>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <h2 id="sparse-patch-write-back-updatespec"><a class="header" href="#sparse-patch-write-back-updatespec">Sparse PATCH write-back: <code>UpdateSpec</code></a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>A <code>parse</code> reads a null bean property as <strong>broken data</strong>: a located <code>FieldError</code>. But a REST <code>PATCH</code> body means the opposite: the client sends only the fields it wants to change, and every other property of the bound request arrives <code>null</code>, meaning <em>not provided, leave unchanged</em>. The two meanings of <code>null</code> are a property of the DTO's contract, not something the mapper can infer, so sparse semantics are an <strong>explicit opt-in</strong>: the spec extends <code>UpdateSpec&lt;Domain, Wire&gt;</code> instead of <code>MappingSpec</code>.</p>
+<p>To opt in, the spec extends <code>UpdateSpec&lt;Domain, Wire&gt;</code> instead of <code>MappingSpec</code>:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <pre><code class="language-java">// A PATCH request bean. Here null means "not provided, leave unchanged" - the opposite of the bean
 // parse above, where null is broken data. That contract is opted into by extending UpdateSpec.
@@ -468,7 +486,7 @@ interface ContactPatchMapping extends UpdateSpec&lt;Customer, ContactPatchBean&g
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <ul>
 <li><strong>Present and valid</strong> → the field is set, or parsed through its leaf, and folded in.</li>
-<li><strong>Present and invalid</strong> → a located <code>FieldError</code>, accumulating as usual: sparseness never weakens validation of what <em>was</em> sent. <code>Edits.Accumulated</code> also offers <code>applyPath(current)</code> to drop straight onto the <a href="../effect/path_validation.html">validation railway</a>, so a controller answers with every error at once instead of persisting a partial write (an all-<code>FieldError</code> payload takes <a href="../spring/spring_boot_integration.html#the-422-leg">the 422 leg</a>: <code>hkj.web.validation-field-error-status</code>, default 422).</li>
+<li><strong>Present and invalid</strong> → a located <code>FieldError</code>, accumulating as usual: sparseness never weakens validation of what <em>was</em> sent. <code>Edits.Accumulated</code> also offers <code>applyPath(current)</code> to drop straight onto the <a href="../effect/path_validation.html">validation railway</a>, so a controller answers with every error at once instead of persisting a partial write.</li>
 <li><strong>Absent (null)</strong> → skipped; the domain's current value survives.</li>
 </ul>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
@@ -483,7 +501,14 @@ interface ContactPatchMapping extends UpdateSpec&lt;Customer, ContactPatchBean&g
 <li><strong>A sealed hierarchy is rejected</strong>, on either side: dispatch has no sparse meaning (an absent property cannot choose a subtype to patch).</li>
 <li><strong>A present container parses through the element vocabulary.</strong> A <code>List</code>, <code>Optional</code> or <code>Map</code>-valued property (a pair declared as exactly those container types) routes through the element leaf named after the component: the same leaf the dense tiers lift, so one <a href="codecs.html#shared-vocabulary-mix-in-interfaces">mix-in vocabulary</a> serves a full spec and its PATCH sibling. Replacement stays wholesale; each failing element is located by index or key (<code>phones.1</code>). A whole-container leaf (<code>ValidatedPrism&lt;List&lt;S&gt;, List&lt;A&gt;&gt;</code>) is the more specific declaration and wins over the element interpretation. A nested <em>spec</em> still does not lift through a sparse container; give the component an element leaf delegating to the nested Impl's <code>asValidatedPrism()</code> if its elements need a whole mapping.</li>
 <li><strong>Coverage is one-sided.</strong> Every wire property maps to a domain component, but a domain component with <em>no</em> wire property is simply never changed: a PATCH DTO deliberately covers a subset.</li>
-<li><strong>A same-typed nested record, <code>Optional</code>, <code>List</code> or <code>Map</code> replaces wholesale</strong> through identity, the fallback when no more specific leaf applies. A same-typed <code>List</code> or <code>Map</code> additionally carries the dense tiers' null scan: a null element or value is a located, accumulating invalid (<code>tags.1: must not be null</code>), never written into the domain; a valid container still passes by reference, unrebuilt. The scan needs a properly parameterised container; a raw or wildcard-argument one is written as sent. A same-typed <code>Optional</code> needs no scan (it cannot hold a null element), so its identity write is unconditional: a present empty sets empty, absent leaves unchanged. A nested record whose wire differs is patched wholesale through its own full mapping spec. Deep merge is out of scope.</li>
+<li><strong>A same-typed nested record, <code>Optional</code>, <code>List</code> or <code>Map</code> replaces wholesale</strong> through identity, the fallback when no more specific leaf applies. The details:
+<ul>
+<li>A same-typed <code>List</code> or <code>Map</code> carries the dense tiers' null scan: a null element or value is a located, accumulating invalid (<code>tags.1: must not be null</code>), never written into the domain; a valid container still passes by reference, unrebuilt.</li>
+<li>The scan needs a properly parameterised container; a raw or wildcard-argument one is written as sent.</li>
+<li>A same-typed <code>Optional</code> needs no scan (it cannot hold a null element), so its identity write is unconditional: a present empty sets empty, absent leaves unchanged.</li>
+<li>A nested record whose wire differs is patched wholesale through its own full mapping spec. Deep merge is out of scope.</li>
+</ul>
+</li>
 </ul>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <p>One vocabulary, both tiers. The element leaf a full spec lifts elementwise is exactly the leaf its PATCH sibling lifts:</p>
@@ -572,15 +597,27 @@ interface RosterPatchMapping extends PhoneVocabulary, UpdateSpec&lt;Roster, Rost
         rosterPatch(null, List.of("+1", "nope"))); // bad element   -&gt; located phones.1
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<div id="admonition-the-patch-endpoint-end-to-end" class="admonition admonish-tip" role="note" aria-labelledby="admonition-the-patch-endpoint-end-to-end-title">
+<div id="admonition-why-this-matters" class="admonition admonish-tip" role="note" aria-labelledby="admonition-why-this-matters-title">
 <div class="admonition-title">
-<div id="admonition-the-patch-endpoint-end-to-end-title">
-<p>The PATCH endpoint, end to end</p>
+<div id="admonition-why-this-matters-title">
+<p>Why this matters</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-the-patch-endpoint-end-to-end"></a>
+<a class="admonition-anchor-link" href="#admonition-why-this-matters"></a>
 </div>
 <div>
-<p>The hkj-spring example app serves <code>PATCH /api/users/{id}</code> through exactly this tier; <a href="../spring/spring_boot_integration.html#sparse-patch">Sparse PATCH at the Spring boundary</a> walks the controller, the not-found-plus-validation channel, and the slice test.</p>
+<p>The three sparse laws are operational guarantees, not formalities. Identity means a client sending an empty PATCH cannot corrupt anything. Idempotence means a retried request (a timeout, a nervous user, an at-least-once queue) lands exactly as if sent once. Validation means sparseness is never an excuse: what the client did send is checked as strictly as a full submission. Hand-written PATCH handlers get these properties by luck; the one <code>MappingLaws</code> call above checks them in your build.</p>
+</div>
+</div>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<div id="admonition-at-the-spring-boundary-the-patch-endpoint-end-to-end" class="admonition admonish-tip" role="note" aria-labelledby="admonition-at-the-spring-boundary-the-patch-endpoint-end-to-end-title">
+<div class="admonition-title">
+<div id="admonition-at-the-spring-boundary-the-patch-endpoint-end-to-end-title">
+<p>At the Spring boundary: the PATCH endpoint, end to end</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-at-the-spring-boundary-the-patch-endpoint-end-to-end"></a>
+</div>
+<div>
+<p>The hkj-spring example app serves <code>PATCH /api/users/{id}</code> through exactly this tier; <a href="../spring/spring_boot_integration.html#sparse-patch">Sparse PATCH at the Spring boundary</a> walks the controller, the not-found-plus-validation channel, and the slice test. An all-<code>FieldError</code> payload takes <a href="../spring/spring_boot_integration.html#the-422-leg">the 422 leg</a> (<code>hkj.web.validation-field-error-status</code>, default 422).</p>
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
@@ -675,6 +712,8 @@ interface RosterPatchMapping extends PhoneVocabulary, UpdateSpec&lt;Roster, Rost
         <script src=".././theme/sidebar-nav-link.js"></script>
         <script src=".././theme/chapter-title.js"></script>
         <script src=".././theme/change-tracking.js"></script>
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
     </div>

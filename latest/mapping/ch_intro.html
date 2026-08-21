@@ -314,11 +314,13 @@
 <h1 id="mapping-at-the-boundary"><a class="header" href="#mapping-at-the-boundary">Mapping at the Boundary</a></h1>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <blockquote>
-<p><em>"A parser is just a function that consumes less-structured input and produces more-structured output."</em>
-— Alexis King, <em>Parse, Don't Validate</em></p>
+<p><em>"I, too, am a translated man. I have been borne across. It is generally believed that something is always lost in translation; I cling to the notion ... that something can also be gained."</em>
+— Salman Rushdie, <em>Shame</em></p>
 </blockquote>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <hr />
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>Every value that crosses a service boundary is translated in Rushdie's sense: born in the wire's language of strings and nulls, borne across into the domain's language of typed identifiers, real dates, and emails that have already been checked. Rushdie insists something can be gained in translation, and this chapter takes him at his word: what lands on the far side is a value the domain can finally trust. The chapter is also about what an honest translator owes you when the original turns out to be gibberish: not the first complaint, but all of them, each with an address.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <p>Every service has the same three files. A DTO the framework binds. A domain record the business logic trusts. And, between them, a mapper: hand-written, reflection-driven, or generated, but always <em>there</em>, because the shape the wire speaks is never quite the shape the domain thinks in.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
@@ -344,9 +346,58 @@
 <li><strong>Its errors have no address.</strong> <code>IllegalArgumentException: bad email</code> says nothing a client can map onto a form field, so a handler somewhere turns it into a vague 400.</li>
 </ol>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>The usual patch is a pipeline: bind with Jackson, annotate the DTO with Bean Validation, translate with a mapper, and catch what leaks in a <code>@ControllerAdvice</code>. And, to be fair to that stack, <code>@Valid</code> <em>does</em> accumulate errors, and they <em>do</em> carry field names. What it cannot do is produce <code>User</code>. The annotations guard the DTO; the domain constructor still runs on data that was checked <em>somewhere else</em>; the format rule lives in a third place neither record enforces; and the mapper in the middle can still throw. Parsing and validating stay separate steps, and the type system never learns that either happened.</p>
+<hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>This chapter replaces that pipeline with one step, derived at compile time from an interface you own. Where a field needs converting or checking, the spec declares a <strong>leaf</strong>: the conversion at that one field, as a <a href="../optics/validated_prism.html"><code>ValidatedPrism</code></a>:</p>
+<h2 id="what-you-get-instead"><a class="header" href="#what-you-get-instead">What you get instead</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>This chapter replaces that mapper with one interface you own and one annotation. The processor derives both directions at compile time, and the fallible direction reports <strong>every</strong> bad field at once, each located by a dotted path. Here is the destination, before any theory: a request with five defects, answered by one response.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<pre><code class="language-json">{
+  "valid": false,
+  "errors": [
+    { "path": "id",             "message": "not a UUID (expected e.g. 123e4567-e89b-12d3-a456-426614174000)" },
+    { "path": "customer.email", "message": "not an email address" },
+    { "path": "lines.1.price",  "message": "not a number in plain notation (expected e.g. 123.45)" },
+    { "path": "placedAt",       "message": "not an ISO-8601 instant (expected e.g. 2026-07-28T12:34:56Z)" },
+    { "path": "status",         "message": "unknown OrderStatus (expected one of NEW, PAID, SHIPPED)" }
+  ],
+  "errorCount": 5
+}
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>The bad email is <em>inside a nested record</em>; the bad price is on the <em>second element of a list</em>. Nobody wrote a line of error-handling code to produce this: it falls out of the declarations, and the <a href="capstone.html">Capstone</a> builds it end to end, proven by a test the build runs (the full response also carries each error's path as structured segments; it is abridged here). The client fixes all five and resubmits once.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>The shape of the machinery is a railway with two directions:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<pre class="mermaid">flowchart LR
+    DTO[&quot;UserDto&lt;br/&gt;(strings and nulls)&quot;] --&gt;|&quot;parse&quot;| CHECK{&quot;every field&lt;br/&gt;checks out?&quot;}
+    CHECK --&gt;|yes| DOM[&quot;User&lt;br/&gt;(typed and trusted)&quot;]
+    CHECK --&gt;|no| ERR[&quot;NonEmptyList&amp;lt;FieldError&amp;gt;&lt;br/&gt;every bad field, located&quot;]
+    DOM --&gt;|&quot;build (total: cannot fail)&quot;| OUT[&quot;UserDto&quot;]
+    ERR --&gt;|&quot;hkj-spring&quot;| RESP[&quot;one 422 response&lt;br/&gt;carrying the JSON above&quot;]
+
+    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef domain fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef error fill:#e78284,stroke:#d20f39,color:#232634
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    class DTO,OUT wire
+    class DOM domain
+    class ERR,RESP error
+    class CHECK decision
+</pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>And the "one interface you own"? Here it is, whole, for a pair whose components already match:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<pre><code class="language-java">record Person(String name, int age) {}
+
+record PersonDto(String name, int age) {}
+
+@GenerateMapping
+interface PersonMapping extends MappingSpec&lt;Person, PersonDto&gt; {}
+
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>Where a field needs converting or checking, the spec (that interface) declares a <strong>leaf</strong>: the conversion at that one field, written as a <a href="../optics/validated_prism.html"><code>ValidatedPrism</code></a>:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <pre><code class="language-java">record Customer(String name, EmailAddress email) {}
 
@@ -364,34 +415,61 @@ interface CustomerMapping extends MappingSpec&lt;Customer, CustomerDto&gt; {
     // Invalid(NonEmptyList[email: not an email address])
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>Outbound, <code>build</code> is a total function: it cannot fail. Inbound, <code>parse</code> is a <em>parser</em> in Alexis King's sense: it returns your typed domain value, or <code>Validated&lt;NonEmptyList&lt;FieldError&gt;, Domain&gt;</code> carrying <strong>every</strong> bad field at once, each located by a dotted path. Nothing drifts, because the processor re-derives the mapping from the records on every compile and rejects what it cannot honour. And in a Spring controller the parse result is already a response: one 422 listing every defect, travelling <a href="../spring/spring_boot_integration.html#the-422-leg">the 422 leg</a> (a <em>leg</em> is the route a returned value travels to become an HTTP response, in the railway sense).</p>
+<p>Outbound, <code>build</code> is a <em>total</em> function: it cannot fail. Inbound, <code>parse</code> returns <code>Validated&lt;NonEmptyList&lt;FieldError&gt;, Domain&gt;</code>: either your typed domain value, or every defect at once. Nothing drifts, because the processor re-derives the mapping from the records on every compile and rejects what it cannot honour.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<div id="admonition-at-the-spring-boundary" class="admonition admonish-tip" role="note" aria-labelledby="admonition-at-the-spring-boundary-title">
+<div class="admonition-title">
+<div id="admonition-at-the-spring-boundary-title">
+<p>At the Spring boundary</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-at-the-spring-boundary"></a>
+</div>
+<div>
+<p>If you arrived here because you want that 422, the wiring is two steps: this chapter's <code>parse</code>, and the <code>hkj-spring-boot-starter</code>, which renders an <code>Invalid</code> parse result as one <strong>422 Unprocessable Content</strong> response with no code in between. Return the result from the controller as-is. <a href="../spring/spring_boot_integration.html#the-422-leg">The 422 leg</a> is the full story, and <a href="../spring/spring_boot_integration.html#sparse-patch">Sparse PATCH at the Spring boundary</a> covers PATCH endpoints. (A <em>leg</em> is the route a returned value travels to become an HTTP response, in the railway sense.)</p>
+</div>
+</div>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<hr />
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<h2 id="part-of-the-library-not-a-bolt-on"><a class="header" href="#part-of-the-library-not-a-bolt-on">Part of the library, not a bolt-on</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>The mapper is not a separate tool that happens to ship in the same jar; it is Higher-Kinded-J's own parts, composed and generated. That is why it fits the rest of the book:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<ul>
+<li><strong>Parse, don't validate.</strong> Alexis King's phrase names the discipline: <em>"a parser is just a function that consumes less-structured input and produces more-structured output."</em> <code>parse</code> is exactly that function. There is no half-state where a DTO has been "validated" but the domain value does not exist yet; the boundary produces a trusted value or a typed refusal, and the type system knows which.</li>
+<li><strong>Typed errors over exceptions.</strong> The refusal is a value (<code>Validated</code>, <code>NonEmptyList</code>, <code>FieldError</code>), so it accumulates, composes, and travels the same <a href="../effect/effect_path_overview.html">railway</a> as every other error in the library.</li>
+<li><strong>Truthful types.</strong> The generated surface only ever offers operations whose laws the record pair can honour; what cannot be lawful is simply not generated.</li>
+<li><strong>Laws, verified.</strong> Each generated surface obeys stated laws, checked in the library's own build and repeatable in yours with <a href="tiers.html#law-checked-in-the-repo-and-in-your-tests">one test call</a>.</li>
+<li><strong>Built from parts you already know.</strong> A leaf is a <a href="../optics/validated_prism.html"><code>ValidatedPrism</code></a>, accumulation is <a href="../monads/validated_assembly.html"><code>Validated.fields()</code></a>, a sparse PATCH folds into <a href="../optics/multi_edit.html"><code>Edits.Accumulated</code></a>. Learn the mapper and you have learned more of the library; learn the library and the mapper holds no surprises.</li>
+</ul>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <h2 id="what-the-mapper-will-and-will-not-generate"><a class="header" href="#what-the-mapper-will-and-will-not-generate">What the mapper will (and will not) generate</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>The generated surface follows the shape of the pair. That decision is the map of this chapter:</p>
+<p>The generated surface follows the shape of the pair, and that decision is the map of this chapter:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<pre><code>                     How do the two records correspond?
-                                    │
-        ┌───────────────────────────┼───────────────────────────┐
-        ▼                           ▼                           ▼
-  every component            some fields differ           wire has FEWER
-  matches by name            in type: leaves,             components than
-  and type                   codecs, nested specs         the domain
-        │                           │                           │
-        ▼                           ▼                 ┌─────────┴─────────┐
-  reversible both ways       one-way render, plus     ▼                   ▼
-  (build, a guarded          an accumulating      all identity:      any converting
-  parse, a lawful asIso)     parse back           a lawful           field: a
-                             (the round trip      write-back         write-back that
-                             can reject)          lens (asLens)      can fail (patch)
+<pre class="mermaid">flowchart TD
+    Q{&quot;How do the two records&lt;br/&gt;correspond?&quot;}
+    Q --&gt; A[&quot;Every component matches&lt;br/&gt;by name and type&quot;]
+    Q --&gt; B[&quot;Some fields differ in type:&lt;br/&gt;leaves, codecs, nested specs&quot;]
+    Q --&gt; C[&quot;Wire has fewer components&lt;br/&gt;than the domain&quot;]
+    A --&gt; AT([&quot;round-trips both ways,&lt;br/&gt;lawfully&quot;])
+    B --&gt; BT([&quot;a parse that reports&lt;br/&gt;every bad field, located&quot;])
+    C --&gt; CQ{&quot;Any converting or&lt;br/&gt;validating field?&quot;}
+    CQ --&gt;|no| CT([&quot;a write-back that keeps&lt;br/&gt;the fields the wire dropped&quot;])
+    CQ --&gt;|yes| DT([&quot;a write-back that&lt;br/&gt;can fail, located&quot;])
+    P[&quot;A PATCH request bean, where&lt;br/&gt;null means leave unchanged&quot;] --&gt; PT([&quot;a sparse update:&lt;br/&gt;absent means keep&quot;])
 
-  ...and a PATCH request bean, where null means "leave unchanged"?
-                    extend UpdateSpec ──▶ updateFrom only
-</code></pre>
+    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    class A,B,C,P wire
+    class AT,BT,CT,DT,PT tier
+    class Q,CQ decision
+</pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>Nothing here is fabricated: a mapping only offers the operations its field correspondences can lawfully support. <a href="tiers.html">The Emission Tiers</a> names each of these surfaces and the laws it obeys, verified in the library's own build and repeatable in yours with one test call.</p>
+<p>That decision tree is the map of this chapter: <a href="tiers.html">The Emission Tiers</a> names each of these surfaces and the laws it obeys.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <div id="admonition-if-you-know-mapstruct" class="admonition admonish-note" role="note" aria-labelledby="admonition-if-you-know-mapstruct-title">
 <div class="admonition-title">
@@ -405,7 +483,33 @@ interface CustomerMapping extends MappingSpec&lt;Customer, CustomerDto&gt; {
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<div id="admonition-if-you-know-bean-validation" class="admonition admonish-note" role="note" aria-labelledby="admonition-if-you-know-bean-validation-title">
+<div class="admonition-title">
+<div id="admonition-if-you-know-bean-validation-title">
+<p>If you know Bean Validation</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-if-you-know-bean-validation"></a>
+</div>
+<div>
+<p>The usual pipeline is: bind with Jackson, annotate the DTO with <code>@Valid</code> constraints, translate with a mapper, and catch what leaks in a <code>@ControllerAdvice</code>. To be fair to that stack, <code>@Valid</code> <em>does</em> accumulate errors, and they <em>do</em> carry field names. What it cannot do is produce <code>User</code>. The annotations guard the DTO; the domain constructor still runs on data that was checked somewhere else; the format rule lives in a third place neither record enforces; and the mapper in the middle can still throw. Here, parsing and validating are one step, and the type system knows it happened.</p>
+</div>
+</div>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <hr />
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<h2 id="how-to-read-this-chapter"><a class="header" href="#how-to-read-this-chapter">How to read this chapter</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>Two pages are enough to ship. <a href="basics.html">Record Mapping Basics</a> declares a mapping and reads its errors; <a href="codecs.html">Standard Codecs</a> covers the stock conversions (UUIDs, dates, enums, money) so most boundaries need no hand-written conversion at all. Everything after that is on demand:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<ul>
+<li>DTOs that nest, hold lists, or dispatch over sealed types: <a href="structure.html">Nesting, Containers, and Sealed Hierarchies</a></li>
+<li>What exactly got generated for your spec, and why: <a href="tiers.html">The Emission Tiers</a></li>
+<li>A PATCH endpoint, or a getter/setter DTO: <a href="beans_patch.html">Beans and Sparse PATCH</a></li>
+<li>A <code>Page&lt;T&gt;</code> at the boundary: <a href="generics.html">Generic Specs</a></li>
+<li>Combining several sources, or typing your error context: <a href="merge_envelopes.html">Merge and Error Envelopes</a></li>
+<li>Spring beans, test fakes, and the feature's limits: <a href="testing.html">Injecting, Testing, and Diagnostics</a></li>
+<li>The whole lane on one worked boundary: <a href="capstone.html">the Capstone</a></li>
+</ul>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <div id="admonition-in-this-chapter" class="admonition admonish-info" role="note" aria-labelledby="admonition-in-this-chapter-title">
 <div class="admonition-title">
@@ -416,15 +520,15 @@ interface CustomerMapping extends MappingSpec&lt;Customer, CustomerDto&gt; {
 </div>
 <div>
 <ul>
-<li><strong>Record Mapping Basics</strong> – The <code>MappingSpec</code> interface, the total <code>build</code> / accumulating <code>parse</code> asymmetry, the null doctrine that turns every wire <code>null</code> into a located error, <code>ValidatedPrism</code> leaves, <code>@MapField</code> renames, and derived wire-only fields.</li>
-<li><strong>Standard Codecs and Shared Vocabulary</strong> – The stock leaf vocabulary (<code>uuid()</code>, <code>localDate()</code>, <code>enumByName(...)</code>, money and more), why it accepts canonical forms only, <code>ValidatedPrism.canonical</code> for your own canons, and mix-in interfaces that share leaves across an API.</li>
-<li><strong>Nesting, Containers, and Sealed Hierarchies</strong> – Specs nest automatically and failures compose into dotted paths; <code>List</code>/<code>Optional</code>/<code>Map</code> lift their elements; sealed pairs dispatch exhaustively in both directions.</li>
-<li><strong>The Emission Tiers</strong> – The truthful-types table: which shapes earn <code>asIso()</code>, <code>asLens()</code>, the validated <code>patch</code>, or <code>asValidatedPrism()</code>, and the <code>MappingLaws</code> call that proves each tier lawful in your own tests.</li>
+<li><strong>Record Mapping Basics</strong> – Declare a mapping as one empty interface and get both directions: a <code>build</code> that cannot fail and a <code>parse</code> that reports every bad field at once. Then add conversions, renames, and computed fields.</li>
+<li><strong>Standard Codecs and Shared Vocabulary</strong> – The stock conversions (UUIDs, dates, enums, money) as one factory call each, and the mix-in pattern that shares your conversions across every spec in an API.</li>
+<li><strong>Nesting, Containers, and Sealed Hierarchies</strong> – Specs nest automatically and failures compose into dotted paths; <code>List</code>/<code>Optional</code>/<code>Map</code> map their elements; sealed pairs dispatch exhaustively in both directions.</li>
+<li><strong>The Emission Tiers</strong> – Which spec shapes earn <code>asIso()</code>, <code>asLens()</code>, the validated <code>patch</code>, or <code>asValidatedPrism()</code>, and the one-call law check that proves each in your own tests.</li>
 <li><strong>Beans and Sparse PATCH</strong> – Getter/setter and builder wires with the full feature set, and the <code>UpdateSpec</code> opt-in that gives a PATCH bean null-as-absent semantics without weakening validation of what was sent.</li>
-<li><strong>Generic Specs</strong> – Concrete instantiations, threaded type parameters, and element-mapped specs whose codecs arrive at construction time.</li>
-<li><strong>Merge and Error Envelopes</strong> – <code>@GenerateMerge</code> assembles one target from several sources with truthful return types; <code>@GenerateErrorEnvelope</code> retires the copy-pasted <code>code</code>/<code>message</code>/<code>timestamp</code> and types the error context.</li>
+<li><strong>Generic Specs</strong> – Mapping <code>Page&lt;T&gt;</code> and friends: concrete instantiations, threaded type parameters, and element-mapped specs whose codecs arrive at construction time.</li>
+<li><strong>Merge and Error Envelopes</strong> – <code>@GenerateMerge</code> assembles one target from several sources; <code>@GenerateErrorEnvelope</code> retires the copy-pasted <code>code</code>/<code>message</code>/<code>timestamp</code> and types the error context.</li>
 <li><strong>Injecting, Testing, and Diagnostics</strong> – Register the surface you consume, fake codecs as two-line values, and lean on what/why/fix diagnostics; there is no component ceiling.</li>
-<li><strong>Capstone: One 422, Every Bad Field</strong> – The whole chapter on one order-intake boundary: a five-defect request answered by a single located-errors response, with PATCH, merge, and envelope encores, all proven by a green test.</li>
+<li><strong>Capstone: One 422, Every Bad Field</strong> – The whole chapter on one order-intake boundary: a five-defect request answered by the single response shown above, with PATCH, merge, and envelope encores, all proven by a green test.</li>
 </ul>
 </div>
 </div>
@@ -446,7 +550,7 @@ interface CustomerMapping extends MappingSpec&lt;Customer, CustomerDto&gt; {
 <h2 id="chapter-contents"><a class="header" href="#chapter-contents">Chapter Contents</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <ol>
-<li><a href="basics.html">Record Mapping Basics</a> - The spec interface, build/parse asymmetry, leaves, renames</li>
+<li><a href="basics.html">Record Mapping Basics</a> - Your first mapping, leaves, renames, derived fields</li>
 <li><a href="codecs.html">Standard Codecs and Shared Vocabulary</a> - Stock lawful codecs and mix-in sharing</li>
 <li><a href="structure.html">Nesting, Containers, and Sealed Hierarchies</a> - Composition and dotted error paths</li>
 <li><a href="tiers.html">The Emission Tiers</a> - Truthful types, projections, the validated patch, laws</li>
@@ -512,6 +616,8 @@ interface CustomerMapping extends MappingSpec&lt;Customer, CustomerDto&gt; {
         <script src=".././theme/sidebar-nav-link.js"></script>
         <script src=".././theme/chapter-title.js"></script>
         <script src=".././theme/change-tracking.js"></script>
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
     </div>

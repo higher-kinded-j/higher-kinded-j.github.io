@@ -315,7 +315,7 @@
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <p><em>The generated surface only ever offers what the field correspondences can lawfully support; nothing is fabricated.</em></p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>Most mapping tools generate the same surface for every pair and let the unlawful corners fail at runtime. <code>@GenerateMapping</code> does the opposite: it reads the field correspondences and emits only the operations they can honour. A lossless pair earns an <code>Iso</code>; a lossy projection earns a <code>Lens</code> write-back but no parse; a validating projection earns a fallible <code>patch</code>. The types tell the truth, and the truth is law-checked.</p>
+<p>Most mapping tools generate the same surface for every pair and let the unlawful corners fail at runtime. <code>@GenerateMapping</code> does the opposite: it reads the field correspondences and emits only the operations they can honour. A lossless pair earns an <code>Iso</code>; a lossy projection (a wire carrying fewer components than the domain) earns a <code>Lens</code> write-back but no parse; a validating projection earns a fallible <code>patch</code>. The types tell the truth, and the truth is law-checked.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
@@ -346,7 +346,36 @@
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>The field correspondences select what the Impl can lawfully offer:</p>
+<p>The field correspondences select what the Impl can lawfully offer. As a decision flow:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<pre class="mermaid">flowchart TD
+    S[&quot;Your spec interface&quot;] --&gt; U{&quot;extends UpdateSpec&lt;br/&gt;(instead of MappingSpec)?&quot;}
+    U --&gt;|yes| UT([&quot;updateFrom() only:&lt;br/&gt;a sparse PATCH fold&quot;])
+    U --&gt;|no| W{&quot;wire has fewer components?&lt;br/&gt;(derived fields don't count)&quot;}
+    W --&gt;|yes| B{&quot;bean-shaped wire with&lt;br/&gt;any reference property?&quot;}
+    B --&gt;|yes| BX([&quot;rejected: the bean projection&lt;br/&gt;flavour is not supported yet&quot;])
+    B --&gt;|no| F{&quot;any fallible correspondence&lt;br/&gt;on a projected component?&lt;br/&gt;(leaf, nested spec, container)&quot;}
+    F --&gt;|no| LT([&quot;build + asLens():&lt;br/&gt;lawful write-back, no parse&quot;])
+    F --&gt;|yes| PT([&quot;build + validated patch():&lt;br/&gt;a write-back that can fail&quot;])
+    W --&gt;|no| D{&quot;any fallible leaf, nested spec,&lt;br/&gt;derived field, or guarded&lt;br/&gt;bean property read?&quot;}
+    D --&gt;|no| IT([&quot;build + guarded parse&lt;br/&gt;+ lawful asIso()&quot;])
+    D --&gt;|yes| VT([&quot;build + accumulating parse,&lt;br/&gt;no asIso()&quot;])
+    IT --&gt; VP([&quot;asValidatedPrism():&lt;br/&gt;the whole mapping as a leaf,&lt;br/&gt;so it nests and lifts&quot;])
+    VT --&gt; VP
+
+    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef error fill:#e78284,stroke:#d20f39,color:#232634
+    class S wire
+    class UT,LT,PT,IT,VT,VP tier
+    class U,W,B,F,D decision
+    class BX error
+</pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>(The bean-read leg of that last decision: on a bean wire an unset reference property is an ordinary state, so its guarded reads count as fallible and a lossless-<em>looking</em> bean mapping still lands on the accumulating branch, withholding <code>asIso()</code>; see <a href="beans_patch.html#bean-shaped-wire-targets">Beans and Sparse PATCH</a>. The rejected bean projection is <a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/702">#702</a>; an all-primitive bean projection, whose reads can never be null, takes the <code>asLens()</code> branch. And a projection that also declares a <a href="basics.html#derived-wire-fields">derived field</a> is rejected outright, which is why derived fields do not count towards the wire tally.)</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>And as the reference table:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <div class="table-wrapper"><table><thead><tr><th>Spec shape</th><th>Generated surface</th></tr></thead><tbody>
 <tr><td>All components identity-matched (lossless)</td><td><code>build</code>, guarded <code>parse</code>, <strong><code>asIso()</code></strong></td></tr>
@@ -379,7 +408,7 @@ interface EmployeeCardMapping extends MappingSpec&lt;Employee, EmployeeCardDto&g
 <a class="admonition-anchor-link" href="#admonition-two-honesty-notes-on-the-lossless-row"></a>
 </div>
 <div>
-<p>"Guarded" because even a lossless record <code>parse</code> can fail on a hostile binding (a null reference component, or a null element inside an identity container, is a located invalid); the parse-iso coherence law is scoped accordingly. And <code>asIso().reverseGet</code> is a second, <em>unguarded</em> wire-to-domain direction: it exists for lawful in-memory round trips, so never feed a freshly bound wire to <code>reverseGet</code>; locating its nulls is <code>parse</code>'s job.</p>
+<p>"Guarded" because even a lossless record <code>parse</code> can fail on a hostile binding (a null reference component, or a null element inside an identity container, is a located invalid); the parse-iso coherence law is therefore stated only for wires whose reference components are non-null. And <code>asIso().reverseGet</code> is a second, <em>unguarded</em> wire-to-domain direction: it exists for lawful in-memory round trips, so never feed a freshly bound wire to <code>reverseGet</code>; locating its nulls is <code>parse</code>'s job.</p>
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
@@ -387,7 +416,21 @@ interface EmployeeCardMapping extends MappingSpec&lt;Employee, EmployeeCardDto&g
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <h2 id="law-checked-in-the-repo-and-in-your-tests"><a class="header" href="#law-checked-in-the-repo-and-in-your-tests">Law-checked, in the repo and in your tests</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>"Lawfully offer" is verified, not promised: every emission tier above (lossless iso, projection lens, fallible leaf, nested spec, <code>List</code>/<code>Optional</code>/<code>Map</code> lifting, sealed dispatch, derived fields) is compiled and law-checked in the Higher-Kinded-J build itself, against the published <a href="../tooling/test_assertions.html#optic-laws"><code>hkj-test</code> law harness</a>. Your own specs get the same guarantee with one call from a test, where <code>hkj-test</code> lives:</p>
+<p>"Lawfully offer" is verified, not promised: every emission tier above (lossless iso, projection lens, fallible leaf, nested spec, <code>List</code>/<code>Optional</code>/<code>Map</code> lifting, sealed dispatch, derived fields) is compiled and law-checked in the Higher-Kinded-J build itself, against the published <a href="../tooling/test_assertions.html#optic-laws"><code>hkj-test</code> law harness</a>.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<div id="admonition-why-this-matters" class="admonition admonish-tip" role="note" aria-labelledby="admonition-why-this-matters-title">
+<div class="admonition-title">
+<div id="admonition-why-this-matters-title">
+<p>Why this matters</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-why-this-matters"></a>
+</div>
+<div>
+<p>Every mapping tool promises correctness; this one states laws and runs them. The tier table is not documentation of intent: each row names properties that hold as passing tests (round trip, projection identity, idempotence, coherence between surfaces). They run in this repository on every build, and the one call below runs them in yours. When a record refactor changes what the pair can lawfully support, the generated surface changes with it and the law test tells you at build time, not in production. We know of no other Java mapping generator that law-checks its own output; it is the difference between a mapper you trust and a mapper you audit.</p>
+</div>
+</div>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>Your own specs get the same guarantee with one call from a test (<code>hkj-test</code> is a test-scope dependency):</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <pre><code class="language-java">import org.higherkindedj.optics.laws.MappingLaws;
 
@@ -408,7 +451,7 @@ interface EmployeeCardMapping extends MappingSpec&lt;Employee, EmployeeCardDto&g
 <li><strong>Sparse-update (<code>UpdateSpec</code>) mapping:</strong> pass the <code>updateFrom</code> method reference, a domain value, and an all-absent, a valid and an invalid wire to check the identity, idempotence and validation laws (<a href="beans_patch.html#sparse-patch-write-back-updatespec">Beans and Sparse PATCH</a>).</li>
 </ul>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>A spec with a derived field <em>and</em> a fallible leaf is better served by the fallible overload, given a parseable wire value whose derived components match what <code>build</code> would produce (this keeps the no-parse check). Reserve the domain-sample overload for total-parse mappings, where no well-formed wire value can fail.</p>
+<p>A spec with a derived field <em>and</em> a fallible leaf is better served by the fallible overload, given a parseable wire value whose derived components match what <code>build</code> would produce (this keeps the overload's rejection check on the non-parsing wire). Reserve the domain-sample overload for total-parse mappings, where no well-formed wire value can fail.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <div id="admonition-mapping-types-you-dont-own" class="admonition admonish-tip" role="note" aria-labelledby="admonition-mapping-types-you-dont-own-title">
 <div class="admonition-title">
@@ -483,7 +526,7 @@ interface SubscriberDetailsMapping extends MappingSpec&lt;Subscriber, Subscriber
         new SubscriberDetailsDto("not-an-email", 36)); // located failure
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>The patch laws are projection identity (<code>patch(d, build(d)) == Valid(d)</code>), idempotence, and located validation. <code>build</code> after <code>patch</code> is deliberately not a law: a normalising leaf rewrites the wire form by design, the same weakening as the fallible full tier.</p>
+<p>The patch laws are projection identity (<code>patch(d, build(d)) == Valid(d)</code>), idempotence, and located validation. <code>build</code> after <code>patch</code> is deliberately not a law: a normalising leaf rewrites the wire form by design, the same weakening the fallible full tier accepts (it, too, drops the build-after-parse law).</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
@@ -576,6 +619,8 @@ interface SubscriberDetailsMapping extends MappingSpec&lt;Subscriber, Subscriber
         <script src=".././theme/sidebar-nav-link.js"></script>
         <script src=".././theme/chapter-title.js"></script>
         <script src=".././theme/change-tracking.js"></script>
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
     </div>
