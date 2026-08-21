@@ -13741,57 +13741,81 @@ Writer patterns.
 
 > *"Success consists of going from failure to failure without loss of enthusiasm."*
 >
-> — Winston Churchill
+> — attributed to Winston Churchill
 
 ---
 
 A retry loop, distilled to its essence. Churchill was describing political life, but the sentiment maps precisely onto what a well-designed distributed system does dozens of times per second. The database times out; the system retries with a longer delay. The upstream service returns a 503; the circuit breaker trips, waits, then cautiously probes again. Each failure is met not with panic but with a policy: how long to wait, how many times to try, when to stop trying, and what to do instead.
 
-This chapter introduces four resilience patterns that encode this discipline into your code. A **Retry** policy re-attempts transient failures with configurable backoff strategies. A **Circuit Breaker** remembers recent failures and prevents your system from wasting effort on a dependency that is clearly down. A **Bulkhead** limits how many concurrent callers can access a shared resource, so that one slow service cannot consume all available capacity. A **Saga** coordinates multi-step operations with compensation logic, so that when step four of five fails, the earlier steps are automatically undone.
+This chapter introduces four resilience patterns that encode this discipline into your code. A **Retry** policy re-attempts transient failures with configurable backoff strategies. A **Circuit Breaker** remembers recent failures and prevents your system from wasting effort on a dependency that is clearly down. A **Bulkhead** limits how many concurrent callers can access a shared resource, so that one slow service cannot consume all available capacity. A **Saga** coordinates multi-step operations with compensation logic, so that when step four of five fails, the earlier steps are automatically undone. A fifth tool, the plain **timeout**, bounds them all; it has no page of its own and lives with the layering rules in [Combined Patterns](combined.md).
 
-```
-    Retry timeline (exponential backoff with jitter):
+Here is the destination, before any theory: one step of an order pipeline, guarded on the [typed railway](../effect/effect_path_overview.md). The whole policy is visible in the chain, and the time budget lands as a typed `Left` on the same channel as every other domain error:
 
-    attempt 1       attempt 2             attempt 3
-        │               │                     │
-        ▼               ▼                     ▼
-    ────X───────────────X─────────────────────X──────────────────✓
-        │   ~200ms wait │     ~800ms wait     │
-        │               │                     │
-        fail            fail                  succeed
+<!-- verify -->
+```java
+VResultPath<OrderError, Reservation> guarded =
+    reserveInventory(order)
+        .withRetry(error -> error instanceof OrderError.SystemError,
+            RetryPolicy.exponentialBackoffWithJitter(3, Duration.ofMillis(200)))
+        .withTimeout(Duration.ofSeconds(5),
+            () -> OrderError.SystemError.timeout("inventory", Duration.ofSeconds(5)));
 
-    Circuit Breaker states:
-
-    ┌────────┐  failures ≥ threshold  ┌────────┐  timeout expires  ┌───────────┐
-    │ CLOSED │───────────────────────▶│  OPEN  │──────────────────▶│ HALF_OPEN │
-    │        │                        │        │                   │           │
-    │ allow  │◀───────────────────────│ reject │                   │   probe   │
-    │  all   │  successes ≥ threshold │  all   │◀──────────────────│  (allow   │
-    └────────┘                        └────────┘   probe fails     │   one)    │
-                                                                   └───────────┘
+// a blown time budget arrives as Left(SystemError: inventory timed out),
+// on the same channel as "out of stock"
 ```
 
-Higher-Kinded-J's resilience patterns integrate directly with `VTask`, `VStream`, and the Effect Path API. You compose them as combinators in the same fluent chains you already use for mapping, error handling, and parallel execution. A retry is just another method on a `VTaskPath`, no different in character from `map` or `timeout`. They are lazy, composable, and type-safe: they describe resilience as structure, not as an afterthought.
+Fluent order is nesting order: each combinator wraps everything before it, so here the timeout bounds the whole retry loop, including its backoff waits, which is exactly the position a timeout belongs in. [Combined Patterns](combined.md) has the full layering rules.
 
-The full `with*` vocabulary (`withRetry`, `withTimeout`, `withCircuitBreaker`, `withBulkhead`) is available across the Path family. The lazy carriers (`IOPath`, `VTaskPath`, `VResultPath`) chain the combinators as instance methods; on the eager `EitherPath` the same combinators are static, taking the step as a `Supplier`, because resilience wraps a *computation* and an eager path has already run. On the typed-error carriers the combinators are **railway-aware**: a business `Left` is a value, never retried and never counted as a circuit-breaker failure, while typed overloads land timeouts and rejections as `Left`s rather than thrown exceptions.
+Resilience here is not an annotation or a wrapper class: it is the same fluent vocabulary you already use for `map` and `via` (`withRetry`, `withTimeout`, `withCircuitBreaker`, `withBulkhead`), lazy and composable across the Path family. (One wrinkle, the eager `EitherPath` taking each step as a `Supplier`, is explained on the [Retry](retry.md) page.)
+
+~~~admonish tip title="Why this matters"
+On the typed-error carriers the combinators are **railway-aware**: a business `Left` ("card declined", "out of stock") is an answer, not a fault, so it is never retried and never counts as a circuit-breaker failure. [Retry](retry.md) and [Circuit Breaker](circuit_breaker.md) each show what that buys.
+~~~
+
+## Which pattern do you need?
+
+```mermaid
+flowchart TD
+    Q{"What is failing,<br/>and how?"}
+    Q -->|"occasional transient blips:<br/>network, failover, contention"| R(["Retry, with backoff<br/>and jitter"])
+    Q -->|"a dependency stays down<br/>for minutes at a time"| CB(["Circuit Breaker<br/>(layered with Retry:<br/>see Combined Patterns)"])
+    Q -->|"one slow dependency starves<br/>everything else of capacity"| B(["Bulkhead"])
+    Q -->|"callers wait forever<br/>on unbounded latency"| T(["Timeout<br/>(in Combined Patterns)"])
+    Q -->|"a multi-step operation<br/>fails halfway through"| S(["Saga: compensate the<br/>completed steps"])
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class Q decision
+    class R,CB,B,T,S tier
+```
+
+A critical dependency usually needs several at once; [Combined Patterns](combined.md) layers them in the correct order with one builder.
+
+## How to read this chapter
+
+[Retry](retry.md) is the 80% case: most transient failure is solved there, and the page introduces the policy vocabulary the other patterns reuse. Read [Combined Patterns](combined.md) before shipping anything critical, because the *ordering* of layered patterns changes their meaning. In between, the decision flow above routes you to [Circuit Breaker](circuit_breaker.md), [Bulkhead](bulkhead.md), or [Saga](saga.md) as a failure mode calls for them.
 
 ---
 
 ~~~admonish info title="In This Chapter"
-- **[Retry](retry.md)**: `RetryPolicy` configuration with fixed, exponential, and jittered backoff strategies. Selective retry based on exception type. Path-native `withRetry` on every carrier, including railway-aware typed retry on `EitherPath` and `VResultPath`.
+- **Retry** – `RetryPolicy` configuration with fixed, exponential, and jittered backoff strategies. Selective retry based on exception type. Path-native `withRetry` on every carrier, including railway-aware typed retry on `EitherPath` and `VResultPath`.
 
-- **[Circuit Breaker](circuit_breaker.md)**: A state machine that tracks dependency health across three states (closed, open, half-open). Protects recovering services from being overwhelmed by callers that have not yet noticed the failure.
+- **Circuit Breaker** – A state machine that tracks dependency health across three states (closed, open, half-open). Protects recovering services from being overwhelmed by callers that have not yet noticed the failure.
 
-- **[Bulkhead](bulkhead.md)**: Semaphore-based concurrency limiting that prevents a single slow dependency from exhausting shared capacity. Configurable permits, fairness, and timeout behaviour.
+- **Bulkhead** – Semaphore-based concurrency limiting that prevents a single slow dependency from exhausting shared capacity. Configurable permits, fairness, and timeout behaviour.
 
-- **[Saga](saga.md)**: Compensating transactions for multi-step distributed operations. Each forward step registers a corresponding undo action; on failure, compensations execute in reverse order to restore consistency.
+- **Saga** – Compensating transactions for multi-step distributed operations. Each forward step registers a corresponding undo action; on failure, compensations execute in reverse order to restore consistency.
 
-- **[Combined Patterns](combined.md)**: Composing multiple resilience patterns into layered defences. The `ResilienceBuilder` applies patterns in the correct order: timeout outermost, then bulkhead, then retry, then circuit breaker innermost. Plus the per-carrier availability table for the path-native `with*` combinators and a worked per-step example.
+- **Combined Patterns** – Composing multiple resilience patterns into layered defences. The `ResilienceBuilder` applies patterns in the correct order: timeout outermost, then bulkhead, then retry, then circuit breaker innermost. Plus the per-carrier availability table for the path-native `with*` combinators and a worked per-step example.
 ~~~
 
 ~~~admonish example title="See Example Code"
-- [ResilienceExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/effect/ResilienceExample.java) - Retry policies, backoff strategies, and combined patterns
-- [ConfigurableOrderWorkflow.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/ConfigurableOrderWorkflow.java): Production-style per-step resilience; retry confined to an idempotent pre-flight, the commit run exactly once under a typed timeout
+- [ResilienceExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/effect/ResilienceExample.java): Retry policies, backoff strategies, and combined patterns
+- [ConfigurableOrderWorkflow.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/ConfigurableOrderWorkflow.java): Production-style per-step resilience; retry confined to an idempotent pre-flight, the commit given a single attempt under a typed timeout
+~~~
+
+~~~admonish info title="Hands-On Learning"
+Practise the whole chapter in the [Resilience Patterns Tutorials](../tutorials/resilience/resilience_journey.md) (4 tutorials, ~40 minutes): circuit breaker, saga, retry with bulkhead, and Path API resilience.
 ~~~
 
 ---
@@ -13835,19 +13859,21 @@ Networks are unreliable. Services restart. Databases hiccup during failover. Mos
 ```java
 // Fixed delay: same wait between every attempt
 RetryPolicy fixed = RetryPolicy.fixed(3, Duration.ofMillis(100));
-// Delays: 100ms, 100ms, 100ms
+// Waits between the 3 attempts: 100ms, 100ms (no wait after the final attempt)
 
 // Exponential backoff: doubling delays
 RetryPolicy exponential = RetryPolicy.exponentialBackoff(5, Duration.ofSeconds(1));
-// Delays: 1s, 2s, 4s, 8s, 16s (capped at maxDelay)
+// Waits between the 5 attempts: 1s, 2s, 4s, 8s
+// (the factory caps delays at 5 minutes; adjust with withMaxDelay, below)
 
 // Exponential with jitter: randomised to prevent thundering herd
 RetryPolicy jittered = RetryPolicy.exponentialBackoffWithJitter(5, Duration.ofSeconds(1));
-// Delays: ~1s, ~2s, ~4s (each randomised between 0 and the calculated delay)
+// Waits: 1s, then random in [0, 2s], [0, 4s], [0, 8s]
+// (the first delay is fixed; full jitter applies from the second)
 
 // Linear backoff: delays increase by a fixed increment
 RetryPolicy linear = RetryPolicy.linear(5, Duration.ofMillis(200));
-// Delays: 200ms, 400ms, 600ms, 800ms, 1000ms
+// Waits between the 5 attempts: 200ms, 400ms, 600ms, 800ms
 
 // No retry: fail immediately
 RetryPolicy none = RetryPolicy.noRetry();
@@ -13909,32 +13935,6 @@ RetryPolicy policy = RetryPolicy.builder()
         event.attemptNumber(), event.lastException().getMessage()))
     .build();
 ```
-
----
-
-## Monitoring with RetryEvent
-
-The `onRetry` listener receives a `RetryEvent` before each retry attempt:
-
-```java
-RetryPolicy monitored = RetryPolicy.exponentialBackoff(5, Duration.ofSeconds(1))
-    .onRetry(event -> {
-        log.warn("Attempt {} failed after {}: {}",
-            event.attemptNumber(),
-            event.nextDelay(),
-            event.lastException().getMessage());
-        metrics.incrementRetryCount(event.attemptNumber());
-    });
-```
-
-`RetryEvent` contains:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `attemptNumber()` | `int` | The 1-based attempt that just failed |
-| `lastException()` | `Throwable` | The exception that triggered this retry |
-| `nextDelay()` | `Duration` | How long the system will wait before the next attempt |
-| `timestamp()` | `Instant` | When this event occurred |
 
 ---
 
@@ -14040,17 +14040,43 @@ EitherPath<OrderError, Reservation> reserved = EitherPath.withRetry(
     policy);
 ```
 
+The whole loop, drawn once:
+
+```mermaid
+flowchart TD
+    A["run the attempt"] --> O{"outcome?"}
+    O -->|"Right"| RV(["returned:<br/>no retry needed"])
+    O -->|"Left: not selected<br/>by the predicate"| LV(["returned as-is:<br/>a business answer"])
+    O -->|"exception: not matched<br/>by the policy"| RX(["rethrown<br/>immediately"])
+    O -->|"Left: selected, or a<br/>retryable exception"| N{"attempts<br/>left?"}
+    N -->|yes| W["wait per the<br/>backoff strategy"] --> A
+    N -->|no| X(["exhausted: the last Left,<br/>or RetryExhaustedException"])
+
+    classDef process fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef error fill:#e78284,stroke:#d20f39,color:#232634
+    class A,W process
+    class O,N decision
+    class RV,LV tier
+    class X,RX error
+```
+
 | Outcome of an attempt | Behaviour |
 |-----------------------|-----------|
 | `Right` | Returned; no retry |
-| `Left` the predicate does not select | Returned immediately; business errors are values |
-| `Left` the predicate selects | Retried per the policy; on exhaustion the **last `Left`** is returned, keeping the error on the typed channel |
+| `Left`, not selected by the predicate | Returned immediately; business errors are values |
+| `Left`, selected by the predicate | Retried per the policy; on exhaustion the **last `Left`** is returned, keeping the error on the typed channel |
 | Thrown exception matching the policy's predicate | Retried; on exhaustion `RetryExhaustedException` is thrown |
 
-Internally both typed carriers share a single railway-aware retry lowering, so `EitherPath` and `VResultPath` behave identically; the only difference is eager-static versus lazy-instance.
+~~~admonish tip title="Why this matters"
+An exception-only retry layer cannot see the difference between "the network dropped the request" and "the card was declined": both arrive as failures, and it is on you to encode business outcomes as exceptions and then remember to exclude every one of them from every policy. On the typed carriers that distinction already exists in the type, so the default is right by construction: answers pass through untouched, faults retry, and opting a genuinely transient typed error into retry is one visible predicate at the call site rather than a hidden convention.
+~~~
+
+Internally both typed carriers are backed by one shared railway-aware retry implementation, so `EitherPath` and `VResultPath` behave identically; the only difference is eager-static versus lazy-instance.
 
 ~~~admonish warning title="Never Retry a Non-Idempotent Step"
-Retry re-invokes the whole step. Wrapping a step with side effects that must happen at most once (a payment, an email, an inventory *commit*) risks performing them twice: an attempt can succeed remotely and still throw on the way back. Confine retry to idempotent steps (reads, validations, reservations that can safely be re-issued) and run everything else exactly once. See [Combined Patterns](combined.md#path-native-resilience-per-step-protection) for a worked per-step example.
+Retry re-invokes the whole step. Wrapping a step with side effects that must happen at most once (a payment, an email, an inventory *commit*) risks performing them twice: an attempt can succeed remotely and still throw on the way back. Confine retry to idempotent steps (reads, validations, reservations that can safely be re-issued) and give everything else a single attempt. See [Combined Patterns](combined.md#path-native-resilience-per-step-protection) for a worked per-step example.
 ~~~
 
 ---
@@ -14068,6 +14094,32 @@ try {
     // Handle the last failure specifically
 }
 ```
+
+---
+
+## Monitoring with RetryEvent
+
+The `onRetry` listener receives a `RetryEvent` before each retry attempt:
+
+```java
+RetryPolicy monitored = RetryPolicy.exponentialBackoff(5, Duration.ofSeconds(1))
+    .onRetry(event -> {
+        log.warn("Attempt {} failed; retrying in {}: {}",
+            event.attemptNumber(),
+            event.nextDelay(),
+            event.lastException().getMessage());
+        metrics.incrementRetryCount(event.attemptNumber());
+    });
+```
+
+`RetryEvent` contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `attemptNumber()` | `int` | The 1-based attempt that just failed |
+| `lastException()` | `Throwable` | The exception that triggered this retry |
+| `nextDelay()` | `Duration` | How long the system will wait before the next attempt |
+| `timestamp()` | `Instant` | When this event occurred |
 
 ---
 
@@ -14113,6 +14165,13 @@ VTask<Data> robust = Retry.retryTask(
 | Simple retry | `Retry.retryTask(task, 3)` |
 | Retry with fallback | `Retry.retryTaskWithFallback(task, policy, fallbackFn)` |
 | Retry with recovery | `Retry.retryTaskWithRecovery(task, policy, recoveryFn)` |
+
+~~~admonish info title="Key Takeaways"
+* **A policy is a value**: immutable `RetryPolicy` objects describe attempts, backoff, and which failures are worth retrying; jitter prevents synchronised thundering herds
+* **Retry wraps a computation**: instance-chained `withRetry` on the lazy carriers, static on the eager `EitherPath`
+* **The railway is respected**: a business `Left` is an answer and is never retried by default; the typed overload opts transient errors in, and exhaustion returns the last `Left` on the typed channel
+* **Only idempotent steps earn retry**: an attempt can succeed remotely and still throw on the way back, so keep payments and other one-shot effects out of retry
+~~~
 
 ~~~admonish tip title="See Also"
 - [Circuit Breaker](circuit_breaker.md) - protecting against persistent failures
@@ -14270,6 +14329,10 @@ VTaskPath<String> guardedAsync = Path.vtask(() -> paymentService.getStatus(order
 
 On the typed-error carriers the breaker is railway-aware: a `Left` is a *successfully computed value* (the service answered, just not with a `Right`), so it does **not** count as a breaker failure. Only thrown exceptions (defects) trip the circuit. A stream of "customer not found" responses will never open the circuit; a stream of connection resets will.
 
+~~~admonish tip title="Why this matters"
+A circuit breaker measures *service health*, not business outcomes. A breaker that counts every non-success trips on a healthy service the moment clients send a burst of bad requests, taking the service away from everyone else exactly when it was answering correctly. On the typed carriers the largest class of non-successes, business `Left`s, is excluded by construction; `recordFailure` then only has to classify what still arrives as a thrown exception.
+~~~
+
 The typed overloads keep an open-circuit rejection on the typed channel instead of surfacing `CircuitOpenException`:
 
 ```java
@@ -14333,15 +14396,15 @@ VTask<String> resilient = Retry.retryTask(
         .retryIf(ex -> !(ex instanceof CircuitOpenException)));
 ```
 
-Note the retry predicate: `CircuitOpenException` should *not* be retried, because the circuit breaker has already determined the service is unhealthy. Use `ResilienceBuilder` for correct ordering without manual wiring:
+Note the retry predicate: `CircuitOpenException` should *not* be retried, because the circuit breaker has already determined the service is unhealthy. [Combined Patterns](combined.md) introduces `ResilienceBuilder`, which applies this ordering for you without manual wiring.
 
-```java
-VTask<String> resilient = Resilience.<String>builder(
-        VTask.of(() -> paymentService.get(url)))
-    .withCircuitBreaker(paymentBreaker)
-    .withRetry(RetryPolicy.exponentialBackoff(3, Duration.ofMillis(200)))
-    .build();
-```
+~~~admonish info title="Key Takeaways"
+* **Three states**: CLOSED counts consecutive failures and opens at `failureThreshold`; OPEN rejects instantly for `openDuration`
+* **Recovery is probed**: HALF_OPEN needs `successThreshold` probe successes to close, and any probe failure re-opens
+* **One breaker per protected endpoint**: `protect()` is generic, so a single instance guards every call to that endpoint and they share failure state; unrelated endpoints get their own breakers
+* **Only faults trip it**: on the typed carriers a business `Left` never counts; the `onOpen` overload lands rejections as typed `Left`s
+* **Tune `recordFailure`**: a 400 or a validation error reflects the request, not the service; count only what signals an unhealthy dependency
+~~~
 
 ~~~admonish tip title="See Also"
 - [Retry](retry.md) - backoff strategies and retry configuration
@@ -14483,7 +14546,7 @@ Without the `onFull` argument, `BulkheadFullException` propagates as-is.
 
 ## Bulkhead vs VStreamPar
 
-Both limit concurrency, but at different scopes:
+Both limit concurrency, but at different scopes (`VStreamPar` is the stream `parEvalMap` family):
 
 | | Bulkhead | VStreamPar |
 |---|----------|------------|
@@ -14513,6 +14576,13 @@ Here, `parEvalMap(4, ...)` limits the stream to 4 in-flight elements, whilst `se
 int available = dbBulkhead.availablePermits();  // How many more callers can enter
 int active = dbBulkhead.activeCount();           // How many callers are currently executing
 ```
+
+~~~admonish info title="Key Takeaways"
+* **A bulkhead protects everyone else**: capping concurrent access to one slow dependency keeps the shared capacity available to healthy ones; waiting for a permit is itself bounded by `waitTimeout`, and `maxWait` bounds the queue
+* **One instance per resource**: like a breaker, a bulkhead is shared application-wide; `protect()` is generic across return types
+* **Rejection is explicit**: a full bulkhead throws `BulkheadFullException`, or lands as a typed `Left` via the `onFull` overload on the railway carriers
+* **Different scope from `parEvalMap`**: VStreamPar bounds one pipeline's parallelism; a bulkhead bounds a shared resource across the whole application, and the two compose
+~~~
 
 ~~~admonish tip title="See Also"
 - [Circuit Breaker](circuit_breaker.md) - detecting and responding to service failures
@@ -14557,25 +14627,18 @@ Use `Resource` for files, connections, and locks. Use `Saga` for multi-step busi
 
 ## The Flow
 
-```
-    Forward execution (left to right):
+```mermaid
+flowchart LR
+    C["Charge Payment<br/>result: pay-123"] --> R["Reserve Stock<br/>result: res-456"] --> S["Schedule Shipping"]
+    S -->|"fails: compensate completed<br/>steps, newest first"| U1["1. Release res-456"]
+    U1 --> U2["2. Refund pay-123"]
 
-    ┌──────────┐    ┌──────────┐    ┌──────────┐
-    │  Charge  │───▶│ Reserve  │───▶│ Schedule │
-    │ Payment  │    │ Stock    │    │ Shipping │
-    │          │    │          │    │          │
-    │ result:  │    │ result:  │    │  FAILS   │
-    │ pay-123  │    │ res-456  │    │    ✗     │
-    └──────────┘    └──────────┘    └──────────┘
-
-    Compensation (right to left):
-
-    ┌──────────┐    ┌──────────┐
-    │  Refund  │◀───│ Release  │
-    │ pay-123  │    │ res-456  │
-    │          │    │          │
-    │    ✓     │    │    ✓     │
-    └──────────┘    └──────────┘
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef error fill:#e78284,stroke:#d20f39,color:#232634
+    classDef comp fill:#8caaee,stroke:#1e66f5,color:#232634
+    class C,R tier
+    class S error
+    class U1,U2 comp
 ```
 
 Key points:
@@ -14656,14 +14719,22 @@ SagaBuilder.<Unit>start()
 ```java
 VTask<String> execution = orderSaga.run();
 
-Try<String> result = execution.runSafe();
-result.foldFailureFirst(
-    error -> log.error("Order failed: {}", error.getMessage()),
-    trackingId -> log.info("Order complete: {}", trackingId)
-);
+try {
+    String trackingId = execution.run();
+    log.info("Order complete: {}", trackingId);
+} catch (SagaExecutionException e) {
+    // a compensation also failed; e carries the full SagaError
+    log.error("Order failed and compensation was incomplete: {}", e.getMessage());
+} catch (RuntimeException original) {
+    // all compensations succeeded; the step's failure surfaces directly
+    // (a checked exception arrives wrapped in VTaskExecutionException)
+    log.error("Order failed, fully compensated: {}", original.getMessage());
+}
 ```
 
 If all compensations succeed, the original exception is thrown directly. If any compensation also fails, a `SagaExecutionException` is thrown containing the full `SagaError`.
+
+The saga's own `runSafe()` (distinct from `VTask.runSafe()`, which returns a `Try`) keeps the failure structured instead of thrown:
 
 ### runSafe(): Either with Full Details
 
@@ -14735,6 +14806,13 @@ idempotent where possible.
 | `saga.andThen(fn)` | Chain another saga step |
 | `saga.map(fn)` | Transform the final result |
 | `saga.flatMap(fn)` | Chain with another saga |
+
+~~~admonish info title="Key Takeaways"
+* **Each compensatable completed step registers an undo**: compensations run in reverse order over the steps that finished; the failed step itself, a `stepNoCompensation` step, and anything a partially applied action did before failing have nothing registered to undo
+* **Saga is for business cleanup, Resource for infrastructure**: refunds and releases belong here; files, connections, and locks belong to `Resource`
+* **`runSafe()` tells the whole story**: `SagaError` names the failed step and carries every compensation result, so partial compensation is detectable, not silent
+* **Compensation is best-effort**: all compensations are attempted even when some fail; design them idempotent so a repeated undo is harmless
+~~~
 
 ~~~admonish tip title="See Also"
 - [Combined Patterns](combined.md) - using saga alongside retry and circuit breaker
@@ -14866,6 +14944,10 @@ Response response = resilientCall.run();
 
 The builder methods can be called in any order; patterns are always applied in the correct sequence.
 
+~~~admonish tip title="Why this matters"
+The ordering bug is silent: hand-wired resilience with retry accidentally inside the breaker compiles, runs, and even works in tests, then misreports service health in production, where one logical failure counts once instead of once per attempt. `ResilienceBuilder` makes that mistake unrepresentable: whatever order you call the methods in, the layers land as timeout, bulkhead, retry, breaker. The principle is the same as the mapper's [truthful tiers](../mapping/tiers.md): make the wrong composition unrepresentable rather than documented.
+~~~
+
 ## Convenience Methods
 
 For simpler combinations, the `Resilience` utility class provides direct methods:
@@ -14903,7 +14985,9 @@ The `with*` vocabulary is available across the Path family, so resilience compos
 | `withBulkhead(bulkhead)` | ✓ | ✓ | ✓ | ✓ |
 | `withBulkhead(bulkhead, onFull)`: rejection as a typed `Left` | · | · | ✓ | ✓ |
 
-The typed carriers (`EitherPath`, `VResultPath`) are **railway-aware** throughout, sharing one retry lowering internally:
+(✓ = available; · = not applicable on that carrier.)
+
+The typed carriers (`EitherPath`, `VResultPath`) are **railway-aware** throughout, backed by one shared retry implementation:
 
 - A business `Left` is a value, not a fault: it is **never retried** by default, and it **never trips a circuit breaker** (only thrown exceptions count as failures).
 - The typed `withRetry(retryOn, policy)` overload opts selected transient errors in; on exhaustion the **last `Left`** is returned, staying on the typed channel.
@@ -14961,7 +15045,7 @@ The layering inside the inventory step follows [the correct order](#the-ordering
 Since a timed-out computation is not interrupted, `Left(timeout)` on the payment step means the charge's outcome is *unknown*, not that it did not happen. Never respond to a payment timeout by simply retrying; reconcile with the payment provider, or use a [Saga](saga.md) to compensate.
 ~~~
 
-The same shape works on the async railway: `VResultPath` carries these combinators as instance methods, so a lazy pipeline chains `.withRetry(retryOn, policy).withCircuitBreaker(breaker, onOpen)` directly. The order example's [`ConfigurableOrderWorkflow`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/ConfigurableOrderWorkflow.java) applies this per-step discipline in full: retry confined to an idempotent pre-flight, the committing phase run exactly once under a typed timeout; see [Order Workflow: Production Patterns](../hkts/order-production.md).
+The same shape works on the async railway: `VResultPath` carries these combinators as instance methods, and **fluent order is nesting order**: each combinator wraps everything chained before it, so the earlier combinator sits inside. `.withCircuitBreaker(breaker, onOpen).withRetry(retryOn, policy)` therefore keeps the breaker innermost, each attempt individually recorded, with the retry predicate refusing the open-circuit `Left` exactly as above. Chaining the breaker *after* the retry instead is a deliberate simplification the combinators' own documentation offers: an open circuit is then never retried against without any predicate, at the cost of the breaker seeing the whole retry loop as a single call. The order example's [`ConfigurableOrderWorkflow`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/ConfigurableOrderWorkflow.java) applies this per-step discipline in full: retry confined to an idempotent pre-flight, the committing phase given a single attempt under a typed timeout; see [Order Workflow: Production Patterns](../hkts/order-production.md).
 
 ## Stream Integration
 
@@ -15000,23 +15084,7 @@ List<UserProfile> profiles = Path.vstreamFromList(userIds)
 
 ## Pattern Selection Guide
 
-Not every service needs every pattern. Choose based on the failure characteristics:
-
-```
-    Is the service likely to fail?
-    │
-    ├── Occasionally (transient)
-    │   └── Retry only
-    │
-    ├── Sometimes for extended periods
-    │   └── Retry + Circuit Breaker
-    │
-    ├── Has limited capacity
-    │   └── Retry + Bulkhead
-    │
-    └── Critical service, all failure modes possible
-        └── Retry + Circuit Breaker + Bulkhead + Timeout
-```
+Not every service needs every pattern. The [chapter introduction's decision flow](ch_intro.md#which-pattern-do-you-need) chooses by failure mode; this is the same choice as a reference table:
 
 | Failure mode | Pattern | Why |
 |-------------|---------|-----|
@@ -15064,6 +15132,13 @@ VTask<PaymentResult> chargePayment = Resilience.<PaymentResult>builder(
 // Execute
 PaymentResult result = chargePayment.run();
 ```
+
+~~~admonish info title="Key Takeaways"
+* **Order is meaning**: the timeout, outermost of the protection layers, bounds everything including waits (a `withFallback` recovery runs after it, outside the budget); the breaker innermost sees every attempt individually; retry inside a breaker misreports health
+* **The builder makes the right order the only order**: call `with*` in any sequence and `ResilienceBuilder` layers them correctly
+* **Grant resilience per step, not per workflow**: idempotent steps earn retry and a breaker; non-idempotent steps get only a typed time budget and no automatic retry
+* **A typed timeout is not a rollback**: the losing computation keeps running unobserved, so a payment timeout means *unknown*, and the answer is reconciliation or a [Saga](saga.md), never a blind retry
+~~~
 
 ~~~admonish tip title="See Also"
 - [Retry](retry.md) - backoff strategies and retry configuration
