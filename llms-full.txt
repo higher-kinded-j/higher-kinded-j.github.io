@@ -16985,7 +16985,7 @@ Arrows indicate "can be used as" relationships. A Lens can stand in wherever a G
 ~~~admonish info title="In This Chapter"
 - **Fundamentals** – Lens, Prism, Affine, and Iso: the four optics for working with single values. Introduces the composition rules and the paired-lens pattern for fields that share invariants. Start here if you are new to optics.
 - **Collections** – Traversals and Folds for zero-or-more focus, plus the asymmetric specialists Getter (read-only) and Setter (write-only). Covers the ready-made traversals for Java's standard collections and monoid-based aggregation.
-- **Precision and Filtering** – Narrow focus by predicate or index. Filtered and indexed traversals, the `Each`, `At`, and `Ixed` type classes, character-level string traversals, and advanced Prism patterns like `nearly` and `doesNotMatch`.
+- **Precision and Filtering** – Narrow focus by predicate or index. Filtered and indexed traversals, the `Each`, `At`, and `Ixed` type classes, character-level string traversals, and advanced Prism patterns, including predicate matching with `nearly`.
 - **Java-Friendly APIs** – Three complementary APIs that make optics feel native to Java: the Focus DSL for path-based navigation, the Fluent API for validation-aware updates, and the Free Monad DSL for programs-as-data. Backed by annotation-driven code generation (`@GenerateLenses`, `@GenerateFocus`, `@GeneratePrisms`, and friends). For the domain ↔ DTO boundary, see the dedicated [Mapping at the Boundary](../mapping/ch_intro.md) chapter.
 - **Integration and Recipes** – A complete walkthrough composing Lens, Prism, and Traversal into a validation pipeline, integration with the library's core types (Either, Maybe, Validated, Optional), multi-edit and sparse REST PATCH updates, and a cookbook of ready-to-use solutions for the nested-update problems you will actually meet in production.
 ~~~
@@ -17656,13 +17656,9 @@ A **Fold** is a read-only optic designed specifically for querying and extractin
 
 ## Advanced Capabilities: Profunctor Adaptations
 
-One of the most powerful features of `higher-kinded-j` optics is their **profunctor** nature. Every optic can be adapted to work with different source and target types using three key operations:
+Every optic is fundamentally an `Optic<S, T, A, B>`, and that interface carries the **profunctor** operations `contramap`, `map`, and `dimap`, which adapt the types an optic works between: where it reads from, and what an update produces.
 
-* **`contramap`**: Adapt an optic to work with a different source type
-* **`map`**: Transform the result type of an optic
-* **`dimap`**: Adapt both source and target types simultaneously
-
-This makes optics incredibly flexible for real-world scenarios like API integration, legacy system support, and working with different data representations. For a detailed exploration of these capabilities, see the [Profunctor Optics Guide](profunctor_optics.md).
+In practice most adaptation is done by composing (when the new source contains the old) or by bridging through an [Iso](iso.md) (when two shapes hold the same information), both of which keep the full optic API. The raw profunctor operations return an `Optic`, and come into their own in effectful `modifyF` pipelines. The [Profunctor Optics Guide](profunctor_optics.md) works through which route fits which job.
 
 ## How `higher-kinded-j` Provides Optics
 
@@ -21766,7 +21762,7 @@ The `Traversals` utility class provides convenient helper methods to perform the
 flowchart TD
     Q{"Bulk work on values<br/>inside a structure?"}
     Q -->|"same shape back,<br/>values updated in place"| T(["Traversal"])
-    Q -->|"filter, regroup, or<br/>reshape the collection"| S(["Stream API"])
+    Q -->|"drop elements or<br/>reshape the collection"| S(["Stream API"])
     Q -->|"early exit or<br/>imperative control flow"| L(["Manual loop"])
 
     classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
@@ -27395,20 +27391,55 @@ Practice list decomposition patterns in [Tutorial 15: List Prisms](https://githu
 
 Sometimes you don't want *all* the elements. Sometimes you want the expensive ones. Or the ones at specific indices. Or the ones that match a condition known only at runtime.
 
-Optics handle this through filtering and indexing: techniques that narrow focus to exactly the subset you need. A filtered Traversal only operates on elements matching a predicate. An indexed Traversal carries position information alongside each element. Together, they provide surgical precision that would otherwise require verbose, error-prone manual iteration.
+Optics handle this through filtering and indexing: techniques that narrow focus to exactly the subset you need. A filtered Traversal only operates on elements matching a predicate. An indexed Traversal carries position information alongside each element. Together, they provide surgical precision that would otherwise require verbose, error-prone manual iteration. Here is the destination, before any theory: a Collections-style bulk update, narrowed to only the items that cost more than £100. Every line compiles against the real library on every build:
+
+<!-- verify -->
+```java
+var pricey = OrderTraversals.items()
+    .andThen(ItemLenses.price().asTraversal())
+    .filtered(price -> price > 100.0);
+
+Order discounted = Traversals.modify(pricey, price -> price - 50.0, order);
+// Traversals.getAll(pricey, order)      -> [500.0, 200.0]
+// Traversals.getAll(pricey, discounted) -> [450.0, 150.0]
+// the £25 mouse is untouched, and so is order itself
+```
+
+~~~admonish tip title="Why this matters"
+The predicate travels with the path, not with the loop body. Write `if` checks inside iteration and every caller must remember them; build the filter into the optic and the rule is declared once, composes with any lens or traversal, and cannot be forgotten at a call site. The same holds for position: an indexed traversal carries the index in the type instead of in a manually-threaded counter.
+~~~
 
 The At and Ixed type classes extend this precision to maps and indexed collections, offering principled ways to access, insert, or remove elements at specific keys. If you've ever written `map.get(key)` followed by null checks and conditional puts, you'll appreciate what these abstractions provide.
 
 This section also revisits Prisms with advanced patterns: the `nearly` prism for predicate-based matching, `doesNotMatch` for exclusion filtering, and composition strategies for complex sealed interface hierarchies. These are the tools you reach for when the basic patterns no longer suffice.
 
-Most users only need filtered traversals, covered first. Indexed access and profunctor optics solve specific problems; read those pages when you hit them, not before.
+Most readers only need filtered traversals, covered first. The rest solve specific problems: reach for indexed optics when position drives the logic, `At`/`Ixed` for per-key map access, `Each` for a canonical traversal per container, string traversals for text, and profunctor adaptations when the optic is right but the types are not. Read those pages when you hit them, not before.
+
+## Which tool do you need?
+
+```mermaid
+flowchart TD
+    Q{"How do you choose<br/>the elements?"}
+    Q -->|"by a condition<br/>on the value"| F(["Filtered Optics"])
+    Q -->|"the position matters<br/>during the update"| I(["Indexed Optics"])
+    Q -->|"per-key insert, update,<br/>or delete in a map"| A(["At and Ixed"])
+    Q -->|"one canonical traversal<br/>per container type"| E(["Each"])
+    Q -->|"the elements are characters,<br/>words, or lines"| S(["String Traversals"])
+    Q -->|"which variant is this,<br/>by type or predicate"| R(["Advanced Prism Patterns"])
+    Q -->|"the optic is right,<br/>the types are not"| P(["Profunctor Optics"])
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class Q decision
+    class F,I,A,E,S,R,P tier
+```
 
 ~~~admonish info title="Hands-On Learning"
 The [Traversals & Practice Journey](../tutorials/optics/traversals_journey.md) (27 exercises, ~40 minutes) covers filtering and indexed patterns alongside the basics.
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Annotations at a Glance](annotations_at_a_glance.md), the underlying optics are still annotation-generated.
+- [Annotations at a Glance](annotations_at_a_glance.md): the underlying optics are still annotation-generated
 ~~~
 
 ---
@@ -27448,9 +27479,9 @@ When position matters:
     ┌─────────────────────────────────────────────┐
     │  IndexedTraversal                           │
     │                                             │
-    │  getAll → [(0,"A"), (1,"B"), (2,"C"), ...]  │
+    │  toIndexedList → [(0,"A"), (1,"B"), ...]    │
     │                                             │
-    │  modifyIndexed((i, v) -> v + i)             │
+    │  imodify((i, v) -> v + i)                   │
     │    → ["A0", "B1", "C2", "D3"]               │
     └─────────────────────────────────────────────┘
 ```
@@ -27463,7 +27494,7 @@ When position matters:
 - **Each Typeclass** – Provides canonical traversals for container types. Get a Traversal for any List, Map, Optional, or custom container through a uniform interface, with optional indexed access.
 - **String Traversals** – Treat strings as collections of characters. Modify individual characters, filter by character properties, or transform text character-by-character.
 - **At and Ixed** – Type classes for indexed access. `At` handles keys that may or may not exist (like Map entries); `Ixed` handles indices that should exist (like List positions).
-- **Advanced Prism Patterns** – Beyond basic sum types: `nearly` matches values close to a target, `doesNotMatch` inverts a Prism's focus, and complex hierarchies compose cleanly.
+- **Advanced Prism Patterns** – Beyond basic sum types: production routing for configuration, API responses, events, and state machines, plus `nearly` for matching a predicate rather than a type and `doesNotMatch` for naming the negative case.
 - **Profunctor Optics** – Transform the input and output types of optics. Adapt an optic for a different representation without rewriting it.
 ~~~
 
@@ -27473,11 +27504,14 @@ When position matters:
 
 1. [Filtered Optics](filtered_optics.md) - Predicate-based targeting within traversals
 2. [Indexed Optics](indexed_optics.md) - Position-aware operations on collections
+    - [Indexed Optics: Advanced Patterns](indexed_optics_advanced.md) - Paired indices and audit trails
 3. [Each Typeclass](each_typeclass.md) - Canonical element-wise traversal for containers
 4. [String Traversals](string_traversals.md) - Character-level operations on text
 5. [Indexed Access](indexed_access.md) - At and Ixed type classes for indexed access patterns
-6. [Advanced Prism Patterns](advanced_prism_patterns.md) - `nearly`, `doesNotMatch`, and complex matching
-7. [Profunctor Optics](profunctor_optics.md) - Type adaptation with contramap, map, and dimap
+6. [Advanced Prism Patterns](advanced_prism_patterns.md) - Production routing patterns, `nearly`, and `doesNotMatch`
+    - [Advanced Prism Patterns: Recipes](advanced_prism_patterns_recipes.md) - Caching and testing recipes
+7. [Profunctor Optics](profunctor_optics.md) - Adapting an optic to different types
+    - [Profunctor Optics: Recipes](profunctor_optics_recipes.md) - Wrapper and migration adapters
 
 ---
 
@@ -27495,12 +27529,12 @@ When position matters:
 - The difference between filtering during modification vs filtering during queries
 - Advanced filtering with `filterBy()` for query-based predicates
 - The static `Traversals.filtered()` combinator for affine traversals
-- Understanding lazy evaluation semantics (preserved structure vs excluded queries)
+- The preserved-versus-excluded semantics: modification keeps the structure, queries drop non-matches
 - When to use filtered optics vs Stream API vs conditional logic
-- Real-world patterns for customer segmentation, inventory management, and analytics
+- Real-world patterns for customer segmentation and analytics
 ~~~
 
-~~~admonish title="Example Code"
+~~~admonish example title="See Example Code"
 [FilteredTraversalExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/FilteredTraversalExample.java)
 ~~~
 
@@ -27538,6 +27572,7 @@ public record Customer(String name, List<Invoice> invoices, SubscriptionTier tie
 
 @GenerateLenses
 @GenerateFolds
+@GenerateTraversals
 public record Platform(List<User> users, List<Customer> customers) {}
 
 public enum SubscriptionTier { FREE, BASIC, PREMIUM, ENTERPRISE }
@@ -27577,7 +27612,7 @@ The key insight: filtering becomes part of your optic's *identity*, not an exter
 
 ## Three Ways to Filter
 
-Higher-kinded-j provides three complementary approaches to filtered optics:
+Higher-Kinded-J provides three complementary approaches to filtered optics:
 
 | Approach | Signature | Use Case |
 |----------|-----------|----------|
@@ -27591,7 +27626,7 @@ Each serves different needs, and they can be combined for powerful compositions.
 
 ## A Step-by-Step Walkthrough
 
-### Step 1: Instance Method – `filtered(Predicate)`
+### Step 1: The Instance Method `filtered(Predicate)`
 
 The most intuitive approach: call `filtered()` on any `Traversal` or `Fold` to create a new optic that only focuses on matching elements.
 
@@ -27615,20 +27650,25 @@ List<User> actives = Traversals.getAll(activeUsers, users);
 
 **Critical Semantic**: During **modification**, non-matching elements are *preserved unchanged* in the structure. During **queries** (like `getAll`), they are *excluded* from the results. This preserves the overall structure whilst focusing operations on the subset you care about.
 
+~~~admonish warning title="The filtered caveat"
+`filtered` behaves predictably only while the modification cannot change the predicate's own verdict. Filter on `score <= 120` and then apply a bonus that lifts a user past 120, and the second run of the very same update targets fewer elements than the first: the operation is not idempotent. (A verdict can flip the other way too, pulling new elements in.) Keep the predicate on fields the modification does not touch, or accept the non-idempotence deliberately.
+~~~
+
 #### On Folds (Read-Only)
 
 ```java
-// Fold from Order to Items
-Fold<Order, Item> itemsFold = Fold.of(Order::items);
+// Fold from Customer to invoices (generated by @GenerateFolds)
+Fold<Customer, Invoice> invoicesFold = CustomerFolds.invoices();
 
-// Filter to expensive items only
-Fold<Order, Item> expensiveItems = itemsFold.filtered(item -> item.price() > 100);
+// Filter to overdue invoices only
+Fold<Customer, Invoice> overdueInvoices = invoicesFold.filtered(Invoice::overdue);
 
-// Query operations work on filtered subset
-int count = expensiveItems.length(order);           // Count expensive items
-List<Item> expensive = expensiveItems.getAll(order); // Get expensive items
-double total = expensiveItems.foldMap(sumMonoid, Item::price, order); // Sum expensive
-boolean allPremium = expensiveItems.all(Item::isPremium, order);  // Check expensive items
+// Query operations work on the filtered subset
+int count = overdueInvoices.length(customer);             // Count overdue invoices
+List<Invoice> overdue = overdueInvoices.getAll(customer); // Get overdue invoices
+double owed = overdueInvoices.foldMap(
+    Monoids.doubleAddition(), Invoice::amount, customer); // Sum overdue amounts
+boolean allLarge = overdueInvoices.all(inv -> inv.amount() > 100, customer);
 ```
 
 ### Step 2: Composing Filtered Traversals
@@ -27675,9 +27715,9 @@ Traversal<List<User>, User> premiumUsers =
         .filtered(user -> user.tier() == PREMIUM || user.tier() == ENTERPRISE);
 ```
 
-### Step 4: Static Combinator – `Traversals.filtered()`
+### Step 4: The Static Combinator `Traversals.filtered()`
 
-The static method creates an **affine traversal** (0 or 1 focus) that can be composed anywhere in a chain:
+The static method creates an **affine traversal**: it focuses zero or one element, depending on the predicate. It is typed `Traversal` rather than [`Affine`](affine.md) so that it slots directly into traversal chains; "affine" here describes how many elements it focuses, not the Java type:
 
 ```java
 // Create a reusable filter
@@ -27708,7 +27748,7 @@ Traversal<List<User>, User> approach1 = Traversals.<User>forList().filtered(User
 Traversal<List<User>, User> approach2 = Traversals.<User>forList().andThen(Traversals.filtered(User::active));
 ```
 
-### Step 5: Advanced Filtering – `filterBy(Fold, Predicate)`
+### Step 5: Advanced Filtering with `filterBy(Fold, Predicate)`
 
 Sometimes you need to filter based on *nested* properties or aggregated queries. The `filterBy` method accepts a `Fold` that queries each element, including only those where at least one queried value matches the predicate.
 
@@ -27731,42 +27771,26 @@ List<Customer> updated = Traversals.modify(
 );
 ```
 
-**Example: Orders with High-Value Items**
-
-```java
-Traversal<List<Order>, Order> allOrders = Traversals.forList();
-Fold<Order, Item> orderItems = Fold.of(Order::items);
-
-// Orders containing at least one item over £500
-Traversal<List<Order>, Order> highValueOrders =
-    allOrders.filterBy(orderItems, item -> item.price() > 500);
-
-List<Order> result = Traversals.getAll(highValueOrders, orders);
-// Returns orders that have at least one expensive item
-```
-
-**Example: Using Composed Folds**
+**Example: Querying Through a Composed Path**
 
 ```java
 Traversal<List<Customer>, Customer> allCustomers = Traversals.forList();
-Fold<Customer, Order> customerOrders = Fold.of(Customer::orders);
-Fold<Order, Item> orderItems = Fold.of(Order::items);
 
-// Fold from Customer to all their Items (across all orders)
-Fold<Customer, Item> customerItems = customerOrders.andThen(orderItems);
+// Fold from Customer to every invoice amount
+Fold<Customer, Double> invoiceAmounts =
+    CustomerFolds.invoices().andThen(InvoiceLenses.amount().asFold());
 
-// Customers who have purchased any premium product
-Traversal<List<Customer>, Customer> premiumBuyers =
-    allCustomers.filterBy(customerItems, Item::isPremium);
+// Customers with any invoice over £1,000
+Traversal<List<Customer>, Customer> keyAccounts =
+    allCustomers.filterBy(invoiceAmounts, amount -> amount > 1_000);
 
-// Mark them as VIP
-Lens<Customer, String> nameLens = CustomerLenses.name();
-Traversal<List<Customer>, String> premiumBuyerNames =
-    premiumBuyers.andThen(nameLens.asTraversal());
+// Tag them in the name
+Traversal<List<Customer>, String> keyAccountNames =
+    keyAccounts.andThen(CustomerLenses.name().asTraversal());
 
 List<Customer> result = Traversals.modify(
-    premiumBuyerNames,
-    name -> name + " [VIP]",
+    keyAccountNames,
+    name -> name + " [KEY ACCOUNT]",
     customers
 );
 ```
@@ -27788,21 +27812,22 @@ A crucial aspect of filtered optics is understanding what happens to non-matchin
 
 ```java
 List<User> users = List.of(
-    new User("Alice", true, 100),   // active
-    new User("Bob", false, 200),    // inactive
-    new User("Charlie", true, 150)  // active
+    new User("Alice", true, 100, PREMIUM),  // active
+    new User("Bob", false, 200, FREE),      // inactive
+    new User("Charlie", true, 150, BASIC)   // active
 );
 
-Traversal<List<User>, User> activeUsers = forList().filtered(User::active);
+Traversal<List<User>, User> activeUsers =
+    Traversals.<User>forList().filtered(User::active);
 
 // MODIFY: Structure preserved, only matching modified
 List<User> modified = Traversals.modify(activeUsers, User::grantBonus, users);
-// [User(Alice, true, 200), User(Bob, false, 200), User(Charlie, true, 250)]
-//  ↑ modified               ↑ UNCHANGED           ↑ modified
+// [User(Alice, true, 200, PREMIUM), User(Bob, false, 200, FREE), User(Charlie, true, 250, BASIC)]
+//  ^ modified                        ^ UNCHANGED                  ^ modified
 
 // QUERY: Only matching elements returned
 List<User> gotten = Traversals.getAll(activeUsers, users);
-// [User(Alice, true, 100), User(Charlie, true, 150)]
+// [User(Alice, true, 100, PREMIUM), User(Charlie, true, 150, BASIC)]
 // Bob is EXCLUDED entirely
 ```
 
@@ -27881,7 +27906,7 @@ List<User> activeUsers = Traversals.getAll(userTraversal, users).stream()
     .collect(toList());
 
 // Wrong mental model: Expecting structure change
-Traversal<List<User>, User> active = forList().filtered(User::active);
+Traversal<List<User>, User> active = Traversals.<User>forList().filtered(User::active);
 List<User> result = Traversals.modify(active, User::grantBonus, users);
 // result still has same LENGTH as users! Non-matching preserved, not removed
 
@@ -27900,7 +27925,7 @@ for (Platform platform : platforms) {
 }
 
 // Clear: Filter is part of the optic definition
-Traversal<List<User>, User> activeUsers = forList().filtered(User::active);
+Traversal<List<User>, User> activeUsers = Traversals.<User>forList().filtered(User::active);
 List<User> result = Traversals.getAll(activeUsers, users);
 // Returns only active users
 
@@ -27918,11 +27943,9 @@ boolean isActive = user.active();
 
 Filtered optics are optimised for efficiency:
 
-* **Lazy evaluation**: The predicate is only called when needed
-* **Short-circuiting**: Operations like `exists` and `find` stop at first match
-* **No intermediate collections**: Filtering happens during traversal, not before
-* **Structural sharing**: Unmodified parts of the structure are reused
-* **Single pass**: Both filtering and transformation occur in one traversal
+* **No pre-filtering pass**: the predicate is applied during the traversal, not in a separate pass beforehand
+* **Element reuse**: elements the predicate rejects are carried over by reference; the list container itself is rebuilt by `ListTraverse.traverse`
+* **Single pass**: both filtering and transformation occur in one traversal (every element is visited; the predicate decides whether the function applies)
 
 **Best Practice**: Store frequently-used filtered traversals as constants:
 
@@ -28119,7 +28142,7 @@ Alice is now VIP
 Charlie is now VIP
 
 --- Analysis 5: Platform Statistics ---
-Expensive items (>£100): 5 items, £3149.00 revenue
+Expensive items (>£100): 4 items, £2399.00 revenue
 Budget items (≤£100): 4 items
 
 === END OF ANALYTICS ===
@@ -28129,7 +28152,7 @@ Budget items (≤£100): 4 items
 
 ## The Relationship to Haskell's Lens Library
 
-For those familiar with functional programming, higher-kinded-j's filtered optics are inspired by Haskell's [lens library](https://hackage.haskell.org/package/lens), specifically the [`filtered`](https://hackage.haskell.org/package/lens-5.2.3/docs/Control-Lens-Traversal.html#v:filtered) combinator.
+For those familiar with functional programming, Higher-Kinded-J's filtered optics are inspired by Haskell's [lens library](https://hackage.haskell.org/package/lens), specifically the [`filtered`](https://hackage.haskell.org/package/lens-5.2.3/docs/Control-Lens-Traversal.html#v:filtered) combinator.
 
 In Haskell:
 ```haskell
@@ -28139,14 +28162,9 @@ filtered :: (a -> Bool) -> Traversal' a a
 This creates a traversal that focuses on the value only if it satisfies the predicate, exactly what our `Traversals.filtered(Predicate)` does.
 
 **Key differences:**
-- Higher-kinded-j uses explicit `Applicative` instances rather than implicit type class resolution
+- Higher-Kinded-J uses explicit `Applicative` instances rather than implicit type class resolution
 - Java's type system requires more explicit composition steps
 - The `filterBy` method is an extension not present in standard lens
-
-**Further Reading:**
-- [Haskell Lens Tutorial: Traversal](https://hackage.haskell.org/package/lens-tutorial-1.0.4/docs/Control-Lens-Tutorial.html) - Original inspiration
-- [Optics By Example](https://leanpub.com/optics-by-example) by Chris Penner - Comprehensive book on optics
-- [Monocle (Scala)](https://www.optics.dev/Monocle/) - Similar library for Scala with `filtered` support
 
 ---
 
@@ -28154,28 +28172,32 @@ This creates a traversal that focuses on the value only if it satisfies the pred
 
 Filtered optics bring **declarative filtering** into the heart of your optic compositions:
 
-* **`filtered(Predicate)`**: Focus on elements matching a condition
-* **`filterBy(Fold, Predicate)`**: Focus on elements where a nested query matches
-* **`Traversals.filtered(Predicate)`**: Create reusable affine filter combinators
+| Method | Focus |
+|--------|-------|
+| `filtered(Predicate)` | Elements matching a condition |
+| `filterBy(Fold, Predicate)` | Elements where a nested query matches |
+| `Traversals.filtered(Predicate)` | A reusable zero-or-one filter to insert anywhere in a chain |
 
-These tools transform how you work with collections in immutable data structures:
+~~~admonish info title="Key Takeaways"
+* **The filter is part of the optic's identity**: "active users" becomes a named, reusable path instead of an `if` inside every loop
+* **Modification preserves, queries exclude**: `modify` keeps non-matching elements in place; `getAll`, `foldMap`, and `length` skip them
+* **`filterBy` reaches into nested data**: filter customers by a query over their invoices without leaving the composition
+* **Chained filters are AND logic**: stack `filtered` calls, or write one combined predicate for OR
+* **Mind the filtered caveat**: keep the predicate on fields the modification does not change, or the operation is not idempotent
+~~~
 
-| Before (Imperative) | After (Declarative) |
-|---------------------|---------------------|
-| Manual loops with conditionals | Single filtered traversal |
-| Stream pipelines breaking composition | Filters as part of optic chain |
-| Logic scattered across codebase | Reusable, composable filter optics |
-| Mix of "what" and "how" | Pure expression of intent |
+~~~admonish tip title="See Also"
+- [Traversals](traversals.md): the unrestricted bulk-update optic that `filtered` refines
+- [Folds](folds.md): the query API and monoid aggregation used with filtered folds
+- [Limiting Traversals](limiting_traversals.md): slicing by position rather than by predicate
+- [Indexed Optics](indexed_optics.md): when the position should inform the update
+~~~
 
-By incorporating filtered optics into your toolkit, you gain:
-
-* **Expressiveness**: Say "active users" once, use everywhere
-* **Composability**: Chain filters, compose with lenses, build complex paths
-* **Type safety**: All operations checked at compile time
-* **Immutability**: Structure preserved, only targets modified
-* **Performance**: Single-pass, lazy evaluation, no intermediate collections
-
-Filtered optics represent the pinnacle of declarative data manipulation in Java: the *what* (your business logic) is cleanly separated from the *how* (iteration, filtering, reconstruction), all whilst maintaining full type safety and referential transparency.
+~~~admonish tip title="Further Reading"
+- **Haskell**: [Lens Tutorial: Traversal](https://hackage.haskell.org/package/lens-tutorial-1.0.4/docs/Control-Lens-Tutorial.html): original inspiration
+- **Chris Penner**: [Optics By Example](https://leanpub.com/optics-by-example): comprehensive book on optics (Haskell)
+- **Scala**: [Monocle](https://www.optics.dev/Monocle/): similar library with `filtered` support
+~~~
 
 ---
 
@@ -28190,7 +28212,7 @@ Filtered optics represent the pinnacle of declarative data manipulation in Java:
 
 > *"Give me a place to stand, and I shall move the earth."*
 >
-> — Archimedes
+> – Archimedes
 
 ![indexed-optics.jpg](../images/indexed-optics.jpg)
 
@@ -28200,17 +28222,15 @@ Filtered optics represent the pinnacle of declarative data manipulation in Java:
 - Using IndexedFold for queries that need position information
 - Using IndexedLens for field name tracking and debugging
 - Creating indexed traversals for Lists and Maps with IndexedTraversals utility
-- Composing indexed optics with paired indices (Pair<I, J>)
 - Converting between indexed and non-indexed optics
 - When to use indexed optics vs standard optics
-- Real-world patterns for debugging, audit trails, and position-based logic
 ~~~
 
-~~~admonish title="Example Code"
+~~~admonish example title="See Example Code"
 [IndexedOpticsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/IndexedOpticsExample.java)
 ~~~
 
-In our journey through optics, we've mastered how to focus on parts of immutable data structures, whether it's a single field with **Lens**, an optional value with **Prism**, or multiple elements with **Traversal**. But sometimes, knowing *where* you are is just as important as knowing *what* you're looking at.
+In our journey through optics, we've mastered how to focus on parts of immutable data structures, whether it's a single field with **Lens**, one variant with **Prism**, an optional value with **Affine**, or multiple elements with **Traversal**. But sometimes, knowing *where* you are is just as important as knowing *what* you're looking at.
 
 Consider these scenarios:
 - **Numbering items** in a packing list: "Item 1: Laptop, Item 2: Mouse..."
@@ -28325,11 +28345,9 @@ The key insight: indexed optics make *position* a first-class citizen, accessibl
 
 ---
 
-## Part I: The Basics
+## The Three Indexed Optics
 
-### The Three Indexed Optics
-
-Higher-kinded-j provides three indexed optics that mirror their standard counterparts:
+Higher-Kinded-J provides three indexed optics that mirror their standard counterparts:
 
 | Standard Optic | Indexed Variant | Index Type | Use Case |
 |----------------|-----------------|------------|----------|
@@ -28385,7 +28403,7 @@ IndexedTraversal<Integer, List<String>, String> indexed = listEach.indexedTraver
 
 This is useful when working with custom containers that implement `EachIndexed` or when integrating with the Focus DSL.
 
-The older `Each.eachWithIndex()`, which returned an `Optional<IndexedTraversal>` and let the caller pick the index type freely, is **deprecated (for removal in 0.5.0)** in favour of `EachIndexed.indexedTraversal()`.
+(`Each.eachWithIndex()` is the deprecated predecessor; [Each](each_typeclass.md) covers the migration.)
 ~~~
 
 ---
@@ -28490,9 +28508,8 @@ List<LineItem> discounted = IndexedTraversals.imodify(
     items
 );
 
-// Position 0 (Laptop): £999.99 → £899.99
-// Position 1 (Mouse): £24.99 (unchanged)
-// Position 2 (Keyboard): £79.99 → £71.99
+// Positions 0 (Laptop) and 2 (Keyboard) are discounted by 10%
+// Position 1 (Mouse) is unchanged
 ```
 
 #### Map Processing with Key Awareness
@@ -28644,7 +28661,7 @@ List<LineItem> uppercased = Traversals.modify(
 
 ---
 
-### When to Use Indexed Optics vs Standard Optics
+## When to Use Indexed Optics vs Standard Optics
 
 Understanding when indexed optics add value is crucial for writing clear, maintainable code.
 
@@ -28692,7 +28709,7 @@ List<Product> inflated = Traversals.modify(prices, price -> price * 1.1, product
 
 ---
 
-### Common Patterns: Position-Based Operations
+## Common Patterns: Position-Based Operations
 
 #### Pattern 1: Adding Sequence Numbers
 
@@ -28771,7 +28788,7 @@ List<String> odd = IndexedTraversals.getAll(oddPositions, values);
 
 ---
 
-### Common Pitfalls
+## Common Pitfalls
 
 #### Don't Do This:
 
@@ -28834,15 +28851,13 @@ List<Pair<Integer, String>> renumbered = IntStream.range(0, pairs.size())
 
 ---
 
-### Performance Notes
+## Performance Notes
 
 Indexed optics are designed to be efficient:
 
-* **No additional traversals** - Index computed during normal iteration
-* **Lazy index creation** - `Pair<I, A>` objects only created when needed
-* **Minimal overhead** - Index tracking adds negligible cost
-* **Reusable compositions** - Indexed optics can be composed and cached
-* **No boxing for primitives** - When using integer indices directly
+* **No additional traversals**: the index is computed during the normal iteration
+* **Minimal overhead**: `forList()` and `forMap()` hand the index and value straight to your function, so nothing is allocated per focus. A `Pair` appears only where one is the result: `toIndexedList`, indexed folds, and `iandThen` composition
+* **Reusable compositions**: indexed optics can be composed once and cached
 
 **Best Practice**: Create indexed optics once and store as constants:
 
@@ -28862,8 +28877,18 @@ public class OrderOptics {
 
 ---
 
+~~~admonish info title="Key Takeaways"
+* **Indexed optics pair every value with where it lives**: list positions, map keys, or field names become part of the focus
+* **`imodify` is the workhorse**: one call replaces manual counter threading, `AtomicInteger` hacks, and entry-set rebuilding
+* **`filterIndex` and `filteredWithIndex` narrow by position, value, or both**: original indices are preserved, never renumbered
+* **`IndexedLens` names the field it touches**: audit trails can record *which* field changed without reflection
+* **Drop the index when it stops earning its keep**: `asTraversal()` converts back, and a lambda that ignores its index parameter is a sign to do so
+~~~
+
 ~~~admonish tip title="See Also"
-- [Indexed Optics: Advanced Patterns](indexed_optics_advanced.md), advanced composition with paired indices, the Haskell heritage, and the trade-off summary.
+- [Indexed Optics: Advanced Patterns](indexed_optics_advanced.md): composition with paired indices, the Haskell heritage, and the trade-off summary
+- [Indexed Access](indexed_access.md): the At and Ixed type classes for single-key operations
+- [Each Typeclass](each_typeclass.md): `EachIndexed.indexedTraversal()` as an alternative source of indexed traversals
 ~~~
 
 ---
@@ -28887,7 +28912,7 @@ This page collects the advanced composition patterns and reference material that
 
 ---
 
-## Part II: Advanced Topics
+## Advanced Composition Patterns
 
 ### Composing Indexed Optics with Paired Indices
 
@@ -28981,38 +29006,20 @@ for (Pair<Pair<Integer, Integer>, LineItem> entry : all) {
 
 ---
 
-### Index Transformation and Mapping
+### Index Transformation
 
-You can transform indices whilst preserving the optic composition.
+There is no separate re-indexing combinator; transform the index inside the `imodify` function. Converting zero-based positions to one-based display numbers looks like this:
 
 ```java
-// Start with integer indices (0, 1, 2...)
 IndexedTraversal<Integer, List<LineItem>, LineItem> zeroIndexed =
     IndexedTraversals.forList();
 
-// Transform to 1-based indices (1, 2, 3...)
-IndexedTraversal<Integer, List<LineItem>, LineItem> oneIndexed =
-    zeroIndexed.reindex(i -> i + 1);
-
-List<LineItem> items = List.of(/* ... */);
-
-List<String> numbered = oneIndexed.imodify(
-    (index, item) -> "Item " + index + ": " + item.productName(),
-    items
-).stream()
-    .map(LineItem::productName)
-    .toList();
-// ["Item 1: Laptop", "Item 2: Mouse", "Item 3: Keyboard"]
-```
-
-**Note**: The `reindex` method is conceptual. In practice, you'd transform indices in your `imodify` function:
-
-```java
-IndexedTraversals.imodify(zeroIndexed, (zeroBasedIndex, item) -> {
+List<LineItem> numbered = IndexedTraversals.imodify(zeroIndexed, (zeroBasedIndex, item) -> {
     int oneBasedIndex = zeroBasedIndex + 1;
     return new LineItem("Item " + oneBasedIndex + ": " + item.productName(),
                         item.quantity(), item.price());
 }, items);
+// productNames: ["Item 1: Laptop", "Item 2: Mouse", "Item 3: Keyboard"]
 ```
 
 ---
@@ -29123,14 +29130,14 @@ When debugging complex nested updates, indexed optics reveal the complete path t
 // Nested structure with multiple levels
 record Item(String name, double price) {}
 record Order(List<Item> items) {}
-record Customer(String name, List<Order> orders) {}
+record Buyer(String name, List<Order> orders) {}
 
 // Build an indexed path through the structure
-IndexedTraversal<Integer, List<Customer>, Customer> customersIdx =
+IndexedTraversal<Integer, List<Buyer>, Buyer> buyersIdx =
     IndexedTraversals.forList();
 
-Lens<Customer, List<Order>> ordersLens =
-    Lens.of(Customer::orders, (c, o) -> new Customer(c.name(), o));
+Lens<Buyer, List<Order>> ordersLens =
+    Lens.of(Buyer::orders, (b, o) -> new Buyer(b.name(), o));
 
 IndexedTraversal<Integer, List<Order>, Order> ordersIdx =
     IndexedTraversals.forList();
@@ -29145,36 +29152,36 @@ Lens<Item, Double> priceLens =
     Lens.of(Item::price, (item, price) -> new Item(item.name(), price));
 
 // Compose the full indexed path
-IndexedTraversal<Pair<Pair<Integer, Integer>, Integer>, List<Customer>, Double> fullPath =
-    customersIdx
+IndexedTraversal<Pair<Pair<Integer, Integer>, Integer>, List<Buyer>, Double> fullPath =
+    buyersIdx
         .andThen(ordersLens.asTraversal())
         .iandThen(ordersIdx)
         .andThen(itemsLens.asTraversal())
         .iandThen(itemsIdx)
         .andThen(priceLens.asTraversal());
 
-List<Customer> customers = List.of(/* ... */);
+List<Buyer> buyers = List.of(/* ... */);
 
 // Modify with full path visibility
-List<Customer> updated = IndexedTraversals.imodify(fullPath,
+List<Buyer> updated = IndexedTraversals.imodify(fullPath,
     (indices, price) -> {
-        int customerIdx = indices.first().first();
+        int buyerIdx = indices.first().first();
         int orderIdx = indices.first().second();
         int itemIdx = indices.second();
 
         System.out.printf(
-            "Updating price at [customer=%d, order=%d, item=%d]: %.2f → %.2f%n",
-            customerIdx, orderIdx, itemIdx, price, price * 1.1
+            "Updating price at [buyer=%d, order=%d, item=%d]: %.2f -> %.2f%n",
+            buyerIdx, orderIdx, itemIdx, price, price * 1.1
         );
 
         return price * 1.1;  // 10% increase
     },
-    customers
+    buyers
 );
 // Output shows complete path to every modified price:
-// Updating price at [customer=0, order=0, item=0]: 999.99 → 1099.99
-// Updating price at [customer=0, order=0, item=1]: 24.99 → 27.49
-// Updating price at [customer=0, order=1, item=0]: 79.99 → 87.99
+// Updating price at [buyer=0, order=0, item=0]: 999.99 -> 1099.99
+// Updating price at [buyer=0, order=0, item=1]: 24.99 -> 27.49
+// Updating price at [buyer=0, order=1, item=0]: 79.99 -> 87.99
 // ...
 ```
 
@@ -29247,6 +29254,14 @@ public class OrderFulfilmentDashboard {
         Map<String, String> metadata
     ) {}
 
+    private static Map<String, String> metadataInOrder() {
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("priority", "express");
+        metadata.put("gift-wrap", "true");
+        metadata.put("delivery-note", "Leave at door");
+        return metadata;
+    }
+
     public static void main(String[] args) {
         Order order = new Order(
             "ORD-12345",
@@ -29256,11 +29271,9 @@ public class OrderFulfilmentDashboard {
                 new LineItem("Keyboard", 1, 79.99),
                 new LineItem("Monitor", 1, 299.99)
             ),
-            new LinkedHashMap<>(Map.of(
-                "priority", "express",
-                "gift-wrap", "true",
-                "delivery-note", "Leave at door"
-            ))
+            // Insertion order matters for the output below, so put() in order:
+            // wrapping Map.of would inherit its randomised iteration order.
+            metadataInOrder()
         );
 
         System.out.println("=== ORDER FULFILMENT DASHBOARD ===\n");
@@ -29272,8 +29285,8 @@ public class OrderFulfilmentDashboard {
         // --- Task 2: Apply Position-Based Discounts ---
         System.out.println("\n--- Position-Based Discounts ---");
         Order discounted = applyPositionDiscounts(order);
-        System.out.println("Original total: £" + calculateTotal(order));
-        System.out.println("Discounted total: £" + calculateTotal(discounted));
+        System.out.printf("Original total: £%.2f%n", calculateTotal(order));
+        System.out.printf("Discounted total: £%.2f%n", calculateTotal(discounted));
 
         // --- Task 3: Process Metadata with Key Awareness ---
         System.out.println("\n--- Metadata Processing ---");
@@ -29419,7 +29432,7 @@ Discounted total: £1417.95
 
 ## The Relationship to Haskell's Lens Library
 
-For those familiar with functional programming, higher-kinded-j's indexed optics are inspired by Haskell's [lens library](https://hackage.haskell.org/package/lens), specifically indexed traversals and indexed folds.
+For those familiar with functional programming, Higher-Kinded-J's indexed optics are inspired by Haskell's [lens library](https://hackage.haskell.org/package/lens), specifically indexed traversals and indexed folds.
 
 In Haskell:
 ```haskell
@@ -29429,19 +29442,10 @@ itraversed :: IndexedTraversal Int ([] a) a
 This creates an indexed traversal over lists where the index is an integer: exactly what our `IndexedTraversals.forList()` provides.
 
 **Key differences:**
-- Higher-kinded-j uses explicit `Applicative` instances rather than implicit type class resolution
+- Higher-Kinded-J uses explicit `Applicative` instances rather than implicit type class resolution
 - Java's type system requires explicit `Pair<I, A>` for index-value pairs
 - The `imodify` and `iget` methods provide a more Java-friendly API
 - Map-based traversals (`forMap`) are a practical extension for Java's collection library
-
-**Further Reading:**
-- [Haskell Lens Tutorial: Indexed Optics](https://hackage.haskell.org/package/lens-tutorial-1.0.4/docs/Control-Lens-Tutorial.html) - Original inspiration
-- [Optics By Example](https://leanpub.com/optics-by-example) by Chris Penner - Chapter on indexed optics
-- [Monocle (Scala)](https://www.optics.dev/Monocle/) - Similar indexed optics for Scala
-
-~~~admonish tip title="For Comprehension Integration"
-For a fluent, comprehension-style API for indexed traversal operations, see [For Comprehensions: Position-Aware Traversals with ForIndexed](../functional/for_comprehension.md#position-aware-traversals-with-forindexed). This provides an alternative syntax for position-based filtering, modifying, and collecting traversal targets.
-~~~
 
 ---
 
@@ -29463,16 +29467,25 @@ These tools transform how you work with collections and records:
 | Complex audit logging logic | Field tracking with `IndexedLens` |
 | Scattered position logic | Composable indexed transformations |
 
-By incorporating indexed optics into your toolkit, you gain:
+~~~admonish info title="Key Takeaways"
+* **`iandThen` pairs the indices**: composing indexed traversals yields `Pair<I, J>` paths, so "customer 0, order 1, item 2" is a value, not a log line
+* **Transform indices inside `imodify`**: there is no separate re-indexing combinator, and none is needed
+* **Layered filters compose**: `filterIndex` for position, `filtered` for value, `filteredWithIndex` for both at once
+* **`IndexedLens` powers audit trails**: the field name arrives with the old value, so change logging needs no reflection
+* **`Pair` is a first-class utility**: `withFirst`/`withSecond`/`swap`, plus `pairToTuple2`/`tuple2ToPair` to bridge into hkj-core
+~~~
 
-* **Expressiveness**: Say "numbered list items" declaratively
-* **Type safety**: Compile-time checked index types
-* **Composability**: Chain indexed optics, filter by position, compose with standard optics
-* **Debugging power**: Track complete paths through nested structures
-* **Audit trails**: Record which fields changed, not just values
-* **Performance**: Minimal overhead, lazy index computation
+~~~admonish tip title="See Also"
+- [Indexed Optics](indexed_optics.md): the basics this page builds on
+- [Position-Aware Traversals with ForIndexed](../functional/for_optics.md#position-aware-traversals-with-forindexed): comprehension-style position-aware filtering, modifying, and collecting
+- [Indexed Access](indexed_access.md): At and Ixed for single-key operations
+~~~
 
-Indexed optics represent the fusion of position awareness with functional composition: enabling you to write code that is simultaneously more declarative, more powerful, and more maintainable than traditional index-tracking approaches.
+~~~admonish tip title="Further Reading"
+- **Haskell**: [Lens Tutorial: Indexed Optics](https://hackage.haskell.org/package/lens-tutorial-1.0.4/docs/Control-Lens-Tutorial.html): original inspiration
+- **Chris Penner**: [Optics By Example](https://leanpub.com/optics-by-example): chapter on indexed optics
+- **Scala**: [Monocle](https://www.optics.dev/Monocle/): similar indexed optics for Scala
+~~~
 
 ---
 
@@ -29483,7 +29496,7 @@ Indexed optics represent the fusion of position awareness with functional compos
 
 # Each: Canonical Element-Wise Traversal
 
-## _Simplicity is the ultimate sophistication_
+## _One Canonical Traversal per Container_
 
 > *"Simplicity is the ultimate sophistication."*
 >
@@ -29499,7 +29512,7 @@ Indexed optics represent the fusion of position awareness with functional compos
 - When to use `Each` vs direct `Traversal` creation
 ~~~
 
-~~~admonish title="Example Code"
+~~~admonish example title="See Example Code"
 [EachInstancesExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/EachInstancesExample.java)
 ~~~
 
@@ -29552,8 +29565,6 @@ The key insight: `Each` abstracts the *how* of traversal, letting you focus on t
 
 ## The Each Type Class
 
-![each_typeclass.svg](../images/puml/each_typeclass.svg)
-
 ```java
 @FunctionalInterface
 public interface Each<S, A> {
@@ -29561,7 +29572,9 @@ public interface Each<S, A> {
     // The canonical traversal for all elements
     Traversal<S, A> each();
 
-    // Check if indexed access is supported (i.e. this is an EachIndexed)
+    // Check if indexed access is supported (i.e. this is an EachIndexed).
+    // The real body also falls back to the deprecated eachWithIndex() for
+    // back-compatibility; that member is omitted here for clarity.
     default boolean supportsIndexed() {
         return this instanceof EachIndexed<?, ?, ?>;
     }
@@ -29680,8 +29693,8 @@ List<String> all = Traversals.getAll(traversal, names);
 List<String> upper = Traversals.modify(traversal, String::toUpperCase, names);
 // Result: ["ALICE", "BOB", "CHARLIE"]
 
-// Set all elements to the same value
-List<String> same = Traversals.set(traversal, "anonymous", names);
+// Set all elements to the same value (set is modify with a constant)
+List<String> same = Traversals.modify(traversal, _ -> "anonymous", names);
 // Result: ["anonymous", "anonymous", "anonymous"]
 ```
 
@@ -29714,18 +29727,26 @@ IndexedTraversal<String, Map<String, Integer>, Integer> indexed = mapEach.indexe
 
 Map<String, Integer> scores = Map.of("alice", 100, "bob", 85, "charlie", 92);
 
-// Add key prefix to each value's string representation
-Map<String, String> labelled = IndexedTraversals.imodify(
+// Award a bonus point to one particular entrant, by key
+Map<String, Integer> adjusted = IndexedTraversals.imodify(
     indexed,
-    (key, value) -> key + ": " + value,
+    (key, value) -> key.equals("bob") ? value + 5 : value,
     scores
 );
-// Result: {"alice": "alice: 100", "bob": "bob: 85", ...}
+// Result: {"alice": 100, "bob": 90, "charlie": 92}
+
+// A traversal cannot change the value type: imodify takes A -> A and returns the
+// same map type. To build a differently-typed map, extract the pairs and collect:
+Map<String, String> labelled =
+    IndexedTraversals.toIndexedList(indexed, scores).stream()
+        .collect(toMap(Pair::first, pair -> pair.first() + ": " + pair.second()));
 ```
 
 ---
 
 ## Integration with Focus DSL
+
+The Focus DSL is covered properly in [Java-Friendly APIs](focus_dsl.md); this section shows only where `Each` plugs into it, so skim it now and return when you reach that chapter.
 
 The Focus DSL provides an `.each(Each)` method on `FocusPath`, `AffinePath`, and `TraversalPath`. This enables fluent navigation through custom container types:
 
@@ -29758,6 +29779,8 @@ This is particularly useful when the container type isn't a standard `List` that
 ---
 
 ## Creating Custom Each Instances
+
+A custom instance implements `each()` by writing the traversal's `modifyF` directly; its `F extends WitnessArity<TypeArity.Unary>` bound is the same one `Traversal.modifyF` carries, naming the applicative effect the traversal runs in.
 
 For custom container types, implement the `Each` interface:
 
@@ -29844,11 +29867,11 @@ Each<List<Order>, Order> orderEach = EachInstances.listEach();
 Traversal<List<Order>, Order> allOrders = orderEach.each();
 
 // Validate all orders, accumulating errors
-Validated<List<String>, List<Order>> result = allOrders.modifyF(
+Validated<List<String>, List<Order>> result = VALIDATED.narrow(allOrders.modifyF(
     order -> validateOrder(order),
     orders,
-    ValidatedApplicative.instance(Semigroups.list())
-);
+    Instances.validated(Semigroups.list())
+));
 ```
 
 ### Conditional Modification with Index
@@ -29911,10 +29934,10 @@ User updated = allTasks.modifyAll(Task::markReviewed, user);
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Traversals](traversals.md) - Understanding the Traversal optic
-- [Indexed Optics](indexed_optics.md) - Position-aware operations with IndexedTraversal
-- [Focus DSL](focus_dsl.md) - Fluent path-based navigation
-- [Foldable and Traverse](../functional/foldable_and_traverse.md) - The HKT Traverse type class
+- [Traversals](traversals.md): understanding the Traversal optic
+- [Indexed Optics](indexed_optics.md): position-aware operations with IndexedTraversal
+- [Focus DSL](focus_dsl.md): fluent path-based navigation
+- [Foldable and Traverse](../functional/foldable_and_traverse.md): the HKT Traverse type class
 ~~~
 
 ---
@@ -29937,7 +29960,7 @@ User updated = allTasks.modifyAll(Task::markReviewed, user);
 - Performance characteristics and best practices
 ~~~
 
-~~~admonish title="Example Code"
+~~~admonish example title="See Example Code"
 [StringTraversalsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/StringTraversalsExample.java)
 ~~~
 
@@ -30074,7 +30097,7 @@ The `lined()` traversal splits by line separators (`\n`, `\r\n`, or `\r`), treat
 **Key Semantics**:
 - All line endings are normalised to `\n` in output
 - Empty strings produce no lines
-- Trailing newlines are preserved in individual line processing
+- Trailing newlines are dropped: `split` discards trailing empty segments, and the lines are rejoined with `\n`
 
 ```java
 Traversal<String, String> lineTraversal = StringTraversals.lined();
@@ -30123,8 +30146,7 @@ public class EmailNormaliser {
     public static String normalise(String email) {
         Traversal<String, String> words = StringTraversals.worded();
 
-        // Split email by @ symbol (treated as whitespace separator for this example)
-        // In production, you'd want more robust parsing
+                // In production, you'd want more robust parsing
         String lowercased = Traversals.modify(words, String::toLowerCase, email);
 
         return lowercased.trim();
@@ -30157,21 +30179,21 @@ public class EmailNormaliser {
 
 The power emerges when combining string traversals with other optics:
 
-### With Filtered Traversals – Pattern Matching
+### With Filtered Traversals: Pattern Matching
 
 ```java
 // Find and transform lines starting with a prefix
 Traversal<String, String> commentLines =
     StringTraversals.lined().filtered(line -> line.trim().startsWith("#"));
 
-String withoutComments = Traversals.modify(
+String commentsBlanked = Traversals.modify(
     commentLines,
     line -> "",  // Remove comment lines by replacing with empty
     sourceCode
 );
 ```
 
-### With Nested Structures – Bulk Text Processing
+### With Nested Structures: Bulk Text Processing
 
 ```java
 @GenerateLenses
@@ -30190,7 +30212,7 @@ Document formatted = Traversals.modify(
 );
 ```
 
-### With Effectful Operations – Validation
+### With Effectful Operations: Validation
 
 ```java
 import org.higherkindedj.hkt.optional.OptionalMonad;
@@ -30377,10 +30399,8 @@ List<Character> extracted = Traversals.getAll(vowels, "banana");
 
 String traversals are optimised for immutability:
 
-* **Single pass**: Text is decomposed and reconstructed in one traversal
-* **No intermediate strings**: Operates on character/word lists internally
-* **Structural sharing**: For filtered operations, unchanged portions reference original
-* **Lazy bounds checking**: Minimal overhead for validation
+* **Single pass**: text is decomposed and reconstructed in one traversal
+* **List-based internals**: transformation happens on the decomposed units, with the string rebuilt once at the end
 
 **Best Practice**: For frequently used string transformations, create traversals as constants:
 
@@ -30404,16 +30424,13 @@ public class TextProcessing {
 
 ---
 
-## Integration with Functional Java Ecosystem
+## Effectful Text Processing with Validated
 
-String traversals complement existing functional libraries:
-
-### Cyclops Integration
+Like every traversal, string traversals accept effects through `modifyF`. Validating each word and accumulating every failure:
 
 ```java
-import cyclops.control.Validated;
+import static org.higherkindedj.hkt.validated.ValidatedKindHelper.VALIDATED;
 
-// Validate each word using Cyclops Validated
 Traversal<String, String> words = StringTraversals.worded();
 
 Function<String, Kind<ValidatedKind.Witness<List<String>>, String>> validateLength =
@@ -30422,26 +30439,31 @@ Function<String, Kind<ValidatedKind.Witness<List<String>>, String>> validateLeng
         : VALIDATED.widen(Validated.invalid(List.of("Word too long: " + word)));
 
 Validated<List<String>, String> result = VALIDATED.narrow(
-    words.modifyF(validateLength, input, validatedApplicative)
+    words.modifyF(validateLength, input, Instances.validated(Semigroups.list()))
 );
 ```
 
 ---
 
-## Related Resources
+~~~admonish info title="Key Takeaways"
+* **Three decompositions cover most text work**: `chars()`, `worded()`, and `lined()` turn a string into traversable units and rebuild it afterwards
+* **Composition replaces regex ceremony**: `lined().filtered(...)` reads as the rule it implements, and the pieces are reusable
+* **Shape is preserved, whitespace is not**: modification rebuilds the same units, but `worded()` collapses runs of whitespace and `lined()` normalises line endings, so an identity modify is not always the identity
+* **Effects work here too**: `modifyF` with `Validated` accumulates every bad word or line in one pass
+* **Reach for regex or Streams when reshaping**: a string traversal splits the text and rebuilds it, but you only get to transform the units it found. Changing how many there are, or how they group, is outside what it can express
+~~~
 
-**Functional Java Libraries**:
-- [Cyclops](https://github.com/aol/cyclops) - Functional control structures and higher-kinded types
-- [jOOλ](https://github.com/jOOQ/jOOL) - Functional utilities complementing Java Streams
+~~~admonish tip title="See Also"
+- [Filtered Optics](filtered_optics.md): the predicate composition used throughout this page
+- [Traversals](traversals.md): the underlying bulk-update optic
+- [List Decomposition](list_decomposition.md): head/tail patterns for the lists these traversals produce
+~~~
 
-**Further Reading**:
-- *Functional Programming in Java* by Venkat Subramaniam - Practical FP patterns
-- *Modern Java in Action* by Raoul-Gabriel Urma - Streams, lambdas, and functional style
-- [Optics By Example](https://leanpub.com/optics-by-example) by Chris Penner - Haskell optics comprehensive guide
-
-**Comparison with Other Languages**:
-- Haskell's [`Data.Text`](https://hackage.haskell.org/package/text-2.0.2/docs/Data-Text.html) - Similar text processing with optics
-- Scala's [Monocle](https://www.optics.dev/Monocle/) - String traversals via `Traversal[String, Char]`
+~~~admonish tip title="Further Reading"
+- **Chris Penner**: [Optics By Example](https://leanpub.com/optics-by-example): comprehensive optics guide (Haskell)
+- **Haskell**: [`Data.Text`](https://hackage.haskell.org/package/text-2.0.2/docs/Data-Text.html): similar text processing with optics
+- **Scala**: [Monocle](https://www.optics.dev/Monocle/): string traversals via `Traversal[String, Char]`
+~~~
 
 ---
 
@@ -30464,7 +30486,7 @@ Validated<List<String>, String> result = VALIDATED.narrow(
 - When to use At vs Ixed vs direct collection operations
 ~~~
 
-~~~admonish title="Example Code"
+~~~admonish example title="See Example Code"
 - [AtUsageExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/AtUsageExample.java)
 - [IxedUsageExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/IxedUsageExample.java)
 ~~~
@@ -30498,7 +30520,7 @@ Use **Ixed** when you want safe read/update that never accidentally modifies str
 
 ---
 
-## Part 1: At – Full CRUD Operations
+## Part 1: At (Full CRUD Operations)
 
 ### Creating At Instances
 
@@ -30623,7 +30645,7 @@ Config withoutDebug = debugSettingLens.set(Optional.empty(), withDebug);
 
 ---
 
-## Part 2: Ixed – Safe Partial Access
+## Part 2: Ixed (Safe Partial Access)
 
 ### Creating Ixed Instances
 
@@ -30843,18 +30865,31 @@ result.remove("c");
 
 | Use Case | Tool | Why |
 |----------|------|-----|
-| Add new map entry | `At.insertOrUpdate()` | Only At can insert |
-| Delete map entry | `At.remove()` | Only At can delete |
-| Update if exists, else no-op | `Ixed.update()` | Safe, structure-preserving |
-| Safe list access without exceptions | `Ixed.get()` | Returns Optional.empty() for invalid indices |
+| Add new map entry | `at.insertOrUpdate(key, value, map)` | Only At can insert |
+| Delete map entry | `at.remove(key, map)` | Only At can delete |
+| Update if exists, else no-op | `IxedInstances.update(ixed, i, value, source)` | Safe, structure-preserving |
+| Safe list access without exceptions | `IxedInstances.get(ixed, i, source)` | Returns `Optional.empty()` for invalid indices |
 | Deep nested CRUD | At + Lens composition | Full control over nested maps |
 | Deep nested read/update | Ixed + Lens composition | Safe partial access |
 
-Both type classes maintain immutability and compose naturally with the rest of the optics ecosystem.
+~~~admonish info title="Key Takeaways"
+* **At is the CRUD optic**: a `Lens<S, Optional<A>>` per key, so insert, update, and delete are all `set` in disguise
+* **Ixed never changes shape**: a missing index makes the operation a no-op instead of an exception or an insert
+* **The `Optional` is the honesty**: At shows absence in the type; `Prisms.some()` unwraps it when composing deeper
+* **Every modification copies the collection**: batch first with plain mutation, then hold the result immutably
+* **Indexed optics answer a different question**: At/Ixed target *one* key; [Indexed Optics](indexed_optics.md) traverse *all* elements with their positions
+~~~
+
+~~~admonish tip title="See Also"
+- [Indexed Optics](indexed_optics.md): traversing every element with its position
+- [Prisms](prisms.md): `Prisms.some()` for unwrapping the `Optional` that At exposes
+- [Common Data Structures](common_data_structure_traversals.md): whole-map value traversals
+~~~
 
 ---
 
-[Previous: String Traversals](string_traversals.md) | [Next: Advanced Prism Patterns](advanced_prism_patterns.md)
+**Previous:** [String Traversals](string_traversals.md)
+**Next:** [Advanced Prism Patterns](advanced_prism_patterns.md)
 
 <!-- Source: optics/advanced_prism_patterns.md -->
 
@@ -30862,7 +30897,7 @@ Both type classes maintain immutability and compose naturally with the rest of t
 
 ## _Real-World Applications of Prisms in Production Systems_
 
-![prism-advanced.jpeg](../images/prism.jpeg)
+![prism.jpeg](../images/prism.jpeg)
 
 ~~~admonish info title="What You'll Learn"
 - Configuration management with layered prism composition
@@ -30871,21 +30906,15 @@ Both type classes maintain immutability and compose naturally with the rest of t
 - Event processing systems with prism-based routing
 - State machine implementations using prisms for transitions
 - Plugin architectures with type-safe variant handling
-- Performance optimisation patterns for production systems
-- Testing strategies for prism-heavy codebases
 ~~~
 
-~~~admonish title="Hands On Practice"
-[Tutorial10_AdvancedPrismPatterns.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial10_AdvancedPrismPatterns.java)
-~~~
-
-~~~admonish title="Example Code"
-[ConfigurationManagementExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/ConfigurationManagementExample.java)
-[ApiResponseHandlingExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/ApiResponseHandlingExample.java)
-[DataValidationPipelineExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/DataValidationPipelineExample.java)
-[EventProcessingExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/EventProcessingExample.java)
-[StateMachineExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/StateMachineExample.java)
-[PluginSystemExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PluginSystemExample.java)
+~~~admonish example title="See Example Code"
+- [ConfigurationManagementExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/ConfigurationManagementExample.java)
+- [ApiResponseHandlingExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/ApiResponseHandlingExample.java)
+- [DataValidationPipelineExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/DataValidationPipelineExample.java)
+- [EventProcessingExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/EventProcessingExample.java)
+- [StateMachineExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/StateMachineExample.java)
+- [PluginSystemExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PluginSystemExample.java)
 ~~~
 
 This guide explores sophisticated prism patterns encountered in production Java applications. We'll move beyond basic type matching to examine how prisms enable elegant solutions to complex architectural problems.
@@ -30933,6 +30962,7 @@ sealed interface ConfigValue permits StringValue, IntValue, BoolValue, NestedCon
 record StringValue(String value) implements ConfigValue {}
 record IntValue(int value) implements ConfigValue {}
 record BoolValue(boolean value) implements ConfigValue {}
+@GenerateLenses
 record NestedConfig(Map<String, ConfigValue> values) implements ConfigValue {}
 
 public class ConfigResolver {
@@ -31018,7 +31048,6 @@ if (response.status() == 200) {
 
 ```java
 @GeneratePrisms
-@GenerateLenses
 sealed interface ApiResponse permits Success, ValidationError, ServerError,
                                      RateLimitError, AuthError, NotFoundError {}
 
@@ -31154,19 +31183,15 @@ public class ValidationPipeline {
         return row.stream()
             .flatMap(value -> Stream.concat(
                 // Validate strings
-                STRING.mapOptional(
-                    s -> s.value().length() > MAX_STRING_LENGTH
-                        ? Optional.of("String too long: " + s.value())
-                        : Optional.empty(),
-                    value
-                ).stream(),
+                STRING.getOptional(value)
+                    .filter(s -> s.value().length() > MAX_STRING_LENGTH)
+                    .map(s -> "String too long: " + s.value())
+                    .stream(),
                 // Validate integers
-                INT.mapOptional(
-                    i -> i.value() < 0
-                        ? Optional.of("Negative integer: " + i.value())
-                        : Optional.empty(),
-                    value
-                ).stream()
+                INT.getOptional(value)
+                    .filter(i -> i.value() < 0)
+                    .map(i -> "Negative integer: " + i.value())
+                    .stream()
             ))
             .collect(Collectors.toList());
     }
@@ -31277,7 +31302,6 @@ public void handleEvent(Event event) {
 
 ```java
 @GeneratePrisms
-@GenerateLenses
 sealed interface DomainEvent permits UserCreated, UserDeleted, UserUpdated,
                                      OrderPlaced, OrderCancelled, PaymentProcessed {}
 
@@ -31492,7 +31516,7 @@ public class OrderStateMachine {
 ### Advanced: Transition Table
 
 ```java
-import org.higherkindedj.optics.util.Pair; // Pair utility from hkj-optics
+import org.higherkindedj.optics.indexed.Pair; // Pair record from hkj-api
 
 public class AdvancedStateMachine {
     // Define transitions as a declarative table
@@ -31501,13 +31525,13 @@ public class AdvancedStateMachine {
         BiFunction<OrderState, OrderEvent, OrderState>
     > TRANSITIONS = Map.of(
         Pair.of(PENDING, PAYMENT),
-        (state, event) -> PAYMENT.mapOptional(
+        (state, event) -> PAYMENT.<OrderState>mapOptional(
             p -> new Processing(p.transactionId(), Instant.now()),
             event
         ).orElse(state),
 
         Pair.of(PROCESSING, SHIPPING),
-        (state, event) -> SHIPPING.mapOptional(
+        (state, event) -> SHIPPING.<OrderState>mapOptional(
             s -> new Shipped(s.trackingNumber(), Instant.now()),
             event
         ).orElse(state)
@@ -31707,8 +31731,66 @@ public class CompositePlugin {
 
 ---
 
+## Predicate Matching with `Prisms.nearly`
+
+Every prism so far has matched on *type*: is this `JsonString`, is this `ShippingError`. Two utilities extend that to matching on a *condition*, and to expressing the negative case.
+
+### `Prisms.nearly`: match a category of values
+
+`Prisms.only(expected)` matches one exact value. `Prisms.nearly(defaultValue, predicate)` is its predicate-based complement: it matches any value satisfying the predicate, and because a matched value carries no extra information, the focus is `Unit`. The default value is what `build` produces when you run the prism backwards.
+
+<!-- verify -->
+```java
+// Match any non-empty string
+Prism<String, Unit> nonEmpty = Prisms.nearly("default", s -> !s.isEmpty());
+
+Optional<Unit> hit = nonEmpty.getOptional("hello");  // Optional.of(Unit.INSTANCE)
+Optional<Unit> miss = nonEmpty.getOptional("");      // Optional.empty()
+String built = nonEmpty.build(Unit.INSTANCE);        // "default"
+```
+
+The point is not the `Unit` itself but composition: a `nearly` prism drops into any chain where you would otherwise break out into an `if`. Routing a value only when it looks like an email address, for instance:
+
+<!-- verify -->
+```java
+Prism<String, Unit> emailish =
+    Prisms.nearly("user@example.com", s -> s.contains("@") && s.contains("."));
+
+boolean looksLikeEmail = emailish.matches(candidate);
+```
+
+~~~admonish note title="`nearly` matches a predicate, not proximity"
+Despite the name, `nearly` has nothing to do with numeric closeness. It reads as "nearly `only`": where `only` demands an exact value, `nearly` accepts anything the predicate admits.
+~~~
+
+### `doesNotMatch`: the negative case, named
+
+`doesNotMatch(source)` is exactly `!matches(source)`, but naming it keeps filter pipelines readable and stops the reader parsing a negation inside a lambda:
+
+<!-- verify -->
+```java
+// Collect everything the prism does NOT match
+List<JsonValue> nonStrings = values.stream()
+    .filter(JsonValuePrisms.jsonString()::doesNotMatch)
+    .toList();
+```
+
+Use it for exclusion filtering and for guard clauses; use `matches` everywhere else, so the positive case stays the default reading.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **A prism is a routing primitive**: configuration layers, API responses, events, states, and plugins are all "which variant is this?" questions
+* **Compose the prism once, reuse it everywhere**: layered fallbacks and deep extractions are values, not call-site logic
+* **`matches`/`modifyWhen` keep intent visible**: conditional processing reads as the rule, not as an `instanceof` cascade
+* **Sealed hierarchies make the variants explicit**: the compiler knows the whole set, so an exhaustive pattern `switch` fails to compile when one is added. Prism-based routing does not get that check for free, so pair it with a `switch` where coverage has to be guaranteed
+* **Production patterns are compositions of the basics**: `getOptional`, `matches`, `mapOptional`, and `modifyWhen` carry every pattern here
+~~~
+
 ~~~admonish tip title="See Also"
-- [Advanced Prism Patterns: Recipes](advanced_prism_patterns_recipes.md), copy-paste recipes for caching composed prisms, bulk-processing utilities, and test strategies.
+- [Advanced Prism Patterns: Recipes](advanced_prism_patterns_recipes.md): copy-paste recipes for caching composed prisms, bulk-processing utilities, and test strategies
+- [Prisms](prisms.md): the fundamentals these patterns build on
+- [Prism Toolkit](prism_toolkit.md): the ready-made utility prisms
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -31754,15 +31836,17 @@ public class OptimisedPrismCache {
         return (T) OPTIC_CACHE.computeIfAbsent(key, k -> factory.get());
     }
 
-    // Example usage: caching a composed traversal
-    private static final Traversal<Config, String> DATABASE_HOST =
-        getCached("config.database.host", () ->
-            ConfigLenses.database()
+    // Example usage: a composition keyed by a value only known at runtime,
+    // so it cannot simply be a `static final` constant.
+    // Note the explicit witnesses: a bare Prisms.some() would infer Object here.
+    public static Traversal<Settings, String> settingAt(String key) {
+        Objects.requireNonNull(key, "key");   // else settingAt(null) and settingAt("null") share a cache entry
+        return getCached("settings." + key, () ->
+            SettingsLenses.entries()
                 .asTraversal()
-                .andThen(Prisms.some().asTraversal())
-                .andThen(Prisms.right().asTraversal())
-                .andThen(DatabaseSettingsLenses.host().asTraversal())
-        );
+                .andThen(Traversals.forMap(key))
+                .andThen(Prisms.<String>some().asTraversal()));
+    }
 }
 ```
 
@@ -31854,16 +31938,22 @@ public class PrismTestPatterns {
 
 ---
 
+~~~admonish info title="Key Takeaways"
+* **Compose once, cache deliberately**: prism composition is cheap but not free; long-running systems should hold composed prisms as constants or in a keyed cache
+* **Partition with prisms, not instanceof**: bulk helpers that split a mixed list by variant keep the type knowledge in one place
+* **Test both directions**: cover the match and the non-match, and test composed prisms end to end rather than only their parts
+~~~
+
+
+~~~admonish tip title="Further Reading"
+- **Monocle**: [Scala Optics Library](https://www.optics.dev/Monocle/): production-ready Scala optics with extensive patterns
+- **Haskell Lens**: [Canonical Reference](https://hackage.haskell.org/package/lens): the original comprehensive optics library
+- **Lens Tutorial**: [A Little Lens Starter Tutorial](https://www.schoolofhaskell.com/school/to-infinity-and-beyond/pick-of-the-week/a-little-lens-starter-tutorial): beginner-friendly introduction
+~~~
+
 ~~~admonish info title="Hands-On Learning"
 Practice advanced prism patterns in [Tutorial 10: Advanced Prism Patterns](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial10_AdvancedPrismPatterns.java) (8 exercises, ~12 minutes).
 ~~~
-
-~~~admonish tip title="Further Reading"
-- **Monocle**: [Scala Optics Library](https://www.optics.dev/Monocle/) - Production-ready Scala optics with extensive patterns
-- **Haskell Lens**: [Canonical Reference](https://hackage.haskell.org/package/lens) - The original comprehensive optics library
-- **Lens Tutorial**: [A Little Lens Starter Tutorial](https://www.schoolofhaskell.com/school/to-infinity-and-beyond/pick-of-the-week/a-little-lens-starter-tutorial) - Beginner-friendly introduction
-~~~
-
 ---
 
 **Previous:** [Advanced Prism Patterns](advanced_prism_patterns.md)
@@ -31875,23 +31965,21 @@ Practice advanced prism patterns in [Tutorial 10: Advanced Prism Patterns](https
 
 ## *Adapting Optics to Different Data Types*
 
-
 ~~~admonish info title="What You'll Learn"
-- How to adapt existing optics to work with different data types
-- Using `contramap` to change source types and `map` to change target types
-- Combining both adaptations with `dimap` for complete format conversion
-- Creating reusable adapter patterns for API integration
-- Working with type-safe wrapper classes and legacy system integration
-- When to use profunctor adaptations vs creating new optics from scratch
+- Why every optic is a profunctor, and what `contramap`, `map`, and `dimap` really adapt
+- The write-side asymmetry: why `contramap` alone changes where reads come from but not what updates produce
+- Getting a fully-typed optic back: composition for nested sources, `Iso` for equivalent shapes, `Lens.of` for hand-rolled adapters
+- When the raw `Optic`-level operations are the right tool (one-way conversions, effectful pipelines)
+- When to adapt an existing optic versus creating a new one from scratch
 ~~~
 
-~~~admonish title="Example Code"
+~~~admonish example title="See Example Code"
 [OpticProfunctorExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/profunctor/OpticProfunctorExample.java)
 ~~~
 
 In the previous optics guides, we explored how to work with data structures directly using `Lens`, `Prism`, `Iso`, and `Traversal`. But what happens when you need to use an optic designed for one data type with a completely different data structure? What if you want to adapt an existing optic to work with new input or output formats?
 
-This is where the **profunctor** nature of optics becomes invaluable. Every optic in higher-kinded-j is fundamentally a profunctor, which means it can be adapted to work with different source and target types using powerful transformation operations.
+This is where the **profunctor** nature of optics becomes invaluable. Every optic in Higher-Kinded-J is fundamentally an `Optic<S, T, A, B>`, and that shared interface carries the profunctor operations. Just as importantly, the everyday answers to "adapt this optic" are often the composition tools you already know; this page shows you which tool fits which job.
 
 ---
 
@@ -31913,125 +32001,107 @@ Consider this scenario: you have a well-tested `Lens` that operates on a `Person
 * **Lens filters**: Modifying what the optic sees (input) and what it produces (output)
 * **Pipeline adapters**: Connecting optics that weren't originally designed to work together
 
+---
+
 ## The Three Profunctor Operations
 
-Every optic provides three powerful adaptation methods that mirror the core profunctor operations:
+Every optic extends `Optic<S, T, A, B>`, which provides three adaptation methods:
 
-### 1. **`contramap`**: Adapting the Source Type
+| Operation | Signature (simplified) | Adapts |
+|-----------|------------------------|--------|
+| `contramap(f)` | `(C -> S) -> Optic<C, T, A, B>` | Where reads come *from* |
+| `map(g)` | `(T -> U) -> Optic<S, U, A, B>` | What updates *produce* |
+| `dimap(f, g)` | `(C -> S, T -> U) -> Optic<C, U, A, B>` | Both at once |
 
-The `contramap` operation allows you to adapt an optic to work with a different source type by providing a function that converts from the new source to the original source.
+Two things about this API matter in practice:
 
-**Use Case**: You have a `Lens<Person, String>` for getting a person's first name, but you want to use it with `Employee` objects.
+1. **The result is an `Optic`, not a `Lens` or `Traversal`.** An `Optic` supports `andThen` and the effectful `modifyF`, but not the convenience surface (`get`, `set`, `modify`). The profunctor operations shine in effectful pipelines; for everyday field access you usually want one of the typed routes below.
+2. **`contramap` alone is asymmetric.** `EmployeeLenses.department().contramap(dtoToEmployee)` reads from an `EmployeeDto`, but a modification still *produces* an `Employee` (the original structure type `T`). To get a full bridge you must also `map` the output back, which is exactly what `dimap` does:
 
+<!-- verify -->
 ```java
-// Original lens: Person -> String (first name)
-Lens<Person, String> firstNameLens = PersonLenses.firstName();
+Optic<EmployeeDto, EmployeeDto, String, String> departmentBridge =
+    EmployeeLenses.department().dimap(Adapters::dtoToEmployee, Adapters::employeeToDto);
 
-// Adapt it to work with Employee by providing the conversion
-Lens<Employee, String> employeeFirstNameLens = 
-    firstNameLens.contramap(employee -> employee.personalInfo());
-
-// Now you can use the adapted lens directly on Employee objects
-Employee employee = new Employee(123, new Person("Alice", "Johnson", ...), "Engineering");
-String firstName = employeeFirstNameLens.get(employee); // "Alice"
+// An Optic is driven through modifyF. Id is the no-op effect: it runs the
+// update purely, with no failure, async, or accumulation behaviour attached.
+EmployeeDto promoted =
+    ID.narrow(departmentBridge.modifyF(
+            dept -> Id.of("Senior " + dept), dto, IdMonad.instance()))
+        .value();
 ```
 
-### 2. **`map`**: Adapting the Target Type
+~~~admonish tip title="Why this matters"
+The profunctor operations are what make `modifyF` pipelines adaptable without rebuilding them: a validating update written against your domain model can be pointed at a wire DTO by supplying the two conversion functions, and nothing else changes. When you find yourself *also* wanting `get` and `set` on the adapted optic, that is the signal you have an isomorphism, and the next section gives you the full API back.
+~~~
 
-The `map` operation adapts an optic to work with a different target type by providing a function that converts from the original target to the new target.
+---
 
-**Use Case**: You have a `Lens<Person, LocalDate>` for birth dates, but you want to work with formatted strings instead.
+## Getting a Typed Optic Back
 
+The raw operations return `Optic`. In most day-to-day code you want a real `Lens` or `Traversal` back, and there are three idiomatic routes.
+
+### Route 1: Composition, when the new source *contains* the old
+
+The most common "contramap" wish is really a nested-field access, and `andThen` already does it, keeping every convenience method:
+
+<!-- verify -->
 ```java
-// Original lens: Person -> LocalDate
-Lens<Person, LocalDate> birthDateLens = PersonLenses.birthDate();
+// Employee contains a Person; compose instead of adapting
+Lens<Employee, String> employeeFirstName =
+    EmployeeLenses.personalInfo().andThen(PersonLenses.firstName());
 
-// Adapt it to work with formatted strings
-Lens<Person, String> birthDateStringLens = 
-    birthDateLens.map(date -> date.format(DateTimeFormatter.ISO_LOCAL_DATE));
-
-// The adapted lens now returns strings
-Person person = new Person("Bob", "Smith", LocalDate.of(1985, 12, 25), ...);
-String dateString = birthDateStringLens.get(person); // "1985-12-25"
+String name = employeeFirstName.get(employee);
+Employee shouted = employeeFirstName.modify(String::toUpperCase, employee);
 ```
 
-### 3. **`dimap`**: Adapting Both Source and Target Types
+### Route 2: An `Iso`, when the two shapes hold the same information
 
-The `dimap` operation is the most powerful: it adapts both the source and target types simultaneously. This is perfect for converting between completely different data representations.
+If your conversion functions form a lossless pair, they are an [Iso](iso.md), and composing with one keeps the whole API in either direction (`Lens >>> Iso = Lens`, and `Iso >>> Lens = Lens`). This is `dimap` with the power retained:
 
-**Use Case**: You have optics designed for internal `Person` objects but need to work with external `PersonDto` objects that use different field structures.
+<!-- verify -->
+```java
+// UserId is a wrapper around String: a textbook Iso
+Iso<UserId, String> userIdValue = Iso.of(UserId::value, UserId::new);
+
+// Reuse any String-side optic against the wrapper
+Lens<Account, UserId> accountUser = AccountLenses.userId();
+Lens<Account, String> accountUserRaw = accountUser.andThen(userIdValue);
+
+Account renamed = accountUserRaw.modify(String::toUpperCase, account);
+```
+
+### Route 3: `Lens.of`, when the adaptation is genuinely one-off
+
+When neither composition nor an Iso fits (the conversion is lopsided, or you only need one field bridged), build the adapted lens directly. This is the "profunctor-style" adaptation the runnable example demonstrates:
 
 ```java
-// Original traversal: Person -> String (hobbies)
-Traversal<Person, String> hobbiesTraversal = PersonTraversals.hobbies();
-
-// Adapt it to work with PersonDto (different source) and call them "interests" (different context)
-Traversal<PersonDto, String> interestsTraversal = 
-    hobbiesTraversal.dimap(
-        // Convert PersonDto to Person
-        dto -> new Person(
-            dto.fullName().split(" ")[0],
-            dto.fullName().split(" ")[1], 
-            LocalDate.parse(dto.birthDateString()),
-            dto.interests()
-        ),
-        // Convert Person back to PersonDto  
-        person -> new PersonDto(
-            person.firstName() + " " + person.lastName(),
-            person.birthDate().format(DateTimeFormatter.ISO_LOCAL_DATE),
-            person.hobbies()
-        )
-    );
+Lens<Employee, String> employeeFirstNameLens =
+    Lens.of(
+        employee -> PersonLenses.firstName().get(employee.personalInfo()),
+        (employee, newName) ->
+            new Employee(
+                employee.id(),
+                PersonLenses.firstName().set(newName, employee.personalInfo()),
+                employee.department()));
 ```
 
 ---
 
-## Decision Guide: When to Use Each Operation
+## Decision Guide: Which Adaptation Do You Need?
 
-### Use `contramap` When:
+```mermaid
+flowchart TD
+    Q{"How do the two<br/>types relate?"}
+    Q -->|"new source contains<br/>the old as a field"| C(["Compose with andThen"])
+    Q -->|"same information,<br/>two lossless shapes"| I(["Iso, then compose"])
+    Q -->|"one-way conversion,<br/>effectful modifyF pipeline"| D(["Optic contramap / map / dimap"])
+    Q -->|"anything lopsided<br/>or one-off"| L(["Hand-build with Lens.of"])
 
-* **Different source type, same target** - Existing optic works perfectly, just need different input
-* **Extracting nested data** - Your new type contains the old type as a field
-* **Wrapper type handling** - Working with strongly-typed wrappers around base types
-
-java
-
-```java
-// Perfect for extracting nested data
-Lens<Order, String> customerNameLens = 
-    OrderLenses.customer().contramap(invoice -> invoice.order());
-```
-
-### Use `map` When:
-
-* **Same source, different target format** - You want to transform the output
-* **Data presentation** - Converting raw data to display formats
-* **Type strengthening** - Wrapping raw values in type-safe containers
-
-java
-
-```java
-// Perfect for presentation formatting
-Lens<Product, String> formattedPriceLens = 
-    ProductLenses.price().map(price -> "£" + price.setScale(2));
-```
-
-### Use `dimap` When:
-
-* **Complete format conversion** - Both input and output need transformation
-* **API integration** - External systems use completely different data structures
-* **Legacy system support** - Bridging between old and new data formats
-* **Data migration** - Supporting multiple data representations simultaneously
-
-java
-
-```java
-// Perfect for API integration
-Traversal<ApiUserDto, String> apiRolesTraversal = 
-    UserTraversals.roles().dimap(
-        dto -> convertApiDtoToUser(dto),
-        userLogin -> convertUserToApiDto(userLogin)
-    );
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class Q decision
+    class C,I,D,L tier
 ```
 
 ---
@@ -32040,190 +32110,89 @@ Traversal<ApiUserDto, String> apiRolesTraversal =
 
 ### Don't Do This:
 
-
 ```java
-// Creating adapters inline repeatedly
-var lens1 = PersonLenses.firstName().contramap(emp -> emp.person());
-var lens2 = PersonLenses.firstName().contramap(emp -> emp.person());
-var lens3 = PersonLenses.firstName().contramap(emp -> emp.person());
+// Rebuilding the same adapter inline repeatedly
+var lens1 = EmployeeLenses.personalInfo().andThen(PersonLenses.firstName());
+var lens2 = EmployeeLenses.personalInfo().andThen(PersonLenses.firstName());
 
-// Over-adapting simple cases
-Lens<Person, String> nameUpper = PersonLenses.firstName()
-    .map(String::toUpperCase)
-    .map(s -> s.trim())
-    .map(s -> s.replace(" ", "_")); // Just write one function!
+// Expecting contramap alone to give a full bridge
+// (reads take a DTO, but updates still produce an Employee)
+var readOnlyBridge = EmployeeLenses.department().contramap(Adapters::dtoToEmployee);
 
-// Forgetting null safety in conversions
-Lens<EmployeeDto, String> unsafeLens = PersonLenses.firstName()
-    .contramap(dto -> dto.person()); // What if dto.person() is null?
-
-// Complex conversions without error handling
-Traversal<String, LocalDate> fragileParser = 
-    Iso.of(LocalDate::toString, LocalDate::parse).asTraversal()
-    .contramap(complexString -> extractDatePart(complexString)); // Might throw!
+// Pretending a lossy conversion is an Iso
+Iso<PersonDto, Person> lossy = Iso.of(
+    dto -> new Person(dto.fullName().split(" ")[0], "", null, List.of()),
+    person -> new PersonDto(person.firstName(), "", List.of()));  // Round trip loses data!
 ```
 
 ### Do This Instead:
 
 ```java
 // Create adapters once, reuse everywhere
-public static final Lens<Employee, String> EMPLOYEE_FIRST_NAME = 
-    PersonLenses.firstName().contramap(Employee::personalInfo);
+public static final Lens<Employee, String> EMPLOYEE_FIRST_NAME =
+    EmployeeLenses.personalInfo().andThen(PersonLenses.firstName());
 
-// Combine transformations efficiently
-Function<String, String> normalise = name -> 
-    name.toUpperCase().trim().replace(" ", "_");
-Lens<Person, String> normalisedNameLens = PersonLenses.firstName().map(normalise);
+// Use dimap when you need the bridge, and drive it through modifyF
+public static final Optic<EmployeeDto, EmployeeDto, String, String> DEPARTMENT_BRIDGE =
+    EmployeeLenses.department().dimap(Adapters::dtoToEmployee, Adapters::employeeToDto);
 
-// Handle null safety explicitly
-Lens<EmployeeDto, Optional<String>> safeNameLens = PersonLenses.firstName()
-    .contramap((EmployeeDto dto) -> Optional.ofNullable(dto.person()))
-    .map(Optional::of);
-
-// Use safe conversions with proper error handling
-Function<String, Either<String, LocalDate>> safeParse = str -> {
-    try {
-        return Either.right(LocalDate.parse(extractDatePart(str)));
-    } catch (Exception e) {
-        return Either.left("Invalid date: " + str);
-    }
-};
+// Reserve Iso for genuinely lossless pairs (wrappers, equivalent records)
+public static final Iso<UserId, String> USER_ID_VALUE = Iso.of(UserId::value, UserId::new);
 ```
+
+~~~admonish warning title="An Iso must not lose data"
+`Iso.of(get, reverseGet)` promises a lossless round trip, and the `IsoLaws` [law harness](../tooling/test_assertions.md) will hold you to it. A DTO conversion that drops or invents fields is not an Iso; route it through `@GenerateMapping` or a [Validated Prism](validated_prism.md) instead.
+~~~
+
 ---
 
 ## Performance Notes
 
-Profunctor adaptations are designed for efficiency:
-
-* **Automatic fusion**: Multiple `contramap` or `map` operations are automatically combined
-* **Lazy evaluation**: Conversions only happen when the optic is actually used
-* **No boxing overhead**: Simple transformations are inlined by the JVM
-* **Reusable adapters**: Create once, use many times without additional overhead
-
-**Best Practice**: Create adapted optics as constants and reuse them:
-
-
-```java
-public class OpticAdapters {
-    // Create once, use everywhere
-    public static final Lens<Employee, String> FIRST_NAME = 
-        PersonLenses.firstName().contramap(Employee::personalInfo);
-  
-    public static final Lens<Employee, String> FORMATTED_BIRTH_DATE = 
-        PersonLenses.birthDate()
-            .contramap(Employee::personalInfo)
-            .map(date -> date.format(DateTimeFormatter.DD_MM_YYYY));
-      
-    public static final Traversal<CompanyDto, String> EMPLOYEE_EMAILS = 
-        CompanyTraversals.employees()
-            .contramap((CompanyDto dto) -> convertDtoToCompany(dto))
-            .andThen(EmployeeTraversals.contacts())
-            .andThen(ContactLenses.email().asTraversal());
-}
-```
+* **Adapters are thin**: each operation wraps the underlying optic with the conversion functions; there is no reflection and no copying beyond what the conversions themselves do
+* **Reuse beats rebuilding**: store composed or adapted optics as constants, the same discipline as every other page
+* **Conversion cost is your cost**: a `dimap` bridge runs your two functions on every pass, so keep them cheap and total
 
 ---
 
 ## Real-World Example: API Integration
 
-Let's explore a comprehensive example where you need to integrate with an external API that uses different field names and data structures than your internal models.
+The runnable [OpticProfunctorExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/profunctor/OpticProfunctorExample.java) walks a complete integration: an internal `Employee`/`Person` model, an external `EmployeeDto`/`PersonDto` wire format, and adapters hand-built with `Lens.of` (Route 3), including a formatted-date bridge that reads through a formatter and writes back through a parser, plus a conversion pair driven through `modifyF`. It compiles and runs on every build, so it is the reference when you wire your own.
 
-**The Scenario**: Your internal system uses `Employee` records, but the external API expects `EmployeeDto` objects with different field names:
-
-```java
-// Internal model
-@GenerateLenses
-@GenerateTraversals
-public record Employee(int id, Person personalInfo, String department) {}
-
-@GenerateLenses
-@GenerateTraversals  
-public record Person(String firstName, String lastName, LocalDate birthDate, List<String> skills) {}
-
-// External API model  
-@GenerateLenses
-public record EmployeeDto(int employeeId, PersonDto person, String dept) {}
-
-@GenerateLenses
-public record PersonDto(String fullName, String birthDateString, List<String> expertise) {}
-```
-
-**The Solution**: Create an adapter that converts between these formats while reusing your existing optics:
+The shape to copy:
 
 ```java
 public class ApiIntegration {
-  
-    // Conversion utilities
-    private static Employee dtoToEmployee(EmployeeDto dto) {
-        PersonDto personDto = dto.person();
-        String[] nameParts = personDto.fullName().split(" ", 2);
-        Person person = new Person(
-            nameParts[0],
-            nameParts.length > 1 ? nameParts[1] : "",
-            LocalDate.parse(personDto.birthDateString()),
-            personDto.expertise()
-        );
-        return new Employee(dto.employeeId(), person, dto.dept());
-    }
-  
-    private static EmployeeDto employeeToDto(Employee employee) {
-        Person person = employee.personalInfo();
-        PersonDto personDto = new PersonDto(
-            person.firstName() + " " + person.lastName(),
-            person.birthDate().toString(),
-            person.skills()
-        );
-        return new EmployeeDto(employee.id(), personDto, employee.department());
-    }
-  
-    // Adapted optics for API integration
-    public static final Lens<EmployeeDto, String> API_EMPLOYEE_DEPARTMENT = 
+
+    // One pair of conversion utilities, written once and tested
+    static Employee dtoToEmployee(EmployeeDto dto) { /* ... */ }
+    static EmployeeDto employeeToDto(Employee employee) { /* ... */ }
+
+    // Typed optics for everyday access, via composition
+    public static final Lens<Employee, String> FIRST_NAME =
+        EmployeeLenses.personalInfo().andThen(PersonLenses.firstName());
+
+    // A dimap bridge where the pipeline is effectful anyway
+    public static final Optic<EmployeeDto, EmployeeDto, String, String> DEPARTMENT =
         EmployeeLenses.department().dimap(
             ApiIntegration::dtoToEmployee,
-            ApiIntegration::employeeToDto
-        );
-  
-    public static final Lens<EmployeeDto, String> API_EMPLOYEE_FIRST_NAME = 
-        EmployeeLenses.personalInfo()
-            .andThen(PersonLenses.firstName())
-            .dimap(
-                ApiIntegration::dtoToEmployee,
-                ApiIntegration::employeeToDto
-            );
-  
-    public static final Traversal<EmployeeDto, String> API_EMPLOYEE_SKILLS = 
-        EmployeeTraversals.personalInfo()
-            .andThen(PersonTraversals.skills())
-            .dimap(
-                ApiIntegration::dtoToEmployee,
-                ApiIntegration::employeeToDto
-            );
-  
-    // Use the adapters seamlessly with external data
-    public void processApiData(EmployeeDto externalEmployee) {
-        // Update department using existing business logic
-        EmployeeDto promoted = API_EMPLOYEE_DEPARTMENT.modify(
-            dept -> "Senior " + dept, 
-            externalEmployee
-        );
-    
-        // Normalise skills using existing traversal logic
-        EmployeeDto normalisedSkills = Traversals.modify(
-            API_EMPLOYEE_SKILLS,
-            skill -> skill.toLowerCase().trim(),
-            externalEmployee
-        );
-    
-        sendToApi(promoted);
-        sendToApi(normalisedSkills);
-    }
+            ApiIntegration::employeeToDto);
 }
 ```
 
 ---
 
+~~~admonish info title="Key Takeaways"
+* **Every optic is an `Optic<S, T, A, B>`**: `contramap`, `map`, and `dimap` live there, adapting the `modifyF` pipeline and returning an `Optic`
+* **`contramap` alone is read-side only**: updates still produce the original structure type; a full bridge needs `dimap`
+* **Composition is the everyday "contramap"**: when the new source contains the old, `andThen` keeps the full typed API
+* **A lossless pair is an `Iso`**: compose it and keep `get`/`set`/`modify`; that is `dimap` with the power retained
+* **`Lens.of` is the honest fallback**: hand-build the adapter when the relationship is lopsided or one-off
+~~~
+
 ~~~admonish tip title="See Also"
-- [Profunctor Optics: Recipes](profunctor_optics_recipes.md), wrapper-type recipes, V1/V2 migration adapters, and a complete runnable example.
+- [Profunctor Optics: Recipes](profunctor_optics_recipes.md): wrapper-type recipes, V1/V2 migration adapters, and a complete runnable example
+- [Isomorphisms](iso.md): the lossless conversions that keep the full optic API
+- [Composition Rules](composition_rules.md): what `andThen` yields for every optic pairing
 ~~~
 
 ---
@@ -32238,22 +32207,19 @@ public class ApiIntegration {
 ## _Wrapper adapters, migration recipes, and a complete worked example_
 
 ~~~admonish info title="What You'll Learn"
-- How to build reusable wrapper-type lenses for strongly-typed value classes (`UserId`, `Email`, etc.).
-- Migration patterns: bridging V1 and V2 record schemas with `dimap`, and database-schema-evolution helpers.
-- A single end-to-end runnable example exercising `contramap`, `map`, and `dimap` together.
-- How profunctor adaptations interact with effectful updates and deep optic composition.
+- How to build reusable wrapper-type lenses for strongly-typed value classes (`UserId`, `Email`, etc.)
+- Migration patterns: exposing an old schema's view of new data, and when an `Iso` bridge is honest
+- Where the runnable example demonstrates the adaptation styles end to end
+- How adapted optics interact with effectful updates and deep composition
 ~~~
 
-This page is a recipe shelf for the production-shaped problems that profunctor adaptations solve. The conceptual material lives in [Profunctor Optics](profunctor_optics.md); use this page when you need a copy-paste recipe for a wrapper, a migration adapter, or want to see all three operations interact in a single program.
+This page is a recipe shelf for the production-shaped problems that optic adaptation solves. The conceptual material, including the crucial distinction between the raw `Optic`-level operations and the typed routes (composition, `Iso`, `Lens.of`), lives in [Profunctor Optics](profunctor_optics.md); use this page when you need a copy-paste recipe.
 
 ---
 
 ## Working with Type-Safe Wrappers
 
-Another powerful use case is adapting optics to work with strongly-typed wrapper classes while maintaining type safety.
-
 **The Challenge**: You want to use string manipulation functions on wrapper types:
-
 
 ```java
 // Strongly-typed wrappers
@@ -32265,372 +32231,162 @@ public record Email(String value) {}
 public record User(UserId id, UserName name, Email email, LocalDate createdAt) {}
 ```
 
-**The Solution**: Create adapted lenses that unwrap and rewrap values:
-
+**The Solution**: A single-field wrapper and its raw value are the textbook lossless pair, so give each wrapper an `Iso` and compose. `Lens >>> Iso = Lens`, so the full API survives:
 
 ```java
 public class WrapperAdapters {
-  
-    // Generic wrapper lens creator
-    public static <W> Lens<W, String> stringWrapperLens(
-        Function<W, String> unwrap,
-        Function<String, W> wrap
-    ) {
-        return Lens.of(unwrap, (wrapper, newValue) -> wrap.apply(newValue));
-    }
-  
-    // Specific wrapper lenses
-    public static final Lens<UserId, String> USER_ID_STRING = 
-        stringWrapperLens(UserId::value, UserId::new);
-      
-    public static final Lens<UserName, String> USER_NAME_STRING = 
-        stringWrapperLens(UserName::value, UserName::new);
-      
-    public static final Lens<Email, String> EMAIL_STRING = 
-        stringWrapperLens(Email::value, Email::new);
-  
+
+    // One Iso per wrapper: get unwraps, reverseGet rewraps
+    public static final Iso<UserId, String> USER_ID_VALUE = Iso.of(UserId::value, UserId::new);
+    public static final Iso<UserName, String> USER_NAME_VALUE = Iso.of(UserName::value, UserName::new);
+    public static final Iso<Email, String> EMAIL_VALUE = Iso.of(Email::value, Email::new);
+
     // Composed lenses for User operations
-    public static final Lens<User, String> USER_NAME_VALUE = 
-        UserLenses.name().andThen(USER_NAME_STRING);
-      
-    public static final Lens<User, String> USER_EMAIL_VALUE = 
-        UserLenses.email().andThen(EMAIL_STRING);
-  
+    public static final Lens<User, String> USER_NAME_STRING =
+        UserLenses.name().andThen(USER_NAME_VALUE);
+
+    public static final Lens<User, String> USER_EMAIL_STRING =
+        UserLenses.email().andThen(EMAIL_VALUE);
+
     // Usage examples
-    public User normaliseUser(User userLogin) {
-        return USER_NAME_VALUE.modify(name -> 
-            Arrays.stream(name.toLowerCase().split(" "))
+    public User normaliseUser(User user) {
+        return USER_NAME_STRING.modify(name -> {
+            String trimmed = name.trim();
+            if (trimmed.isEmpty()) {
+                return name;   // split("\\s+") on "" yields one empty token, and charAt(0) would throw
+            }
+            return Arrays.stream(trimmed.toLowerCase().split("\\s+"))
                 .map(word -> Character.toUpperCase(word.charAt(0)) + word.substring(1))
-                .collect(joining(" ")),
-            userLogin
-        );
+                .collect(joining(" "));
+        }, user);
     }
-  
-    public User updateEmailDomain(User userLogin, String newDomain) {
-        return USER_EMAIL_VALUE.modify(email -> {
+
+    public User updateEmailDomain(User user, String newDomain) {
+        return USER_EMAIL_STRING.modify(email -> {
             String localPart = email.substring(0, email.indexOf('@'));
             return localPart + "@" + newDomain;
-        }, userLogin);
+        }, user);
     }
 }
 ```
+
+The wrapper Isos are lawful (wrap-then-unwrap is the identity in both directions), so the law harness in `hkj-test` can hold them to it.
 
 ---
 
 ## Migration Patterns
 
-Profunctor adaptations are particularly valuable during system migrations:
+Schema migrations are where adaptation earns its keep, but honesty about information loss decides the tool.
 
-### Legacy System Integration
+### Exposing the Old Schema's View of New Data
 
+Version bridges are usually **lossy** (V1's `age` cannot reproduce V2's `birthDate`), so they are not Isos. The honest recipe is to build the V1-shaped view directly on V2 with `Lens.of`:
 
 ```java
-// You have optics for PersonV1, but data is now PersonV2
 public record PersonV1(String name, int age) {}
 
 @GenerateLenses
 public record PersonV2(String firstName, String lastName, LocalDate birthDate) {}
 
 public class MigrationAdapters {
-  
-    // Convert between versions
-    private static PersonV1 v2ToV1(PersonV2 v2) {
-        return new PersonV1(
-            v2.firstName() + " " + v2.lastName(),
-            Period.between(v2.birthDate(), LocalDate.now()).getYears()
-        );
-    }
-  
-    private static PersonV2 v1ToV2(PersonV1 v1) {
-        String[] nameParts = v1.name().split(" ", 2);
-        return new PersonV2(
-            nameParts[0],
-            nameParts.length > 1 ? nameParts[1] : "",
-            LocalDate.now().minusYears(v1.age())
-        );
-    }
-  
-    // Existing V1 optics work with V2 data
-    public static final Lens<PersonV2, String> V2_NAME_FROM_V1_LENS = 
-        // Assume we have a V1 name lens
-        Lens.of(PersonV1::name, (p1, name) -> new PersonV1(name, p1.age()))
-            .dimap(MigrationAdapters::v2ToV1, MigrationAdapters::v1ToV2);
+
+    // A V1-shaped "name" view over V2 data: reads join, writes split
+    public static final Lens<PersonV2, String> V2_FULL_NAME =
+        Lens.of(
+            v2 -> v2.lastName().isEmpty()
+                ? v2.firstName()                                 // no trailing separator, so set-then-get round-trips
+                : v2.firstName() + " " + v2.lastName(),
+            (v2, name) -> {
+                String[] parts = name.split(" ", 2);
+                return new PersonV2(
+                    parts[0],
+                    parts.length > 1 ? parts[1] : "",
+                    v2.birthDate());
+            });
 }
 ```
 
+Code written against "a person's name" keeps working during the migration, and nothing pretends the round trip through V1 preserves the birth date.
+
 ### Database Schema Evolution
 
+The same recipe scales to entity migrations. The V1-shaped views live in one adapter class, so when the migration completes you delete one file:
 
 ```java
 // Old database entity
 public record CustomerEntityV1(Long id, String name, String email) {}
 
-// New database entity  
+// New database entity
 @GenerateLenses
-public record CustomerEntityV2(Long id, String firstName, String lastName, String emailAddress, boolean active) {}
+public record CustomerEntityV2(
+    Long id, String firstName, String lastName, String emailAddress, boolean active) {}
 
 public class SchemaAdapters {
-  
-    // Adapter for name field
-    public static final Lens<CustomerEntityV2, String> FULL_NAME_ADAPTER = 
-        Lens.of(CustomerEntityV1::name, (v1, name) -> new CustomerEntityV1(v1.id(), name, v1.email()))
-            .dimap(
-                // V2 -> V1 conversion
-                v2 -> new CustomerEntityV1(v2.id(), v2.firstName() + " " + v2.lastName(), v2.emailAddress()),
-                // V1 -> V2 conversion  
-                v1 -> {
-                    String[] parts = v1.name().split(" ", 2);
-                    return new CustomerEntityV2(
-                        v1.id(),
-                        parts[0],
-                        parts.length > 1 ? parts[1] : "",
-                        v1.email(),
-                        true // Default active status
-                    );
-                }
-            );
+
+    public static final Lens<CustomerEntityV2, String> FULL_NAME =
+        Lens.of(
+            v2 -> v2.firstName() + " " + v2.lastName(),
+            (v2, name) -> {
+                String[] parts = name.split(" ", 2);
+                return new CustomerEntityV2(
+                    v2.id(),
+                    parts[0],
+                    parts.length > 1 ? parts[1] : "",
+                    v2.emailAddress(),
+                    v2.active());
+            });
+
+    public static final Lens<CustomerEntityV2, String> EMAIL =
+        Lens.of(
+            CustomerEntityV2::emailAddress,
+            (v2, email) -> new CustomerEntityV2(
+                v2.id(), v2.firstName(), v2.lastName(), email, v2.active()));
 }
 ```
+
+~~~admonish note title="When schemas really are equivalent"
+If the two versions hold exactly the same information in different shapes, write the conversion pair as an `Iso` and compose old optics through it: `Iso >>> Lens = Lens`. Reach for the raw `Optic.dimap` bridge only when the pipeline is effectful and lives in `modifyF` anyway; see [Profunctor Optics](profunctor_optics.md#the-three-profunctor-operations).
+~~~
 
 ---
 
 ## Complete, Runnable Example
 
-This comprehensive example demonstrates all three profunctor operations in a realistic scenario:
+[OpticProfunctorExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/profunctor/OpticProfunctorExample.java) works each adaptation style end to end (hand-building with `Lens.of`, rather than the raw `Optic` operations), and it compiles and runs on every build:
 
+- **The nested-source ("contramap") wish**: a `Person` first-name lens reaching through `Employee`, hand-built with `Lens.of`
+- **Map-style**: a `LocalDate` lens exposed as a formatted-string lens (read formats, write parses)
+- **Dimap-style**: a hobbies traversal driven across the `PersonDto` wire shape through `modifyF`, with the conversion pair supplied at the boundary
+- **Wrapper integration**: a hand-built value lens reaching through a `UserName` wrapper
+- **API adapter**: the full internal-model-to-DTO round trip
 
-```java
-package org.higherkindedj.example.optics.profunctor;
-
-import org.higherkindedj.optics.Lens;
-import org.higherkindedj.optics.Traversal;
-import org.higherkindedj.optics.annotations.GenerateLenses;
-import org.higherkindedj.optics.annotations.GenerateTraversals;
-import org.higherkindedj.optics.util.Traversals;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.util.List;
-import java.util.Optional;
-
-public class OpticProfunctorExample {
-
-    // Internal data model
-    @GenerateLenses
-    @GenerateTraversals
-    public record Person(String firstName, String lastName, LocalDate birthDate, List<String> hobbies) {}
-  
-    @GenerateLenses
-    public record Employee(int id, Person personalInfo, String department) {}
-  
-    // External API model
-    @GenerateLenses
-    public record PersonDto(String fullName, String birthDateString, List<String> interests) {}
-  
-    @GenerateLenses  
-    public record EmployeeDto(int employeeId, PersonDto person, String dept) {}
-  
-    // Type-safe wrapper
-    public record UserId(long value) {}
-  
-    @GenerateLenses
-    public record UserProfile(UserId id, String displayName, boolean active) {}
-
-    public static void main(String[] args) {
-        System.out.println("=== PROFUNCTOR OPTICS EXAMPLE ===");
-      
-        // Test data
-        var person = new Person("Alice", "Johnson", 
-            LocalDate.of(1985, 6, 15), 
-            List.of("reading", "cycling", "photography"));
-        var employee = new Employee(123, person, "Engineering");
-      
-        // --- SCENARIO 1: contramap - Adapt source type ---
-        System.out.println("--- Scenario 1: contramap (Source Adaptation) ---");
-      
-        // Original lens works on Person, adapt it for Employee
-        Lens<Person, String> firstNameLens = PersonLenses.firstName();
-        Lens<Employee, String> employeeFirstNameLens = 
-            firstNameLens.contramap(Employee::personalInfo);
-      
-        String name = employeeFirstNameLens.get(employee);
-        Employee renamedEmployee = employeeFirstNameLens.set("Alicia", employee);
-      
-        System.out.println("Original employee: " + employee);
-        System.out.println("Extracted name: " + name);
-        System.out.println("Renamed employee: " + renamedEmployee);
-        System.out.println();
-      
-        // --- SCENARIO 2: map - Adapt target type ---
-        System.out.println("--- Scenario 2: map (Target Adaptation) ---");
-      
-        // Original lens returns LocalDate, adapt it to return formatted string
-        Lens<Person, LocalDate> birthDateLens = PersonLenses.birthDate();
-        Lens<Person, String> birthDateStringLens = 
-            birthDateLens.map(date -> date.format(DateTimeFormatter.ISO_LOCAL_DATE));
-      
-        String formattedDate = birthDateStringLens.get(person);
-        // Note: set operation would need to parse the string back to LocalDate
-        System.out.println("Person: " + person);
-        System.out.println("Formatted birth date: " + formattedDate);
-        System.out.println();
-      
-        // --- SCENARIO 3: dimap - Adapt both source and target ---
-        System.out.println("--- Scenario 3: dimap (Both Source and Target Adaptation) ---");
-      
-        // Convert between internal Person and external PersonDto
-        Traversal<Person, String> hobbiesTraversal = PersonTraversals.hobbies();
-        Traversal<PersonDto, String> interestsTraversal = hobbiesTraversal.dimap(
-            // PersonDto -> Person
-            dto -> {
-                String[] nameParts = dto.fullName().split(" ", 2);
-                return new Person(
-                    nameParts[0],
-                    nameParts.length > 1 ? nameParts[1] : "",
-                    LocalDate.parse(dto.birthDateString()),
-                    dto.interests()
-                );
-            },
-            // Person -> PersonDto  
-            p -> new PersonDto(
-                p.firstName() + " " + p.lastName(),
-                p.birthDate().toString(),
-                p.hobbies()
-            )
-        );
-      
-        var personDto = new PersonDto("Bob Smith", "1990-03-20", 
-            List.of("gaming", "cooking", "travel"));
-      
-        List<String> extractedInterests = Traversals.getAll(interestsTraversal, personDto);
-        PersonDto updatedDto = Traversals.modify(interestsTraversal, 
-            interest -> interest.toUpperCase(), personDto);
-      
-        System.out.println("Original DTO: " + personDto);
-        System.out.println("Extracted interests: " + extractedInterests);
-        System.out.println("Updated DTO: " + updatedDto);
-        System.out.println();
-      
-        // --- SCENARIO 4: Working with wrapper types ---
-        System.out.println("--- Scenario 4: Wrapper Type Integration ---");
-      
-        // Create a lens that works directly with the wrapped value
-        Lens<UserId, Long> userIdValueLens = Lens.of(UserId::value, (id, newValue) -> new UserId(newValue));
-        Lens<UserProfile, Long> profileIdValueLens = 
-            UserProfileLenses.id().andThen(userIdValueLens);
-      
-        var userProfile = new UserProfile(new UserId(456L), "Alice J.", true);
-      
-        Long idValue = profileIdValueLens.get(userProfile);
-        UserProfile updatedProfile = profileIdValueLens.modify(id -> id + 1000, userProfile);
-      
-        System.out.println("Original profile: " + userProfile);
-        System.out.println("Extracted ID value: " + idValue);
-        System.out.println("Updated profile: " + updatedProfile);
-        System.out.println();
-      
-        // --- SCENARIO 5: Chaining adaptations ---
-        System.out.println("--- Scenario 5: Chaining Adaptations ---");
-      
-        // Chain multiple adaptations: Employee -> Person -> String (formatted)
-        Lens<Employee, String> formattedEmployeeName = 
-            PersonLenses.firstName()
-                .contramap(Employee::personalInfo)  // Employee -> Person
-                .map(name -> "Mr/Ms. " + name.toUpperCase()); // String -> Formatted String
-      
-        String formalName = formattedEmployeeName.get(employee);
-        Employee formalEmployee = formattedEmployeeName.set("Mr/Ms. ROBERT", employee);
-      
-        System.out.println("Original employee: " + employee);
-        System.out.println("Formal name: " + formalName);
-        System.out.println("Employee with formal name: " + formalEmployee);
-        System.out.println();
-      
-        // --- SCENARIO 6: Safe adaptations with Optional ---
-        System.out.println("--- Scenario 6: Safe Adaptations ---");
-      
-        // Handle potentially null fields safely
-        Lens<Optional<Person>, Optional<String>> safeNameLens = 
-            PersonLenses.firstName()
-                .map(Optional::of)
-                .contramap(optPerson -> optPerson.orElse(new Person("", "", LocalDate.now(), List.of())));
-      
-        Optional<Person> maybePerson = Optional.of(person);
-        Optional<Person> emptyPerson = Optional.empty();
-      
-        Optional<String> safeName1 = safeNameLens.get(maybePerson);
-        Optional<String> safeName2 = safeNameLens.get(emptyPerson);
-      
-        System.out.println("Safe name from present person: " + safeName1);
-        System.out.println("Safe name from empty person: " + safeName2);
-    }
-}
-```
-
-**Expected Output:**
-
-```
-=== PROFUNCTOR OPTICS EXAMPLE ===
---- Scenario 1: contramap (Source Adaptation) ---
-Original employee: Employee[id=123, personalInfo=Person[firstName=Alice, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]], department=Engineering]
-Extracted name: Alice
-Renamed employee: Employee[id=123, personalInfo=Person[firstName=Alicia, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]], department=Engineering]
-
---- Scenario 2: map (Target Adaptation) ---
-Person: Person[firstName=Alice, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]]
-Formatted birth date: 1985-06-15
-
---- Scenario 3: dimap (Both Source and Target Adaptation) ---
-Original DTO: PersonDto[fullName=Bob Smith, birthDateString=1990-03-20, interests=[gaming, cooking, travel]]
-Extracted interests: [gaming, cooking, travel]
-Updated DTO: PersonDto[fullName=Bob Smith, birthDateString=1990-03-20, interests=[GAMING, COOKING, TRAVEL]]
-
---- Scenario 4: Wrapper Type Integration ---
-Original profile: UserProfile[id=UserId[value=456], displayName=Alice J., active=true]
-Extracted ID value: 456
-Updated profile: UserProfile[id=UserId[value=1456], displayName=Alice J., active=true]
-
---- Scenario 5: Chaining Adaptations ---
-Original employee: Employee[id=123, personalInfo=Person[firstName=Alice, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]], department=Engineering]
-Formal name: Mr/Ms. ALICE
-Employee with formal name: Employee[id=123, personalInfo=Person[firstName=ROBERT, lastName=Johnson, birthDate=1985-06-15, hobbies=[reading, cycling, photography]], department=Engineering]
-
---- Scenario 6: Safe Adaptations ---
-Safe name from present person: Optional[Alice]
-Safe name from empty person: Optional[]
-```
+Run it from the repository to see each scenario's printed before/after output.
 
 ---
 
 ## Integration with Existing Optics
 
-Profunctor adaptations work seamlessly with all the optic types and features you've already learned:
+Adapted optics integrate exactly like the optics they wrap:
 
-### With Effectful Updates
+- **Typed adapters** (composition, `Iso`, `Lens.of`) are ordinary lenses and traversals: they compose with `andThen`, convert with `asTraversal()`/`asFold()`, and accept effects through `modifyF`, including accumulating validation with `Instances.validated(...)`.
+- **Raw `Optic` bridges** (`contramap`/`map`/`dimap`) compose with other optics via `Optic.andThen` and run through `modifyF`. They do not offer `get`/`set` directly, which is precisely why the typed routes are preferred outside effectful pipelines.
 
-```java
-// Original effectful lens
-Lens<Person, String> emailLens = PersonLenses.email();
+This adaptability is what lets you keep well-tested optics through data-format changes without rewriting core business logic.
 
-// Adapt it for Employee and use with validation
-Lens<Employee, String> employeeEmailLens = emailLens.contramap(Employee::personalInfo);
+---
 
-// Use with effectful validation as normal
-Kind<ValidatedKind.Witness<String>, Employee> result = 
-    employeeEmailLens.modifyF(this::validateEmail, employee, validatedApplicative);
-```
+~~~admonish info title="Key Takeaways"
+* **Wrappers want Isos**: `Iso.of(Wrapper::value, Wrapper::new)` composed after a lens keeps the whole API, lawfully
+* **Lossy version bridges want `Lens.of`**: expose the old schema's view of the new data, and never call a lossy pair an Iso
+* **Keep adapters in one place**: a migration adapter class is deleted in one commit when the migration lands
+* **Effectful pipelines can use raw `dimap`**: an `Optic` bridge plus `modifyF` reuses domain logic across wire shapes
+~~~
 
-### With Deep Composition
-
-
-```java
-// Compose adapted optics just like regular optics
-Traversal<EmployeeDto, String> deepPath = 
-    apiAdapter.asTraversal()
-        .andThen(PersonTraversals.hobbies())
-        .andThen(stringProcessor);
-```
-
-This profunctor capability makes higher-kinded-j optics incredibly flexible and reusable, allowing you to adapt existing, well-tested optics to work with new data formats and requirements without rewriting your core business logic.
+~~~admonish tip title="See Also"
+- [Profunctor Optics](profunctor_optics.md): the concepts and the typed-versus-`Optic` distinction these recipes apply
+- [Isomorphisms](iso.md): the lawful lossless conversions behind the wrapper recipe
+- [Validated Prisms](validated_prism.md): the right home for conversions that can fail
+~~~
 
 ---
 
@@ -42038,21 +41794,30 @@ AppConfig updatedConfig = Traversals.modify(finalAuditor, reEncryptFunction, ori
 
 ### 3. **Profunctor Adaptations for Legacy Systems**
 
-Suppose your audit service expects a different data format: perhaps it works with `ConfigDto` objects instead of `AppConfig`. Rather than rewriting your carefully crafted optic, you can adapt it using profunctor operations:
+Suppose your audit service expects a different data format: perhaps it works with `ConfigDto` objects instead of `AppConfig`. Rather than rewriting your carefully crafted optic, you can adapt it.
 
+If the DTO and the domain config hold the same information, the conversion pair is an [Iso](iso.md), and composing through it keeps the full `Traversal` API:
 
 ```java
-// Adapt the auditor to work with legacy DTO format
-Traversal<ConfigDto, byte[]> legacyAuditor = finalAuditor.contramap(dto -> convertToAppConfig(dto));
+// A lossless pair: ConfigDto <-> AppConfig
+Iso<ConfigDto, AppConfig> dtoIso = Iso.of(Auditing::toAppConfig, Auditing::toConfigDto);
 
-// Or adapt both input and output formats simultaneously
-Traversal<ConfigDto, AuditRecord> fullyAdaptedAuditor = finalAuditor.dimap(
-    dto -> convertToAppConfig(dto),           // Convert input format
-    bytes -> new AuditRecord(bytes, timestamp()) // Convert output format
-);
+// Iso >>> Traversal = Traversal, so every operation still works
+Traversal<ConfigDto, byte[]> legacyAuditor = dtoIso.andThen(finalAuditor);
+
+List<byte[]> passwords = Traversals.getAll(legacyAuditor, someDto);
 ```
 
-This profunctor capability means your core business logic (the auditing path) remains unchanged whilst adapting to different system interfaces: a powerful example of the [Profunctor Optics](profunctor_optics.md) capabilities.
+When the conversion is one-way or lossy, use the `Optic`-level `dimap` bridge instead, and drive it through `modifyF`:
+
+```java
+// dimap adapts the SOURCE (ConfigDto -> AppConfig) and the STRUCTURE the update
+// produces (AppConfig -> ConfigDto); the focus stays byte[] throughout.
+Optic<ConfigDto, ConfigDto, byte[], byte[]> dtoAuditor =
+    finalAuditor.dimap(Auditing::toAppConfig, Auditing::toConfigDto);
+```
+
+Either way your core business logic (the auditing path) remains unchanged whilst adapting to different system interfaces. [Profunctor Optics](profunctor_optics.md) explains when each route applies.
 
 ### 4. **More Complex Filters**
 
@@ -44169,7 +43934,7 @@ The decision trees that appear in scattered form across the chapter intros are c
 | Build optic operations as data, run later | [Free Monad DSL](free_monad_dsl.md) |
 | Audit trail of every optic operation | [Free Monad DSL with logging interpreter](interpreters.md) |
 | Reuse an optic for a type you cannot annotate | [`@ImportOptics`](importing_optics.md) or an [`OpticsSpec`](optics_spec_interfaces.md) interface |
-| Adapt an optic to a different data shape | [Profunctor `contramap` / `map` / `dimap`](profunctor_optics.md) |
+| Adapt an optic to a different data shape | [Compose when the source nests, an `Iso` when the shapes are equivalent, `Lens.of` when it is lopsided, `dimap` when it is one-way](profunctor_optics.md) |
 
 ---
 
@@ -44202,10 +43967,10 @@ The decision trees that appear in scattered form across the chapter intros are c
 | "Access by key in a `Map`" | [Indexed Access](indexed_access.md) and the [`At`](each_typeclass.md) typeclass |
 | "Apply over every element of a custom container" | [Each Typeclass](each_typeclass.md) |
 | "Operate on individual characters of a `String`" | [String Traversals](string_traversals.md) |
-| "Adapt a lens for a different source record type" | `lens.contramap(...)` ([Profunctor Optics](profunctor_optics.md)) |
-| "Adapt a lens for a different target type" | `lens.map(...)` ([Profunctor Optics](profunctor_optics.md)) |
-| "Both source and target need adapting" | `lens.dimap(...)` ([Profunctor Optics](profunctor_optics.md)) |
-| "Match a sum-type variant by a predicate, not type" | [Advanced Prism Patterns: `nearly` and `doesNotMatch`](advanced_prism_patterns.md) |
+| "Adapt a lens for a different source record type" | Compose: `outerLens.andThen(innerLens)` ([Profunctor Optics](profunctor_optics.md)) |
+| "The two shapes hold the same information" | An [`Iso`](iso.md), then compose: `Iso >>> Lens = Lens` |
+| "One-way conversion inside an effectful pipeline" | `optic.dimap(...)` ([Profunctor Optics](profunctor_optics.md)) |
+| "Match a value by a predicate, not by type" | [`Prisms.nearly`](advanced_prism_patterns.md#predicate-matching-with-prismsnearly) |
 
 ---
 
