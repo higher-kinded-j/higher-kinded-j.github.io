@@ -21718,6 +21718,38 @@ public record Team(String name, List<Player> players) {}
 
 This is useful when you need to avoid name collisions or organise generated code separately.
 
+#### Wildcard Element Types
+
+A container's element type may be written as a wildcard. The generated traversal focuses **the type the wildcard stands for**: `? extends Player` is focused as `Player`, and `?` or `? super Player` as `Object`.
+
+<!-- verify -->
+```java
+@GenerateTraversals
+record Roster(String coach, List<? extends Player> players) {}
+
+// `? extends Player` is focused as `Player`
+Traversal<Roster, Player> everyPlayer = RosterTraversals.players();
+```
+
+A wildcard cannot be written into the generated source — `Traversal<Roster, ? extends Player>` is not a type an implementation can be declared with — so the bound is what the method hands back. It is the element type [`@GenerateFocus`](focus_containers.md) reads wherever it looks inside a container, so a Focus path over the same component reaches `Player` too. That annotation has the stricter job of composing an optic instance to widen an **SPI** container, and rejects a wildcard there rather than guessing one.
+
+Modifying through the traversal builds a **fresh** container and hands it to the record's constructor, so a narrower list the field was constructed from is never written into.
+
+#### Generic Records
+
+A record that declares type parameters of its own gets them on the generated method, so a traversal over `Holder<T>` focuses `T` rather than losing it:
+
+<!-- verify -->
+```java
+@GenerateTraversals
+record Squad<T>(String coach, List<T> members) {}
+
+// Generated: public static <T> Traversal<Squad<T>, T> members()
+Traversal<Squad<Player>, Player> everyMember = SquadTraversals.members();
+```
+
+Arrays work the same way, whatever their element type: an `int[]` is focused as `Integer` and boxed on the way through, and an element type the traversal cannot name in a `new` expression — `List<Player>[]`, `Player[][]`, `T[]` — is rebuilt by copying the source array to length, which keeps its runtime component type.
+
 ### Step 2: Composing a Deep Traversal
 
 Just like other optics, `Traversal`s can be composed with `andThen`. We can chain them together to create a single, deep traversal from the `League` all the way down to each player's `score`.
@@ -33667,6 +33699,8 @@ The built-in `Optional`, `List` and `Set` widenings take a wildcard without comp
 A `ZERO_OR_MORE` SPI container is rejected only when something actually widens it — `widenCollections = true`, or a navigator taking it. At the default settings it stays a `FocusPath`, and the wildcard costs it nothing. Nor does one beneath it: `Map<String, Either<String, ? extends Leaf>>` compiles at the default settings, because the `Map` is never widened and so the `Either` inside it is never asked for an optic.
 
 A generator that names no optic expression is exempt: it widens through `.nullable()` or `.each()`, whose free type variable takes a raw or wildcard argument without complaint. Every generator shipped with HKJ names one.
+
+This is a rule about **composing an optic instance**, so it is `@GenerateFocus`'s alone. `@GenerateTraversals` reads the same component and emits a `Traversal` over the type the wildcard stands for: nothing is inferred, so there is nothing to fail. Where a path does widen — the built-in `Optional`, `List` and `Set` above — it reaches that same element type. See [Wildcard Element Types](traversals.md#wildcard-element-types).
 ~~~
 
 ### Cross-Ecosystem Navigation
@@ -80349,7 +80383,7 @@ public class NonEmptyListGenerator extends BaseTraversableGenerator {
                 "final var effectOfNonEmptyList = applicative.map(list -> com.example.NonEmptyList.of(list), effectOfList)")
             .addStatement(
                 "return applicative.map(newNonEmptyList -> new $T($L), effectOfNonEmptyList)",
-                recordClassName, constructorArgs)
+                recordTypeName(component, recordClassName), constructorArgs)
             .build();
     }
 }
@@ -80392,9 +80426,11 @@ The `TraversalProcessor` will now discover your `NonEmptyListGenerator` via `Ser
 
 ### Implementation Tips
 
-- **Extend `BaseTraversableGenerator`** to inherit `getGenericTypeName()` and `generateConstructorArgs()` helper methods.
+- **Extend `BaseTraversableGenerator`** to inherit `getGenericTypeName()`, `getTypeArgumentName(component, index)` and `generateConstructorArgs()` helper methods. Read every type argument through one of the first two: they resolve a wildcard to the type it stands for, and a wildcard written into generated source does not compile.
+- **Construct the record through `recordTypeName(component, recordClassName)`**, not the class name you were handed: a generic record's traversal is generated in a method carrying its type variables, and naming the record without them constructs a raw instance.
+- **Name the effect through `effectVariable(component)`** wherever the body you emit writes a `Kind<F, …>`: a record is free to declare a type parameter called `F`, and the generated method then declares the effect under another name.
 - **Use fully qualified names** in `supports()` to avoid false matches with similarly named types.
-- **Reuse `Traversals.traverseList()`** when your type can be converted to a `java.util.List`. Most third-party generators follow this pattern: convert to list, traverse, convert back.
+- **Reuse `Traversals.traverseList()`** when your type can be converted to a `java.util.List`. Most third-party generators follow this pattern: convert to list, traverse, convert back. A map-shaped type hands itself to `Traversals.traverseMapValues()` instead, which keeps the keys and gives back a JDK `Map` to rebuild from.
 - **Override `getFocusTypeArgumentIndex()`** if your type's traversal target is not the first type parameter (e.g. `Either<L, R>` focuses on index 1).
 - **Override `getCardinality()`** to return `Cardinality.ZERO_OR_ONE` for optional-like types (e.g. `Either`, `Try`, `Validated`). The default `ZERO_OR_MORE` is correct for collection-like types and does not need overriding.
 - **Write integration tests** using Google's compile-testing library to verify generated code compiles and contains the expected statements.
@@ -80405,7 +80441,7 @@ The `TraversalProcessor` will now discover your `NonEmptyListGenerator` via `Ser
 * **30 built-in generators** cover JDK types, HKJ core types, Eclipse Collections, Guava, Vavr, Apache Commons, and PCollections
 * **Third-party support activates automatically** when the library is on the classpath; no configuration required
 * **The SPI is extensible**: implement `TraversableGenerator`, register it with `@ServiceProvider`, and the processor discovers it at compile time
-* **Most generators follow a common pattern**: convert to `java.util.List`, traverse with `Traversals.traverseList()`, convert back to the original type
+* **Most generators follow a common pattern**: convert to `java.util.List`, traverse with `Traversals.traverseList()`, convert back to the original type; map-shaped ones traverse with `Traversals.traverseMapValues()` and rebuild from the JDK `Map` it returns
 * **Cardinality drives widening**: `ZERO_OR_ONE` produces an `AffinePath`, always; `ZERO_OR_MORE` produces a `TraversalPath` under `widenCollections = true`, or when the container's element is itself a navigable record. Static Focus methods and navigator methods read the same answer
 ~~~
 
@@ -87761,6 +87797,14 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 _In development. Release notes will be added here as changes land on `main`._
 
 - **The mapping documentation becomes its own chapter**: the record-mapping material moved from a single page under Optics into a dedicated [Mapping at the Boundary](mapping/ch_intro.md) chapter (basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing), opening with a problem-first introduction and closing with a compiled, law-checked capstone: [One 422, Every Bad Field](mapping/capstone.md). The old `optics/record_mapping.html` URL redirects to the new chapter.
+- **`@GenerateTraversals` reads a wildcard type argument** ([#721](https://github.com/higher-kinded-j/higher-kinded-j/issues/721)): a component written `List<? extends Leaf>` copied its type argument verbatim into the generated optic, which emitted `new Traversal<Holder, ? extends Leaf>() {` — a wildcard where javac wants a class or interface — so the generated file did not compile. It was not confined to third-party containers: `List` and `Map<String, ? extends Leaf>` failed as readily as `Either<String, ? extends Leaf>`, as did every unbounded and super-bounded form, and `Map<?, Leaf>`, where the wildcard sits in an argument the generator does not even focus. The argument is now resolved where it is read, the way `@GenerateFocus` reads it wherever it looks inside a container — `? extends T` is `T`, `?` and `? super T` are `Object` — so `HolderTraversals.items()` hands back `Traversal<Holder, Leaf>`. See [Wildcard Element Types](optics/traversals.md#wildcard-element-types).
+
+  _Also:_ the generated map traversal calls `Traversals.traverseMapValues` rather than rebuilding the map from a list of entries, four statements becoming one, and that helper stopped copying the map it is building on every entry — a 16 000-entry map traverses in 1.3 ms where it took 851 ms, and `Traversals.forMapValues()` was already on that quadratic path. `Traversals.traverseList` takes its function as `Function<? super A, ? extends Kind<F, ? extends B>>`, matching `traverseSet`, `traverseArray` and `traverseMapValues`, which lets the first two drop an unchecked cast each, and its list as `List<? extends A>`, which is what lets a wildcard-typed field be handed over directly. Every JDK, HKJ and third-party container shape is now compiled through the real processor by a sweep that also pins the element type each one focuses, so a shape that generates uncompilable source fails a test rather than a user's build.
+
+  _Four more component shapes that generated uncompilable source:_ an **array of a type that cannot be created by name** (`List<Leaf>[]`, `Leaf[][]`) emitted `new List<Leaf>[size]` or `new Leaf[][size]`; the array is copied to length instead, which keeps its runtime component type. An **array of a primitive** (`int[]`, and every one of the eight — `Arrays.stream` has an overload for only three, and those return a stream that cannot collect to a `List`) is now walked and boxed an element at a time, and unboxed back into a fresh array. A **generic record** (`record Holder<T>(List<T> items)`) generated `Traversal<Holder, T>` in a static method that had never heard of `T`; the method now carries the record's own type variables, as `@GenerateLenses` and `@GenerateFocus` already did. Where a record claims `F` for a type parameter of its own, the effect takes another name — one the processor declaring it and the generators writing uses of it both read from a single place, since a body that says `Kind<F, …>` against a record's `F` names the wrong variable.
+
+  _Behaviour change, narrow:_ a `Map` component's traversal no longer throws on a null **key** in the source map, nor on a null the function hands back. It used to rebuild the map through `Map.entry` and `Collectors.toMap`, which reject both — the key too, though a values traversal never touches it. A null value already in the map was always handed to the function, and still is. The `List`, `Set` and array siblings have always stored whatever the function returned, null included.
+
 - **A component reports one path type, whichever way you reach it** ([#719](https://github.com/higher-kinded-j/higher-kinded-j/issues/719)): `ShapesFocus.tags()` and `OuterFocus.shapes().tags()` are generated from one declaration by one processor run, and disagreed about it — two analyses answered the same question and nothing reconciled them. An `ArrayList<String>` was a `FocusPath` at the static method and a `TraversalPath` at the navigator; a `Map<String, String>` widened at the navigator whatever `widenCollections` said; a nested `List<Optional<String>>` composed to the element in one and stopped at the `Optional` in the other. There is now one widening analysis, and a navigation method composes the static Focus method for the field it reaches rather than re-deriving the widening, so the two cannot drift apart. See [Navigation and Composition](optics/focus_navigation.md#path-widening).
 
   _Shapes that generated source javac rejected, now compiling:_ a `Kind<F, A>` component on a navigator-reachable record (the navigator asked a widened path for its lens); a navigator over an SPI container of records whose target record has a plain navigable field of its own (`Map<String, Mid>` where `Mid` holds a `Leaf` — the composed path is now handed back where the target's navigator cannot hold it, rather than being passed to it); and a record whose `targetPackage` sends its companion elsewhere, which navigators looked for where the record was declared.
