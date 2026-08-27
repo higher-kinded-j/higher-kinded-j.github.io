@@ -17270,6 +17270,8 @@ Apply these to abstract methods inside an interface that extends `OpticsSpec<S>`
 | `@InstanceOf(SubType.class)` | Java `instanceof` pattern matching (e.g. Jackson's `ObjectNode`, `ArrayNode`) |
 | `@MatchWhen` | Predicate method (`isFoo()`) plus a getter (`asFoo()`), for type-checking APIs that don't use sealed types |
 
+A parameterised `@InstanceOf` target may only promise the type arguments the source type pins down — the class constant is raw, and the test runs after erasure. See [Parameterised Targets](optics_spec_interfaces.md#parameterised-targets).
+
 ### Lens hints, copy strategies for legacy Java
 
 External record-like types rarely have a single copy mechanism. The processor uses these hints to know how to rebuild the object after a `set` or `modify`.
@@ -34573,6 +34575,70 @@ Prism<Value, String> string();
 
 Both produce a `Prism`, so both compose the same way afterwards. Pick by what the library gives you: a type to test, or a method to ask.
 
+### Parameterised Targets
+
+`@InstanceOf` takes a class constant, which is always raw, and the generated test runs after erasure. A parameterised target may therefore only be narrowed to the type arguments the source type *pins down* — the ones a value of that source type must already have had to reach the test at all.
+
+```mermaid
+flowchart TD
+    T["@InstanceOf(Circle.class)<br/>Prism&lt;S, Circle&lt;T&gt;&gt;"] --> Q{"Does S carry the<br/>argument Circle is<br/>reached under?"}
+    Q -->|"Shape&lt;T&gt;, and<br/>Circle&lt;X&gt; implements Shape&lt;X&gt;"| P(["source instanceof Circle&lt;T&gt;<br/>javac checks it"])
+    Q -->|"Shape, which<br/>declares nothing"| E(["Rejected: declare<br/>Circle&lt;?&gt;, or use @MatchWhen"])
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef error fill:#e78284,stroke:#d20f39,color:#232634
+    class T tier
+    class Q decision
+    class P tier
+    class E error
+```
+
+A generic hierarchy pins its own argument, so the prism can promise it. `T` is the spec's own type parameter, and `Circle<X> implements Shape<X>` is what lets the test check it:
+
+```java
+sealed interface Shape<X> permits Circle {}
+record Circle<X>(X tag) implements Shape<X> {}
+
+@ImportOptics
+interface ShapeOpticsSpec<T> extends OpticsSpec<Shape<T>> {
+
+    @InstanceOf(Circle.class)
+    Prism<Shape<T>, Circle<T>> circle();
+    // generates: source instanceof Circle<T> t ? Optional.of(t) : Optional.empty()
+}
+```
+
+A base that says nothing about the argument pins nothing. Every instantiation passes the same test, so the same declaration is rejected:
+
+```java
+class Shape {}
+class Circle<X> extends Shape {}
+
+@ImportOptics
+interface ShapeOpticsSpec<T> extends OpticsSpec<Shape> {
+
+    @InstanceOf(Circle.class)
+    Prism<Shape, Circle<T>> circle();   // rejected: nothing checks T
+}
+```
+
+Widened to the wildcard, which is what the test earns, it is accepted — and the spec needs no type parameter of its own once the prism stops promising one:
+
+```java
+@ImportOptics
+interface ShapeOpticsSpec extends OpticsSpec<Shape> {
+
+    @InstanceOf(Circle.class)
+    Prism<Shape, Circle<?>> circle();
+    // generates: source instanceof Circle<?> t ? Optional.of(t) : Optional.empty()
+}
+```
+
+~~~admonish info title="Where the argument matters"
+Widening to `Circle<?>` keeps the prism, at the cost of the argument. Where you need the argument, `@MatchWhen` is the sound alternative: it narrows through a predicate and getter of the source type, so the argument is the source's to honour rather than the test's to invent.
+~~~
+
 ---
 
 ## Layering Domain Optics
@@ -41418,6 +41484,24 @@ A source type that is itself generic is supported, and the spec names its own ty
 **Cause.** The class passed to `@InstanceOf(SubType.class)` is not a subclass of the optic's source type.
 
 **Fix.** Verify that `SubType` extends or implements the spec's `<S>` parameter. If you are working with sum types that don't use a sealed hierarchy (such as Jackson's pre-3.x `JsonNode`), use `@MatchWhen` with predicate and getter method names instead.
+
+### "@InstanceOf: '...' declares its focus as 'Circle<T>', which the test cannot narrow to"
+
+**Cause.** The prism promises a type argument the test cannot check. `@InstanceOf` takes a class constant, which is raw, and the generated `instanceof` runs after erasure, so the only arguments the narrowed value is known to have are the ones the source type pins down. `class Circle<X> extends Shape` reached from a `Shape` that declares no parameters pins none: every instantiation passes the same test, and a `Prism<Shape, Circle<T>>` would hand any of them back as the `T` the caller asked for, to fail on the first read.
+
+**Fix.** Declare the focus as `Circle<?>`, which is what the test earns, or narrow through a predicate and getter of the source type with `@MatchWhen`, which reads the argument off the source rather than inventing it. Where the source type does carry the argument — `Circle<X> implements Shape<X>`, reached from `Shape<T>` — the prism may promise it, and the generated test names it. See [Spec Interfaces](optics_spec_interfaces.md#parameterised-targets).
+
+### "@InstanceOf: '...' names '...', which carries type parameters of its own and is a member of a generic type"
+
+**Cause.** The test has to name the type it checks, and `Outer<X>.Inner<Y>` cannot be written with its own type arguments unless the enclosing type is written with its — which an `instanceof` cannot do. The remaining `Outer.Inner` is raw: it checks nothing about `Y`, and it is a `rawtypes` warning in the consuming build besides. A member of a *non-generic* type is unaffected, since `Outer.Inner<Y>` names itself perfectly well.
+
+**Fix.** Declare the member `static`, so it can be named on its own, or narrow through a predicate and getter with `@MatchWhen`.
+
+### "@InstanceOf: '...' narrows to '...', which is not a '...'"
+
+**Cause.** The class the annotation names is not one the prism's focus type accepts. Either the two are unrelated, or the source type pins the target's argument to something the focus does not agree with: `OpticsSpec<Node<String>>` narrowed to `Leaf` can only be a `Leaf<String>`, whatever a `Prism<Node<String>, Leaf<U>>` says.
+
+**Fix.** Name the class the focus declares, or declare the focus as a supertype of the narrowed type. A prism whose focus is deliberately wider than the test — `@InstanceOf(ArrayList.class) Prism<Collection<T>, List<T>>` — is fine; it is only a focus the narrowed value cannot be assigned to that is rejected.
 
 ### "@ViaCopyAndSet: copyConstructor names '...', which does not resolve to a type"
 
@@ -88024,11 +88108,15 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 _In development. Release notes will be added here as changes land on `main`._
 
 - **The mapping documentation becomes its own chapter**: the record-mapping material moved from a single page under Optics into a dedicated [Mapping at the Boundary](mapping/ch_intro.md) chapter (basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing), opening with a problem-first introduction and closing with a compiled, law-checked capstone: [One 422, Every Bad Field](mapping/capstone.md). The old `optics/record_mapping.html` URL redirects to the new chapter.
+- **An `@InstanceOf` prism narrows to what its test can check** ([#733](https://github.com/higher-kinded-j/higher-kinded-j/issues/733)): the annotation takes a class constant, which is always raw, so a prism onto a parameterised target narrowed through a raw `instanceof` and handed the value back under whatever instantiation the caller asked for. `ShapeOptics.<String>circle()` matched a `Circle<Integer>`, returned a populated `Optional<Circle<String>>`, and threw `ClassCastException` on the first read of `tag()`. The generated test is now written under the type arguments the *source type* pins down — `Circle<X> implements Shape<X>` reached from `Shape<U>` pins `X` to `U`, so the test is `source instanceof Circle<U>`, which javac itself accepts as a checked one — and an unbounded wildcard wherever the source pins nothing, so `Prism<Shape, Circle<?>>` is generated as `source instanceof Circle<?>`. An array target is narrowed through its component, `List[].class` reaching `source instanceof List<?>[]`, because a class constant naming an array is exactly as raw as one naming its element type. A focus asking for more than that is refused at the declaration, naming both remedies: widen it to the wildcard, or narrow through `@MatchWhen`, which reads the argument off the source rather than inventing it. The `@SuppressWarnings({"unchecked", "rawtypes"})` those methods had been carrying is gone with the hazard it was hiding. See [Spec Interfaces](optics/optics_spec_interfaces.md#parameterised-targets) and [Compiler Errors](optics/compiler_errors.md#instanceof--declares-its-focus-as-circlet-which-the-test-cannot-narrow-to).
+
+  _Behaviour change, source-breaking in three narrow places:_ a spec whose `@InstanceOf` focus names a type argument the source type does not pin — `Prism<Shape, Circle<T>>` on `OpticsSpec<Shape>`, or `Prism<Object, List<String>[]>` for an `@InstanceOf(List[].class)` — compiled with warnings in 0.4.9, and is now refused; widen the focus to `Circle<?>` or `List<?>[]`, or narrow through `@MatchWhen`. A prism whose focus does not accept the class the annotation names is refused too, where before it generated source javac rejected in a file the author never wrote. And a target that is a parameterised member of a *generic* type — `Outer<X>.Inner<Y>` — is refused, because the test cannot name it with its own arguments at all; declare the member `static`, or use `@MatchWhen`. Prisms whose arguments the source does pin are unaffected, and lose only the suppression.
+
 - **`@GeneratePathBridge` emits a bridge the consuming build compiles** ([#748](https://github.com/higher-kinded-j/higher-kinded-j/issues/748)): the processor accepted several shapes it had no compiling rendering of, and the author met the result as an error in a file they never wrote. The whole `IO` row was non-functional: it mapped to `Path.io`, which takes a `Supplier`; the factory that takes an `IO` is `Path.ioPath`. So every `IO<T>` bridge the annotation advertised was source javac refused. A `Validated` whose error type is a wildcard emitted a `ValidationPath` and a `Semigroup` naming that type twice, which capture makes two different types. A raw type anywhere the bridge copies, `Optional` as a return type or `List` as a parameter, landed as a `[rawtypes]` warning in the one file the author's own `@SuppressWarnings` cannot reach. An inherited `@PathVia` was invisible, because the walk read enclosed elements rather than members, so a bridge for `StringStore extends Store<String>` was generated with a constructor and nothing else, silently. Members are now read under the annotated interface's own instantiation, an inherited `<R extends T>` becoming `<R extends String>` where the bridge can name it, and deduplicated so that two unrelated superinterfaces declaring one method do not produce a class that declares it twice. Along the way: a `throws` clause is carried across rather than dropped, varargs are kept rather than erased to an array, the delegate is called as `this.delegate` so a parameter named `delegate` no longer redirects the call to itself, an appended `Semigroup` takes a name no parameter has claimed, and a generic method's call carries an explicit type witness so a self-referential bound such as `<R extends Enum<R>>` still infers. Six shapes with no correct rendering are refused at the declaration instead, each with what, why and a remedy: see [Compiler Errors](optics/compiler_errors.md#generatepathbridge-and-pathvia).
 
   _Behaviour change, source-breaking in three narrow places:_ a varargs delegate's bridge method is now varargs rather than `T[]`, so an existing call passing a bare `null` for that parameter draws *"non-varargs call of varargs method with inexact argument type"*, a mandatory warning and therefore a failure under `-Werror`; write `(String[]) null`. A raw effect return type and a wildcard `Validated` error type previously generated source (uncompilable, or warning-laden) and are now refused at the declaration; name the type arguments. And an interface with no `@PathVia` method anywhere now draws a processor warning, which cannot be suppressed and so fails a `-Werror` build; the annotation is not inherited by an override, so a method overriding an annotated one needs its own. Bridges that already compiled are unaffected, apart from picking up any `@PathVia` methods they inherit.
 
-- **`@ImportOptics` declares the type parameters the generated signature names** ([#730](https://github.com/higher-kinded-j/higher-kinded-j/issues/730)): a generated optic method took its type parameters from the **source type's own declaration** while building the rest of the signature from the instantiated source type, so the two agreed only by name coincidence. A spec that renamed them — `interface BoxOpticsSpec<U> extends OpticsSpec<Box<U>>` — emitted `static <T> Lens<Box<U>, String> label()`, which javac rejected inside the generated file; a spec naming a concrete instantiation, `OpticsSpec<Box<String>>`, declared an unused `<T>`; a partial application, `OpticsSpec<Pair<A, String>>`, declared `<A, B>` where nothing could ever infer `B`; and a generic spec over a *non-generic* source, `Prism<Shape, Circle<T>>` on `OpticsSpec<Shape>`, declared nothing at all and named `T` anyway. Each method now declares the parameters its own source and focus types reach, in the spec's declaration order, carrying along any that a kept parameter's bound names so the bound still resolves. An optic method that declares parameters of *its own* is rejected at the declaration, rather than generating a method no call could resolve. An `@InstanceOf` prism onto a parameterised target answers its own `unchecked`/`rawtypes` warnings, since the class constant it tests carries no type arguments — the consuming build may run under `-Werror`. See [Spec Interfaces](optics/optics_spec_interfaces.md#generic-spec-interfaces).
+- **`@ImportOptics` declares the type parameters the generated signature names** ([#730](https://github.com/higher-kinded-j/higher-kinded-j/issues/730)): a generated optic method took its type parameters from the **source type's own declaration** while building the rest of the signature from the instantiated source type, so the two agreed only by name coincidence. A spec that renamed them — `interface BoxOpticsSpec<U> extends OpticsSpec<Box<U>>` — emitted `static <T> Lens<Box<U>, String> label()`, which javac rejected inside the generated file; a spec naming a concrete instantiation, `OpticsSpec<Box<String>>`, declared an unused `<T>`; a partial application, `OpticsSpec<Pair<A, String>>`, declared `<A, B>` where nothing could ever infer `B`; and a generic spec over a *non-generic* source, `Prism<Shape, Circle<T>>` on `OpticsSpec<Shape>`, declared nothing at all and named `T` anyway. Each method now declares the parameters its own source and focus types reach, in the spec's declaration order, carrying along any that a kept parameter's bound names so the bound still resolves. An optic method that declares parameters of *its own* is rejected at the declaration, rather than generating a method no call could resolve. An `@InstanceOf` prism onto a parameterised target answered its own `unchecked`/`rawtypes` warnings, since the class constant it tests carries no type arguments; [#733](https://github.com/higher-kinded-j/higher-kinded-j/issues/733) then removed the need for them by narrowing the test to what the source type pins down. See [Spec Interfaces](optics/optics_spec_interfaces.md#generic-spec-interfaces).
 
   _Behaviour change, source-breaking for explicit type arguments:_ a generated method's arity can fall. `OpticsSpec<Pair<A, String>>` generated `<A, B> … left()` and now generates `<A> … left()`; `OpticsSpec<Box<String>>` generated an unused `<T>` and now generates no parameters at all. Both compiled in 0.4.9, so a call site that supplied the witnesses explicitly — `PairOptics.<String, Object>left()` — stops compiling. Drop the explicit arguments and let inference do it; the inferred result is unchanged. A spec that renamed the source type's parameters never compiled at all, so nothing can depend on that.
 
