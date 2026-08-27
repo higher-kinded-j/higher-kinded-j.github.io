@@ -16684,6 +16684,7 @@ for setup and details.
 | Wrong error type at runtime, no compile error | `E` silently erased across a chain step | Unify `E` / `mapError`; the `error-type-mismatch` check warns (§5) |
 
 ~~~admonish tip title="See Also"
+- [Optics Compiler Errors](../optics/compiler_errors.md#generatepathbridge-and-pathvia) - What `@GeneratePathBridge` and `@PathVia` report, and why
 - [Type Conversions](conversions.md) - Full reference for converting between Path types
 - [Troubleshooting](../tutorials/troubleshooting.md) - Tutorial-specific issues (Kind types, annotation processors, IDE setup)
 - [Cheat Sheet](../cheatsheet.md) - Quick reference for Path types and operators
@@ -41453,6 +41454,76 @@ A source type that is itself generic is supported, and the spec names its own ty
 **Cause.** The string passed to `@MatchWhen(predicate = "isFoo", getter = "asFoo")` does not match a real method on the source type.
 
 **Fix.** Check the method names against the source type's API. Both methods must take no arguments; the predicate returns `boolean` and the getter returns the prism's target type.
+
+---
+
+## `@GeneratePathBridge` and `@PathVia`
+
+Every message on this page is quoted as the processor emits it, with `'x'` standing in for the name it prints.
+
+The bridge is a file you never wrote and cannot edit, so the errors below refuse a shape at your own declaration rather than emitting source that would fail, or warn, in the build that consumes it. The last entry is a warning rather than an error: the bridge it describes is written, it just has nothing in it.
+
+### "@PathVia: the return type of 'x' is 'Y', which no Path wraps"
+
+**Cause.** The method returns a type the bridge has no Path for. The bridged set is `Optional`, `Maybe`, `Either`, `Try`, `Validated` and `IO`; `CompletableFuture` is the type most often met outside it.
+
+**Fix.** Return one of the six, or drop `@PathVia` and wrap the call by hand.
+
+### "@PathVia: the signature of 'x' names the raw type 'Y'"
+
+**Cause.** A generic type is written without its arguments somewhere the bridge copies verbatim: `Optional` as the return type, `Optional<List>` as its argument, `List` as a parameter. Each becomes a `[rawtypes]` warning in the generated file, and the `@SuppressWarnings` on your own declaration does not cover a file it does not appear in.
+
+**Fix.** Name the type arguments: `Optional<Item>` rather than `Optional`.
+
+### "@PathVia: the error type of the 'Validated' returned by 'x' is the wildcard '?'"
+
+**Cause.** A `Validated` bridge names its error type twice: in the `ValidationPath` it returns, and in the `Semigroup` it asks the caller for. A wildcard is a *different* captured type at each mention, so no argument satisfies both.
+
+Only the error position is affected. `Validated<String, ? extends Number>` is fine, `Validated<List<? extends CharSequence>, String>` is fine because the wildcard is nested and denotes one type at both mentions, and so are wildcards in `Optional`, `Maybe`, `Either` and `Try` returns.
+
+**Fix.** Name the error type.
+
+### "@PathVia: the type parameter 'T' on 'x' has the same name as 'Y's"
+
+**Cause.** The bridge declares the interface's type parameters and the method's side by side, which the delegate never does; where the names collide, the method's hides the interface's. An inherited `<T extends U>` on a `Derived<T>` would be written `<T extends T>`, and a parameter typed by the interface's `T` would silently become the method's.
+
+Only a collision the signature actually depends on is refused. `<T> Optional<T> get(T t)` on a `Derived<T>` names nothing it hides, and is generated unchanged.
+
+**Fix.** Rename the method's type parameter.
+
+### "@PathVia: the bridge cannot call 'x'"
+
+**Cause.** The method is `static` or `private`. The bridge reaches its delegate through an interface reference, which gets at abstract and `default` members and nothing else.
+
+**Fix.** Make it an abstract or `default` instance method, or drop `@PathVia` from it.
+
+### "@PathVia: the bridge signature for 'x' is already taken"
+
+**Cause.** Two `@PathVia` methods land on the same generated name and parameter types, usually through `@PathVia(name = ...)`. One class cannot declare both.
+
+**Fix.** Give one of them a distinct name, or drop `@PathVia` from it.
+
+### "@PathVia: @PathVia(name = "...") is not a method name"
+
+**Cause.** The `name` attribute is not a Java identifier, or it is a keyword. The bridge declares a method called exactly that.
+
+**Fix.** Give a plain identifier, or drop the attribute to keep the delegate's own name.
+
+### "@GeneratePathBridge: on 'X', the signature names 'Y', which cannot be reached from 'p'"
+
+**Cause.** `targetPackage` puts the bridge in package `p`, and something the bridge writes down, a parameter type, a return type, a bound or the delegate itself, is not visible there. The same message names *the bound on 'T'* when the culprit is a type parameter's bound.
+
+**Fix.** Make the type public, or drop `targetPackage` so the bridge is written beside the interface.
+
+### "@GeneratePathBridge: no @PathVia method was found among 'X's members" (a warning)
+
+**Cause.** No `@PathVia` method survives among the interface's members, so the bridge is written with a constructor and nothing else. Usually that means none was ever written; it can also mean one was hidden, which the note below covers.
+
+Inherited methods do count: a bridge for `StringStore extends Store<String>` picks up `Store`'s, read under `String`. But `@PathVia` is *not* inherited by an override, so a method that overrides an annotated one hides it unless it is annotated too, and that is the usual cause of this message on an interface whose parent is annotated.
+
+A processor warning cannot be suppressed, so a build running `-Werror` treats this as an error.
+
+**Fix.** Put `@PathVia` on the methods to bridge, or drop `@GeneratePathBridge`.
 
 ---
 
@@ -75621,6 +75692,10 @@ public final class RepoPaths<T extends Comparable<T>> {
 }
 ```
 
+Inherited `@PathVia` methods are bridged too, read under the instantiation the annotated interface gives them: `StringStore extends Store<String>` gets `Store`'s methods with `T` already `String`. An overridden method is bridged once, and so is a method that two unrelated superinterfaces both declare. The annotation itself is not inherited, though, so a method that overrides an annotated one hides it unless it is annotated too; an interface left with no `@PathVia` method anywhere draws a warning rather than a silently empty bridge. A `throws` clause and a varargs parameter both carry across unchanged.
+
+The bridge is a file you never wrote and cannot edit, so a handful of shapes the language accepts are refused at your own declaration instead: a raw type anywhere in the signature, a `Validated` whose error type is a wildcard, a method type parameter that hides one of the interface's, a `static` or `private` method, and, under `targetPackage`, anything the target package cannot see. [Common Compiler Errors](../../optics/compiler_errors.md#generatepathbridge-and-pathvia) quotes each message with its cause and remedy.
+
 ---
 
 ## Focus-Effect bridge
@@ -87949,6 +88024,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 _In development. Release notes will be added here as changes land on `main`._
 
 - **The mapping documentation becomes its own chapter**: the record-mapping material moved from a single page under Optics into a dedicated [Mapping at the Boundary](mapping/ch_intro.md) chapter (basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing), opening with a problem-first introduction and closing with a compiled, law-checked capstone: [One 422, Every Bad Field](mapping/capstone.md). The old `optics/record_mapping.html` URL redirects to the new chapter.
+- **`@GeneratePathBridge` emits a bridge the consuming build compiles** ([#748](https://github.com/higher-kinded-j/higher-kinded-j/issues/748)): the processor accepted several shapes it had no compiling rendering of, and the author met the result as an error in a file they never wrote. The whole `IO` row was non-functional: it mapped to `Path.io`, which takes a `Supplier`; the factory that takes an `IO` is `Path.ioPath`. So every `IO<T>` bridge the annotation advertised was source javac refused. A `Validated` whose error type is a wildcard emitted a `ValidationPath` and a `Semigroup` naming that type twice, which capture makes two different types. A raw type anywhere the bridge copies, `Optional` as a return type or `List` as a parameter, landed as a `[rawtypes]` warning in the one file the author's own `@SuppressWarnings` cannot reach. An inherited `@PathVia` was invisible, because the walk read enclosed elements rather than members, so a bridge for `StringStore extends Store<String>` was generated with a constructor and nothing else, silently. Members are now read under the annotated interface's own instantiation, an inherited `<R extends T>` becoming `<R extends String>` where the bridge can name it, and deduplicated so that two unrelated superinterfaces declaring one method do not produce a class that declares it twice. Along the way: a `throws` clause is carried across rather than dropped, varargs are kept rather than erased to an array, the delegate is called as `this.delegate` so a parameter named `delegate` no longer redirects the call to itself, an appended `Semigroup` takes a name no parameter has claimed, and a generic method's call carries an explicit type witness so a self-referential bound such as `<R extends Enum<R>>` still infers. Six shapes with no correct rendering are refused at the declaration instead, each with what, why and a remedy: see [Compiler Errors](optics/compiler_errors.md#generatepathbridge-and-pathvia).
+
+  _Behaviour change, source-breaking in three narrow places:_ a varargs delegate's bridge method is now varargs rather than `T[]`, so an existing call passing a bare `null` for that parameter draws *"non-varargs call of varargs method with inexact argument type"*, a mandatory warning and therefore a failure under `-Werror`; write `(String[]) null`. A raw effect return type and a wildcard `Validated` error type previously generated source (uncompilable, or warning-laden) and are now refused at the declaration; name the type arguments. And an interface with no `@PathVia` method anywhere now draws a processor warning, which cannot be suppressed and so fails a `-Werror` build; the annotation is not inherited by an override, so a method overriding an annotated one needs its own. Bridges that already compiled are unaffected, apart from picking up any `@PathVia` methods they inherit.
+
 - **`@ImportOptics` declares the type parameters the generated signature names** ([#730](https://github.com/higher-kinded-j/higher-kinded-j/issues/730)): a generated optic method took its type parameters from the **source type's own declaration** while building the rest of the signature from the instantiated source type, so the two agreed only by name coincidence. A spec that renamed them — `interface BoxOpticsSpec<U> extends OpticsSpec<Box<U>>` — emitted `static <T> Lens<Box<U>, String> label()`, which javac rejected inside the generated file; a spec naming a concrete instantiation, `OpticsSpec<Box<String>>`, declared an unused `<T>`; a partial application, `OpticsSpec<Pair<A, String>>`, declared `<A, B>` where nothing could ever infer `B`; and a generic spec over a *non-generic* source, `Prism<Shape, Circle<T>>` on `OpticsSpec<Shape>`, declared nothing at all and named `T` anyway. Each method now declares the parameters its own source and focus types reach, in the spec's declaration order, carrying along any that a kept parameter's bound names so the bound still resolves. An optic method that declares parameters of *its own* is rejected at the declaration, rather than generating a method no call could resolve. An `@InstanceOf` prism onto a parameterised target answers its own `unchecked`/`rawtypes` warnings, since the class constant it tests carries no type arguments — the consuming build may run under `-Werror`. See [Spec Interfaces](optics/optics_spec_interfaces.md#generic-spec-interfaces).
 
   _Behaviour change, source-breaking for explicit type arguments:_ a generated method's arity can fall. `OpticsSpec<Pair<A, String>>` generated `<A, B> … left()` and now generates `<A> … left()`; `OpticsSpec<Box<String>>` generated an unused `<T>` and now generates no parameters at all. Both compiled in 0.4.9, so a call site that supplied the witnesses explicitly — `PairOptics.<String, Object>left()` — stops compiling. Drop the explicit arguments and let inference do it; the inferred result is unchanged. A spec that renamed the source type's parameters never compiled at all, so nothing can depend on that.
