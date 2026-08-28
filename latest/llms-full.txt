@@ -36072,13 +36072,37 @@ Practice the fluent API in [Tutorial 09: Fluent Optics API](https://github.com/h
 
 ---
 
-Theory is useful; working code is better.
+Theory is useful; working code is better. Here is the chapter's capstone in miniature, before any of the reasoning behind it. One path runs from a form, through a sealed principal, across a list of permissions, down to each permission's name; one call validates every one of them and collects the failures. Every line compiles against the real library on every build:
+
+<!-- verify -->
+```java
+Traversal<Form, String> everyPermissionName =
+    FormLenses.principal().asTraversal()
+        .andThen(PrincipalPrisms.user().asTraversal())
+        .andThen(UserTraversals.permissions())
+        .andThen(PermissionLenses.name().asTraversal());
+
+Validated<String, Form> checked =
+    VALIDATED.narrow(
+        everyPermissionName.modifyF(
+            Fixture::validatePermission, Fixture.form, Instances.validated(Semigroups.string("; "))));
+// Invalid("Invalid permission: PERM_FLY")
+// A Guest principal would simply have no permissions in focus, and validate clean.
+```
+
+The sample `Form` holds a `User` with two permissions, `PERM_READ` and `PERM_FLY`, and only the first is on the allowed list. `Fixture` is the compiled example's own setup, not library API.
+
+~~~admonish tip title="Why this matters"
+Four optics of three different kinds compose into one value, and that value is reusable in both directions: run it with a plain function to update every permission, or with an `Applicative` to validate them and accumulate the failures. The prism in the middle is what makes it safe. A `Form` holding a `Guest` has nothing in focus, so the same expression returns a clean result rather than a `ClassCastException`, and no branch had to be written for that case.
+~~~
 
 This section brings together everything from the previous four into practical patterns you can apply directly. The capstone example demonstrates a complete validation workflow: composing Lens, Prism, and Traversal to validate permissions nested deep within a form structure. It's the sort of problem that would require dozens of lines of imperative code, handled in a few declarative compositions.
 
 The integration sections cover how optics work with higher-kinded-j's core types: extending Lenses and Traversals with additional capabilities, using Prisms for Optional, Either, and other standard containers. If you've wondered how to combine optics with the rest of the library, this is where you'll find answers.
 
-The cookbook provides ready-to-use recipes for common problems: updating nested optionals, modifying specific sum type variants, bulk collection operations with filtering, configuration management, and audit trail generation. Each recipe includes the problem statement, solution code, and explanation of why it works.
+Three pages then deal with the operations that fall between one edit and one query. **Multi-Edit** applies N independent edits at different paths in a single reusable operation, including the sparse REST `PATCH` that reports every bad field at once. **Optic-Driven Batching** attaches a batching strategy to a traversal, so N foci become one backend call, and **Plan Introspection and Guardrails** lets you see and bound that call before it leaves the JVM.
+
+The cookbook provides ready-to-use recipes for common problems: updating nested optionals, modifying specific sum type variants, bulk collection operations with filtering, and configuration management. Each recipe states the problem and gives the solution, with a note on why it works where the mechanism is not obvious. Audit trail generation gets a page of its own after it.
 
 Copy freely. That's what they're for.
 
@@ -36087,7 +36111,7 @@ The [Optics Tutorial Track](../tutorials/optics/ch_intro.md) groups all six jour
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Annotations at a Glance](annotations_at_a_glance.md), every optic in the recipes below is annotation-generated.
+- [Annotations at a Glance](annotations_at_a_glance.md): every optic in the recipes below is annotation-generated
 ~~~
 
 ---
@@ -36096,48 +36120,28 @@ The [Optics Tutorial Track](../tutorials/optics/ch_intro.md) groups all six jour
 
 When facing a new problem, this flowchart helps:
 
+```mermaid
+flowchart TD
+    Q{"What are you doing<br/>to the focus?"}
+    Q -->|"reading only"| R{"How many<br/>targets?"}
+    Q -->|"reading and writing"| M{"How many<br/>targets?"}
+    Q -->|"converting between<br/>equivalent types"| I(["Iso"])
+
+    R -->|"exactly one"| G(["Getter"])
+    R -->|"zero or more"| F(["Fold"])
+
+    M -->|"exactly one"| L(["Lens"])
+    M -->|"zero or one:<br/>the field may be absent"| A(["Affine"])
+    M -->|"zero or one:<br/>the value may be another variant"| P(["Prism"])
+    M -->|"zero or more"| T(["Traversal"])
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class Q,R,M decision
+    class I,G,F,L,A,P,T tier
 ```
-                     ┌─────────────────────┐
-                     │ What are you doing? │
-                     └──────────┬──────────┘
-                                │
-           ┌────────────────────┼────────────────────┐
-           ▼                    ▼                    ▼
-    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-    │   Reading   │     │  Modifying  │     │ Transforming│
-    │    only?    │     │   values?   │     │   types?    │
-    └──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-           │                   │                   │
-           ▼                   │                   ▼
-    ┌─────────────┐            │            ┌─────────────┐
-    │How many     │            │            │    ISO      │
-    │targets?     │            │            └─────────────┘
-    └──────┬──────┘            │
-           │                   │
-    ┌──────┴──────┐            │
-    ▼             ▼            ▼
-┌───────┐   ┌──────────┐  ┌─────────────┐
-│ One   │   │Zero-more │  │How many     │
-│       │   │          │  │targets?     │
-└───┬───┘   └────┬─────┘  └──────┬──────┘
-    │            │               │
-    ▼            ▼        ┌──────┴──────┐
-┌───────┐   ┌────────┐    ▼             ▼
-│GETTER │   │ FOLD   │ ┌───────┐  ┌──────────┐
-└───────┘   └────────┘ │ One   │  │Zero-more │
-                       └───┬───┘  └────┬─────┘
-                           │           │
-                 ┌─────────┴───┐       │
-                 ▼             ▼       ▼
-           ┌──────────┐ ┌─────────┐ ┌──────────┐
-           │ Required │ │Optional │ │TRAVERSAL │
-           └────┬─────┘ └────┬────┘ └──────────┘
-                │            │
-                ▼            ▼
-           ┌────────┐   ┌─────────┐
-           │  LENS  │   │ PRISM   │
-           └────────┘   └─────────┘
-```
+
+The two zero-or-one branches are the ones worth reading twice. An `Affine` reaches a value that may not be there, such as an optional field. A `Prism` reaches a value that may be a *different variant*, and can build the structure back up from it. The capstone above uses a `Prism` for exactly that reason: a `Principal` is either a `User` or a `Guest`.
 
 ---
 
@@ -36156,11 +36160,7 @@ Optics compose to handle complex real-world scenarios:
      ▼
     User
      │
-     │ UserTraversals.permissions()  ← TRAVERSAL (list of perms)
-     ▼
-    List<Permission>
-     │
-     │ each                          ← focus on each
+     │ UserTraversals.permissions()  ← TRAVERSAL (each permission)
      ▼
     Permission
      │
@@ -36170,10 +36170,10 @@ Optics compose to handle complex real-world scenarios:
      │
      │ validate(name)                ← effectful modification
      ▼
-    Validated<Error, String>
+    Validated<String, String>
 
     ═══════════════════════════════════════════════════════════
-    Result: Validated<List<Error>, Form>
+    Result: Validated<String, Form>
 ```
 
 All permissions validated. All errors accumulated. Original structure preserved.
@@ -36212,9 +36212,7 @@ See also [Capstone: Effects Meet Optics](../effect/capstone_focus_effect.md) for
 
 <!-- Source: optics/composing_optics.md -->
 
-# Capstone Example:
-
-## _Composing Optics for Deep Validation_
+# Capstone: Composing Optics for Deep Validation
 
 ~~~admonish info title="What You'll Learn"
 - How to compose multiple optic types into powerful processing pipelines
@@ -36226,11 +36224,7 @@ See also [Capstone: Effects Meet Optics](../effect/capstone_focus_effect.md) for
 - Advanced patterns for multi-level and conditional validation scenarios
 ~~~
 
-~~~admonish title="Hands On Practice"
-[Tutorial06_OpticsComposition.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial06_OpticsComposition.java)
-~~~
-
-~~~admonish title="Example Code"
+~~~admonish example title="See Example Code"
 [ValidatedTraversalExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/ValidatedTraversalExample.java)
 ~~~
 
@@ -36242,6 +36236,10 @@ This guide showcases the true power of the optics approach by composing multiple
 
 ---
 
+~~~admonish tip title="Why this matters"
+The alternative to this composition is a nested loop that pattern-matches the principal, iterates the permissions, collects errors into a mutable list, and rebuilds the form field by field. That version cannot be reused for anything else, and every new rule reopens it. The composed optic is a value: the same `Traversal<Form, String>` validates, updates, counts and reports, and adding a rule means handing `modifyF` a different function rather than editing a traversal.
+~~~
+
 ## The Scenario: Validating User Permissions
 
 Imagine a data model for a form that can be filled out by either a registered `User` or a `Guest`. Our goal is to validate that every `Permission` held by a `User` has a valid name.
@@ -36250,7 +36248,7 @@ This single task requires us to:
 
 1. Focus on the form's `principal` field (**a job for a Lens**).
 2. Safely "select" the `User` case, ignoring any `Guest`s (**a job for a Prism**).
-3. Operate on every `Permission` in the userLogin's list (**a job for a Traversal**).
+3. Operate on every `Permission` in the user's list (**a job for a Traversal**).
 
 ---
 
@@ -36341,7 +36339,7 @@ Before diving into the code, let's understand why we need each type of optic and
 
 ### 4. Composing the Master Optic
 
-Now for the main event. We will compose our generated optics to create a single `Traversal` that declaratively represents the path from a `Form` all the way down to each permission `name`. While the new `with*` helpers are great for simple, shallow updates, a deep and conditional update like this requires composition.
+Now for the main event. We will compose our generated optics to create a single `Traversal` that declaratively represents the path from a `Form` all the way down to each permission `name`. While the `with*` helpers are great for simple, shallow updates, a deep and conditional update like this requires composition.
 
 To ensure type-safety across different optic types, we convert each `Lens` and `Prism` in the chain to a `Traversal` using the `.asTraversal()` method.
 
@@ -36352,7 +36350,7 @@ import org.higherkindedj.optics.Traversal;
 
 // Get the individual generated optics
 Lens<Form, Principal> formPrincipalLens = FormLenses.principal();
-Prism<Principal, User> principalUserPrism = PrincipalPrisms.userLogin();
+Prism<Principal, User> principalUserPrism = PrincipalPrisms.user();
 Traversal<User, Permission> userPermissionsTraversal = UserTraversals.permissions();
 Lens<Permission, String> permissionNameLens = PermissionLenses.name();
 
@@ -36378,16 +36376,12 @@ This single `formToPermissionNameTraversal` object now encapsulates the entire c
 * **Error accumulation** - You want to collect all errors, not stop at the first failure
 
 ```java
-// Perfect for reusable, complex validation
-Traversal<Company, String> allEmployeeEmails = 
-    CompanyTraversals.departments()
-        .andThen(DepartmentTraversals.employees())
-        .andThen(EmployeePrisms.active().asTraversal())  // Only active employees
-        .andThen(EmployeeLenses.email().asTraversal());
+// Perfect for reusable, complex validation: the path below is built once and
+// reused for every rule that needs to reach a permission name.
+Traversal<Form, String> allPermissionNames = FORM_TO_PERMISSION_NAMES;
 
-// Use across multiple validation scenarios
-Validated<List<String>, Company> result1 = validateEmails(company1);
-Validated<List<String>, Company> result2 = validateEmails(company2);
+Validated<String, Form> checked = validatePermissions(form);
+Validated<String, Form> rechecked = validatePermissions(updatedForm);
 ```
 
 ### Use Direct Validation When:
@@ -36399,11 +36393,11 @@ Validated<List<String>, Company> result2 = validateEmails(company2);
 
 ```java
 // Simple validation doesn't need optics
-public Validated<String, User> validateUser(User userLogin) {
-    if (userLogin.username().length() < 3) {
+public Validated<String, User> validateUser(User user) {
+    if (user.username().length() < 3) {
         return Validated.invalid("Username too short");
     }
-    return Validated.valid(userLogin);
+    return Validated.valid(user);
 }
 ```
 
@@ -36420,7 +36414,7 @@ Map<String, Long> permissionCounts = forms.stream()
     .map(Form::principal)
     .filter(User.class::isInstance)
     .map(User.class::cast)
-    .flatMap(userLogin -> userLogin.permissions().stream())
+    .flatMap(user -> user.permissions().stream())
     .collect(groupingBy(Permission::name, counting()));
 ```
 
@@ -36442,7 +36436,7 @@ var badResult = traversal.modifyF(validatePermissionName, form, /* wrong applica
 
 // Creating complex compositions inline
 var inlineResult = FormLenses.principal().asTraversal()
-    .andThen(PrincipalPrisms.userLogin().asTraversal())
+    .andThen(PrincipalPrisms.user().asTraversal())
     .andThen(UserTraversals.permissions())
     .andThen(PermissionLenses.name().asTraversal())
     .modifyF(validatePermissionName, form, applicative); // Hard to read and reuse
@@ -36466,7 +36460,7 @@ Applicative<ValidatedKind.Witness<String>> validatedApplicative =
 // Create reusable, well-named compositions
 public static final Traversal<Form, String> FORM_TO_PERMISSION_NAMES =
     FormLenses.principal().asTraversal()
-        .andThen(PrincipalPrisms.userLogin().asTraversal())
+        .andThen(PrincipalPrisms.user().asTraversal())
         .andThen(UserTraversals.permissions())
         .andThen(PermissionLenses.name().asTraversal());
 
@@ -36481,13 +36475,12 @@ var result = FORM_TO_PERMISSION_NAMES.modifyF(validatePermissionName, form, vali
 
 ## Performance Notes
 
-Optic composition is designed for efficiency:
+Optic composition trades a little throughput for composability, and it is worth being precise about which:
 
-* **Lazy evaluation**: Only processes data when actually used
-* **Structural sharing**: Unchanged parts of data structures are reused
-* **Single-pass processing**: `modifyF` traverses the structure only once
-* **Memory efficient**: Only creates new objects for changed data
-* **JIT compiler optimisation**: Complex compositions are optimised by the JVM's just-in-time compiler through method inlining
+* **Element references are shared**: values a modification leaves alone are reused, not copied; the containers along the path are rebuilt
+* **No hidden laziness**: every focus the path reaches is visited, so cost is proportional to the number of foci
+* **Single pass**: one `modifyF` walks the structure once, whatever the effect
+* **A prism that does not match costs nothing further**: the rest of the chain is never entered for that element
 
 **Best Practice**: Create composed optics as constants for reuse:
 
@@ -36497,17 +36490,17 @@ public class ValidationOptics {
     // Reusable validation paths
     public static final Traversal<Form, String> USER_PERMISSION_NAMES =
         FormLenses.principal().asTraversal()
-            .andThen(PrincipalPrisms.userLogin().asTraversal())
+            .andThen(PrincipalPrisms.user().asTraversal())
             .andThen(UserTraversals.permissions())
             .andThen(PermissionLenses.name().asTraversal());
-  
-    public static final Traversal<Company, String> EMPLOYEE_EMAILS =
-        CompanyTraversals.employees()
-            .andThen(EmployeeLenses.contactInfo().asTraversal())
-            .andThen(ContactInfoLenses.email().asTraversal());
-  
+
+    public static final Traversal<Form, String> USERNAMES =
+        FormLenses.principal().asTraversal()
+            .andThen(PrincipalPrisms.user().asTraversal())
+            .andThen(UserLenses.username().asTraversal());
+
     // Helper methods for common validations
-    public static Validated<List<String>, Form> validatePermissions(Form form) {
+    public static Validated<String, Form> validatePermissions(Form form) {
         return VALIDATED.narrow(USER_PERMISSION_NAMES.modifyF(
             ValidationOptics::validatePermissionName,
             form,
@@ -36525,11 +36518,11 @@ public class ValidationOptics {
 
 
 ```java
-// Validate both userLogin data AND permissions in one pass
-public static Validated<List<String>, Form> validateFormCompletely(Form form) {
-    // First validate userLogin basic info
+// Validate both user data AND permissions in one pass
+public static Validated<String, Form> validateFormCompletely(Form form) {
+    // First validate the user's basic info
     var userValidation = FormLenses.principal().asTraversal()
-        .andThen(PrincipalPrisms.userLogin().asTraversal())
+        .andThen(PrincipalPrisms.user().asTraversal())
         .andThen(UserLenses.username().asTraversal())
         .modifyF(ValidationOptics::validateUsername, form, getValidatedApplicative());
   
@@ -36550,41 +36543,41 @@ public static Validated<List<String>, Form> validateFormCompletely(Form form) {
 
 
 ```java
-// Different validation rules for different userLogin types
-public static final Traversal<Form, String> ADMIN_USER_PERMISSIONS =
+// A prism can only branch where the model is actually sealed. `Principal` is,
+// so this pair is legal: one path for each variant.
+public static final Traversal<Form, String> USER_PERMISSIONS =
     FormLenses.principal().asTraversal()
-        .andThen(PrincipalPrisms.userLogin().asTraversal())
-        .andThen(UserPrisms.adminUser().asTraversal())  // Only admin users
-        .andThen(AdminUserTraversals.permissions())
+        .andThen(PrincipalPrisms.user().asTraversal())
+        .andThen(UserTraversals.permissions())
         .andThen(PermissionLenses.name().asTraversal());
 
-public static final Traversal<Form, String> REGULAR_USER_PERMISSIONS =
-    FormLenses.principal().asTraversal()
-        .andThen(PrincipalPrisms.userLogin().asTraversal())
-        .andThen(UserPrisms.regularUser().asTraversal())  // Only regular users
-        .andThen(RegularUserTraversals.permissions())
-        .andThen(PermissionLenses.name().asTraversal());
+// `User` is a record, so there is no `UserPrisms`: @GeneratePrisms applies to
+// sealed interfaces and enums only. To narrow further, filter on a field.
+public static final Traversal<Form, String> DESTRUCTIVE_PERMISSIONS =
+    USER_PERMISSIONS.filtered(name -> name.startsWith("PERM_DELETE"));
 ```
+
+If you genuinely need per-role paths, the split has to exist in the model: make `User` a sealed interface over `AdminUser` and `RegularUser`, and `@GeneratePrisms` will give you `UserPrisms.adminUser()`. A record cannot be narrowed by a prism, only filtered.
 
 ### 3. Cross-Field Validation
 
 
 ```java
-// Validate that permissions are appropriate for userLogin role
-public static Validated<List<String>, Form> validatePermissionsForRole(Form form) {
+// Validate that a user's permissions are appropriate for who they are
+public static Validated<String, Form> validatePermissionsForUser(Form form) {
     return FormLenses.principal().asTraversal()
-        .andThen(PrincipalPrisms.userLogin().asTraversal())
-        .modifyF(userLogin -> {
-            // Custom validation that checks both role and permissions
-            Set<String> allowedPerms = getAllowedPermissionsForRole(userLogin.role());
-            List<String> errors = userLogin.permissions().stream()
+        .andThen(PrincipalPrisms.user().asTraversal())
+        .modifyF(user -> {
+            // Cross-field: the username decides which permissions are allowed
+            Set<String> allowedPerms = allowedPermissionsFor(user.username());
+            List<String> errors = user.permissions().stream()
                 .map(Permission::name)
                 .filter(perm -> !allowedPerms.contains(perm))
-                .map(perm -> "Permission '" + perm + "' not allowed for role " + userLogin.role())
+                .map(perm -> "Permission '" + perm + "' not allowed for " + user.username())
                 .toList();
           
             return errors.isEmpty() 
-                ? VALIDATED.widen(Validated.valid(userLogin))
+                ? VALIDATED.widen(Validated.valid(user))
                 : VALIDATED.widen(Validated.invalid(String.join("; ", errors)));
         }, form, getValidatedApplicative());
 }
@@ -36652,7 +36645,7 @@ public class ValidatedTraversalExample {
     // --- Reusable Optic Compositions ---
     public static final Traversal<Form, String> FORM_TO_PERMISSION_NAMES =
             FormLenses.principal().asTraversal()
-                    .andThen(PrincipalPrisms.userLogin().asTraversal())
+                    .andThen(PrincipalPrisms.user().asTraversal())
                     .andThen(UserTraversals.permissions())
                     .andThen(PermissionLenses.name().asTraversal());
 
@@ -36733,7 +36726,6 @@ public class ValidatedTraversalExample {
             String status = result.isValid() ? "✓ VALID" : "✗ INVALID";
             System.out.println("  Form " + form.formId() + ": " + status);
             if (result.isInvalid()) {
-                // Fix: Use getError() instead of getInvalid()
                 System.out.println("    Errors: " + result.getError());
             }
         });
@@ -36746,7 +36738,6 @@ public class ValidatedTraversalExample {
         Applicative<ValidatedKind.Witness<List<String>>> listApplicative =
                 Instances.validated(Semigroups.list());
 
-        // Fix: Create a proper function for list validation
         java.util.function.Function<String, Kind<ValidatedKind.Witness<List<String>>, String>> listValidation =
                 name -> VALID_PERMISSIONS.contains(name)
                         ? VALIDATED.widen(Validated.valid(name))
@@ -36830,7 +36821,7 @@ By mastering optic composition, you gain a powerful tool for building robust, ma
 
 ---
 
-## Modern Simplification: Validation-Aware Methods
+## Without the Applicative: Validation-Aware Methods
 
 ~~~admonish tip title="Enhanced Validation Patterns"
 Higher-kinded-j provides specialised validation methods that simplify the patterns shown above. These methods eliminate the need for explicit `Applicative` setup whilst maintaining full type safety and error accumulation capabilities.
@@ -36863,7 +36854,11 @@ Whilst powerful and flexible, this approach requires:
 
 ### The Simplified Approach: Validation-Aware Methods
 
-The new validation-aware methods provide a more direct API for common validation patterns:
+These methods provide a more direct API for the common validation patterns:
+
+~~~admonish warning title="Two families, two argument orders"
+`OpticOps` takes the **source first**: `modifyAllValidated(form, path, validator)`. The `LensExtensions` and `TraversalExtensions` statics on [Optics Extensions](optics_extensions.md) take the **optic first**: `modifyAllValidated(path, validator, form)`. They do the same work; only the convention differs, and mixing them up is a compile error rather than a silent bug.
+~~~
 
 #### 1. **Error Accumulation with `modifyAllValidated`**
 
@@ -36874,12 +36869,11 @@ import static org.higherkindedj.optics.fluent.OpticOps.modifyAllValidated;
 
 // Simplified: direct Validated result, automatic error accumulation
 Validated<List<String>, Form> result = modifyAllValidated(
+    form,
     FORM_TO_PERMISSION_NAMES,
     name -> VALID_PERMISSIONS.contains(name)
         ? Validated.valid(name)
-        : Validated.invalid(List.of("Invalid permission: " + name)),
-    form
-);
+        : Validated.invalid("Invalid permission: " + name));
 ```
 
 **Benefits:**
@@ -36888,28 +36882,26 @@ Validated<List<String>, Form> result = modifyAllValidated(
 * Automatic error accumulation with `List<E>`
 * Clear intent: "validate all and collect errors"
 
-#### 2. **Short-Circuit Validation with `modifyAllEither`**
+#### 2. **First Error Only, with `modifyAllEither`**
 
-For performance-critical validation that stops at the first error:
+When the caller only needs to know that *something* failed, and which failure the traversal met first:
 
 ```java
 import static org.higherkindedj.optics.fluent.OpticOps.modifyAllEither;
 
-// Short-circuit: stops at first error
+// Every element is validated; the result keeps only the first error
 Either<String, Form> result = modifyAllEither(
+    form,
     FORM_TO_PERMISSION_NAMES,
     name -> VALID_PERMISSIONS.contains(name)
         ? Either.right(name)
-        : Either.left("Invalid permission: " + name),
-    form
-);
+        : Either.left("Invalid permission: " + name));
 ```
 
 **Benefits:**
-* Stops processing on first error (performance optimisation)
-* Direct `Either` result
-* Perfect for fail-fast validation
-* No unnecessary computation after failure
+* A direct `Either` result: no `Kind`, no narrowing
+* One error rather than a report, which is what a batch job or an internal caller usually wants
+* The traversal still evaluates every element; only the *result* keeps the first failure. Choose this for the shape of the answer, not to save work
 
 ### Comparison: Traditional vs Validation-Aware Methods
 
@@ -36918,7 +36910,7 @@ Either<String, Form> result = modifyAllEither(
 | **Applicative Setup** | Required (explicit) | Not required (automatic) |
 | **Type Complexity** | High (`Kind`, `Witness`) | Low (direct types) |
 | **Error Accumulation** | Yes (via Applicative) | Yes (`modifyAllValidated`) |
-| **Short-Circuiting** | Manual (via Either Applicative) | Built-in (`modifyAllEither`) |
+| **First-error result** | Manual (via Either Applicative) | Built-in (`modifyAllEither`) |
 | **Learning Curve** | Steep (HKT knowledge) | Gentle (familiar types) |
 | **Flexibility** | Maximum (any Applicative) | Focused (common patterns) |
 | **Boilerplate** | More (setup code) | Less (direct API) |
@@ -36934,39 +36926,31 @@ Either<String, Form> result = modifyAllEither(
 ```java
 // Perfect for form validation
 Validated<List<String>, OrderForm> validated = modifyAllValidated(
-    ORDER_TO_PRICES,
-    price -> validatePrice(price),
-    orderForm
-);
+    orderForm, ORDER_TO_PRICES, OrderRules::validatePrice);
 ```
 
 **Use `modifyAllEither` when:**
-* You want **fail-fast behaviour**
-* Working in **performance-critical** paths
-* First error is **sufficient feedback**
+* One error is **sufficient feedback**
+* The caller is a **batch job or internal service**, not a person filling in a form
+* You want the **`Either` shape** the rest of your pipeline already speaks
 
 ```java
-// Perfect for quick validation in high-throughput scenarios
+// Perfect when one message is all the caller will act on
 Either<String, OrderForm> validated = modifyAllEither(
-    ORDER_TO_PRICES,
-    price -> validatePrice(price),
-    orderForm
-);
+    orderForm, ORDER_TO_PRICES, OrderRules::validatePrice);
 ```
 
 **Use `modifyMaybe` when:**
-* Invalid items should be **silently filtered**
-* Building **data enrichment** pipelines
-* Failures are **expected and ignorable**
+* A **single** optional modification either lands or yields nothing
+* Building **data enrichment** pipelines where a miss means "leave the whole thing alone"
+* Failure needs **no detail**, only presence or absence
 
 ```java
-// Perfect for optional enrichment
-Maybe<OrderForm> enriched = modifyMaybe(
-    ORDER_TO_OPTIONAL_DISCOUNTS,
-    discount -> tryApplyDiscount(discount),
-    orderForm
-);
+// modifyMaybe focuses ONE field through a Lens: nothing() discards the whole update
+Maybe<OrderForm> enriched = modifyMaybe(orderForm, ORDER_DISCOUNT, OrderRules::tryApplyDiscount);
 ```
+
+It is all-or-nothing on that one focus, not a per-element filter. For "modify what you can and keep the rest", reach for `TraversalExtensions.modifyWherePossible`.
 
 **Use traditional `modifyF` when:**
 * Working with **custom Applicative** functors
@@ -36996,30 +36980,28 @@ public class SimplifiedValidation {
     // Same traversal as before
     public static final Traversal<Form, String> FORM_TO_PERMISSION_NAMES =
         FormLenses.principal().asTraversal()
-            .andThen(PrincipalPrisms.userLogin().asTraversal())
+            .andThen(PrincipalPrisms.user().asTraversal())
             .andThen(UserTraversals.permissions())
             .andThen(PermissionLenses.name().asTraversal());
 
     // Simplified validation - no Applicative setup needed
     public static Validated<List<String>, Form> validateFormPermissions(Form form) {
         return modifyAllValidated(
+            form,
             FORM_TO_PERMISSION_NAMES,
             name -> VALID_PERMISSIONS.contains(name)
                 ? Validated.valid(name)
-                : Validated.invalid(List.of("Invalid permission: " + name)),
-            form
-        );
+                : Validated.invalid("Invalid permission: " + name));
     }
 
-    // Alternative: fail-fast validation
-    public static Either<String, Form> validateFormPermissionsFast(Form form) {
+    // Alternative: keep only the first error
+    public static Either<String, Form> validateFormPermissionsFirstError(Form form) {
         return modifyAllEither(
+            form,
             FORM_TO_PERMISSION_NAMES,
             name -> VALID_PERMISSIONS.contains(name)
                 ? Either.right(name)
-                : Either.left("Invalid permission: " + name),
-            form
-        );
+                : Either.left("Invalid permission: " + name));
     }
 }
 ```
@@ -37030,12 +37012,22 @@ public class SimplifiedValidation {
 * **Easier to learn**: Uses familiar types (`Validated`, `Either`, `Maybe`)
 * **Equally powerful**: Same type safety, same error accumulation, same composition
 
-~~~admonish title="Complete Example"
+~~~admonish example title="Complete Example"
 See [FluentValidationExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/fluent/FluentValidationExample.java) for comprehensive demonstrations of all validation-aware methods, including complex real-world scenarios like order validation and bulk data import.
 ~~~
 
+~~~admonish info title="Key Takeaways"
+* **Four optics, three kinds, one value.** `Lens >>> Prism >>> Traversal >>> Lens` collapses into a single `Traversal<Form, String>` that you name once and reuse for reads, writes and validations.
+* **`.asTraversal()` is the levelling step.** Composing mixed optic kinds means widening each to the weakest one in the chain, which is why the composed path is a `Traversal` rather than a `Lens`.
+* **The prism is the safety.** A `Form` holding a `Guest` puts nothing in focus, so the whole pipeline returns cleanly with no branch written for the absent case.
+* **`Validated` accumulates, `Either` keeps the first.** The optic never changes; only the `Applicative` handed to `modifyF` does, and that single choice is the whole difference between a full report and one message. Neither skips elements.
+* **The fluent methods remove the ceremony, not the power.** `OpticOps` gives the same accumulation without `widen`, `narrow` or an explicit `Applicative` at the call site.
+~~~
+
 ~~~admonish tip title="See Also"
-For the four validation strategies, the fluent builders, and when to drop to `modifyF`, see [Fluent API for Optics](fluent_api.md#part-2-validation-aware-modification).
+- [Fluent API for Optics](fluent_api.md#part-2-validation-aware-modification): the four validation strategies, the builders, and when to drop to `modifyF`
+- [Composition Rules](composition_rules.md): why a chain of mixed optics widens to a `Traversal`
+- [Core Type Integration](core_type_integration.md): the prisms that let a core type sit mid-path
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -37050,6 +37042,8 @@ Practice optic composition in [Tutorial 06: Optics Composition](https://github.c
 <!-- Source: optics/core_type_integration.md -->
 
 # Working with Core Types and Optics
+
+## _Prisms and Traversals for Maybe, Either, Validated and Try_
 
 ![Diagram illustrating optics integration with functional core types like Maybe, Either, and Validated](../images/optics.jpg)
 
@@ -37132,11 +37126,15 @@ Clean separation of concerns:
 
 ---
 
+~~~admonish tip title="Why this matters"
+Without these, a `Maybe` or an `Either` in the middle of a path forces you out of the optic and into unwrap-check-rewrap by hand, which is exactly the ceremony optics exist to remove. With them, a core type is just another sum type: `Right` is a variant like any other, so a path can run straight through it and the absent case stays a no-op rather than becoming a branch.
+~~~
+
 ## Two Complementary Approaches
 
 Higher-Kinded-J provides two integrated solutions for working with core types and optics:
 
-### 1. Core Type Prisms – Pattern Matching on Functional Types
+### 1. Core Type Prisms: Pattern Matching on Functional Types
 
 Extract values from `Maybe`, `Either`, `Validated`, and `Try` using prisms, just as you would with sealed interfaces.
 
@@ -37153,7 +37151,7 @@ Optional<Order> order = successPrism.getOptional(tryOrder);
 
 **Best for:** Safe extraction and pattern matching on core types, composing with other optics.
 
-### 2. Optics Extensions – Safety Rails for Lens and Traversal
+### 2. Optics Extensions: Safety Rails for Lens and Traversal
 
 Augment lenses and traversals with built-in null safety, validation, and exception handling.
 
@@ -37180,7 +37178,7 @@ Validated<List<String>, List<Order>> result = modifyAllValidated(
 
 **Best for:** Individual field operations with validation, bulk operations, exception handling.
 
-[Learn more about Optics Extensions →](optics_extensions.md)
+Optics Extensions are covered on [their own page](optics_extensions.md).
 
 ---
 
@@ -37386,17 +37384,15 @@ dbResults.stream()
 - Accessing potentially null fields
 - Validating single field or bulk updates
 - Performing operations that might throw exceptions
-- Choosing between fail-fast and error accumulation strategies
+- Choosing between first-error and error-accumulation strategies
 
 ---
 
-## Example Code
-
-~~~admonish example title="Runnable Examples"
-- [CoreTypePrismsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/CoreTypePrismsExample.java) – API response processing
-- [LensExtensionsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/LensExtensionsExample.java) – User profile validation
-- [TraversalExtensionsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/TraversalExtensionsExample.java) – Bulk order processing
-- [IntegrationPatternsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/IntegrationPatternsExample.java) – Complete e-commerce workflow
+~~~admonish example title="See Example Code"
+- [CoreTypePrismsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/CoreTypePrismsExample.java): API response processing
+- [LensExtensionsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/LensExtensionsExample.java): user profile validation
+- [TraversalExtensionsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/TraversalExtensionsExample.java): bulk order processing
+- [IntegrationPatternsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/IntegrationPatternsExample.java): complete e-commerce workflow
 ~~~
 
 ---
@@ -37446,17 +37442,19 @@ Maybe<String> backToMaybe = value
 
 ## Summary
 
-Core Type Integration provides:
+~~~admonish info title="Key Takeaways"
+* **A core type is just another sum type.** `Maybe`, `Either`, `Validated` and `Try` each get prisms for their cases, so matching one is the same operation as matching any sealed hierarchy.
+* **Prisms answer, traversals act.** `matches()` and `getOptional()` interrogate a case; the matching traversal modifies the value inside it and leaves the other case untouched.
+* **They compose with the optics you already have.** A prism into a `Right` is a legal middle step in a longer path, which is what turns "unwrap, check, rewrap" into one expression.
+* **`getOptional()` speaks `Optional`, not `Maybe`.** The optics surface is uniform on the JDK type, so converting back is an explicit `map`/`orElse` step.
+* **Absence stays absent.** Modifying through the wrong case is a no-op rather than an error, so a `Left` survives a `Right`-targeted update unchanged.
+~~~
 
-**Safe Extraction** – Extract values from `Maybe`, `Either`, `Validated`, and `Try` without null checks or verbose pattern matching
-
-**Pattern Matching** – Use `matches()` to check cases, `getOptional()` to extract values
-
-**Composability** – Combine with lenses and traversals for deep navigation
-
-**Collection Processing** – Filter, extract, and count different cases in collections
-
-**Type Safety** – The compiler ensures you handle all cases correctly
+~~~admonish tip title="See Also"
+- [Prisms](prisms.md): the optic these instances are built from
+- [Optics Extensions](optics_extensions.md): the validated `Lens` and `Traversal` operations that pair with them
+- [Composing Optics](composing_optics.md): the capstone that puts a prism in the middle of a longer path
+~~~
 
 ---
 
@@ -37466,6 +37464,8 @@ Core Type Integration provides:
 <!-- Source: optics/multi_edit.md -->
 
 # Multi-Edit and Sparse Updates
+
+## _N Edits in One Operation, and the REST PATCH Shape_
 
 ~~~admonish example title="See Example Code"
 **The code on this page is [MultiEditBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/MultiEditBook.java)** - the page includes it directly, so it is compiled and run by the build.
@@ -37653,10 +37653,10 @@ Practice the whole model in [Tutorial 24: Multi-Edit and Sparse Updates](https:/
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Semigroup and Monoid](../functional/semigroup_and_monoid.md) - The `Update` monoid that powers `combine`
-- [Accumulating Assembly](../monads/validated_assembly.md) - The same all-errors-at-once model for *constructing* values
-- [Coupled Fields](coupled_fields.md) - Atomic updates of interdependent fields
-- [Record Mapping, sparse PATCH (`UpdateSpec`)](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) - Generate this `Edits.accumulate` fold when the DTO maps one-to-one
+- [Semigroup and Monoid](../functional/semigroup_and_monoid.md): the `Update` monoid that powers `combine`
+- [Accumulating Assembly](../monads/validated_assembly.md): the same all-errors-at-once model for *constructing* values
+- [Coupled Fields](coupled_fields.md): atomic updates of interdependent fields
+- [Record Mapping, sparse PATCH (`UpdateSpec`)](../mapping/beans_patch.md#sparse-patch-write-back-updatespec): generate this `Edits.accumulate` fold when the DTO maps one-to-one
 ~~~
 
 ---
@@ -37674,12 +37674,12 @@ Practice the whole model in [Tutorial 24: Multi-Edit and Sparse Updates](https:/
 - Safe field access with `getMaybe`, `getEither`, and `getValidated`
 - Validated modifications with `modifyEither`, `modifyMaybe`, and `modifyValidated`
 - Exception-safe operations with `modifyTry`
-- Bulk operations with fail-fast (`modifyAllEither`) or error accumulation (`modifyAllValidated`)
+- Bulk operations keeping only the first error (`modifyAllEither`) or accumulating every one (`modifyAllValidated`)
 - Selective updates with `modifyWherePossible`
 - Analysis methods: `countValid` and `collectErrors`
 ~~~
 
-~~~admonish title="Example Code"
+~~~admonish example title="See Example Code"
 - [LensExtensionsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/LensExtensionsExample.java)
 - [TraversalExtensionsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/TraversalExtensionsExample.java)
 ~~~
@@ -37704,7 +37704,7 @@ These extension methods are also available through the [Fluent API](fluent_api.m
 
 ### Safe Access Methods
 
-#### `getMaybe` – Null-Safe Field Access
+#### `getMaybe`: Null-Safe Field Access
 
 Returns `Maybe.just(value)` if the field is non-null, `Maybe.nothing()` otherwise.
 
@@ -37721,7 +37721,7 @@ Maybe<String> noBio = getMaybe(bioLens, withoutBio);  // Maybe.nothing()
 String displayBio = bio.orElse("No bio provided");
 ```
 
-#### `getEither` – Access with Default Error
+#### `getEither`: Access with Default Error
 
 Returns `Either.right(value)` if non-null, `Either.left(error)` if null.
 
@@ -37737,7 +37737,7 @@ String message = age.fold(
 );
 ```
 
-#### `getValidated` – Access with Validation Error
+#### `getValidated`: Access with Validation Error
 
 Like `getEither`, but returns `Validated` for consistency with validation workflows.
 
@@ -37750,7 +37750,7 @@ Validated<String, String> email = getValidated(emailLens, "Email is required", p
 
 ### Modification Methods
 
-#### `modifyMaybe` – Optional Modifications
+#### `modifyMaybe`: Optional Modifications
 
 Apply a modification that might not succeed. Returns `Maybe.just(updated)` if successful, `Maybe.nothing()` if it fails.
 
@@ -37765,7 +37765,7 @@ Maybe<UserProfile> updated = modifyMaybe(
 // Maybe.just(UserProfile with name "ALICE") or Maybe.nothing()
 ```
 
-#### `modifyEither` – Fail-Fast Validation
+#### `modifyEither`: Fail-Fast Validation
 
 Apply a modification with validation. Returns `Either.right(updated)` if valid, `Either.left(error)` if invalid.
 
@@ -37783,7 +37783,7 @@ Either<String, UserProfile> updated = modifyEither(
 );
 ```
 
-#### `modifyTry` – Exception-Safe Modifications
+#### `modifyTry`: Exception-Safe Modifications
 
 Apply a modification that might throw exceptions. Returns `Try.success(updated)` or `Try.failure(exception)`.
 
@@ -37802,7 +37802,7 @@ updated.match(
 );
 ```
 
-#### `setIfValid` – Conditional Updates
+#### `setIfValid`: Conditional Updates
 
 Set a new value **only if it passes validation**. Unlike `modifyEither`, you provide the new value directly.
 
@@ -37852,7 +37852,7 @@ import static org.higherkindedj.optics.extensions.TraversalExtensions.*;
 
 ### Extraction Methods
 
-#### `getAllMaybe` – Extract All Values
+#### `getAllMaybe`: Extract All Values
 
 Returns `Maybe.just(values)` if any elements exist, `Maybe.nothing()` for empty collections.
 
@@ -37867,7 +37867,7 @@ Maybe<List<BigDecimal>> prices = getAllMaybe(allPrices, items);
 
 ### Bulk Modification Methods
 
-#### `modifyAllMaybe` – All-or-Nothing Modifications
+#### `modifyAllMaybe`: All-or-Nothing Modifications
 
 Returns `Maybe.just(updated)` if **all** modifications succeed, `Maybe.nothing()` if **any** fail. Atomic operation.
 
@@ -37886,9 +37886,9 @@ Maybe<List<OrderItem>> updated = modifyAllMaybe(
 Use for **atomic updates** where all modifications must succeed or none should apply, for example, applying currency conversion where partial conversion would leave data inconsistent.
 ~~~
 
-#### `modifyAllEither` – Fail-Fast Validation
+#### `modifyAllEither`: First Error Only
 
-Returns `Either.right(updated)` if **all** validations pass, `Either.left(firstError)` if **any** fail. **Stops at first error**.
+Returns `Either.right(updated)` if **all** validations pass, `Either.left(firstError)` if **any** fail. The result keeps only the first error; the traversal still visits every element.
 
 ```java
 Either<String, List<OrderItem>> result = modifyAllEither(
@@ -37901,14 +37901,14 @@ Either<String, List<OrderItem>> result = modifyAllEither(
     },
     items
 );
-// Stops at first invalid price
+// Left("Price cannot be negative"): the first failure wins, though every price is checked
 ```
 
 ~~~admonish tip title="When to Use modifyAllEither"
-Use for **fail-fast validation** where you want to stop immediately at the first error, for example, API request validation where you reject immediately if any field is invalid.
+Use when **one error is all the caller will act on**, for example an API request you reject as soon as it is known to be invalid. Note this shapes the answer, not the work: every element is still validated before the `Either` collapses.
 ~~~
 
-#### `modifyAllValidated` – Error Accumulation
+#### `modifyAllValidated`: Error Accumulation
 
 Returns `Validated.valid(updated)` if **all** validations pass, `Validated.invalid(allErrors)` if **any** fail. **Collects all errors**.
 
@@ -37925,20 +37925,21 @@ Validated<List<String>, List<OrderItem>> result = modifyAllValidated(
 );
 // Checks ALL items and collects ALL errors
 
-result.match(
-    errors -> {
-        System.out.println("Validation failed with " + errors.size() + " errors:");
-        errors.forEach(err -> System.out.println("   - " + err));
-    },
-    updated -> System.out.println("All items valid")
-);
+// Validated exposes fold, not match
+if (result.isInvalid()) {
+    List<String> errors = result.getError();
+    System.out.println("Validation failed with " + errors.size() + " errors:");
+    errors.forEach(err -> System.out.println("   - " + err));
+} else {
+    System.out.println("All items valid");
+}
 ```
 
 ~~~admonish tip title="When to Use modifyAllValidated"
 Use for **error accumulation** where you want to collect all errors, for example, form validation where users need to see all problems at once rather than one at a time.
 ~~~
 
-#### `modifyWherePossible` – Selective Modification
+#### `modifyWherePossible`: Selective Modification
 
 Modifies elements where the function returns `Maybe.just(value)`, leaves others unchanged. Best-effort operation that always succeeds.
 
@@ -37963,7 +37964,7 @@ Use for **selective updates** where only some elements should be modified, for e
 
 ### Analysis Methods
 
-#### `countValid` – Count Passing Validation
+#### `countValid`: Count Passing Validation
 
 Count how many elements pass validation without modifying anything.
 
@@ -37979,7 +37980,7 @@ int validCount = countValid(
 System.out.println("Valid items: " + validCount + " out of " + items.size());
 ```
 
-#### `collectErrors` – Gather Validation Failures
+#### `collectErrors`: Gather Validation Failures
 
 Collect all validation errors without modifying anything. Returns empty list if all valid.
 
@@ -38082,7 +38083,7 @@ private Either<String, Integer> validateQuantity(Integer qty) {
 **Fail-fast (`modifyAllEither`):**
 - API requests (reject immediately)
 - Critical validations (stop on first error)
-- Performance-sensitive operations
+- Internal callers that act on the first problem
 
 **Error accumulation (`modifyAllValidated`):**
 - Form validation (show all errors)
@@ -38135,15 +38136,34 @@ Maybe<String> safeBio = maybeProfile.flatMap(p -> getMaybe(bioLens, p));
 | `modifyEither` | `Either<E, S>` | Fail-fast single field validation |
 | `modifyTry` | `Try<S>` | Exception-safe modifications |
 | `modifyAllMaybe` | `Maybe<S>` | All-or-nothing bulk modification |
-| `modifyAllEither` | `Either<E, S>` | Fail-fast bulk validation |
+| `modifyAllEither` | `Either<E, S>` | Bulk validation, first error only |
 | `modifyAllValidated` | `Validated<List<E>, S>` | Error accumulation |
 | `modifyWherePossible` | `S` | Selective modification |
 | `countValid` | `int` | Count valid elements |
 | `collectErrors` | `List<E>` | Gather all errors |
+| `getValidated` | `Validated<E, A>` | Access, accumulating the failure |
+| `modifyValidated` | `Validated<E, S>` | Single-field modification, accumulating |
+| `setIfValid` | `Either<String, S>` | Write only when the new value passes |
+| `getAllMaybe` | `Maybe<List<A>>` | Extract all, or nothing when empty |
+
+~~~admonish info title="Key Takeaways"
+* **The extensions are the error-handling half of an optic.** A `Lens` gets you to a field; `getEither`, `modifyEither` and `modifyTry` decide what happens when getting there, or changing it, can fail.
+* **The suffix names the failure shape, not the operation.** `Maybe` for "no detail", `Either` for "first error", `Try` for "it threw", `Validated` for "every error at once". Pick the suffix from what the caller needs to hear.
+* **`modifyAll*` is the bulk family.** All-or-nothing, first-error and accumulating are three different answers to one traversal, and the return type states which you chose. All three visit every element: the suffix shapes the answer, not the work.
+* **`modifyWherePossible` is deliberately total.** It never fails; elements that cannot be modified are left as they are, which makes it the right tool for best-effort passes and the wrong one for validation.
+* **`countValid` and `collectErrors` inspect without writing.** They answer "would this succeed, and why not" before you commit to a modification.
+~~~
+
+~~~admonish tip title="See Also"
+- [Core Type Integration](core_type_integration.md): the prisms and traversals for the `Maybe`/`Either`/`Validated`/`Try` these methods return
+- [Fluent API](fluent_api.md): the same validation strategies as `OpticOps` statics and builders
+- [Composing Optics](composing_optics.md): the capstone these operations shorten
+~~~
 
 ---
 
-[Previous: Multi-Edit and Sparse Updates](multi_edit.md) | [Next: Optic-Driven Batching](optic_batching.md)
+**Previous:** [Multi-Edit and Sparse Updates](multi_edit.md)
+**Next:** [Optic-Driven Batching](optic_batching.md)
 
 <!-- Source: optics/optic_batching.md -->
 
@@ -38173,19 +38193,64 @@ This is the N+1, and optics by themselves do not save you from it. A `Traversal`
 
 The `org.higherkindedj.optics.fetch` package changes the strategy and leaves the optic alone:
 
-![optic_batching_n_plus_one.svg](../images/puml/optic_batching_n_plus_one.svg)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Caller
+    participant T as Traversal over N ids
+    participant B as Backend
+
+    Note over C,B: Without batching: N+1
+    C->>T: modifyF(loadOne, ids)
+    loop N times, one per focus
+        T->>B: loadOne(id)
+        B-->>T: entity
+    end
+    T-->>C: List of entities
+
+    Note over C,B: With FetchApplicative: one round
+    C->>T: modifyF(Fetch.fetch, ids, FetchApplicative)
+    Note right of T: ap() merges pending request sets,<br/>so foci share a single round
+    T->>B: batchResolver({id_1 ... id_N})
+    B-->>T: Map of id to entity
+    T-->>C: List of entities
+```
 
 Top half: the loop you didn't mean to write. Bottom half: the same traversal, the same source, the same backend, plus one new piece, `FetchApplicative`. One round, one batched call, every focus resolved.
 
 ---
 
+~~~admonish tip title="Why this matters"
+The usual fix for an N+1 is a hand-written pre-fetch: collect the ids, load them in one query, build a map, then thread that map through the code that needed it. It works, and it decays, because nothing stops the next edit reintroducing a per-element load. Here the batching lives in the strategy attached to the traversal, and `RunResult.backendCalls()` makes the guarantee assertable in a unit test, so a regression fails the build instead of the pager.
+~~~
+
 ## The Pattern, Drawn
 
 The pipeline has three pieces. The optic owns the shape. The applicative is the strategy. The runner is the boundary that actually talks to the backend:
 
-![optic_batching_pipeline.svg](../images/puml/optic_batching_pipeline.svg)
+```mermaid
+flowchart LR
+    OP(["Traversal<br/>(or any Optic)"]) -->|"modifyF(f, s, applicative)"| FA(["FetchApplicative"])
+    FA -->|"produces"| F(["Fetch&lt;K, V, A&gt;<br/>a value, not an action"])
 
-Everything else in this chapter is a variation on those three pieces.
+    F -->|"sync"| RC(["Fetch.runCached"])
+    F -->|"async"| RA(["Fetch.runAsync"])
+    F -->|"railway (Either)"| SC(["SafeFetch.runCached"])
+
+    RC -->|"one keyset per round"| FN(["Function&lt;Set&lt;K&gt;, Map&lt;K, V&gt;&gt;"])
+    RA -->|"one keyset per round"| BL(["BatchLoader"])
+    RA -->|"fan out per source"| SR(["SourceRouter.routed"])
+    RA -->|"cap dispatch size"| BC(["BatchLoaders.chunked"])
+
+    classDef shape fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class OP,FA shape
+    class F,RC,RA,SC wire
+    class FN,BL,SR,BC tier
+```
+
+Everything else on this page is a variation on those three pieces.
 
 ```java
 // 1. The optic describes the shape (a list-traversal here).
@@ -38294,7 +38359,29 @@ A backend that returns no entry for a requested key is surfaced as `MissingKeyEx
 
 Applicative composition collapses because the arguments are independent. `flatMap` cannot collapse, because the continuation's requests depend on the value the previous round produced. The library does not paper over this; it lays the boundary out where you can see it:
 
-![optic_batching_rounds.svg](../images/puml/optic_batching_rounds.svg)
+```mermaid
+sequenceDiagram
+    participant P as Program
+    participant R as Runner
+    participant B as Backend
+
+    Note over P,B: Pure applicative: N foci, 1 round
+    P->>R: ap(ap(ap(f, fetch a), fetch b), fetch c)
+    R->>B: { a, b, c }
+    B-->>R: { a:..., b:..., c:... }
+    R-->>P: value
+
+    Note over P,B: flatMap dependency chain: 3 rounds
+    P->>R: fetch(a).flatMap(x -> fetch(x.next))
+    R->>B: { a }
+    B-->>R: { a:... }
+    Note right of R: only now do we know<br/>what to ask for next
+    R->>B: { a.next }
+    B-->>R: { a.next:... }
+    R->>B: { a.next.next }
+    B-->>R: { ... }
+    R-->>P: value
+```
 
 The practical rule is one line: *anything you can express with `map2`, `ap`, or an optic traversal collapses to one round; every `flatMap` in a chain is another round.* Express data dependencies as `flatMap` when you have one; do not reach for it when you don't.
 
@@ -38324,27 +38411,36 @@ In tests, this is exactly what you want: `assertThat(result.backendCalls()).isEq
 
 - **Applicative-only batching.** A `flatMap` data dependency costs an extra round. This is the Haxl law (see further reading), not a defect.
 - **Per-run cache.** No distributed cache; concurrent `runAsync` calls must each be given their own cache map.
-- **Optics are post-fetch.** No predicate pushdown to the backend; the backend sees the keyset, not the optic's filter expression.
+- **No predicate pushdown.** The backend receives a keyset, never the optic's filter expression. A filter placed *before* the fetch still shrinks that keyset, because `filtered` hands non-matching foci to `applicative.of` and never runs the fetch for them; what it cannot do is let the backend evaluate the predicate.
 
 ---
+
+~~~admonish info title="Key Takeaways"
+* **The optic names the keys; the runtime batches them.** One traversal over a collection becomes one keyset and one backend call, instead of one call per element.
+* **Applicative collapses, `flatMap` does not.** Anything expressible with `map2`, `ap` or a traversal folds into a single round; every genuine data dependency costs another. That is the Haxl law, not a gap in the library.
+* **`RunResult` makes the win assertable.** `backendCalls()` is how you prove in a test that the N+1 is gone rather than merely hidden, and `cacheHits()` shows what the per-run cache absorbed.
+* **The cache is per invocation and in-JVM.** Two concurrent runs need two cache maps; nothing here is a distributed cache.
+* **Optics do not push predicates to the backend.** The backend sees a keyset, never a predicate expression. Narrowing the optic before the fetch still narrows the keyset; it just never becomes a `WHERE` clause.
+~~~
 
 ~~~admonish info title="Hands-On Learning"
 Practice the four pieces (batching, heterogeneous fetch, multi-source routing, railway errors) in [Tutorial 21: Optic-Driven Request Batching](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial21_OpticBatching.java) (5 exercises, ~15 minutes).
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Traversals](traversals.md) - The optic shape this strategy attaches to.
-- [Optics Extensions](optics_extensions.md) - Validated, per-element error handling on the value side.
-- [Core Type Integration](core_type_integration.md) - `Either`, `Try`, `Validated` as railway types.
+- [Traversals](traversals.md): the optic shape this strategy attaches to
+- [Optics Extensions](optics_extensions.md): validated, per-element error handling on the value side
+- [Core Type Integration](core_type_integration.md): `Either`, `Try` and `Validated` as railway types
 ~~~
 
 ~~~admonish tip title="Further Reading"
-- **Apollo Tutorials**: [Data loaders under the hood](https://www.apollographql.com/tutorials/dataloaders-dgs/03-data-loaders-under-the-hood) - A diagrammed, language-agnostic walk through the same batching idea Haxl popularised (Java framing in the worked example, accessible without prior functional-programming background).
+- **Apollo Tutorials**: [Data loaders under the hood](https://www.apollographql.com/tutorials/dataloaders-dgs/03-data-loaders-under-the-hood): a diagrammed, language-agnostic walk through the same batching idea Haxl popularised (Java framing in the worked example, accessible without prior functional-programming background).
 ~~~
 
 ---
 
-[Previous: Optics Extensions](optics_extensions.md) | [Next: Plan Introspection and Guardrails](optic_batching_guardrails.md)
+**Previous:** [Optics Extensions](optics_extensions.md)
+**Next:** [Plan Introspection and Guardrails](optic_batching_guardrails.md)
 
 <!-- Source: optics/optic_batching_guardrails.md -->
 
@@ -38369,7 +38465,7 @@ Practice the four pieces (batching, heterogeneous fetch, multi-source routing, r
 
 It's quarter to five. The on-call channel pings: "What did that endpoint *actually* do? It just hammered the user service with twelve thousand ids in one call and the SREs are unhappy." You look at the code. It's an optic traversal. It batched, just as designed. The optic did exactly what you asked it to do. The problem is that nobody asked beforehand whether that was a sensible thing to ask.
 
-That is what this chapter is about. Three things you want, once an optic run has any chance of producing a sizeable batch.
+That is what this page is about. Three things you want, once an optic run has any chance of producing a sizeable batch.
 
 | Question | When you ask it | Answer |
 |---|---|---|
@@ -38383,9 +38479,32 @@ Two small primitives, one familiar railway pattern, no surprises.
 
 ## "What Would Round 1 Be?"
 
-A `Fetch` program is a value. It hasn't run yet. You can pull its first round's pending-key set out without touching a backend, which is what `Plans.preflight` does:
+A `Fetch` program is a value. It hasn't run yet. `program` throughout this page is the one built on [Optic-Driven Batching](optic_batching.md): an optic over a team's member ids with `FetchApplicative` as the strategy, not yet handed to a runner. You can pull its first round's pending-key set out without touching a backend, which is what `Plans.preflight` does:
 
-![optic_batching_preflight.svg](../images/puml/optic_batching_preflight.svg)
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant P as Fetch program
+    participant R as Runner
+    participant B as Backend
+
+    Note over C,B: Online: Fetch.runCached, real I/O
+    C->>R: runCached(program, resolver)
+    R->>P: pending()
+    P-->>R: { id_1 ... id_N }
+    R->>B: resolver({ id_1 ... id_N })
+    B-->>R: { id_1: v_1 ... id_N: v_N }
+    R-->>C: RunResult(value, rounds=1, fetchedBatches=[...])
+
+    Note over C,B: Offline: Plans.preflight, no I/O
+    C->>R: preflight(program)
+    R->>P: pending()
+    P-->>R: { id_1 ... id_N }
+    Note right of R: resume with stub nulls:<br/>no backend, no values, no side effects
+    R->>P: resume(stub map)
+    P-->>R: Done, or another Blocked
+    R-->>C: Plan(fetchedBatches=[...], truncated=?)
+```
 
 Top half: the real run, the one that bills your cloud account. Bottom half: the inspection, the one you can put inside an `assertThat`. Same keysets. Different boundary.
 
@@ -38412,7 +38531,29 @@ A traversal that collapses N foci to a single batched call is *one round*. Its k
 
 The other half of the chapter doesn't ask offline; it asks at the round boundary, during the real run, just before each dispatch. That's a `Guard`:
 
-![optic_batching_guard.svg](../images/puml/optic_batching_guard.svg)
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant R as Runner
+    participant G as Guard
+    participant B as Resolver
+
+    C->>R: runCached(program, resolver, guard)
+    loop per round
+        R->>R: compute uncached keyset
+        R->>G: check(keys, roundIndex, backendCallsSoFar)
+        alt keys within budget
+            G-->>R: pass
+            R->>B: resolver(keys)
+            B-->>R: values
+        else budget exceeded
+            G-->>R: throw GuardViolationException
+            Note over R,B: resolver is never called
+            R-->>C: exception, or Either.left via SafeFetch
+        end
+    end
+    R-->>C: RunResult
+```
 
 ```java
 // Refuse a round that would dispatch more than 500 keys.
@@ -38475,19 +38616,27 @@ return outcome.fold(
 ## Limits, Stated Up Front
 
 - **Round 1 only is universally observable offline.** Past round 1, `Plans.preflight` walks programs whose combines accept `null`; the rest truncate. `Plan.truncated()` is the honest signal.
-- **Guards do not retry.** A refused round aborts the run; it does not "wait and try a smaller batch". Compose with `BatchLoaders.chunked` upstream of the guard if you want size capping with continuation.
+- **Guards do not retry.** A refused round aborts the run; it does not "wait and try a smaller batch". `BatchLoaders.chunked` does not soften that: the guard checks the round's uncached keyset *before* the loader is called, so `maxKeysPerRound(500)` refuses a 501-key round that `chunked` would otherwise have split. Chunking caps what one dispatch sends, not what one round may ask for.
 - **`maxBackendCalls` counts non-empty rounds only.** A round whose keys are all already cached costs no backend call and does not consume a budget slot.
 
 ---
+
+~~~admonish info title="Key Takeaways"
+* **A plan is inspectable before it runs.** `Plans.preflight` gives you round 1's keyset with no I/O, which is both a logging hook and a test assertion.
+* **Round 1 is the honest boundary.** Beyond it, preflight only walks programs whose combines tolerate `null`; the rest report `Plan.truncated()` rather than guessing.
+* **Guards refuse, they do not retry.** A violated bound aborts the run, and it is checked before the loader runs, so `BatchLoaders.chunked` cannot rescue an over-budget round. Chunking limits a single dispatch; the guard limits the round.
+* **Refusal can be a value.** `SafeFetch.runCachedWithGuard` puts the `GuardViolationException` on `Either.left`, so the run never throws and controllers keep the shape they already have.
+* **An all-cached round is free.** `maxBackendCalls` counts only rounds that reach the resolver, so caching does not silently consume the budget.
+~~~
 
 ~~~admonish info title="Hands-On Learning"
 Practice the five exercises (preflight, truncation, refusal, audit, railway) in [Tutorial 22: Plan Introspection and Guardrails](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial22_OpticBatchingGuardrails.java) (5 exercises, ~12 minutes).
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Optic-Driven Batching](optic_batching.md): The substrate this chapter builds on.
-- [Optics Extensions](optics_extensions.md): Validated, per-element error handling on the value side.
-- [Core Type Integration](core_type_integration.md): `Either` as the railway type for guard refusal.
+- [Optic-Driven Batching](optic_batching.md): the substrate this page builds on
+- [Optics Extensions](optics_extensions.md): validated, per-element error handling on the value side
+- [Core Type Integration](core_type_integration.md): `Either` as the railway type for guard refusal
 ~~~
 
 ~~~admonish tip title="Further Reading"
@@ -38496,7 +38645,8 @@ Practice the five exercises (preflight, truncation, refusal, audit, railway) in 
 
 ---
 
-[Previous: Optic-Driven Batching](optic_batching.md) | [Next: Cookbook](cookbook.md)
+**Previous:** [Optic-Driven Batching](optic_batching.md)
+**Next:** [Cookbook](cookbook.md)
 
 <!-- Source: optics/cookbook.md -->
 
@@ -38508,10 +38658,6 @@ Practice the five exercises (preflight, truncation, refusal, audit, railway) in 
 - Ready-to-use patterns for common optics scenarios
 - Copy-paste recipes with explanations
 - Best practices for production code
-~~~
-
-~~~admonish title="Hands On Practice"
-[Tutorial08_RealWorldOptics.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial08_RealWorldOptics.java)
 ~~~
 
 This cookbook provides practical recipes for common optics problems. Each recipe includes the problem statement, solution, and explanation.
@@ -38563,9 +38709,9 @@ You have a sealed interface and want to modify only one specific variant whilst 
 ### Solution
 
 ```java
-sealed interface ApiResponse permits Success, Error, Loading {}
+sealed interface ApiResponse permits Success, Failure, Loading {}
 record Success(Data data, String timestamp) implements ApiResponse {}
-record Error(String message, int code) implements ApiResponse {}
+record Failure(String message, int code) implements ApiResponse {}
 record Loading(int progress) implements ApiResponse {}
 
 // Create prism for the Success case
@@ -38574,27 +38720,25 @@ Prism<ApiResponse, Success> successPrism = Prism.of(
     s -> s
 );
 
-// Compose with lens to access data
-Traversal<ApiResponse, Data> successData =
+// Compose with lens to access data. Prism >>> Lens settles at Affine:
+// the focus may be absent, but there is at most one of it.
+Affine<ApiResponse, Data> successData =
     successPrism.andThen(SuccessLenses.data());
 
 // Usage: transform data only for Success responses
 ApiResponse response = new Success(new Data("original"), "2024-01-01");
-ApiResponse modified = Traversals.modify(
-    successData,
+ApiResponse modified = successData.modify(
     data -> new Data(data.value().toUpperCase()),
     response
 );
 // Result: Success[data=Data[value=ORIGINAL], timestamp=2024-01-01]
 
-// Error responses pass through unchanged
-ApiResponse error = new Error("Not found", 404);
-ApiResponse unchanged = Traversals.modify(
-    successData,
+// Failure responses pass through unchanged
+ApiResponse failure = new Failure("Not found", 404);
+ApiResponse unchanged = successData.modify(
     data -> new Data(data.value().toUpperCase()),
-    error
-);
-// Result: Error[message=Not found, code=404] (unchanged)
+    failure);
+// Result: Failure[message=Not found, code=404] (unchanged)
 ```
 
 ---
@@ -38925,18 +39069,23 @@ public final class OrderOptics {
             .andThen(Traversals.forList())
             .andThen(LineItemLenses.price().asTraversal());
 
+    // The prism narrows Customer to Verified, so the next hop is a lens on
+    // Verified, not on Customer.
     public static final Traversal<Order, String> CUSTOMER_EMAIL =
         OrderLenses.customer()
             .andThen(CustomerPrisms.verified())
-            .andThen(CustomerLenses.email().asTraversal());
+            .andThen(VerifiedLenses.email().asTraversal());
 }
 ```
 
 ### 2. Use Direct Composition Methods
 
 ```java
-// Preferred: type-safe, clearer intent
-Traversal<Config, Settings> direct = configLens.andThen(settingsPrism);
+// Direct composition: mixed kinds settle at the weakest, so Lens >>> Prism is an Affine
+Affine<Config, Settings> direct = configLens.andThen(settingsPrism);
+
+// Widen only where the call site actually needs a Traversal
+Traversal<Config, Settings> asTraversal = direct.asTraversal();
 
 // Fallback: when you need maximum flexibility
 Traversal<Config, Settings> manual =
@@ -38954,7 +39103,7 @@ Traversal<Config, Settings> manual =
 public static final Traversal<Order, String> ACTIVE_PROMO_CODES =
     OrderLenses.customer()
         .andThen(CustomerPrisms.loyaltyMember())
-        .andThen(LoyaltyLenses.promotions().asTraversal())
+        .andThen(LoyaltyMemberLenses.promotions().asTraversal())
         .andThen(Traversals.forList())
         .andThen(Traversals.filtered(Promotion::isActive))
         .andThen(PromotionLenses.code().asTraversal());
@@ -39081,14 +39230,18 @@ You have deeply nested records and want to update values without verbose composi
 #### Solution
 
 ```java
-record Company(String name, List<Department> departments) {}
-record Department(String name, List<Employee> employees) {}
-record Employee(String name, int salary) {}
+@GenerateLenses @GenerateFocus record Company(String name, List<Department> departments) {}
+@GenerateLenses @GenerateFocus record Department(String name, List<Employee> employees) {}
+@GenerateLenses @GenerateFocus record Employee(String name, int salary) {}
 
-// Using Focus DSL instead of manual lens composition
-FocusPath<Company, List<Department>> deptPath = FocusPath.of(companyDeptsLens);
-TraversalPath<Company, Employee> allEmployees = deptPath.each().via(deptEmployeesLens).each();
-TraversalPath<Company, Integer> allSalaries = allEmployees.via(employeeSalaryLens);
+// Starting from a lens, each hop is spelled out. Only the FINAL each() can infer
+// its element type from the target, so the intermediate one needs a witness.
+TraversalPath<Company, Integer> allSalaries =
+    FocusPath.of(CompanyLenses.departments())
+        .<Department>each()
+        .via(DepartmentLenses.employees())
+        .<Employee>each()
+        .via(EmployeeLenses.salary());
 
 // Give everyone a 5% raise
 Company updated = allSalaries.modifyAll(s -> (int) (s * 1.05), company);
@@ -39278,16 +39431,20 @@ You have a complex path composition and need to understand what values are being
 #### Solution
 
 ```java
-record System(List<Server> servers) {}
-record Server(String hostname, List<Service> services) {}
+@GenerateLenses record Estate(List<Server> servers) {}
+@GenerateLenses record Server(String hostname, List<Service> services) {}
 record Service(String name, Status status) {}
 
-TraversalPath<System, Service> allServices =
-    FocusPath.of(systemServersLens).each().via(serverServicesLens).each();
+// The intermediate each() needs a witness; the final one infers from the target.
+TraversalPath<Estate, Service> allServices =
+    FocusPath.of(EstateLenses.servers())
+        .<Server>each()
+        .via(ServerLenses.services())
+        .<Service>each();
 
 // Add tracing to observe navigation
-TraversalPath<System, Service> tracedServices = allServices.traced(
-    (system, services) -> {
+TraversalPath<Estate, Service> tracedServices = allServices.traced(
+    (estate, services) -> {
         System.out.println("Accessing " + services.size() + " services");
         for (Service s : services) {
             System.out.println("  - " + s.name() + ": " + s.status());
@@ -39296,7 +39453,7 @@ TraversalPath<System, Service> tracedServices = allServices.traced(
 );
 
 // Every getAll() now logs
-List<Service> services = tracedServices.getAll(system);
+List<Service> services = tracedServices.getAll(estate);
 // Output:
 // Accessing 5 services
 //   - api: RUNNING
@@ -39304,7 +39461,8 @@ List<Service> services = tracedServices.getAll(system);
 //   - cache: STOPPED
 //   - ...
 
-// Note: traced() only observes getAll(), not modifyAll()
+// Note: traced() only observes getAll(), not modifyAll(). Composing further with
+// .via(...) returns the underlying path, so the tracing is dropped: trace last.
 ```
 
 ---
@@ -39340,6 +39498,20 @@ Inventory cleared = allProducts.modifyWhen(
 );
 ```
 
+~~~admonish info title="Key Takeaways"
+* **Every recipe is the same two steps, then a choice.** Name the path and choose the optic whose cardinality matches the target; the last step is whichever operation the answer needs, from `get` and `modify` through `foldMap`, `sorted` and an effectful `modifyF`.
+* **Reach for a prism the moment a shape is conditional.** Optional fields, sum-type variants and parse-or-fail boundaries are all "this may not be here", and a prism keeps the absent case from becoming a branch.
+* **Put the predicate in the path.** Whether you spell it `Traversals.filtered(...)` mid-composition or `modifyWhen` at the call site, the selection rule travels with the optic instead of living in an `if` around it: the structure is rebuilt once and the code reads as the business rule.
+* **Store the path, not the operation.** A composed optic in a `static final` field is reusable across reads, writes and validations; recomposing it per call site is where drift starts.
+* **Copy freely, then name it.** These recipes are starting points; the value appears when the composition gets a domain name and the rest of the code stops mentioning the shape.
+~~~
+
+~~~admonish tip title="See Also"
+- [Composing Optics](composing_optics.md): the capstone these recipes are miniatures of
+- [Optics Extensions](optics_extensions.md): the validated variants of the operations used here
+- [Focus DSL](focus_dsl.md): the fluent path syntax several recipes use
+~~~
+
 ~~~admonish info title="Hands-On Learning"
 Practice real-world optics patterns in [Tutorial 08: Real World Optics](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial08_RealWorldOptics.java) (6 exercises, ~10 minutes).
 ~~~
@@ -39353,7 +39525,7 @@ Practice real-world optics patterns in [Tutorial 08: Real World Optics](https://
 
 # Auditing Complex Data with Optics
 
-## _A Real-World Deep Dive_: The Power of Optics
+## _A Real-World Deep Dive into Conditional Config Auditing_
 
 ~~~admonish info title="What You'll Learn"
 - Solving complex, real-world data processing challenges with optics
@@ -39366,15 +39538,11 @@ Practice real-world optics patterns in [Tutorial 08: Real World Optics](https://
 
 In modern software, we often work with complex, nested data structures. Performing a seemingly simple task, like "find and decode all production database passwords", can lead to messy, error-prone code with nested loops, `if` statements, and manual type casting.
 
-This tutorial demonstrates how to solve a sophisticated, real-world problem elegantly using the full power of **higher-kinded-j optics**. We'll build a single, declarative, type-safe optic that performs a deep, conditional data transformation.
+This page builds a single, declarative, type-safe optic that performs a deep, conditional data transformation.
 
-~~~admonish title="Example Code"
-
-All the example code for this tutorial can be found in the  `org.higherkindedj.example package in the [Config Audit example](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-examples/src/main/java/org/higherkindedj/example/configaudit).
-
-Other examples of using Optics can be found here.
-[Optics examples](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-examples/src/main/java/org/higherkindedj/example/optics).
-
+~~~admonish example title="See Example Code"
+- [Config Audit example](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-examples/src/main/java/org/higherkindedj/example/configaudit): the worked audit this page builds
+- [Optics examples](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-examples/src/main/java/org/higherkindedj/example/optics): the wider optics example set
 ~~~
 
 ---
@@ -39401,7 +39569,7 @@ Doing this imperatively is a recipe for complexity. Let's build it with optics i
 - **A treasure hunt with conditional maps**: Only certain maps (GCP/Live configs) contain the treasures (encrypted passwords)
 - **A selective mining operation**: Drill down only into the right geological formations (config types) to extract specific minerals (encrypted data)
 - **A security scanner with filters**: Only scan certain types of systems (matching deployment criteria) for specific vulnerabilities (encrypted values)
-- **A data archaeology expedition**: Excavate only specific sites (qualified configs) to uncover particular artifacts (encoded passwords)
+- **A data archaeology expedition**: Excavate only specific sites (qualified configs) to uncover particular artefacts (encoded passwords)
 
 ---
 
@@ -39447,9 +39615,13 @@ A `Traversal` lets us operate on zero or more targets within a larger structure.
 - **Declarative data processing** - Building self-documenting processing pipelines
 
 ```java
-
-// Perfect for reusable, conditional audit logic Traversal<ServerConfig, byte[]> sensitiveDataAuditor = ServerConfigTraversals.environments() .andThen(EnvironmentPrisms.production().asTraversal()) .andThen(EnvironmentTraversals.credentials()) .andThen(CredentialPrisms.encrypted().asTraversal()) .andThen(EncryptedCredentialIsos.base64ToBytes.asTraversal());
-
+// Perfect for reusable, conditional audit logic
+Traversal<ServerConfig, byte[]> sensitiveDataAuditor =
+    ServerConfigTraversals.environments()
+        .andThen(EnvironmentPrisms.production().asTraversal())
+        .andThen(EnvironmentTraversals.credentials())
+        .andThen(CredentialPrisms.encrypted().asTraversal())
+        .andThen(EncryptedCredentialIsos.base64ToBytes.asTraversal());
 ```
 
 ### Use Stream Processing When:
@@ -39459,9 +39631,11 @@ A `Traversal` lets us operate on zero or more targets within a larger structure.
 - **Aggregation logic** - Computing statistics or summaries
 
 ```java
-
-// Better with streams for simple collection processing List<String> allConfigNames = configs.stream() .map(AppConfig::name) .filter(name -> name.startsWith("prod-")) .collect(toList());
-
+// Better with streams for simple collection processing
+List<String> allConfigNames = configs.stream()
+    .map(AppConfig::name)
+    .filter(name -> name.startsWith("prod-"))
+    .collect(toList());
 ```
 
 ### Use Manual Iteration When:
@@ -39471,9 +39645,13 @@ A `Traversal` lets us operate on zero or more targets within a larger structure.
 - **Legacy integration** - Working with existing imperative codebases
 
 ```java
-
-// Sometimes manual loops are clearest for complex logic for (AppConfig config : configs) { if (shouldAudit(config) && hasEncryptedData(config)) { auditResults.add(performDetailedAudit(config)); if (auditResults.size() >= MAX\_AUDITS) break; } }
-
+// Sometimes manual loops are clearest for complex logic
+for (AppConfig config : configs) {
+    if (shouldAudit(config) && hasEncryptedData(config)) {
+        auditResults.add(performDetailedAudit(config));
+        if (auditResults.size() >= MAX_AUDITS) break;
+    }
+}
 ```
 
 ---
@@ -39483,48 +39661,81 @@ A `Traversal` lets us operate on zero or more targets within a larger structure.
 ### Don't Do This:
 
 ```java
+// Over-engineering simple cases
+Traversal<String, String> stringIdentity = Iso.of(s -> s, s -> s).asTraversal();
+// Just use the string directly
 
-// Over-engineering simple cases Traversal<String, String> stringIdentity = Iso.of(s -> s, s -> s).asTraversal(); // Just use the string directly!
+// Creating complex compositions inline
+var passwords = AppConfigLenses.settings().asTraversal()
+    .andThen(SettingLenses.value().asTraversal())
+    .andThen(SettingValuePrisms.encryptedValue().asTraversal())
+    // ... ten more lines of composition
+    ;
+var inlineResult = Traversals.getAll(passwords, config);
+// Hard to understand, impossible to reuse
 
-// Creating complex compositions inline var passwords = AppConfigLenses.settings().asTraversal() .andThen(SettingLenses.value().asTraversal()) .andThen(SettingValuePrisms.encryptedValue().asTraversal()) // ... 10 more lines of composition .getAll(config); // Hard to understand and reuse
+// Ignoring error handling in transformations
+Iso<String, byte[]> unsafeBase64 = Iso.of(
+    Base64.getDecoder()::decode,        // can throw IllegalArgumentException
+    Base64.getEncoder()::encodeToString);
 
-// Ignoring error handling in transformations Iso<String, byte[]> unsafeBase64 = Iso.of( Base64.getDecoder()::decode,  // Can throw IllegalArgumentException! Base64.getEncoder()::encodeToString );
-
-// Forgetting to test round-trip properties // No verification that encode(decode(x)) == x
-
+// Forgetting to test round-trip properties:
+// nothing verifies that encode(decode(x)) == x
 ```
 
 ### Do This Instead:
 
 ```java
+// Use appropriate tools for simple cases
+String configName = config.name();   // direct access is fine
 
-// Use appropriate tools for simple cases String configName = config.name(); // Direct access is fine
+// Create well-named, reusable compositions
+public static final Traversal<AppConfig, byte[]> GCP_LIVE_ENCRYPTED_PASSWORDS =
+    gcpLiveOnlyPrism.asTraversal()
+        .andThen(AppConfigTraversals.settings())
+        .andThen(SettingLenses.value().asTraversal())
+        .andThen(SettingValuePrisms.encryptedValue().asTraversal())
+        .andThen(EncryptedValueLenses.base64Value().asTraversal())
+        .andThen(EncryptedValueIsos.base64.asTraversal());
 
-// Create well-named, reusable compositions public static final Traversal<AppConfig, byte[]> GCP\_LIVE\_ENCRYPTED\_PASSWORDS = gcpLiveOnlyPrism.asTraversal() .andThen(AppConfigTraversals.settings()) .andThen(SettingLenses.value().asTraversal()) .andThen(SettingValuePrisms.encryptedValue().asTraversal()) .andThen(EncryptedValueLenses.base64Value().asTraversal()) .andThen(EncryptedValueIsos.base64.asTraversal());
+// Handle errors gracefully
+Prism<String, byte[]> safeBase64Prism = Prism.of(
+    str -> {
+        try {
+            return Optional.of(Base64.getDecoder().decode(str));
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
+    },
+    bytes -> Base64.getEncoder().encodeToString(bytes));
 
-// Handle errors gracefully Prism<String, byte[]> safeBase64Prism = Prism.of( str -> { try { return Optional.of(Base64.getDecoder().decode(str)); } catch (IllegalArgumentException e) { return Optional.empty(); } }, bytes -> Base64.getEncoder().encodeToString(bytes) );
-
-// Test your compositions @Test public void testBase64RoundTrip() { String original = "test data"; String encoded = Base64.getEncoder().encodeToString(original.getBytes()); byte[] decoded = EncryptedValueIsos.base64.get(encoded); String roundTrip = new String(decoded); assertEquals(original, roundTrip); }
-
+// Test your compositions
+@Test
+public void testBase64RoundTrip() {
+    String original = "test data";
+    String encoded = Base64.getEncoder().encodeToString(original.getBytes());
+    byte[] decoded = EncryptedValueIsos.base64.get(encoded);
+    assertEquals(original, new String(decoded));
+}
 ```
 
 ---
 
 ## Performance Notes
 
-Optic compositions are optimised for complex data processing:
+Optic compositions trade a little throughput for composability, and it is worth being precise about which:
 
-- **Lazy evaluation**: Complex filters only run when data actually matches
-- **Single-pass processing**: Compositions traverse data structures only once
-- **Memory efficient**: Only creates new objects for actual transformations
-- **Compile-time optimisation**: Complex optic chains are inlined by the JVM
-- **Structural sharing**: Unchanged parts of data structures are reused
+- **Element references are shared**: values a transformation leaves alone are reused, not copied; the containers along the path are rebuilt
+- **A prism that does not match costs nothing further**: a non-matching branch puts nothing in focus, so the rest of the chain is never entered for that element
+- **No hidden laziness**: every element the path reaches is visited when you call `getAll` or `modify`, so cost is proportional to the number of foci
+- **The composition is not free**: a deep chain is a chain of objects, and a hot loop over a flat structure will still favour a stream
 
 **Best Practice**: Profile your specific use case and compare with stream-based alternatives:
 
 ```java
+public class AuditPerformance {
 
-public class AuditPerformance { // For frequent auditing, create optics once and reuse 
+    // For frequent auditing, create the optic once and reuse it
     private static final Traversal<AppConfig, byte[]> AUDIT_TRAVERSAL = createAuditTraversal();
 
     @Benchmark
@@ -39650,8 +39861,9 @@ If the DTO and the domain config hold the same information, the conversion pair 
 // A lossless pair: ConfigDto <-> AppConfig
 Iso<ConfigDto, AppConfig> dtoIso = Iso.of(Auditing::toAppConfig, Auditing::toConfigDto);
 
-// Iso >>> Traversal = Traversal, so every operation still works
-Traversal<ConfigDto, byte[]> legacyAuditor = dtoIso.andThen(finalAuditor);
+// Iso has andThen overloads for Lens, Prism, Affine and Iso, but not Traversal.
+// Widen it first: Traversal >>> Traversal = Traversal.
+Traversal<ConfigDto, byte[]> legacyAuditor = dtoIso.asTraversal().andThen(finalAuditor);
 
 List<byte[]> passwords = Traversals.getAll(legacyAuditor, someDto);
 ```
@@ -39693,8 +39905,10 @@ public static final Map<String, Traversal<AppConfig, byte[]>> ENVIRONMENT_AUDITO
 );
 
 public static List<byte[]> auditForEnvironment(String environment, AppConfig config) {
-    return ENVIRONMENT_AUDITORS.getOrDefault(environment, Traversal.empty())
-        .getAll(config);
+    // Traversal has no static empty() and no instance getAll: reads go through
+    // the Traversals utility, and the absent case is handled here.
+    Traversal<AppConfig, byte[]> auditor = ENVIRONMENT_AUDITORS.get(environment);
+    return auditor == null ? List.of() : Traversals.getAll(auditor, config);
 }
 ```
 
@@ -39704,9 +39918,11 @@ Use the same optics to validate your configuration. You could compose a traversa
 
 
 ```java
-public static final Traversal<AppConfig, Integer> SERVER_PORTS = 
+// Narrowing by key is a filter, not a generated optic; and IntValue needs
+// @GenerateLenses on the record before IntValueLenses exists.
+public static final Traversal<AppConfig, Integer> SERVER_PORTS =
     AppConfigTraversals.settings()
-        .andThen(settingWithKey("server.port"))
+        .andThen(Traversals.filtered(setting -> setting.key().equals("server.port")))
         .andThen(SettingLenses.value().asTraversal())
         .andThen(SettingValuePrisms.intValue().asTraversal())
         .andThen(IntValueLenses.value().asTraversal());
@@ -39744,11 +39960,24 @@ public static AuditReport generateAuditReport(List<AppConfig> configs, String au
 }
 ```
 
-This combination of composability, type safety, and profunctor adaptability makes higher-kinded-j optics incredibly powerful for real-world data processing scenarios, particularly in enterprise environments where data formats, security requirements, and compliance needs are constantly evolving.
+~~~admonish info title="Key Takeaways"
+* **An audit is a read-only traversal with a shape.** The same composition that would update settings instead projects each one into an `AuditEntry`, and nothing in the source is touched.
+* **The prism carries the condition.** "Only live GCP configs" lives in the path rather than in an `if` at the call site, so the filter cannot be forgotten by the next caller.
+* **Filtering and mapping both belong in the optic.** By the time you call `getAll`, the selection rule and the projection are already part of the value you named.
+* **The composition is the specification.** Reading the optic tells you which records qualify and what is recorded, which is the property that makes it reviewable by someone who does not read Java well.
+* **It survives shape changes.** When the config format moves, the optic is what changes; the reporting code above it does not.
+~~~
+
+~~~admonish tip title="See Also"
+- [Composing Optics](composing_optics.md): the same four-optic composition, used for validation instead of reporting
+- [Filtered Optics](filtered_optics.md): the predicate narrowing this example depends on
+- [Folds](folds.md): the read-only optic to reach for when nothing will be written
+~~~
 
 ---
 
 **Previous:** [Cookbook](cookbook.md)
+**Next:** [Advanced Optics](ch6_intro.md)
 
 <!-- Source: optics/ch6_intro.md -->
 
