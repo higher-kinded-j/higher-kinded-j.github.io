@@ -29543,7 +29543,7 @@ These tools transform how you work with collections and records:
 
 ~~~admonish info title="What You'll Learn"
 - How the `Each` type class provides canonical traversals for container types
-- Using `EachInstances` for Java collections (List, Set, Map, Optional, arrays, Stream, VStream, String)
+- Using `EachInstances` for Java collections (List, Set, Collection, Map, Optional, arrays, Stream, VStream, String)
 - Using `EachExtensions` for HKT types (Maybe, Either, Try, Validated)
 - Indexed traversal support via `EachIndexed.indexedTraversal()` for position-aware operations
 - Integration with Focus DSL using `.each(Each)` method
@@ -29644,6 +29644,7 @@ Earlier releases exposed `Each.eachWithIndex()`, which returned an `Optional<Ind
 ├──────────────────────────────────────────────────────────────┤
 │  List<A>       │   ✓     │       ✓         │  Integer       │
 │  Set<A>        │   ✓     │       ✗         │     -          │
+│  Collection<A> │   ✓     │       ✗         │     -          │
 │  Map<K, V>     │   ✓     │       ✓         │     K          │
 │  Optional<A>   │   ✓     │       ✗         │     -          │
 │  A[]           │   ✓     │       ✓         │  Integer       │
@@ -29661,6 +29662,9 @@ Each<List<String>, String> listEach = EachInstances.listEach();
 
 // Set traversal (no meaningful index)
 Each<Set<Integer>, Integer> setEach = EachInstances.setEach();
+
+// Collection traversal: a set comes back a set, anything else comes back a list
+Each<Collection<String>, String> collectionEach = EachInstances.collectionEach();
 
 // Map values traversal with key as index
 Each<Map<String, Double>, Double> mapEach = EachInstances.mapValuesEach();
@@ -29965,7 +29969,7 @@ User updated = allTasks.modifyAll(Task::markReviewed, user);
 
 ~~~admonish info title="Key Takeaways"
 * **Each<S, A>** provides a canonical `Traversal<S, A>` for any container type
-* **EachInstances** covers Java collections: List, Set, Map, Optional, arrays, Stream, VStream, String
+* **EachInstances** covers Java collections: List, Set, Collection, Map, Optional, arrays, Stream, VStream, String
 * **EachExtensions** covers HKT types: Maybe, Either, Try, Validated
 * **EachIndexed.indexedTraversal()** returns an `IndexedTraversal` when the container supports meaningful indices (`eachWithIndex()` is deprecated for removal in 0.5.0)
 * **Focus DSL integration** via `.each(Each)` enables fluent navigation through custom containers
@@ -32858,7 +32862,7 @@ The previous page gave you one method per record component. This page is about t
 
 ### `.each()`: Traverse All Elements
 
-`.each()` steps from a collection into its elements. For a `List` or `Set` field the generated method has already applied it, which is why `ContainerFocus.items()` focuses each `Item`:
+`.each()` steps from a collection into its elements. For a `List`, `Set` or `Collection` field the generated method has already applied the right one, which is why `ContainerFocus.items()` focuses each `Item`:
 
 <!-- verify -->
 ```java
@@ -32872,7 +32876,7 @@ TraversalPath<Container, Item> sameThing = FocusPath.of(ContainerLenses.items())
 
 ### `.each(Each)`: Traverse with a Custom Each Instance
 
-For containers `.each()` does not recognise, hand it an explicit `Each` instance. This works on `FocusPath`, `AffinePath` and `TraversalPath` alike:
+The no-argument `.each()` carries a `List` traversal and nothing else. Every other container — a `Set`, a `Collection`, a `Map`, an array, a third-party collection — takes an explicit `Each` instead. The generated method already does this for you: `EachInstances.setEach()` for a `Set` field, `EachInstances.collectionEach()` for a `Collection`. Hand-built paths have to say it themselves, and this works on `FocusPath`, `AffinePath` and `TraversalPath` alike:
 
 <!-- verify -->
 ```java
@@ -33343,7 +33347,8 @@ The explicit type witnesses are load-bearing: Java cannot infer `F` and `E` from
 
 | Field shape | Use |
 |-------------|-----|
-| `List<T>`, `Set<T>` | `each()`, already applied by the generated method |
+| `List<T>` | `each()`, already applied by the generated method |
+| `Set<T>`, `Collection<T>` | `each(EachInstances.setEach())` / `each(EachInstances.collectionEach())`, already applied by the generated method; the no-argument `each()` is `List`-only |
 | `Kind<F, T>` on an annotated record | nothing: the processor applies `traverseOver` for you |
 | `Kind<F, T>` behind a hand-written lens | `traverseOver(SomeTraverse.INSTANCE)` |
 
@@ -33659,11 +33664,13 @@ Whichever way you reach a field — the static method, or a navigator on a recor
 | `Try<A>` | HKJ | `Affines.trySuccess()` |
 | `Validated<E, A>` | HKJ | `Affines.validatedValid()` |
 
-`ZERO_OR_MORE` containers, which produce a `TraversalPath` (at the static method only for the first row, or for the rest under `widenCollections = true`):
+`ZERO_OR_MORE` containers, which produce a `TraversalPath` (at the static method for the first three rows, which are recognised by name, and for the rest only under `widenCollections = true`):
 
 | Container | Source | Optic used |
 |-----------|--------|------------|
-| `List<A>`, `Set<A>`, `Collection<A>` | JDK | `.each()` (recognised directly) |
+| `List<A>` | JDK | `.each()` (recognised directly) |
+| `Set<A>` | JDK | `EachInstances.setEach()` (recognised directly) |
+| `Collection<A>` | JDK | `EachInstances.collectionEach()` (recognised directly) |
 | `Map<K, V>` | JDK | `EachInstances.mapValuesEach()` |
 | `A[]` | JDK | `EachInstances.arrayEach()` |
 | `ImmutableList`, `MutableList`, `ImmutableSet`, `MutableSet`, `ImmutableBag`, `MutableBag`, `ImmutableSortedSet`, `MutableSortedSet` | Eclipse Collections | `EachInstances.fromIterableCollecting(...)` |
@@ -33672,6 +33679,20 @@ Whichever way you reach a field — the static method, or a navigator on a recor
 | `HashBag`, `UnmodifiableList` | Apache Commons | `EachInstances.fromIterableCollecting(...)` |
 | `PVector`, `PStack`, `PSet`, `PSortedSet`, `PBag` | PCollections | `EachInstances.fromIterableCollecting(...)` |
 | `PMap`, `PSortedMap` | PCollections | `EachInstances.mapValuesEachCollecting(...)` |
+
+The three JDK collections are recognised by name rather than by the SPI, but they do not share one traversal: the no-argument `.each()` carries a `List` one, so a `Set` field is widened with `EachInstances.setEach()` and a `Collection` field with `EachInstances.collectionEach()`. Each rebuilds a value the component can take back, which is what lets the modified result go home:
+
+<!-- verify -->
+```java
+// Each of these widened at the static method, through its own Each instance
+TraversalPath<Team, Skill> teamSkills = TeamFocus.skills();
+TraversalPath<Team, String> teamTags = TeamFocus.tags();
+
+// The path is a TraversalPath, so the Set widened at the static method
+Team promoted = teamSkills.via(SkillFocus.level()).modifyAll(level -> level + 1, team);
+```
+
+A `Collection` names no ordering and no uniqueness, so `collectionEach()` rebuilds whichever it was given: a set-valued `Collection` comes back a set — a `LinkedHashSet`, so a `TreeSet` or other `SortedSet` source keeps its elements but not its ordering contract — and anything else comes back a `List`. A `Collection` that is neither, such as an `ArrayDeque`, also comes back a `List`; those types inherit identity `equals`, so no rebuild could return a collection equal to the one it was handed.
 
 Every third-party *collection* generator goes through `EachInstances.fromIterableCollecting(collector)`, a generic factory that iterates the container, traverses the elements with the applicative, and rebuilds the container through the collector it is given; the map-shaped ones go through `mapValuesEachCollecting` instead. No extra HKJ module is needed: the library itself you supply, and a project that names one of these types in a record already has it on the classpath.
 
@@ -33704,13 +33725,15 @@ public record Holder(Either<String, Leaf> either) {}
 
 Both of the container's own type arguments count, focused or not, so `Either<?, Leaf>` is rejected too. A wildcard nested *inside* an argument is fine: `Either<String, List<? extends Leaf>>` still has a ground instantiation and widens to `.some(Affines.eitherRight()).each()`.
 
-The built-in `Optional`, `List` and `Set` widenings take a wildcard without complaint, because `.some()` and `.each()` are methods with a free type variable and no optic argument to unify. `List<? extends Leaf>` widens to `TraversalPath<Holder, Leaf>` as usual.
+The recognised `Optional`, `Maybe` and `List` widenings take a wildcard without complaint, because `.some()` and the no-argument `.each()` are methods with a free type variable and no optic argument to unify. `List<? extends Leaf>` widens to `TraversalPath<Holder, Leaf>` as usual.
+
+`Set` and `Collection` are recognised directly too, but each widens by naming an `Each` instance, so the rule above applies to them exactly as it does to an SPI container: `Set<?>`, `Set<? extends Leaf>` and a raw `Set` are rejected at the declaration.
 
 A `ZERO_OR_MORE` SPI container is rejected only when something actually widens it — `widenCollections = true`, or a navigator taking it. At the default settings it stays a `FocusPath`, and the wildcard costs it nothing. Nor does one beneath it: `Map<String, Either<String, ? extends Leaf>>` compiles at the default settings, because the `Map` is never widened and so the `Either` inside it is never asked for an optic.
 
 A generator that names no optic expression is exempt: it widens through `.nullable()` or `.each()`, whose free type variable takes a raw or wildcard argument without complaint. Every generator shipped with HKJ names one.
 
-This is a rule about **composing an optic instance**, so it is `@GenerateFocus`'s alone. `@GenerateTraversals` reads the same component and emits a `Traversal` over the type the wildcard stands for: nothing is inferred, so there is nothing to fail. Where a path does widen — the built-in `Optional`, `List` and `Set` above — it reaches that same element type. See [Wildcard Element Types](traversals.md#wildcard-element-types).
+This is a rule about **composing an optic instance**, so it is `@GenerateFocus`'s alone. `@GenerateTraversals` reads the same component and emits a `Traversal` over the type the wildcard stands for: nothing is inferred, so there is nothing to fail. Where a path does widen — the recognised `Optional`, `Maybe` and `List` above — it reaches that same element type. See [Wildcard Element Types](traversals.md#wildcard-element-types).
 ~~~
 
 ### Cross-Ecosystem Navigation
@@ -34027,7 +34050,8 @@ Check, in order: whether an `AffinePath` in the chain actually matches (`matches
 
 | Field is | Use |
 |----------|-----|
-| `List<T>` or `Set<T>` | `each()`, already applied by the generated method |
+| `List<T>` | `each()`, already applied by the generated method |
+| `Set<T>`, `Collection<T>` | `each(EachInstances.setEach())` / `each(EachInstances.collectionEach())`, already applied by the generated method; the no-argument `each()` is `List`-only |
 | `Kind<F, T>` on a `@GenerateFocus` record | nothing: the processor generates the traversal |
 | `Kind<F, T>` behind a hand-written lens | `traverseOver(SomeTraverse.INSTANCE)` |
 
@@ -41292,6 +41316,7 @@ Bulk operations on `Traversal` values typically live on the `Traversals` utility
 | `Traversals.filtered(predicate)` | A traversal that focuses only on matching elements |
 | `Traversals.forList()` | Standard traversal over `List<A>` elements |
 | `Traversals.forSet()` | Standard traversal over `Set<A>` elements |
+| `Traversals.forCollection()` | Traversal over `Collection<A>` elements; a set source is rebuilt as a set, anything else as a `List` |
 | `Traversals.forMap(key)` | Traversal focused on the value at `key` in a `Map` |
 | `Traversals.forMapValues()` | Traversal over every value in a `Map` |
 | `Traversals.forOptional()` | Traversal that focuses zero or one elements of an `Optional` |
@@ -41465,6 +41490,12 @@ Note this is about what the *iso* names, not what the method declares: `<T> Iso<
 **Cause.** The generated class lives in package `p` and calls the method from there, but the method — or a type enclosing it — is `private`, `protected` or package-private somewhere else. Most often seen with `targetPackage`.
 
 **Fix.** Make the method and its enclosing types public, or generate into the package they are already visible from.
+
+### "@GenerateFocus: record component 'X.y' has a wildcard type argument in Set<? extends T>"
+
+**Cause.** Also reported as *"has a raw Set"*, and for `Collection`, `Map`, `Either`, `Try` and every other container the processor widens through an optic **instance**. That instance — `EachInstances.setEach()`, `Affines.eitherRight()` — has its own type arguments inferred from the component's type, and a raw container offers none to infer from while a wildcard has no ground instantiation. `Optional`, `Maybe` and `List` are exempt: they widen through the no-argument `.some()` and `.each()`, whose free type variable takes either without complaint.
+
+**Fix.** Name the type argument — `Set<Leaf>` rather than `Set<? extends Leaf>` — or drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance and take the component as written. See [Custom Containers](focus_containers.md#supported-container-types).
 
 ---
 
@@ -88125,6 +88156,14 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 _In development. Release notes will be added here as changes land on `main`._
 
 - **The mapping documentation becomes its own chapter**: the record-mapping material moved from a single page under Optics into a dedicated [Mapping at the Boundary](mapping/ch_intro.md) chapter (basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing), opening with a problem-first introduction and closing with a compiled, law-checked capstone: [One 422, Every Bad Field](mapping/capstone.md). The old `optics/record_mapping.html` URL redirects to the new chapter.
+- **A `Set` or `Collection` component reaches a traversal that rebuilds it** ([#725](https://github.com/higher-kinded-j/higher-kinded-j/issues/725)): `@GenerateFocus` recognises five containers by name, and widened three of them — `List`, `Set` and `Collection` — through the same no-argument `.each()`. That method carries a `List` traversal behind an unchecked cast, so a `Set` component compiled and then threw `class java.util.HashSet cannot be cast to class java.util.List` on its first traversal, read or write; a `Collection` component threw the same way whenever the runtime value was not a `List`, and worked by accident when it was. No `Set`-valued Focus path has ever worked. The recognised-container table now pairs each type with the `Each` that rebuilds it: `List` keeps the no-argument `.each()`, a `Set` widens through `EachInstances.setEach()`, and a `Collection` through the new `EachInstances.collectionEach()`. The tiers are unchanged, so no generated signature moves. See [Custom Containers](optics/focus_containers.md#supported-container-types).
+
+  _Behaviour change, source-breaking at the declaration:_ naming an `Each` gives the widening type arguments javac infers from the component, which is the same rule raw and wildcard-carrying SPI containers already fall under. A `Set` or `Collection` component that is raw, or carries a wildcard of any kind — `Set<?>`, `Set<? extends T>`, `Set<? super T>`, `Collection<?>` — is now rejected where it is declared, at any nesting depth the analysis reaches: `List<Set<?>>` and `Optional<Set<?>>` at the default settings, and `Map<String, Set<?>>` under `widenCollections = true`. Every one of those compiled in 0.4.9 and threw `ClassCastException` on the first traversal, so nothing that worked stops working. Name the type argument — `Set<Object>` for an unbounded wildcard, `Set<Leaf>` for `? extends Leaf` — or drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance and take the component as written. `Optional`, `Maybe` and `List` are unaffected and still take a wildcard silently. See [Compiler Errors](optics/compiler_errors.md#generatefocus-record-component-xy-has-a-wildcard-type-argument-in-set-extends-t).
+
+  _Behaviour change, one set-rebuild policy:_ `EachInstances.setEach()` traversed through `Set.copyOf`, whose iteration order the JDK randomises per JVM run and which rejects a null element — so the same modification returned a differently-ordered set on each run, and `getAll`, which kept source order, disagreed with it. It now uses `Traversals.forSet()`, which every other annotation already emitted, so a `Set` reached through `@GenerateFocus`, `@GenerateTraversals`, `@ImportOptics` and `@ThroughField` rebuilds the same way: source iteration order preserved, nulls carried through, and — as `traverseList` already did — an **unmodifiable** set handed back. `Traversals.forSet()` and `Traversals.traverseSet` previously returned a mutable `LinkedHashSet`; code that mutated the result of a set traversal in place now meets an `UnsupportedOperationException`, and should build its own copy.
+
+  _Also:_ `Traversals.forCollection()` and `EachInstances.collectionEach()` are new. A `Collection` says nothing about ordering or uniqueness, so they rebuild the shape they were handed — a set source comes back a set, anything else a `List`. Rebuilding every source as a list would let a modification that maps two elements onto one value leave duplicates in a collection that had none. Two limits follow from `Collection` being all the declaration says: a `SortedSet` source keeps its elements but not its comparator, and a source that is neither `List` nor `Set` — an `ArrayDeque`, a `PriorityQueue` — comes back a `List`, so the identity modification does not return an *equal* collection; those types inherit identity `equals`, and no rebuild could satisfy it.
+
 - **A generated prism's focus has to be a variant of its source** ([#755](https://github.com/higher-kinded-j/higher-kinded-j/issues/755)): a prism runs both ways, and every prism generated from a spec interface builds back with identity — `value -> value`, the function `Prism.build` stands up. That is only a source when the focus is one, and nothing checked it. A focus that was a *value* rather than a variant, `Prism<JsonNode, String>`, reached javac as *"incompatible types: cannot infer type-variable(s) S,A,T,T"* inside the generated file, with no line of the spec interface in it and no diagnostic from the processor at all. The requirement belongs to the prism rather than to either hint, so `@InstanceOf` and `@MatchWhen` are now both held to it, at the declaration, in what/why/fix form. It is asked after the hint parses, so a method carrying no hint is still told that first — the nearer problem. See [Compiler Errors](optics/compiler_errors.md).
 
   _Documentation change:_ the shape was one the documentation recommended in three places, none of which compiled — `@MatchWhen`'s own javadoc (`Prism<JsonNode, String> text()`), the [Spec Interfaces](optics/optics_spec_interfaces.md) page (`Prism<Value, String> string()`), and that page's Protocol Buffers suggestion, where a oneof field's type is often a scalar. All three now focus a variant, and the page says why. Where the value type is genuinely the point, `Prism.of` with a real build side is the hand-written route; the spec interface has no way to name one.
