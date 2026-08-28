@@ -19252,12 +19252,11 @@ public class AppPrisms {
 
 # Validated Prisms
 
+## _The smart-constructor optic: a `Prism` whose match says why not, and all the reasons at once_
+
 ~~~admonish example title="See Example Code"
 **The code on this page is [ValidatedPrismBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/ValidatedPrismBook.java)** - the page includes it directly, so it is compiled and run by the build.
 ~~~
-
-
-_The smart-constructor optic: a `Prism` whose match says **why not**, and all the reasons at once._
 
 ~~~admonish info title="What You'll Learn"
 - Why a validated boundary needs a fallible, accumulating `parse` and a total `build`: the "parse, don't validate" asymmetry captured as an optic
@@ -19272,17 +19271,22 @@ A `Prism<S, A>` answers one question about a value: does it match this shape, ye
 
 `ValidatedPrism<S, A>` captures that asymmetry as two directions with different shapes. `parse` is fallible and accumulating; `build` is total:
 
-```
-                 parse  (fallible, accumulating)
-   wire value  ───────────────────────────────▶  domain value
-   String                                          EmailAddress
-   (unvalidated)  ◀───────────────────────────────  (always valid)
-                 build  (total, always succeeds)
+```mermaid
+flowchart LR
+    W(["wire value<br/>String, unvalidated"])
+    D(["domain value<br/>EmailAddress, always valid"])
+    W -->|"parse: fallible, accumulating"| D
+    D -->|"build: total, never fails"| W
 
-   parse("  NOPE ")          =  Invalid[ "not an email" ]   (every reason at once)
-   parse("ada@corp.example") =  Valid(EmailAddress)
-   build(addr)               =  "ada@corp.example"          (never fails)
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class W,D tier
 ```
+
+| Call | Result |
+|---|---|
+| `parse("  NOPE ")` | `Invalid[ "not an email" ]`, every reason at once |
+| `parse("ada@corp.example")` | `Valid(EmailAddress)` |
+| `build(addr)` | `"ada@corp.example"`, never fails |
 
 In code:
 
@@ -19318,16 +19322,27 @@ Prisms combine in two ways, and the two behave differently when a parse fails.
 
 **Sibling fields accumulate.** To report every bad field of a record at once, parse each field with its own prism and combine the results with [`fields()` / `accumulate()`](../monads/validated_assembly.md) or the [`Edits` builder](multi_edit.md). Because the fields are independent, every reason is collected, not just the first.
 
-```
-   Nesting: andThen, deeper into one value       =>  short-circuit
-     outer.parse ✗ ─────────────────────────▶  stop, the first reason wins
-     outer.parse ✓ ──▶ inner.parse ─────────▶  keep going
+```mermaid
+flowchart TD
+    subgraph nest["Nesting with andThen: deeper into one value, so it short-circuits"]
+        direction TB
+        O{"outer.parse"}
+        O -->|"fails"| Stop(["stop, the first reason wins"])
+        O -->|"succeeds"| Inner(["inner.parse<br/>keep going"])
+    end
+    subgraph sib["Siblings with fields() or accumulate(): independent, so they accumulate"]
+        direction TB
+        N(["name ✓"]) --> All(["Invalid[ all reasons at once ]"])
+        E(["email ✗ not an email"]) --> All
+        A(["age ✗ must be positive"]) --> All
+    end
 
-   Siblings: fields() / accumulate(), one prism per field    =>  accumulate
-     name   ✓
-     email  ✗  "not an email"      ┐
-     age    ✗  "must be positive"  ├──▶  Invalid[ all reasons at once ]
-                                   ┘
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef bad fill:#e78284,stroke:#d20f39,color:#232634
+    class Inner,N tier
+    class O decision
+    class Stop,All,E,A bad
 ```
 
 Only compositions that preserve the **total build** yield a `ValidatedPrism`:
@@ -19414,10 +19429,10 @@ Practice the boundary in [Tutorial 25: ValidatedPrism](https://github.com/higher
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Prisms](prisms.md) - The yes/no match this type upgrades
-- [Accumulating Assembly](../monads/validated_assembly.md) - Sibling-field accumulation for multi-field parses
-- [Multi-Edit and Sparse Updates](multi_edit.md) - The update-side counterpart
-- [Record Mapping](../mapping/ch_intro.md) - `@GenerateMapping` derives whole-record `parse`/`build` from these leaves
+- [Prisms](prisms.md): the yes/no match this type upgrades
+- [Accumulating Assembly](../monads/validated_assembly.md): sibling-field accumulation for multi-field parses
+- [Multi-Edit and Sparse Updates](multi_edit.md): the update-side counterpart
+- [Record Mapping](../mapping/ch_intro.md): `@GenerateMapping` derives whole-record `parse`/`build` from these leaves
 ~~~
 
 ---
@@ -20703,23 +20718,27 @@ When composing optics, the resulting optic type follows precise mathematical rul
 
 ## The Optic Hierarchy
 
-Optics form a hierarchy from most specific (most operations available) to most general (fewest operations available):
+Optics order themselves by capability, from most specific (most operations available) to most general (fewest). An arrow points from an optic to one that can do less:
 
+```mermaid
+flowchart TD
+    I(["Iso"]) --> L(["Lens"])
+    I --> P(["Prism"])
+    L --> G(["Getter"])
+    L --> F(["Fold"])
+    P --> A(["Affine"])
+    A --> F
+    A --> T(["Traversal"])
+    P --> T
+    T --> St(["Setter"])
+
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class I,L,P,G,F,A,T,St tier
 ```
-Iso ──────────────────────────────────────────┐
- │                                            │
- ├──> Lens ──> Getter                         │
- │       │                                    │
- │       └──────────────────────┐             │
- │                              │             │
- └──> Prism ──> Affine ─────> Fold            │
-          │         │                         │
-          │         └──────────────┐          │
-          │                        v          │
-          └──────────────────> Traversal ─────┘
-                                    │
-                                    └──> Setter
-```
+
+~~~admonish note title="Capability, not Java subtyping"
+These arrows rank what each optic can do; they are not `extends` edges. `Getter extends Fold` is the only inheritance between two optic types, and every other step across this diagram is an explicit conversion such as `asFold()` or `asTraversal()`. [Conversions](conversions.md) lists the ones that exist, and [Optic Capabilities](optic_capabilities.md) has the per-method table.
+~~~
 
 **What is Affine?** An Affine optic focuses on **zero or one** element within a structure. It combines the partial access of a Prism with the update capability of a Lens. Common use cases include:
 
@@ -21060,7 +21079,7 @@ Practice lens composition in [Tutorial 02: Lens Composition](https://github.com/
 <img src="../images/coupled_mr_robot.png" alt="Illustration for coupled fields and atomic updates" style="width: 100%;" />
 > *"A bug is never just a mistake. It represents something bigger. An error of thinking that makes you who you are."*
 >
-> — Elliot Alderson, *Mr. Robot*
+> – Elliot Alderson, *Mr. Robot*
 
 When a lens update throws an exception, it is not the lens that is broken; it is our assumption about field independence. What looks like a bug often reveals a deeper truth about the relationship between fields in our data structures.
 
@@ -21087,24 +21106,22 @@ The hidden culprit? Standard lens composition assumes fields are independent, th
 
 When we compose lenses with `andThen`, we are drilling *vertically* through nested structures:
 
-```
-VERTICAL COMPOSITION (andThen)        HORIZONTAL COMPOSITION (paired)
-══════════════════════════════        ══════════════════════════════
+```mermaid
+flowchart TD
+    subgraph vert["Vertical: andThen, drilling deeper"]
+        direction TB
+        V1(["Lens&lt;S, A&gt;"]) -->|"andThen"| V2(["Lens&lt;A, B&gt;"]) --> V3(["Lens&lt;S, B&gt;<br/>one nested field"])
+    end
+    subgraph horiz["Horizontal: paired, two fields at once"]
+        direction TB
+        H1(["Lens&lt;S, A&gt;"]) --> H3(["Lens&lt;S, Pair&lt;A, B&gt;&gt;<br/>two sibling fields"])
+        H2(["Lens&lt;S, B&gt;"]) --> H3
+    end
 
-    Lens<S, A>                            Lens<S, A>    Lens<S, B>
-         │                                     │            │
-         ▼ andThen                             └─────┬──────┘
-    Lens<A, B>                                       │
-         │                                           ▼ paired
-         ▼                                           │
-    Lens<S, B>                            Lens<S, Pair<A, B>>
-
-
-    Focus: NESTED fields                  Focus: SIBLING fields
-    (drilling deeper)                     (same level, same source)
-
-    Example:                              Example:
-    User → Address → Street               Range → (lo, hi)
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
+    class V1,V2,H1,H2 tier
+    class V3,H3 out
 ```
 
 Vertical composition (`andThen`) assumes that once you have focused on a field, you can update it independently. This works beautifully for nested structures like `Employee → Company → Address → Street`.
@@ -21174,32 +21191,28 @@ The "correct" order depends on the direction of change!
 
 ## Why This Happens
 
+```mermaid
+flowchart TD
+    subgraph seq["Sequential: one field at a time"]
+        direction TB
+        S1(["Range(1, 2)"]) -->|"loLens.set(11)"| S2(["Range(11, 2)"]) --> S3(["invariant broken:<br/>11 &gt; 2"])
+    end
+    subgraph pair["Paired: both bounds together"]
+        direction TB
+        P1(["Range(1, 2)"]) -->|"boundsLens.get"| P2(["Pair(1, 2)"])
+        P2 -->|"transform"| P3(["Pair(11, 12)"])
+        P3 -->|"Range::new"| P4(["Range(11, 12)<br/>invariant held"])
+    end
+
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef bad fill:#e78284,stroke:#d20f39,color:#232634
+    class S1,S2,P1,P2,P3 tier
+    class P4 out
+    class S3 bad
 ```
-Record: Range(lo=1, hi=2)          Invariant: lo ≤ hi
-════════════════════════════════════════════════════════════════
 
-Goal: Shift both bounds by +10 to get Range(11, 12)
-
-SEQUENTIAL APPROACH                 PAIRED APPROACH
-───────────────────                 ───────────────
-
-    Range(1, 2)                         Range(1, 2)
-         │                                   │
-         ▼ loLens.set(11)                    ▼ boundsLens.get
-    Range(11, 2)                        Pair(1, 2)
-         │                                   │
-    ╔════╧════════╗                          ▼ transform
-    ║  INVALID!   ║                     Pair(11, 12)
-    ║   11 > 2    ║                          │
-    ║   THROWS    ║                          ▼ reconstruct via Range::new
-    ╚═════════════╝                     Range(11, 12)
-                                             │
-                                        ╔════╧════╗
-                                        ║ VALID!  ║
-                                        ╚═════════╝
-
-The paired lens bypasses the intermediate state entirely.
-```
+The goal is to shift both bounds by ten, from `Range(1, 2)` to `Range(11, 12)`, under the invariant `lo <= hi`.
 
 Sequential lens updates create intermediate states. When fields are coupled by an invariant, these intermediate states can be invalid, even when both the starting and ending states are perfectly valid.
 
@@ -21209,7 +21222,7 @@ Sequential lens updates create intermediate states. When fields are coupled by a
 
 > *"They're all tied in together."*
 >
-> — Sergeant Pinback, *Dark Star*
+> – Sergeant Pinback, *Dark Star*
 
 This boils down to: if fields are coupled, update them together. `Lens.paired` combines two lenses into one that focuses on both values as a `Pair`:
 
@@ -21504,27 +21517,28 @@ These are verified by property-based tests in `LensPairedLawsPropertyTest.java`.
 ---
 
 ~~~admonish info title="Key Takeaways"
-1. **Standard lenses assume field independence** - updating one field should not affect another
-2. **Coupled fields violate this assumption** - invariants create dependencies between fields
-3. **Sequential updates create invalid intermediate states** - even when start and end are valid
-4. **`Lens.paired` provides atomic multi-field updates** - bypassing intermediate states entirely
-5. **Order independence** - paired lenses do not care which direction you are transforming
+* **Standard lenses assume field independence**: updating one field should not affect another
+* **Coupled fields violate that assumption**: an invariant makes two fields constrain each other
+* **Sequential updates pass through invalid intermediate states**, even when the start and the end are both valid
+* **`Lens.paired` updates the group atomically**: no intermediate state exists for the constructor to reject
+* **`CoupledLenses.coupled3` to `coupled9` is the same shape for more fields**, generated into `org.higherkindedj.optics.util`
+* **Order independence follows**: a paired lens does not care which direction you are transforming
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
-Practice the binary form in [Tutorial 04: Affine Basics](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial04_AffineBasics.java), then move up the arity ladder in [Tutorial 23: N-ary Coupled Lenses](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial23_CoupledLenses.java) (3 exercises, ~10 minutes).
+Practice both the binary form and the arity ladder in [Tutorial 23: N-ary Coupled Lenses](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial23_CoupledLenses.java) (3 exercises, ~10 minutes).
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Lenses](lenses.md) - Core lens concepts and operations
-- [Composition Rules](composition_rules.md) - How different optics compose
-- [Isomorphisms](iso.md) - For transforming between constrained and unconstrained representations
+- [Lenses](lenses.md): core lens concepts and operations
+- [Composition Rules](composition_rules.md): how different optics compose
+- [Isomorphisms](iso.md): transforming between constrained and unconstrained representations
 ~~~
 
 ~~~admonish tip title="Further Reading"
-**Chris Penner**: [Virtual Record Fields Using Lenses](https://chrispenner.ca/posts/virtual-fields) - Introduces "virtual fields" as computed properties accessed through lenses. Penner demonstrates how hiding data constructors and exporting only lenses creates a stable public interface that absorbs internal refactoring. His treatment of data invariants is relevant here: where we use `Lens.paired` to *enforce* invariants during updates, Penner uses lenses to *hide* representation details and maintain invariants transparently. He also candidly notes that breaking lens laws is "usually perfectly fine" for pragmatism, echoing our observation that real-world records often have constraints that do not fit the idealised lens model.
+**Chris Penner**: [Virtual Record Fields Using Lenses](https://chrispenner.ca/posts/virtual-fields): introduces "virtual fields" as computed properties accessed through lenses. Penner demonstrates how hiding data constructors and exporting only lenses creates a stable public interface that absorbs internal refactoring. His treatment of data invariants is relevant here: where we use `Lens.paired` to *enforce* invariants during updates, Penner uses lenses to *hide* representation details and maintain invariants transparently. He also candidly notes that breaking lens laws is "usually perfectly fine" for pragmatism, echoing our observation that real-world records often have constraints that do not fit the idealised lens model.
 
-**Gunnar Morling**: [Enforcing Java Record Invariants With Bean Validation](https://www.morling.dev/blog/enforcing-java-record-invariants-with-bean-validation/) - Tackles record invariants from a different angle, using Bean Validation annotations to enforce constraints automatically at construction time. The article explicitly discusses multi-field invariants like "end must be greater than begin", precisely the kind of coupled constraint that breaks sequential lens updates. Morling's approach guarantees the invariant holds but does not help you *transform* a valid object when both fields must change together. This is where `Lens.paired` complements Bean Validation: validation solves the construction problem; paired lenses solve the transformation problem. In a robust system, you would use both.
+**Gunnar Morling**: [Enforcing Java Record Invariants With Bean Validation](https://www.morling.dev/blog/enforcing-java-record-invariants-with-bean-validation/): tackles record invariants from a different angle, using Bean Validation annotations to enforce constraints automatically at construction time. The article explicitly discusses multi-field invariants like "end must be greater than begin", precisely the kind of coupled constraint that breaks sequential lens updates. Morling's approach guarantees the invariant holds but does not help you *transform* a valid object when both fields must change together. This is where `Lens.paired` complements Bean Validation: validation solves the construction problem; paired lenses solve the transformation problem. In a robust system, you would use both.
 ~~~
 
 ---
@@ -21597,34 +21611,32 @@ The diagram signposts Lens, Prism, and Affine rather than covering them: those s
 
 The distinction is worth understanding clearly:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      TRAVERSAL                              │
-│  ┌─────┐   ┌─────┐   ┌─────┐   ┌─────┐                      │
-│  │  A  │   │  B  │   │  C  │   │  D  │  ← Focuses on all    │
-│  └──┬──┘   └──┬──┘   └──┬──┘   └──┬──┘                      │
-│     │        │        │        │                            │
-│     ▼        ▼        ▼        ▼                            │
-│   getAll ──────────────────────────→ [A, B, C, D]           │
-│   modify(f) ───────────────────────→ [f(A), f(B), ...]      │
-│   set(X) ──────────────────────────→ [X, X, X, X]           │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph tr["Traversal: reads and writes"]
+        direction LR
+        T1(["A, B, C, D"]) --> T2(["Traversal"]) --> T3["read them all<br/>modify every one<br/>set every one"]
+    end
+    subgraph fo["Fold: reads only"]
+        direction LR
+        F1(["A, B, C, D"]) --> F2(["Fold"]) --> F3["read them all<br/>combine them<br/>ask a question of them"]
+    end
 
-┌─────────────────────────────────────────────────────────────┐
-│                        FOLD                                 │
-│  ┌─────┐   ┌─────┐   ┌─────┐   ┌─────┐                      │
-│  │  A  │   │  B  │   │  C  │   │  D  │  ← Read-only         │
-│  └──┬──┘   └──┬──┘   └──┬──┘   └──┬──┘                      │
-│     │        │        │        │                            │
-│     ▼        ▼        ▼        ▼                            │
-│   getAll ──────────────────────────→ [A, B, C, D]           │
-│   foldMap(monoid, f) ──────────────→ combined result        │
-│   exists(predicate) ───────────────→ true/false             │
-│   ✗ NO set or modify                                        │
-└─────────────────────────────────────────────────────────────┘
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
+    class T1,T2,F1,F2 tier
+    class T3,F3 out
 ```
 
-Both can read. Only Traversal can write. Choose based on intent. (For a `Traversal`, `getAll` and `modify` live on the `Traversals` utility class, and `set` is simply modify-with-a-constant.)
+Both focus zero or more elements, and both can read. Only a `Traversal` can write. Where the operation *lives* differs too, which is the part that trips people up: a `Fold` declares its query family directly, while a `Traversal` declares only `modifyF` and reaches the rest through the `Traversals` utility or `asFold()`.
+
+| You want to | On a `Traversal` | On a `Fold` |
+|---|---|---|
+| read every focus | `Traversals.getAll(t, s)` | `getAll(s)` |
+| combine the focuses | `t.asFold().foldMap(...)` | `foldMap(monoid, f, s)` |
+| ask whether any matches | `t.asFold().exists(...)` | `exists(p, s)` |
+| change every focus | `Traversals.modify(t, f, s)` | not available |
+| set every focus | `Traversals.modify(t, a -> x, s)` | not available |
 
 ~~~admonish info title="Hands-On Learning"
 Practice this section in the [Traversals & Practice Journey](../tutorials/optics/traversals_journey.md) (27 exercises, ~40 minutes).
@@ -27117,31 +27129,12 @@ Higher-Kinded-J brings these patterns to Java through the `ListPrisms` utility c
 
 Lists can be viewed from either end. This simple observation leads to two complementary decomposition strategies:
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          CONS (head/tail)                               │
-│                                                                         │
-│   List:     [ A  |  B  |  C  |  D  |  E ]                               │
-│               ↓     └──────────┬────────┘                               │
-│             head            tail                                        │
-│                                                                         │
-│   Pair.of(A, [B, C, D, E])                                              │
-│                                                                         │
-│   "Begin at the beginning..."                                           │
-└─────────────────────────────────────────────────────────────────────────┘
+| Pattern | Splits `[A, B, C, D, E]` into | Result |
+|---|---|---|
+| **CONS** (head/tail) | `head` = `A`, `tail` = `[B, C, D, E]` | `Pair.of(A, [B, C, D, E])` |
+| **SNOC** (init/last) | `init` = `[A, B, C, D]`, `last` = `E` | `Pair.of([A, B, C, D], E)` |
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          SNOC (init/last)                               │
-│                                                                         │
-│   List:     [ A  |  B  |  C  |  D  |  E ]                               │
-│              └──────────┬────────┘    ↓                                 │
-│                       init          last                                │
-│                                                                         │
-│   Pair.of([A, B, C, D], E)                                              │
-│                                                                         │
-│   "...and go on till you come to the end"                               │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+CONS begins at the beginning; SNOC goes on till it comes to the end.
 
 Both patterns return `Optional.empty()` for empty lists, making them safe to use without null checks.
 
@@ -27542,19 +27535,19 @@ The [Traversals & Practice Journey](../tutorials/optics/traversals_journey.md) (
 
 The concept is straightforward; the power is in the composition:
 
-```
-    Order Items: [Laptop, Mouse, Monitor, Keyboard]
-                    │       │       │        │
-                    ▼       ▼       ▼        ▼
-    Unfiltered:   [✓]     [✓]     [✓]      [✓]
+```mermaid
+flowchart TD
+    Items(["Laptop, Mouse, Monitor, Keyboard"])
+    Items --> Filter{"price &gt; £100?"}
+    Filter -->|"yes"| Kept(["Laptop, Monitor"])
+    Filter -->|"no"| Skipped(["Mouse, Keyboard<br/>left untouched"])
+    Kept --> Mod(["modify(applyDiscount)"])
 
-    filtered(price > £100):
-                  [✓]     [ ]     [✓]      [ ]
-                   │               │
-                   ▼               ▼
-    Focused:   [Laptop]       [Monitor]
-
-    → modify(applyDiscount) only affects Laptop and Monitor
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    class Items,Kept,Mod tier
+    class Filter decision
+    class Skipped tier
 ```
 
 The filter becomes part of the optic itself, not scattered through your business logic.
@@ -27565,19 +27558,16 @@ The filter becomes part of the optic itself, not scattered through your business
 
 When position matters:
 
-```
-    List: ["A", "B", "C", "D"]
-           │     │     │     │
-    Index: 0     1     2     3
+```mermaid
+flowchart LR
+    L(["List: A, B, C, D"]) --> IT(["IndexedTraversal"])
+    IT --> TL["toIndexedList<br/>(0, A), (1, B), (2, C), (3, D)"]
+    IT --> IM["imodify((i, v) -&gt; v + i)<br/>A0, B1, C2, D3"]
 
-    ┌─────────────────────────────────────────────┐
-    │  IndexedTraversal                           │
-    │                                             │
-    │  toIndexedList → [(0,"A"), (1,"B"), ...]    │
-    │                                             │
-    │  imodify((i, v) -> v + i)                   │
-    │    → ["A0", "B1", "C2", "D3"]               │
-    └─────────────────────────────────────────────┘
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
+    class L,IT tier
+    class TL,IM out
 ```
 
 ---
@@ -28334,42 +28324,30 @@ Consider these scenarios:
 
 Standard optics give you the *value*. **Indexed optics** give you both the *index* and the *value*.
 
-```
-               STANDARD OPTICS vs INDEXED OPTICS
+```mermaid
+flowchart LR
+    subgraph std["Standard traversal: the value only"]
+        direction LR
+        S1(["List&lt;Item&gt;"]) --> S2(["Traversal"]) --> S3["Laptop<br/>Mouse<br/>Keyboard"]
+    end
+    subgraph idx["Indexed traversal: the value and where it sat"]
+        direction LR
+        I1(["List&lt;Item&gt;"]) --> I2(["IndexedTraversal"]) --> I3["(0, Laptop)<br/>(1, Mouse)<br/>(2, Keyboard)"]
+    end
 
-  ┌─────────────────────────────────────────────────────────────┐
-  │  STANDARD TRAVERSAL                                         │
-  │  ═══════════════════                                        │
-  │                                                             │
-  │    List<Item>  ──▶  Traversal  ──▶  Item, Item, Item        │
-  │                                                             │
-  │    You get: "Laptop", "Mouse", "Keyboard"                   │
-  │    You lose: Where each item is in the list                 │
-  │                                                             │
-  ├─────────────────────────────────────────────────────────────┤
-  │  INDEXED TRAVERSAL                                          │
-  │  ══════════════════                                         │
-  │                                                             │
-  │    List<Item>  ──▶  IndexedTraversal  ──▶  (0, Item),       │
-  │                                            (1, Item),       │
-  │                                            (2, Item)        │
-  │                                                             │
-  │    You get: (0, "Laptop"), (1, "Mouse"), (2, "Keyboard")    │
-  │    Position becomes a first-class citizen                   │
-  │                                                             │
-  └─────────────────────────────────────────────────────────────┘
-
-                    ┌───────────────────────┐
-                    │   Pair<Index, A>      │
-                    │  ┌───────┬──────────┐ │
-                    │  │ Index │ Value    │ │
-                    │  ├───────┼──────────┤ │
-                    │  │   0   │ Laptop   │ │
-                    │  │   1   │ Mouse    │ │
-                    │  │   2   │ Keyboard │ │
-                    │  └───────┴──────────┘ │
-                    └───────────────────────┘
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
+    class S1,S2,I1,I2 tier
+    class S3,I3 out
 ```
+
+A standard traversal hands back each `Item` and forgets where it was; an indexed one hands back a `Pair<Index, A>`, so the position travels with the value:
+
+| Index | Value |
+|---|---|
+| `0` | `Laptop` |
+| `1` | `Mouse` |
+| `2` | `Keyboard` |
 
 Archimedes understood that position is power. With the right fulcrum point, a lever can move the world. Similarly, with the right index, an optic can transform data in ways that value-only access cannot. Position-based discounts, numbered lists, audit trails showing *which* field changed: all require knowing *where* you are, not just *what* you have.
 
@@ -29012,37 +28990,28 @@ This page collects the advanced composition patterns and reference material that
 
 When you compose two indexed optics, the indices form a **pair** representing the path through nested structures.
 
-```
-        COMPOSING INDEXED OPTICS: NESTED PATH TRACKING
+```mermaid
+flowchart TD
+    A(["IndexedTraversal&lt;Integer, List&lt;Order&gt;, Order&gt;"])
+    B(["IndexedTraversal&lt;Integer, List&lt;Item&gt;, Item&gt;"])
+    R["Pair&lt;Pair&lt;Integer, Integer&gt;, Item&gt;<br/>the outer index and the inner one, kept together"]
+    A -->|"iandThen"| B --> R
 
-   List<Order>                    List<Item>
-  ┌───────────┐                  ┌───────────┐
-  │ Order 0   │──┐               │ Item 0    │──▶ Pair(0, 0)
-  │           │  │    items      │ Item 1    │──▶ Pair(0, 1)
-  │ Order 1   │──┼──────────────▶├───────────┤
-  │           │  │               │ Item 0    │──▶ Pair(1, 0)
-  │ Order 2   │──┘               │ Item 1    │──▶ Pair(1, 1)
-  └───────────┘                  │ Item 2    │──▶ Pair(1, 2)
-                                 └───────────┘
-
-  IndexedTraversal<Integer, List<Order>, Order>
-                    │
-                    │ iandThen
-                    ▼
-  IndexedTraversal<Integer, List<Item>, Item>
-                    │
-                    │ Result: Pair<Pair<Integer, Integer>, Item>
-                    ▼
-            ┌───────────────────────────────────┐
-            │  (orderIndex, itemIndex) → Item   │
-            │  ─────────────────────────────────│
-            │  ((0, 0), Laptop)                 │
-            │  ((0, 1), Mouse)                  │
-            │  ((1, 0), Keyboard)               │
-            │  ((1, 1), Monitor)                │
-            │  ((1, 2), Cable)                  │
-            └───────────────────────────────────┘
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
+    class A,B tier
+    class R out
 ```
+
+Each item arrives carrying the whole path that reached it, outer index first:
+
+| Path | Item |
+|---|---|
+| `(0, 0)` | `Laptop` |
+| `(0, 1)` | `Mouse` |
+| `(1, 0)` | `Keyboard` |
+| `(1, 1)` | `Monitor` |
+| `(1, 2)` | `Cable` |
 
 ```java
 import org.higherkindedj.optics.indexed.Pair;
@@ -29693,21 +29662,17 @@ Earlier releases exposed `Each.eachWithIndex()`, which returned an `Optional<Ind
 
 ### Standard Java Types (EachInstances)
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Type          │ each()  │  EachIndexed?   │ Index Type     │
-├──────────────────────────────────────────────────────────────┤
-│  List<A>       │   ✓     │       ✓         │  Integer       │
-│  Set<A>        │   ✓     │       ✗         │     -          │
-│  Collection<A> │   ✓     │       ✗         │     -          │
-│  Map<K, V>     │   ✓     │       ✓         │     K          │
-│  Optional<A>   │   ✓     │       ✗         │     -          │
-│  A[]           │   ✓     │       ✓         │  Integer       │
-│  Stream<A>     │   ✓     │       ✗         │     -          │
-│  VStream<A>    │   ✓     │       ✗         │     -          │
-│  String        │   ✓     │       ✓         │  Integer       │
-└──────────────────────────────────────────────────────────────┘
-```
+| Type | `each()` | Indexed? | Index type | Factory |
+|---|---|---|---|---|
+| `List<A>` | ✓ | ✓ | `Integer` | `listEach()` |
+| `Set<A>` | ✓ |   |   | `setEach()` |
+| `Collection<A>` | ✓ |   |   | `collectionEach()` |
+| `Map<K, V>` | ✓ | ✓ | `K` | `mapValuesEach()` |
+| `Optional<A>` | ✓ |   |   | `optionalEach()` |
+| `A[]` | ✓ | ✓ | `Integer` | `arrayEach()` |
+| `Stream<A>` | ✓ |   |   | `streamEach()` |
+| `VStream<A>` | ✓ |   |   | `vstreamEach()` |
+| `String` | ✓ | ✓ | `Integer` | `stringCharsEach()`, focusing `Character` |
 
 ```java
 import org.higherkindedj.optics.each.EachInstances;
@@ -29744,16 +29709,12 @@ Each<String, Character> stringEach = EachInstances.stringCharsEach();
 
 For Higher-Kinded-J core types, use `EachExtensions`:
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Type            │ each()  │  EachIndexed?   │ Index Type   │
-├──────────────────────────────────────────────────────────────┤
-│  Maybe<A>        │   ✓     │       ✗         │     -        │
-│  Either<L, R>    │   ✓     │       ✗         │     -        │
-│  Try<A>          │   ✓     │       ✗         │     -        │
-│  Validated<E, A> │   ✓     │       ✗         │     -        │
-└──────────────────────────────────────────────────────────────┘
-```
+| Type | `each()` | Indexed? | Factory | Focuses |
+|---|---|---|---|---|
+| `Maybe<A>` | ✓ |   | `maybeEach()` | the value when present |
+| `Either<L, R>` | ✓ |   | `eitherRightEach()` | the right side only |
+| `Try<A>` | ✓ |   | `trySuccessEach()` | the success only |
+| `Validated<E, A>` | ✓ |   | `validatedEach()` | the valid side only |
 
 ```java
 import org.higherkindedj.optics.extensions.EachExtensions;
@@ -36204,31 +36165,18 @@ The two zero-or-one branches are the ones worth reading twice. An `Affine` reach
 
 Optics compose to handle complex real-world scenarios:
 
-```
-    Form
-     │
-     │ FormLenses.principal()        ← LENS (required field)
-     ▼
-    Principal (sealed interface)
-     │
-     │ PrincipalPrisms.user()        ← PRISM (might be Guest)
-     ▼
-    User
-     │
-     │ UserTraversals.permissions()  ← TRAVERSAL (each permission)
-     ▼
-    Permission
-     │
-     │ PermissionLenses.name()       ← LENS (required field)
-     ▼
-    String
-     │
-     │ validate(name)                ← effectful modification
-     ▼
-    Validated<String, String>
+```mermaid
+flowchart TD
+    Form(["Form"]) -->|"FormLenses.principal()<br/>LENS, a required field"| Principal(["Principal<br/>sealed interface"])
+    Principal -->|"PrincipalPrisms.user()<br/>PRISM, it might be a Guest"| User(["User"])
+    User -->|"UserTraversals.permissions()<br/>TRAVERSAL, every permission"| Permission(["Permission"])
+    Permission -->|"PermissionLenses.name()<br/>LENS, a required field"| Name(["String"])
+    Name -->|"validate(name)<br/>effectful modification"| Result(["Validated&lt;String, Form&gt;"])
 
-    ═══════════════════════════════════════════════════════════
-    Result: Validated<String, Form>
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
+    class Form,Principal,User,Permission,Name tier
+    class Result out
 ```
 
 All permissions validated. All errors accumulated. Original structure preserved.
@@ -37602,14 +37550,20 @@ The `…IfPresent` factories treat `null` as *absent*: the edit contributes the 
 
 Each request field maps to exactly one slot; an absent field simply contributes nothing to the fold:
 
-```
-    PatchRequest { email: "a@b.example",   sku: null,        qtyDelta: 3 }
-                          │                     │                  │
-                          ▼                     ▼                  ▼
-                    write email             identity           qty += 3
-                          └─────────────────────┼──────────────────┘
-                                                ▼
-                  order': email and quantity changed, sku untouched
+```mermaid
+flowchart TD
+    Req(["PatchRequest<br/>email: a@b.example, sku: null, qtyDelta: 3"])
+    Req --> E(["email present<br/>write it"])
+    Req --> S(["sku absent<br/>identity, no change"])
+    Req --> Q(["qtyDelta present<br/>qty += 3"])
+    E --> Out(["order': email and quantity changed,<br/>sku untouched"])
+    S --> Out
+    Q --> Out
+
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
+    class Req,E,S,Q tier
+    class Out out
 ```
 
 ~~~admonish warning title="Absent and null are deliberately the same"
@@ -37651,17 +37605,23 @@ When the request DTO's fields line up one-to-one with a domain record (the commo
 
 `combine` accepts only pure edits; `accumulate` accepts both. That is not a rule you have to remember: it is carried by the type of each edit. `set`, `modify`, and the `…IfPresent` forms produce an `Edit` (cannot fail); `parseIfPresent` produces a `FallibleEdit` (may fail). Passing a `FallibleEdit` to `combine` does not compile, so a validation failure can never be silently dropped.
 
-```
-    FallibleEdit<S>            may fail: carries Validated<NEL<FieldError>, Update<S>>
-        ▲       ▲
-        │       └── FallibleEdit.Parsed     the fallible leaf   (from parseIfPresent)
-        │
-    Edit<S>                    cannot fail: carries the Update<S> directly
-        ▲
-        └────────── Edit.Infallible         the infallible leaf (from set / modify / …IfPresent)
+```mermaid
+flowchart TD
+    FE(["FallibleEdit&lt;S&gt;<br/>may fail: carries Validated&lt;NEL&lt;FieldError&gt;, Update&lt;S&gt;&gt;"])
+    ED(["Edit&lt;S&gt;<br/>cannot fail: carries the Update&lt;S&gt; directly"])
+    P(["FallibleEdit.Parsed<br/>from parseIfPresent"]) --> FE
+    I(["Edit.Infallible<br/>from set, modify, …IfPresent"]) --> ED
+    ED --> FE
 
-    Edits.combine(Edit<S>...)          ← only pure edits fit: a FallibleEdit is a compile error
-    Edits.accumulate(FallibleEdit<S>...) ← both fit: a pure edit is one that always validates
+    C["Edits.combine(Edit…)<br/>only pure edits fit:<br/>a FallibleEdit is a compile error"]
+    A["Edits.accumulate(FallibleEdit…)<br/>both fit: a pure edit<br/>is one that always validates"]
+    ED --> C
+    FE --> A
+
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
+    class FE,ED,P,I tier
+    class C,A out
 ```
 
 ---
@@ -37673,22 +37633,26 @@ An accumulated patch works in two phases:
 1. **Validate**: each edit's incoming value is checked independently. Validation never sees a source, which is what makes accumulation sound *and* lets one patch apply to many sources.
 2. **Apply**: only if every edit validated, the writes run as a single left-to-right fold.
 
-```
-  Phase 1: validate every edit independently (no source involved)
+```mermaid
+flowchart TD
+    subgraph one["Phase 1: validate each edit independently, no source involved"]
+        direction TB
+        S1(["setIfPresent(SKU, null)<br/>absent → identity"]) --> V1(["Valid, a no-op"])
+        S2(["parseIfPresent(EMAIL, raw)<br/>the parser runs"]) --> V2(["Valid(write)<br/>or Invalid(errors)"])
+        S3(["modifyIfPresent(QTY, 3)<br/>present → write"]) --> V3(["Valid(write)"])
+    end
+    V1 --> Q{"every edit Valid?"}
+    V2 --> Q
+    V3 --> Q
+    Q -->|"yes"| Ok(["Phase 2: one left-to-right fold<br/>Valid(order'), only the present fields written"])
+    Q -->|"no"| Bad(["Invalid(NEL[email: …])<br/>every bad field, located"])
 
-    setIfPresent(SKU, null)     parseIfPresent(EMAIL, raw)      modifyIfPresent(QTY, 3)
-             │                            │                             │
-      absent → identity              parser runs                 present → write
-             │                            │                             │
-        Valid(no-op)          Valid(write) or Invalid(errors)      Valid(write)
-             └────────────────────────────┼─────────────────────────────┘
-                                          │
-                        all Valid?  ──────┴──────  any Invalid?
-                             │                          │
-  Phase 2: one               ▼                          ▼
-  left-to-right fold   Valid(order')          Invalid(NEL[ email: … ])
-  of the writes        only the present       every bad field, located,
-                       fields changed         in edit order; no writes run
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef bad fill:#e78284,stroke:#d20f39,color:#232634
+    class S1,S2,S3,V1,V2,V3,Ok tier
+    class Q decision
+    class Bad bad
 ```
 
 Application order is observable only when paths overlap: disjoint paths commute; an edit at an overlapping path sees the previous edit's result (a `modify` reads the *current* value at application time). Genuinely coupled fields belong in one atomic edit (see [Coupled Fields](coupled_fields.md) and `Lens.paired`).
