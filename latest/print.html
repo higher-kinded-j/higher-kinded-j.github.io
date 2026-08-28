@@ -49008,11 +49008,13 @@ interface SupplierMapping extends ContactVocabulary, MappingSpec&lt;Supplier, Su
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <p>An inherited member counts exactly as if it were declared on the spec: renames, leaves <em>and</em> derived fields, collected across the whole hierarchy (a mix-in may extend further mix-ins, and a diamond counts once). Precedence is <strong>Java's own</strong>: a member re-declared on the spec (or on a nearer mix-in) hides the one it overrides.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>A mix-in <strong>may be generic</strong>: its members are read under the spec's instantiation, so <code>Emails&lt;T&gt;</code> extended as <code>Emails&lt;EmailAddress&gt;</code> contributes <code>ValidatedPrism&lt;String, EmailAddress&gt;</code>. See <a href="mapping/generics.html#generic-mix-ins">Generic mix-ins</a>.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <p>Two shapes are rejected, each naming the offender:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <ul>
 <li>a mix-in that <strong>is itself a mapping spec</strong> (directly or transitively extends <code>MappingSpec</code>/<code>UpdateSpec</code>): a mix-in shares vocabulary, a spec generates an Impl, and inheriting one spec from another would conflate the two;</li>
-<li>a <strong>generic</strong> mix-in: inherited member types are read as declared, and substituting them under an instantiation is not supported yet.</li>
+<li>a generic mix-in <strong>reached raw</strong>, either because the spec writes <code>extends Emails</code> or because an interface between them does: raw erases every member of the type below it, so the spec would inherit what it never declared.</li>
 </ul>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <p>Diagnostics about an inherited member name its declaring interface, <code>abstract method 'bogus' (inherited from 'BrokenVocabulary') is neither a rename nor a leaf</code>, so the fix points at the right file.</p>
@@ -49029,7 +49031,7 @@ interface SupplierMapping extends ContactVocabulary, MappingSpec&lt;Supplier, Su
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
-<p>Mix-ins compose with the rest of the feature: <a href="mapping/generics.html">threaded generic specs</a> can extend (non-generic) mix-ins, and <a href="mapping/beans_patch.html#sparse-patch-write-back-updatespec"><code>UpdateSpec</code></a> mappings inherit vocabulary the same way, element leaves included, so the leaf a full spec lifts over a <code>List</code> serves its PATCH sibling unchanged. <a href="mapping/merge_envelopes.html"><code>@GenerateMerge</code></a> specs still declare everything directly.</p>
+<p>Mix-ins compose with the rest of the feature: <a href="mapping/generics.html">threaded generic specs</a> can extend mix-ins, generic ones included, at their own type parameters, and <a href="mapping/beans_patch.html#sparse-patch-write-back-updatespec"><code>UpdateSpec</code></a> mappings inherit vocabulary the same way, element leaves included, so the leaf a full spec lifts over a <code>List</code> serves its PATCH sibling unchanged. <a href="mapping/merge_envelopes.html"><code>@GenerateMerge</code></a> specs still declare everything directly.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
@@ -50211,6 +50213,47 @@ interface PageMapping&lt;T&gt; extends MappingSpec&lt;Page&lt;T&gt;, PageDto&lt;
 </div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<h2 id="generic-mix-ins"><a class="header" href="#generic-mix-ins">Generic mix-ins</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>A mix-in may declare type parameters of its own. Its members are read under the spec's instantiation, so a shared vocabulary interface parameterised by the type it speaks about contributes at the type the spec gives it:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<pre><code class="language-java">// Vocabulary parameterised by the type it speaks about: one interface, reused wherever the
+// domain component happens to land.
+interface Renames&lt;T&gt; {
+  @MapField(to = "fullName")
+  T name();
+}
+
+// The interface below it says what T is. The spec never repeats it, and never sees a T.
+interface TextRenames extends Renames&lt;String&gt; {}
+
+record Contractor(String name, EmailAddress email) {}
+
+record ContractorDto(String fullName, String email) {}
+
+@GenerateMapping
+interface ContractorMapping extends TextRenames, MappingSpec&lt;Contractor, ContractorDto&gt; {
+  default ValidatedPrism&lt;String, EmailAddress&gt; email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p><code>name()</code> says <code>T</code> where it is declared and <code>String</code> where the spec has it, and that is what the generated Impl carries. It holds however many interfaces separate the two, and a spec's own parameters survive as themselves, because the Impl declares them.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>The one shape this cannot answer for is a <strong>raw</strong> supertype anywhere on the route. Raw erases every member of the type below it, whatever that member declares, so <code>extends Renames</code> would contribute <code>Object name()</code> rather than the <code>String</code> it was written with. A raw ancestor that contributes nothing is left alone, since nothing of its is read; one that contributes a rename, a leaf or a derived field is refused at the declaration:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<pre><code>@GenerateMapping: mix-in 'Renames' is written raw. Its members are read under the spec's
+instantiation, and a raw supertype erases every one of them whatever they declare: a
+'ValidatedPrism&lt;String, Email&gt;' arrives bare, and a 'T' arrives as Object. Name the type
+arguments where 'Renames' is extended, as 'extends Renames&lt;...&gt;'.
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p>Erasure travels downwards, so the raw clause is not always the interface whose members went missing: with <code>TextRenames extends Renames&lt;String&gt;</code> and a spec saying <code>extends TextRenames</code> raw, it is <code>TextRenames</code> that has to be given its argument. The message names the raw clause in both cases, because that is the line to edit.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<hr />
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <h2 id="element-mapped-specs"><a class="header" href="#element-mapped-specs">Element-mapped specs</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <p>The third form is <strong>element-mapped</strong>: thread the two sides under <em>different</em> variables (<code>Page&lt;T&gt; ↔ PageDto&lt;TDto&gt;</code>) and declare the element mapping as an <strong>abstract leaf</strong>. Nothing on the spec can parse a <code>TDto</code> into a <code>T</code>, so the generated Impl defers it: each abstract leaf becomes a constructor-supplied field behind a public <code>of(...)</code> factory, one <code>ValidatedPrism</code> per leaf in declaration order:</p>
@@ -50754,7 +50797,7 @@ public class MappingConfiguration {
 <p>Every rejection follows the processor's what/why/fix standard: the message states what is wrong, why the mapper needs it, and the code to write. The limits themselves are each explained where their feature lives; this table is the index:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
 <div class="table-wrapper"><table><thead><tr><th>Limit</th><th>Where it is explained</th></tr></thead><tbody>
-<tr><td>Nested and sealed resolution sees specs in the same compilation; mix-ins must be plain, non-generic interfaces</td><td><a href="mapping/codecs.html#shared-vocabulary-mix-in-interfaces">Shared vocabulary</a></td></tr>
+<tr><td>Nested and sealed resolution sees specs in the same compilation; a mix-in may be generic, but must not be reached raw</td><td><a href="mapping/codecs.html#shared-vocabulary-mix-in-interfaces">Shared vocabulary</a></td></tr>
 <tr><td><code>Map</code> components lift values only; keys are identity, so differing key types, raw <code>Map</code>s and wildcards are rejected</td><td><a href="mapping/structure.html">Nesting and containers</a></td></tr>
 <tr><td>A fallible projection emits the validated <code>patch</code>, never a fake <code>asLens()</code>; projections cannot carry derived fields</td><td><a href="mapping/tiers.html#leaf-carrying-projections-the-validated-patch">The Emission Tiers</a>, <a href="mapping/basics.html#derived-wire-fields">Derived wire fields</a></td></tr>
 <tr><td>Generic mappings come in exactly three forms and stay record-to-record</td><td><a href="mapping/generics.html">Generic Specs</a></td></tr>
@@ -103881,6 +103924,12 @@ List&lt;VTask&lt;Result&gt;&gt; tasks = ids.stream()
 <div class="hkj-ct-mark" data-kind="new" data-run="start" data-since="v0.4.9"></div>
 <ul>
 <li><strong>The mapping documentation becomes its own chapter</strong>: the record-mapping material moved from a single page under Optics into a dedicated <a href="mapping/ch_intro.html">Mapping at the Boundary</a> chapter (basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing), opening with a problem-first introduction and closing with a compiled, law-checked capstone: <a href="mapping/capstone.html">One 422, Every Bad Field</a>. The old <code>optics/record_mapping.html</code> URL redirects to the new chapter.</li>
+<li><strong><code>@GenerateMapping</code> reads a generic mix-in under the spec's instantiation</strong> (<a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/752">#752</a>): a mix-in declaring type parameters was refused at the declaration, with a message saying substitution "is not supported yet". It is supported now: a member inherited from <code>Emails&lt;T&gt;</code> is read as the spec has it, so <code>extends Emails&lt;EmailAddress&gt;</code> contributes <code>ValidatedPrism&lt;String, EmailAddress&gt;</code> and the generated Impl carries that rather than a name nothing declares. This is the shape a shared vocabulary interface exists for, and the previous remedy, declaring the members directly on each spec, cost exactly the reuse it was there to provide. Every place a spec member's type is read now goes through one helper: the two that reach generated code (the element-mapped leaf fields and the <code>@MapField</code> rename stubs), the three that compare a member against the instantiated pair (<code>findLeaf</code>, the derived-field <code>Getter</code> shape, and the hand-written-mapper heuristic, that last reading both halves of the signature), and two diagnostics where a free type variable had been leaking into the message text. A <strong>generic</strong> ancestor reached through a raw supertype is still refused where it contributes something to read, because erasure travels downwards and leaves the spec inheriting members it never declared; a non-generic one is untouched by erasure and is left alone. The diagnostic names the interface whose clause is raw, which is not always the spec's own, and a raw or wildcard argument on the spec's own mix-in clause is refused for the same reason its <code>MappingSpec</code> clause always was. See <a href="mapping/generics.html#generic-mix-ins">Generic Specs</a>.</li>
+</ul>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<p><em>Behaviour change, accepting where it refused:</em> a spec extending a generic mix-in compiled with an error before and generates now, so nothing that worked stops working. The one direction to check is a spec that was relying on the refusal to catch a raw <code>extends</code> clause: that is still refused when the ancestor beneath it is generic, with the message changed from "is generic" to "is extended raw by ..."; a raw route to a non-generic ancestor is now accepted, since nothing of its is erased.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>
+<ul>
 <li><strong>A <code>Set</code> or <code>Collection</code> component reaches a traversal that rebuilds it</strong> (<a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/725">#725</a>): <code>@GenerateFocus</code> recognises five containers by name, and widened three of them — <code>List</code>, <code>Set</code> and <code>Collection</code> — through the same no-argument <code>.each()</code>. That method carries a <code>List</code> traversal behind an unchecked cast, so a <code>Set</code> component compiled and then threw <code>class java.util.HashSet cannot be cast to class java.util.List</code> on its first traversal, read or write; a <code>Collection</code> component threw the same way whenever the runtime value was not a <code>List</code>, and worked by accident when it was. No <code>Set</code>-valued Focus path has ever worked. The recognised-container table now pairs each type with the <code>Each</code> that rebuilds it: <code>List</code> keeps the no-argument <code>.each()</code>, a <code>Set</code> widens through <code>EachInstances.setEach()</code>, and a <code>Collection</code> through the new <code>EachInstances.collectionEach()</code>. The tiers are unchanged, so no generated signature moves. See <a href="optics/focus_containers.html#supported-container-types">Custom Containers</a>.</li>
 </ul>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.9"></div>

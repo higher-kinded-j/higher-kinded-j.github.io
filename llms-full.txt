@@ -42648,10 +42648,12 @@ interface SupplierMapping extends ContactVocabulary, MappingSpec<Supplier, Suppl
 
 An inherited member counts exactly as if it were declared on the spec: renames, leaves *and* derived fields, collected across the whole hierarchy (a mix-in may extend further mix-ins, and a diamond counts once). Precedence is **Java's own**: a member re-declared on the spec (or on a nearer mix-in) hides the one it overrides.
 
+A mix-in **may be generic**: its members are read under the spec's instantiation, so `Emails<T>` extended as `Emails<EmailAddress>` contributes `ValidatedPrism<String, EmailAddress>`. See [Generic mix-ins](generics.md#generic-mix-ins).
+
 Two shapes are rejected, each naming the offender:
 
 - a mix-in that **is itself a mapping spec** (directly or transitively extends `MappingSpec`/`UpdateSpec`): a mix-in shares vocabulary, a spec generates an Impl, and inheriting one spec from another would conflate the two;
-- a **generic** mix-in: inherited member types are read as declared, and substituting them under an instantiation is not supported yet.
+- a generic mix-in **reached raw**, either because the spec writes `extends Emails` or because an interface between them does: raw erases every member of the type below it, so the spec would inherit what it never declared.
 
 Diagnostics about an inherited member name its declaring interface, `abstract method 'bogus' (inherited from 'BrokenVocabulary') is neither a rename nor a leaf`, so the fix points at the right file.
 
@@ -42659,7 +42661,7 @@ Diagnostics about an inherited member name its declaring interface, `abstract me
 Conflicting inherited `default` methods are already a javac error before the processor runs. The one case javac leaves open, unrelated mix-ins both declaring the same *abstract* rename (override-equivalent abstracts may coexist, JLS 9.4.1), folds into a single rename when the targets agree and is rejected with a diagnostic naming both interfaces when they conflict. Interface `static` helpers are not inherited (JLS 8.4.8), so factory methods on a mix-in stay inert.
 ~~~
 
-Mix-ins compose with the rest of the feature: [threaded generic specs](generics.md) can extend (non-generic) mix-ins, and [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) mappings inherit vocabulary the same way, element leaves included, so the leaf a full spec lifts over a `List` serves its PATCH sibling unchanged. [`@GenerateMerge`](merge_envelopes.md) specs still declare everything directly.
+Mix-ins compose with the rest of the feature: [threaded generic specs](generics.md) can extend mix-ins, generic ones included, at their own type parameters, and [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) mappings inherit vocabulary the same way, element leaves included, so the leaf a full spec lifts over a `List` serves its PATCH sibling unchanged. [`@GenerateMerge`](merge_envelopes.md) specs still declare everything directly.
 
 ---
 
@@ -43377,6 +43379,49 @@ The three access shapes are one rule, not three conventions: *how much state doe
 
 ---
 
+## Generic mix-ins
+
+A mix-in may declare type parameters of its own. Its members are read under the spec's instantiation, so a shared vocabulary interface parameterised by the type it speaks about contributes at the type the spec gives it:
+
+``` java
+// Vocabulary parameterised by the type it speaks about: one interface, reused wherever the
+// domain component happens to land.
+interface Renames<T> {
+  @MapField(to = "fullName")
+  T name();
+}
+
+// The interface below it says what T is. The spec never repeats it, and never sees a T.
+interface TextRenames extends Renames<String> {}
+
+record Contractor(String name, EmailAddress email) {}
+
+record ContractorDto(String fullName, String email) {}
+
+@GenerateMapping
+interface ContractorMapping extends TextRenames, MappingSpec<Contractor, ContractorDto> {
+  default ValidatedPrism<String, EmailAddress> email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+```
+
+`name()` says `T` where it is declared and `String` where the spec has it, and that is what the generated Impl carries. It holds however many interfaces separate the two, and a spec's own parameters survive as themselves, because the Impl declares them.
+
+The one shape this cannot answer for is a **raw** supertype anywhere on the route. Raw erases every member of the type below it, whatever that member declares, so `extends Renames` would contribute `Object name()` rather than the `String` it was written with. A raw ancestor that contributes nothing is left alone, since nothing of its is read; one that contributes a rename, a leaf or a derived field is refused at the declaration:
+
+```
+@GenerateMapping: mix-in 'Renames' is written raw. Its members are read under the spec's
+instantiation, and a raw supertype erases every one of them whatever they declare: a
+'ValidatedPrism<String, Email>' arrives bare, and a 'T' arrives as Object. Name the type
+arguments where 'Renames' is extended, as 'extends Renames<...>'.
+```
+
+Erasure travels downwards, so the raw clause is not always the interface whose members went missing: with `TextRenames extends Renames<String>` and a spec saying `extends TextRenames` raw, it is `TextRenames` that has to be given its argument. The message names the raw clause in both cases, because that is the line to edit.
+
+---
+
 ## Element-mapped specs
 
 The third form is **element-mapped**: thread the two sides under *different* variables (`Page<T> ↔ PageDto<TDto>`) and declare the element mapping as an **abstract leaf**. Nothing on the spec can parse a `TDto` into a `T`, so the generated Impl defers it: each abstract leaf becomes a constructor-supplied field behind a public `of(...)` factory, one `ValidatedPrism` per leaf in declaration order:
@@ -43691,7 +43736,7 @@ Every rejection follows the processor's what/why/fix standard: the message state
 
 | Limit | Where it is explained |
 |---|---|
-| Nested and sealed resolution sees specs in the same compilation; mix-ins must be plain, non-generic interfaces | [Shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) |
+| Nested and sealed resolution sees specs in the same compilation; a mix-in may be generic, but must not be reached raw | [Shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) |
 | `Map` components lift values only; keys are identity, so differing key types, raw `Map`s and wildcards are rejected | [Nesting and containers](structure.md) |
 | A fallible projection emits the validated `patch`, never a fake `asLens()`; projections cannot carry derived fields | [The Emission Tiers](tiers.md#leaf-carrying-projections-the-validated-patch), [Derived wire fields](basics.md#derived-wire-fields) |
 | Generic mappings come in exactly three forms and stay record-to-record | [Generic Specs](generics.md) |
@@ -88156,6 +88201,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 _In development. Release notes will be added here as changes land on `main`._
 
 - **The mapping documentation becomes its own chapter**: the record-mapping material moved from a single page under Optics into a dedicated [Mapping at the Boundary](mapping/ch_intro.md) chapter (basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing), opening with a problem-first introduction and closing with a compiled, law-checked capstone: [One 422, Every Bad Field](mapping/capstone.md). The old `optics/record_mapping.html` URL redirects to the new chapter.
+- **`@GenerateMapping` reads a generic mix-in under the spec's instantiation** ([#752](https://github.com/higher-kinded-j/higher-kinded-j/issues/752)): a mix-in declaring type parameters was refused at the declaration, with a message saying substitution "is not supported yet". It is supported now: a member inherited from `Emails<T>` is read as the spec has it, so `extends Emails<EmailAddress>` contributes `ValidatedPrism<String, EmailAddress>` and the generated Impl carries that rather than a name nothing declares. This is the shape a shared vocabulary interface exists for, and the previous remedy, declaring the members directly on each spec, cost exactly the reuse it was there to provide. Every place a spec member's type is read now goes through one helper: the two that reach generated code (the element-mapped leaf fields and the `@MapField` rename stubs), the three that compare a member against the instantiated pair (`findLeaf`, the derived-field `Getter` shape, and the hand-written-mapper heuristic, that last reading both halves of the signature), and two diagnostics where a free type variable had been leaking into the message text. A **generic** ancestor reached through a raw supertype is still refused where it contributes something to read, because erasure travels downwards and leaves the spec inheriting members it never declared; a non-generic one is untouched by erasure and is left alone. The diagnostic names the interface whose clause is raw, which is not always the spec's own, and a raw or wildcard argument on the spec's own mix-in clause is refused for the same reason its `MappingSpec` clause always was. See [Generic Specs](mapping/generics.md#generic-mix-ins).
+
+  _Behaviour change, accepting where it refused:_ a spec extending a generic mix-in compiled with an error before and generates now, so nothing that worked stops working. The one direction to check is a spec that was relying on the refusal to catch a raw `extends` clause: that is still refused when the ancestor beneath it is generic, with the message changed from "is generic" to "is extended raw by ..."; a raw route to a non-generic ancestor is now accepted, since nothing of its is erased.
+
 - **A `Set` or `Collection` component reaches a traversal that rebuilds it** ([#725](https://github.com/higher-kinded-j/higher-kinded-j/issues/725)): `@GenerateFocus` recognises five containers by name, and widened three of them — `List`, `Set` and `Collection` — through the same no-argument `.each()`. That method carries a `List` traversal behind an unchecked cast, so a `Set` component compiled and then threw `class java.util.HashSet cannot be cast to class java.util.List` on its first traversal, read or write; a `Collection` component threw the same way whenever the runtime value was not a `List`, and worked by accident when it was. No `Set`-valued Focus path has ever worked. The recognised-container table now pairs each type with the `Each` that rebuilds it: `List` keeps the no-argument `.each()`, a `Set` widens through `EachInstances.setEach()`, and a `Collection` through the new `EachInstances.collectionEach()`. The tiers are unchanged, so no generated signature moves. See [Custom Containers](optics/focus_containers.md#supported-container-types).
 
   _Behaviour change, source-breaking at the declaration:_ naming an `Each` gives the widening type arguments javac infers from the component, which is the same rule raw and wildcard-carrying SPI containers already fall under. A `Set` or `Collection` component that is raw, or carries a wildcard of any kind — `Set<?>`, `Set<? extends T>`, `Set<? super T>`, `Collection<?>` — is now rejected where it is declared, at any nesting depth the analysis reaches: `List<Set<?>>` and `Optional<Set<?>>` at the default settings, and `Map<String, Set<?>>` under `widenCollections = true`. Every one of those compiled in 0.4.9 and threw `ClassCastException` on the first traversal, so nothing that worked stops working. Name the type argument — `Set<Object>` for an unbounded wildcard, `Set<Leaf>` for `? extends Leaf` — or drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance and take the component as written. `Optional`, `Maybe` and `List` are unaffected and still take a wildcard silently. See [Compiler Errors](optics/compiler_errors.md#generatefocus-record-component-xy-has-a-wildcard-type-argument-in-set-extends-t).
