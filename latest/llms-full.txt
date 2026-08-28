@@ -41574,6 +41574,25 @@ The reference cluster collects the lookup material that returning readers come b
 
 Each page in this cluster is structured as a quick-scan reference, not a tutorial. If you need the conceptual material, the earlier chapters cover it in depth.
 
+Most lookups here resolve to one distinction, so it is worth stating before the tables do. An optic either declares an operation or it does not, and when it does not, a conversion usually reaches it anyway:
+
+<!-- verify -->
+```java
+Lens<Order, String> customer = OrderLenses.customer();
+
+String name = customer.get(Fixture.order);
+// "Alice": get is declared on Lens
+
+// customer.getAll(Fixture.order);
+// will not compile: getAll is on Fold, not Lens
+
+Fold<Order, String> asFold = customer.asFold();
+List<String> all = asFold.getAll(Fixture.order);
+// ["Alice"]: the same access, one conversion later
+```
+
+[Optic Capabilities](optic_capabilities.md) is the table of what each optic declares; [Conversions](conversions.md) is the table of how to get from one to another. Between them they answer most of what brings a returning reader back.
+
 ~~~admonish info title="In This Chapter"
 - **Optic Capabilities** – A unified table showing which operations (`get`, `set`, `modify`, `modifyF`, `getAll`, `preview`, `foldMap`, `matches`, `build`) each optic type supports, including the asymmetric specialists (`Getter`, `Setter`, `Fold`).
 - **Conversions** – The methods for converting between optic types (`asTraversal`, `asFold`, `asLens`, `andThen`) and the rules governing what type results from composing two optics.
@@ -41582,15 +41601,21 @@ Each page in this cluster is structured as a quick-scan reference, not a tutoria
 - **Decision Trees** – The three top-level trees consolidated into one page: which optic for your data shape, which API style for your task, and which advanced feature for your specific need.
 ~~~
 
+~~~admonish tip title="See Also"
+- [Composition Rules](composition_rules.md): the `andThen` result table these pages refer back to
+- [Annotations at a Glance](annotations_at_a_glance.md): which annotation generates each optic
+- [Quickstart](quickstart.md): the shortest route in, if you arrived here first
+~~~
+
 ---
 
 ## Chapter Contents
 
-1. [Optic Capabilities](optic_capabilities.md) - What operations each optic supports
-2. [Conversions](conversions.md) - Converting between optic types
-3. [Common Compiler Errors](compiler_errors.md) - Diagnosing errors from generated code
-4. [Production Readiness](production_readiness.md) - Performance and operational concerns
-5. [Decision Trees](decision_trees.md) - Choosing optic, API, and features
+1. [Optic Capabilities](optic_capabilities.md): what operations each optic supports
+2. [Conversions](conversions.md): converting between optic types
+3. [Common Compiler Errors](compiler_errors.md): diagnosing errors from generated code
+4. [Production Readiness](production_readiness.md): performance and operational concerns
+5. [Decision Trees](decision_trees.md): choosing optic, API, and features
 
 ---
 
@@ -41624,31 +41649,33 @@ This is the lookup table for "can a `Prism` do `getAll`? does a `Getter` have `s
 | `Traversal<S, A>` | zero or more | yes | yes |
 | `Fold<S, A>` | zero or more | yes | no |
 | `Getter<S, A>` | exactly one | yes | no |
-| `Setter<S, A>` | exactly one | no | yes |
+| `Setter<S, A>` | zero or more | no | yes |
 
 ---
 
 ## Method support
 
-A `✓` means the optic usefully supports the operation. A blank cell means the operation is unavailable or has no observable effect (for example, `Fold` technically inherits `modifyF` for compositional reasons but cannot reconstruct the source structure, so it is treated as unavailable here). A note in the cell points at the utility class where a related operation lives.
+A `✓` means the interface **declares** the method, so you can call it directly on that optic. A blank cell means you cannot: either the operation makes no sense for that optic, or it is reachable only after a conversion. A note in the cell points at the utility class or conversion that gets you there.
+
+That distinction matters, because most optics reach most operations *eventually*. A `Lens` has no `getAll`, but `lens.asFold().getAll(source)` works; a `Traversal` has no `modify`, but `Traversals.modify(traversal, f, source)` does. The table below is about what is on the type; [Conversions](conversions.md) is about how to get from one type to another.
+
+One deliberate exception: `Fold` declares its own read-only `modifyF`, which runs the effects and returns the input unchanged. `Getter` extends `Fold` and inherits exactly that, so both are marked `✗` rather than `✓`. `Setter` inherits `modifyF` as an abstract obligation from `Optic`, so every concrete `Setter` implements it for real.
 
 | Method | Lens | Iso | Prism | Affine | Traversal | Fold | Getter | Setter |
 |---|---|---|---|---|---|---|---|---|
 | `get(S) → A` | ✓ | ✓ |   |   |   |   | ✓ |   |
-| `getOptional(S) → Optional<A>` | ✓ | ✓ | ✓ | ✓ | via [`Traversals`](traversals.md) | via `preview` | ✓ |   |
-| `getAll(S) → List<A>` | ✓ | ✓ |   |   | via [`Traversals`](traversals.md) | ✓ | ✓ |   |
-| `preview(S) → Optional<A>` |   |   |   |   |   | ✓ |   |   |
+| `getOptional(S) → Optional<A>` |   |   | ✓ | ✓ |   | via `preview` | via `preview` |   |
+| `getAll(S) → List<A>` | via `asFold()` | via `asFold()` | via `asFold()` | via `asFold()` | via `asFold()` or [`Traversals`](traversals.md) | ✓ | ✓ |   |
+| `preview(S) → Optional<A>` | via `asFold()` | via `asFold()` | via `asFold()` | via `asFold()` | via `asFold()` | ✓ | ✓ |   |
 | `matches(S) → boolean` |   |   | ✓ | ✓ |   |   |   |   |
-| `set(A, S) → S` | ✓ | ✓ | ✓ | ✓ | via [`Traversals`](traversals.md) |   |   | ✓ |
-| `modify(f, S) → S` | ✓ | ✓ | ✓ | ✓ | via [`Traversals`](traversals.md) |   |   | ✓ |
-| `modifyF(f, S, App) → Kind<F, S>` | ✓ | ✓ | ✓ | ✓ | ✓ |   |   | ✓ |
-| `build(A) → S` |   | ✓ (reverseGet) | ✓ |   |   |   |   |   |
-| `foldMap(monoid, f, S) → M` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |   |
-| `exists(predicate, S) → boolean` |   |   |   |   |   | ✓ |   |   |
-| `all(predicate, S) → boolean` |   |   |   |   |   | ✓ |   |   |
-| `find(predicate, S) → Optional<A>` |   |   |   |   |   | ✓ |   |   |
-| `isEmpty(S) → boolean` |   |   |   |   |   | ✓ |   |   |
-| `length(S) → int` |   |   |   |   |   | ✓ |   |   |
+| `set(A, S) → S` | ✓ |   |   | ✓ | via `Traversals.modify(t, a -> v, s)` |   |   | ✓ |
+| `modify(f, S) → S` | ✓ |   | ✓ | ✓ | via [`Traversals`](traversals.md) |   |   | ✓ |
+| `modifyF(f, S, App) → Kind<F, S>` | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ (see note) | ✗ (see note) | ✓ |
+| `build(A) → S` |   | ✓ (`reverseGet`) | ✓ |   |   |   |   |   |
+| `foldMap(monoid, f, S) → M` | via `asFold()` | via `asFold()` | via `asFold()` | via `asFold()` | via `asFold()` | ✓ | ✓ |   |
+| `exists`, `all`, `find`, `isEmpty`, `length` | via `asFold()` | via `asFold()` | via `asFold()` | via `asFold()` | via `asFold()` | ✓ | ✓ |   |
+
+Two rows are worth reading twice. `Iso` carries only `get`, `reverseGet` and `modifyF`: it has no `set` and no `modify` of its own, because `reverseGet` already rebuilds the whole structure from the focus. And `Getter` extends `Fold`, so it inherits the entire query family, `getAll` and `preview` included; every other read-only capability in the `Fold` column applies to `Getter` too.
 
 ---
 
@@ -41676,6 +41703,20 @@ Stay in the static-method utility for one-off bulk operations; reach for the [Fl
 ## Conversions and composition
 
 All optic types expose `andThen(other)` for composition; the result type follows the rules in [Composition Rules](composition_rules.md). The conversion methods between optic types are catalogued in [Conversions](conversions.md).
+
+~~~admonish info title="Key Takeaways"
+* **A `✓` means the method is on the type.** A cell naming a conversion means you can still get there, one `asFold()`, `asTraversal()` or `Traversals` call later. An empty cell means only that the type does not declare it. Sometimes the operation is meaningless there — a `Setter` has no read at all, and `matches` never fails on an optic that always hits — and sometimes a conversion still reaches it, as `iso.asLens().set(...)` does.
+* **`Iso` is smaller than it looks.** `get`, `reverseGet` and `modifyF`: no `set` and no `modify` of its own, because `reverseGet` already rebuilds the whole structure. `asLens()` is the route when you want them.
+* **`Traversal` declares no plain read or write.** It has `modifyF` (plus `filtered`, `filterBy`, `branch` and `modifyWhen`); every `get`, `set` and `modify` goes through `Traversals` or `asFold()`.
+* **`Getter` extends `Fold`**, so it inherits the whole query family: `getAll`, `preview`, `exists`, `all`, `find`, `isEmpty` and `length`.
+* **`Setter` is zero-or-more and write-only.** It has `set` and `modify` and no way to read at all.
+~~~
+
+~~~admonish tip title="See Also"
+- [Conversions](conversions.md): how to reach the capabilities a given optic lacks
+- [Composition Rules](composition_rules.md): what type results from combining two optics
+- [Decision Trees](decision_trees.md): choosing which optic you want in the first place
+~~~
 
 ---
 
@@ -41715,13 +41756,13 @@ This page covers (1). For (2), see the rules table.
 | `affine.asFold()` | `Affine<S, A>` | `Fold<S, A>` | Read-only access to the optional field. |
 | `iso.asLens()` | `Iso<S, A>` | `Lens<S, A>` | When you only need the forward direction; the `reverseGet` capability is dropped. |
 | `iso.asTraversal()` | `Iso<S, A>` | `Traversal<S, A>` | Same lifting as for a lens. |
-| `iso.asFold()` | `Iso<S, A>` | `Fold<S, A>` | Read-only access; both `reverseGet` and `set` are dropped. |
+| `iso.asFold()` | `Iso<S, A>` | `Fold<S, A>` | Read-only access; `reverseGet` is dropped. |
 | `iso.reverse()` | `Iso<S, A>` | `Iso<A, S>` | Swaps the direction of the iso. The new optic's `get` is the old `reverseGet` and vice versa. |
 | `getter.asFold()` | `Getter<S, A>` | `Fold<S, A>` | Lifting a getter into a context that expects a fold. |
 | `setter.asTraversal()` | `Setter<S, A>` | `Traversal<S, A>` | Lifting a setter for use in traversal-shaped pipelines. |
 | `traversal.asFold()` | `Traversal<S, A>` | `Fold<S, A>` | Discarding write capability to express read-only intent or to call fold-only operations. |
 
-You cannot widen the other direction: a `Traversal` does not become a `Lens` because it has no guarantee of focusing on exactly one element.
+You cannot widen the other direction: a `Traversal` does not become a `Lens`, because it has no guarantee of focusing on exactly one element. The nearest thing is [`Traversals.partsOf`](traversals.md), which gives you a `Lens<S, List<A>>` onto the focused elements as a list: a lens onto *all* of them, not onto *one* of them, which is precisely the guarantee a `Traversal` cannot make.
 
 ---
 
@@ -41753,10 +41794,19 @@ You only need an explicit `asTraversal()` when the API you are calling requires 
 
 ---
 
-## See also
+~~~admonish info title="Key Takeaways"
+* **Conversion is one optic changing shape; composition is two optics meeting.** `asTraversal()` is the first, `andThen` is the second, and you rarely need both at once.
+* **Widening loses capability.** `asFold()` drops writing, `asLens()` drops `reverseGet`, and nothing converts back up: a `Traversal` cannot become a `Lens`, because it cannot promise exactly one focus.
+* **`andThen` already widens for you.** Converting before composing is redundant; the [Composition Rules](composition_rules.md) settle the result type.
+* **Convert when a type demands it**, storing an optic in a typed field or handing it to a utility that takes a `Traversal`.
+* **`reverse()` is the one conversion that loses nothing.** An `Iso` is symmetric, so reversing it just swaps `get` and `reverseGet`.
+~~~
 
-- [Composition Rules](composition_rules.md), the rules table for what type results from `andThen`.
-- [Optic Capabilities](optic_capabilities.md), which methods are available on each optic.
+~~~admonish tip title="See Also"
+- [Composition Rules](composition_rules.md): the rules table for what type results from `andThen`
+- [Optic Capabilities](optic_capabilities.md): which methods are available on each optic
+- [Decision Trees](decision_trees.md): choosing the optic before you convert it
+~~~
 
 ---
 
@@ -41788,23 +41838,21 @@ This page is for the moment a build fails and you want to know what the message 
 
 **Fix.** Run a build (`./gradlew build` or `mvn compile`). After the build completes, refresh the project in your IDE so it indexes `build/generated/sources/annotationProcessor/java/main` (Gradle) or `target/generated-sources/annotations` (Maven).
 
-### "annotation @GenerateLenses not allowed on this type"
+### "@GenerateLenses: can only be applied to records, but 'Foo' is a class"
 
-**Cause.** `@GenerateLenses`, `@GenerateFocus`, `@GenerateFolds`, `@GenerateGetters`, `@GenerateSetters`, and `@GenerateTraversals` only apply to records.
+**Cause.** `@GenerateLenses`, `@GenerateFocus`, `@GenerateFolds`, `@GenerateGetters`, `@GenerateSetters` and `@GenerateTraversals` only apply to records. The annotations target `TYPE`, so javac itself is happy; the message comes from the processor. The wording varies: `@GenerateLenses` and `@GenerateFocus` name the offending type, while the others emit the shorter "The @GenerateTraversals annotation can only be applied to records."
 
 **Fix.** Convert the class to a record. If the type is third-party and you cannot change it, use [`@ImportOptics`](importing_optics.md) on a `package-info.java` or a spec interface instead.
 
-### "annotation @GeneratePrisms not allowed on this type"
+### "The @GeneratePrisms annotation can only be applied to sealed interfaces or enums."
 
-**Cause.** `@GeneratePrisms` requires either a `sealed interface` or an `enum`. Plain interfaces and abstract classes are not supported.
+**Cause.** `@GeneratePrisms` requires a `sealed interface` or an `enum`. A sealed *abstract class* is rejected too, despite being sealed, because the processor tests the element kind rather than the modifier.
 
-**Fix.** Make the type sealed and declare its `permits` clause, or convert to an enum.
+**Fix.** Make the type a sealed interface and declare its `permits` clause, or convert it to an enum.
 
-### "method must return Iso<...>"
-
-**Cause.** `@GenerateIsos` is applied to a method whose return type is not `Iso`.
-
-**Fix.** Ensure the annotated method returns `Iso<A, B>`. The processor reads the type parameters to generate the static field.
+~~~admonish warning title="A plain interface fails silently instead"
+A non-sealed *interface* passes the processor's guard and produces an **empty** `XPrisms` class with no diagnostic at all. If your prisms class exists but has no methods, an unsealed interface is why.
+~~~
 
 ### "@GenerateIsos: the iso returned by 'x' names a type variable"
 
@@ -41850,7 +41898,7 @@ Note this is about what the *iso* names, not what the method declares: `<T> Iso<
 
 ### "@ImportOptics: Lens method 'x' carries no copy strategy annotation"
 
-**Cause.** A method on an `OpticsSpec` interface returning `Lens<S, A>` lacks one of `@Wither`, `@ViaBuilder`, `@ViaConstructor`, or `@ViaCopyAndSet`.
+**Cause.** A method on an `OpticsSpec` interface returning `Lens<S, A>` carries none of those four hints, so the processor has no way to know how the external type rebuilds itself.
 
 **Fix.** Add the appropriate hint based on how the source type is copied. See [Optics for External Types](importing_optics.md) and [Database Records with JOOQ](copy_strategies.md) for the full strategy table.
 
@@ -41868,7 +41916,7 @@ Note this is about what the *iso* names, not what the method declares: `<T> Iso<
 
 A source type that is itself generic is supported, and the spec names its own type parameters: `interface BoxOpticsSpec<U> extends OpticsSpec<Box<U>>` generates `static <U> Lens<Box<U>, String> label()`. See [Spec Interfaces](optics_spec_interfaces.md#generic-spec-interfaces) for which parameters a generated method declares. It is only a bare type variable, standing for the whole source type, that has no source to read.
 
-### "@InstanceOf: target subtype not assignable to source type"
+### "@InstanceOf target 'com.example.Foo' is not a subtype of source type 'com.example.Base'"
 
 **Cause.** The class passed to `@InstanceOf(SubType.class)` is not a subclass of the optic's source type.
 
@@ -41928,11 +41976,17 @@ A source type that is itself generic is supported, and the spec names its own ty
 
 **Fix.** Focus the variant that carries the value — `TextNode` rather than `String` — and read the payload with a further optic. Where the value type is the point, write that prism by hand with `Prism.of` and a build side that constructs the source, such as `TextNode::valueOf`.
 
-### "@MatchWhen: predicate / getter method not found on source"
+### "cannot find symbol", inside the generated `XPrisms.java`, after using `@MatchWhen`
 
-**Cause.** The string passed to `@MatchWhen(predicate = "isFoo", getter = "asFoo")` does not match a real method on the source type.
+**Cause.** The processor does **not** validate the strings in `@MatchWhen(predicate = "isFoo", getter = "asFoo")`. It splices them into the generated source verbatim, so a typo surfaces as an ordinary javac error inside generated code rather than as a processor message.
 
-**Fix.** Check the method names against the source type's API. Both methods must take no arguments; the predicate returns `boolean` and the getter returns the prism's target type.
+**Fix.** Check the names against the source type's API. Both methods must take no arguments; the predicate returns `boolean` and the getter returns the prism's target type.
+
+### "Prism method 'x' requires a prism hint annotation: @InstanceOf or @MatchWhen"
+
+**Cause.** A spec-interface method returning `Prism<S, A>` with neither hint.
+
+**Fix.** Add `@InstanceOf` for a real subtype, or `@MatchWhen` for a check-and-extract API. The same rule applies to traversals: "Traversal method 'x' requires a traversal hint annotation: @TraverseWith or @ThroughField".
 
 ---
 
@@ -42029,19 +42083,38 @@ TraversalPath<User, Role> allRoles =
 
 ### "Incompatible types when chaining .each().via()"
 
-**Cause.** Long Focus DSL chains overflow Java's type inference budget.
+**Cause.** Usually one `.each()` too many. A generated accessor for a collection component is *already* element-level, so `CompanyFocus.departments()` is a `TraversalPath<Company, Department>` and adding `.each()` steps into a `Department` as though it were a list. Long chains can also overflow Java's inference budget.
 
-**Fix.** Break the chain into intermediate variables; each one carries a concrete type the compiler can reason about:
+**Fix.** Drop the extra `.each()`, and break long chains into intermediate variables so each carries a concrete type:
 
 ```java
-TraversalPath<Company, Department> depts = CompanyFocus.departments().each();
-TraversalPath<Company, Employee>   employees = depts.via(DepartmentFocus.employees()).each();
-TraversalPath<Company, Integer>    salaries = employees.via(EmployeeFocus.salary());
+TraversalPath<Company, Department> depts     = CompanyFocus.departments();
+TraversalPath<Company, Employee>   employees = depts.via(DepartmentFocus.employees());
+TraversalPath<Company, Integer>    salaries  = employees.via(EmployeeFocus.salary());
+```
+
+~~~admonish warning title="The extra `.each()` compiles"
+`each()` is `<E> TraversalPath<S, E>` and infers `E` from the assignment target, so a surplus hop type-checks and then fails at runtime when the list traversal is applied to something that is not a list. It is not caught by the compiler, which is why it belongs on this page rather than in a debugging note.
+~~~
+
+### "Cannot infer type argument(s)" on an intermediate `.each()`
+
+**Cause.** Only the *final* `each()` in a chain can infer its element type from the target type. An intermediate one has nothing to infer from.
+
+**Fix.** Spell the element type at the intermediate hop:
+
+```java
+TraversalPath<Company, Integer> allSalaries =
+    FocusPath.of(CompanyLenses.departments())
+        .<Department>each()
+        .via(DepartmentLenses.employees())
+        .<Employee>each()
+        .via(EmployeeLenses.salary());
 ```
 
 ### "Method reference ::new doesn't work with single-field records as BiFunction"
 
-**Cause.** Java's overload resolution struggles to pick `Foo::new` as a `BiFunction` when the record has a single component.
+**Cause.** A single-component record has no two-argument constructor, and `Lens.of`'s setter is a `BiFunction<S, A, S>` taking `(source, newValue)`. It is an arity mismatch, not an inference wobble.
 
 **Fix.** Use an explicit lambda:
 
@@ -42084,6 +42157,20 @@ Person result = OpticInterpreters.direct().run(program);
 3. Is the IDE indexing the generated sources directory? Refresh the project after a build.
 4. If it is none of these, please file an issue at the [Higher-Kinded-J GitHub repository](https://github.com/higher-kinded-j/higher-kinded-j) with the minimal reproducer and the full error.
 
+~~~admonish info title="Key Takeaways"
+* **"cannot find symbol: XLenses" is almost always a build problem**, not a code problem: the processor did not run, or the IDE has not indexed the generated sources.
+* **The annotations are shape-specific.** `@GenerateLenses` wants a record, `@GeneratePrisms` wants a sealed interface or enum, and using one on the other is rejected at the declaration.
+* **A spec interface needs a copy strategy** for every lens method, because the processor has no way to guess how your external type rebuilds itself.
+* **Most Focus DSL errors are one hop too many, or one witness too few.** A generated collection accessor is already element-level, so an extra `.each()` is the common cause; and only the final `each()` in a chain can infer its element type.
+* **Read the processor's own message first.** It names the element it rejected, which is faster than working backwards from the downstream "cannot find symbol".
+~~~
+
+~~~admonish tip title="See Also"
+- [Annotations at a Glance](annotations_at_a_glance.md): which annotation to reach for, and what it generates
+- [Optics for External Types](importing_optics.md): the `@ImportOptics` and spec-interface rules these errors enforce
+- [Build Plugins](../tooling/gradle_plugin.md): the canonical processor setup
+~~~
+
 ---
 
 **Previous:** [Conversions](conversions.md)
@@ -42113,43 +42200,47 @@ This page does not offer a marketing case for using optics in production; it off
 
 Every `set` or `modify` call on a `Lens` over a record allocates one new record per layer of nesting touched. A composed lens through three layers allocates three new records, plus any intermediate captures. There is no in-place mutation; that is the cost of immutability and not specific to optics.
 
-Compared to a hand-written `with*` cascade for the same nested update, generated optics typically incur the same allocation count. The difference at the byte-code level is the two or three lambda objects that the composition captures, which the JIT inlines after the path becomes hot.
+Compared to a hand-written `with*` cascade for the same nested update, generated optics typically incur the same allocation count. The difference is the two or three anonymous `Lens` and `FocusPath` objects the composition allocates.
 
-For a single update on a small record, the cost is below noise. For tight inner loops, see the caching note below.
+For a single update on a small record, the cost is unlikely to matter. For tight inner loops, see the caching note below.
+
+These are engineering estimates from the shape of the generated code, not benchmark output: the [JMH suite](../benchmarks.md) covers `Fold.plus` but not lens or traversal allocation.
 
 ### `modifyF` and effect handlers
 
-`modifyF(f, source, applicative)` runs `f` once per focused element and threads the results through the supplied `Applicative`. The cost is one call to `f` plus whatever the applicative's `ap` and `pure` do. Validation accumulates errors at the cost of not short-circuiting; `Either` short-circuits on the first failure.
+`modifyF(f, source, applicative)` runs `f` once per focused element and threads the results through the supplied `Applicative`. The cost is one call to `f` plus whatever the applicative's `ap` and `pure` do. `Validated` accumulates every error and `Either` keeps only the first, but neither skips work: the traversal applies `f` to every focused element before the applicative combines the results, so the choice shapes the answer rather than the cost.
 
 ### Traversal allocation
 
-`Traversal.modify(f, source)` over a `List<A>` allocates one new list. If the function returns the same value for every element (a no-op modify), the list is still rebuilt; optics do not currently exploit reference equality to skip rebuilding.
+`Traversals.modify(traversal, f, source)` over a `List<A>` allocates one new list, plus a small constant number of short-lived objects *per element*: the traversal threads each result through the `Id` applicative and an immutable cons-list before flattening. Budget O(n) allocations, not O(1). (Reads and writes on a bare `Traversal` go through the `Traversals` utility; the interface itself declares no plain read or write.) If the function returns the same value for every element (a no-op modify), the list is still rebuilt; optics do not compare references to skip rebuilding.
 
 ---
 
 ## Caching optics
 
-A lens or focus path is a value, not a function. Building the path has a one-off allocation cost; using it has none. For paths used repeatedly, store them as `static final`:
+A lens or focus path is a value, not a function. Building the path has a one-off allocation cost, which caching removes; applying it still allocates the rebuilt structure, which nothing removes. For paths used repeatedly, store them as `static final`:
 
 ```java
 private static final Lens<Company, String> COMPANY_NAME =
     CompanyLenses.name();
 
 private static final TraversalPath<Order, BigDecimal> ALL_PRICES =
-    OrderFocus.items().each().price();
+    OrderFocus.items().via(ItemFocus.price());
 ```
 
-This matters most for paths constructed by `andThen` chains; the work of composing the path is paid once instead of per call. For a single annotation-generated lens like `CompanyLenses.name()`, the path object is already a singleton-like static method result and additional caching gains nothing.
+This matters most for paths constructed by `andThen` chains, where the whole composition is rebuilt on every call. The saving is smaller but real for a single accessor too, because a generated accessor is a factory rather than a constant: `CompanyLenses.name()` calls `Lens.of(...)` and allocates a fresh `Lens` every time, and `CompanyFocus.name()` allocates a `Lens` and a `FocusPath`.
+
+Both cases assume the path is used more than once. A path used once has no allocation to amortise, which is why the table above still says to inline it at the call site.
 
 ---
 
 ## Build-time impact
 
-The annotation processor adds a single round of code generation to compilation. On a codebase with around a hundred annotated records the additional time is in the low single digits of seconds; large codebases scale roughly linearly with the number of annotated types.
+The annotation processor adds one code-generation pass to compilation. On a codebase with around a hundred annotated records the additional time is in the low single digits of seconds; large codebases scale roughly linearly with the number of annotated types.
 
 Generated sources land under `build/generated/sources/annotationProcessor/java/main` (Gradle) or `target/generated-sources/annotations` (Maven). Most IDEs index these automatically after the first build. If autocomplete cannot see `XLenses` or `XFocus` types, a rebuild and project refresh resolves it.
 
-Incremental compilation works as you would expect: changing a record's component triggers regeneration of just that record's companion classes.
+Incremental compilation is supported, conservatively: every processor is registered with Gradle as *aggregating*, so a change to any annotated type re-runs generation across the source set rather than regenerating one companion class. That is deliberate, an isolating claim that turned out wrong would produce silently stale output, and consuming source sets stay incremental regardless.
 
 ---
 
@@ -42183,14 +42274,28 @@ When upgrading across minor versions, regenerate by rebuilding. Generated code i
 
 ## Team conventions that work
 
-These are not mandates, just patterns observed in production codebases that adopted optics without regret.
+These are the conventions the library's own examples and tests follow. Treat them as defaults, not mandates.
 
-- **Annotate aggressively.** Add `@GenerateLenses` and `@GenerateFocus` to every record you own at the time you write it, even if you are not yet sure which optics you will use. The cost is one annotation; the benefit is that future code can reach for an optic without a refactor.
+- **Annotate the records you own as you write them.** Adding `@GenerateLenses` later is mechanical, but discovering mid-task that the optic does not exist is not. Weigh it against the build-time note above: generation scales with the number of annotated types, so "every record in the monorepo" is a different proposition from "every record in this module".
 - **Place optic constants near the domain type.** A static `Optics` utility class next to the record carries the well-known paths.
 - **Name paths after the field they end at.** `companyName`, not `companyToName` or `getCompanyName`. The receiver-style naming reads naturally at call sites: `Optics.companyName.set("...", company)`.
 - **Use `Fold` when you only read.** Even when a `Lens` would work, expressing read-only intent makes reviews easier and prevents accidental mutations.
 - **Reach for the Focus DSL first.** Manual `andThen` composition is fine and sometimes clearer, but the DSL gives you better IDE support and shorter call sites for nested updates.
 - **Reserve the Free Monad DSL for problems that demand it.** If you do not have an audit, dry-run, or multi-mode requirement, the everyday APIs are simpler.
+
+~~~admonish info title="Key Takeaways"
+* **Immutability is the cost, not optics.** A composed lens allocates one record per touched layer, the same count a hand-written `with*` cascade would.
+* **A path is a value: build it once.** `static final` removes the construction cost; it cannot remove the cost of rebuilding the structure you update.
+* **A no-op modify still rebuilds.** Optics do not compare references to skip work.
+* **Neither error strategy saves work.** `Validated` accumulates and `Either` keeps the first, but every element is visited either way.
+* **Annotation processing is a build-time cost, paid once per compile**, and it buys compile-time errors instead of runtime ones.
+~~~
+
+~~~admonish tip title="See Also"
+- [Optic Capabilities](optic_capabilities.md): what each optic can do before you tune how it does it
+- [Optic-Driven Batching](optic_batching.md): the one place where an optic's cost is I/O rather than allocation
+- [Decision Trees](decision_trees.md): choosing the API whose cost profile suits the task
+~~~
 
 ---
 
@@ -42215,48 +42320,28 @@ The decision trees that appear in scattered form across the chapter intros are c
 
 ## Tree 1: Which optic do I need?
 
+```mermaid
+flowchart TD
+    Q{"What are you doing<br/>to the focus?"}
+    Q -->|"reading only"| R{"How many<br/>targets?"}
+    Q -->|"reading and writing"| M{"How many<br/>targets?"}
+    Q -->|"converting between<br/>equivalent types"| I(["Iso"])
+
+    R -->|"exactly one"| G(["Getter"])
+    R -->|"zero or more"| F(["Fold"])
+
+    M -->|"exactly one"| L(["Lens"])
+    M -->|"zero or one:<br/>the field may be absent"| A(["Affine"])
+    M -->|"zero or one:<br/>the value may be another variant"| P(["Prism"])
+    M -->|"zero or more"| T(["Traversal"])
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class Q,R,M decision
+    class I,G,F,L,A,P,T tier
 ```
-                     ┌─────────────────────┐
-                     │ What are you doing? │
-                     └──────────┬──────────┘
-                                │
-           ┌────────────────────┼────────────────────┐
-           ▼                    ▼                    ▼
-    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-    │   Reading   │     │  Modifying  │     │ Transforming│
-    │    only?    │     │   values?   │     │   types?    │
-    └──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-           │                   │                   │
-           ▼                   │                   ▼
-    ┌─────────────┐            │            ┌─────────────┐
-    │ How many    │            │            │     ISO     │
-    │ targets?    │            │            └─────────────┘
-    └──────┬──────┘            │
-           │                   │
-    ┌──────┴──────┐            │
-    ▼             ▼            ▼
-┌───────┐   ┌──────────┐  ┌─────────────┐
-│ One   │   │Zero-more │  │ How many    │
-│       │   │          │  │ targets?    │
-└───┬───┘   └────┬─────┘  └──────┬──────┘
-    │            │               │
-    ▼            ▼        ┌──────┴──────┐
-┌───────┐   ┌────────┐    ▼             ▼
-│GETTER │   │ FOLD   │ ┌───────┐  ┌──────────┐
-└───────┘   └────────┘ │ One   │  │Zero-more │
-                       └───┬───┘  └────┬─────┘
-                           │           │
-                 ┌─────────┴───┐       │
-                 ▼             ▼       ▼
-           ┌──────────┐ ┌─────────┐ ┌──────────┐
-           │ Required │ │Optional │ │TRAVERSAL │
-           └────┬─────┘ └────┬────┘ └──────────┘
-                │            │
-                ▼            ▼
-           ┌────────┐   ┌─────────┐
-           │  LENS  │   │ PRISM   │
-           └────────┘   └─────────┘
-```
+
+Write-only access is the one case the tree does not reach: that is a [Setter](setters.md), and you arrive at it by knowing you never read.
 
 | You have... | You want to... | Reach for |
 |---|---|---|
@@ -42267,34 +42352,25 @@ The decision trees that appear in scattered form across the chapter intros are c
 | A collection field | Apply an operation to every element | [Traversal](traversals.md) |
 | A collection field, read-only | Query, search, aggregate | [Fold](folds.md) |
 | Read-only access to a single field | Get only | [Getter](getters.md) |
-| Write-only access to a single field | Set only | [Setter](setters.md) |
+| Write-only access, one or many targets | Set or modify, never read | [Setter](setters.md) |
 
 ---
 
 ## Tree 2: Which API style?
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        CHOOSING YOUR API                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────────┐                                                        │
-│  │  Focus DSL      │ ◄─── START HERE                                        │
-│  │  (Recommended)  │      Path-based navigation with full type safety       │
-│  └────────┬────────┘      CompanyFocus.headquarters().city()                │
-│           │                                                                 │
-│           │  Need validation-aware modifications?                           │
-│           │  Working with Either/Maybe/Validated?                           │
-│           ▼                                                                 │
-│  ┌─────────────────┐                                                        │
-│  │  Fluent API     │      Static methods + builders for effectful ops       │
-│  │  (OpticOps)     │      OpticOps.modifyEither(user, lens, validator)      │
-│  └─────────────────┘                                                        │
-│                                                                             │
-│  Need audit trails, dry-runs, or multiple execution strategies?             │
-│  See Advanced Optics for the Free Monad DSL.                                │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    S(["Start: Focus DSL<br/>CompanyFocus.headquarters().city()"]) --> Q{"Does the update<br/>need more?"}
+    Q -->|"no: plain nested update"| S2(["stay on the Focus DSL"])
+    Q -->|"it can fail, or accumulate errors"| FA(["Fluent API: OpticOps<br/>modifyEither, modifyAllValidated"])
+    Q -->|"it must be inspected,<br/>audited or run several ways"| FM(["Free Monad DSL<br/>see Advanced Optics"])
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
+    class Q decision
+    class S2,FA,FM tier
+    class S wire
 ```
 
 | Your task | Use |
@@ -42312,31 +42388,24 @@ The decision trees that appear in scattered form across the chapter intros are c
 
 ## Tree 3: Which advanced feature?
 
-```
-                  ┌─────────────────────────────┐
-                  │ What is the constraint?     │
-                  └──────────────┬──────────────┘
-                                 │
-        ┌────────────────────────┼────────────────────────┐
-        ▼                        ▼                        ▼
-   ┌──────────┐           ┌────────────┐           ┌──────────────┐
-   │ Subset   │           │ Position   │           │ Type adapter │
-   │ matters  │           │ matters    │           │ for source/  │
-   │          │           │            │           │ target       │
-   └────┬─────┘           └─────┬──────┘           └──────┬───────┘
-        │                       │                         │
-        ▼                       ▼                         ▼
-   ┌──────────┐           ┌────────────┐           ┌──────────────┐
-   │ Filtered │           │  Indexed   │           │  Profunctor  │
-   │ optics   │           │  optics    │           │  optics      │
-   └──────────┘           └────────────┘           └──────────────┘
+```mermaid
+flowchart TD
+    Q{"What is the<br/>constraint?"}
+    Q -->|"only some elements<br/>should be touched"| F(["Filtered optics"])
+    Q -->|"the position matters<br/>as well as the value"| I(["Indexed optics"])
+    Q -->|"the source or target<br/>is the wrong shape"| P(["Profunctor optics"])
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class Q decision
+    class F,I,P tier
 ```
 
 | Your problem | Reach for |
 |---|---|
 | "Apply only to elements matching a predicate" | [Filtered Optics](filtered_optics.md) |
 | "I need the index alongside each element" | [Indexed Optics](indexed_optics.md) |
-| "Access by key in a `Map`" | [Indexed Access](indexed_access.md) and the [`At`](each_typeclass.md) typeclass |
+| "Access by key in a `Map`" | [Indexed Access](indexed_access.md): the `At` (full CRUD) and `Ixed` (read/update) type classes |
 | "Apply over every element of a custom container" | [Each Typeclass](each_typeclass.md) |
 | "Operate on individual characters of a `String`" | [String Traversals](string_traversals.md) |
 | "Adapt a lens for a different source record type" | Compose: `outerLens.andThen(innerLens)` ([Profunctor Optics](profunctor_optics.md)) |
@@ -42346,15 +42415,24 @@ The decision trees that appear in scattered form across the chapter intros are c
 
 ---
 
-## See also
+~~~admonish info title="Key Takeaways"
+* **Direction first, cardinality second.** The tree asks what you are doing to the focus, then how many values it reaches; those two answers pick the optic between them.
+* **The two zero-or-one optics are not interchangeable.** An `Affine` reaches a value that may be absent; a `Prism` reaches a value that may be another variant, and can rebuild the structure from it.
+* **Start on the Focus DSL and leave it only when forced.** Failure, accumulation and effects move you to `OpticOps`; inspection and multi-mode execution move you to the Free Monad DSL.
+* **The advanced features are constraint-shaped.** Subset means filtered, position means indexed, wrong shape means an adapter.
+* **These are entry points, not conclusions.** Every leaf here has a page; the trees route, the pages decide.
+~~~
 
-- [Optic Capabilities](optic_capabilities.md), what each optic can do once you have chosen one.
-- [Composition Rules](composition_rules.md), what type results from composing two optics.
-- [Annotations at a Glance](annotations_at_a_glance.md), which annotation generates each optic.
+~~~admonish tip title="See Also"
+- [Optic Capabilities](optic_capabilities.md): what each optic can do once you have chosen one
+- [Composition Rules](composition_rules.md): what type results from composing two optics
+- [Annotations at a Glance](annotations_at_a_glance.md): which annotation generates each optic
+~~~
 
 ---
 
 **Previous:** [Production Readiness](production_readiness.md)
+**Next:** [Mapping at the Boundary](../mapping/ch_intro.md)
 
 <!-- Source: mapping/ch_intro.md -->
 
