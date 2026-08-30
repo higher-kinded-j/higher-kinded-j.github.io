@@ -27,15 +27,15 @@ reading order, with code examples inlined. For a concise index, see llms.txt.
 
 ---
 
-Higher-Kinded-J brings two capabilities that Java has long needed: composable error handling through the **[Effect Path API](effect/ch_intro.md)**, and type-safe immutable data navigation through the **[Focus DSL](optics/focus_dsl.md)**. Each is powerful alone. Together, they form a unified approach to building robust applications, where effects and structure compose seamlessly. For services that need multiple execution modes, **[Effect Handlers](effect/effect_handlers_intro.md)** let you define domain operations as data and interpret them differently for production, testing, or audit.
+Higher-Kinded-J brings two capabilities that Java has long needed: composable error handling through the **[Effect Path API](effect/ch_intro.md)**, and type-safe immutable data navigation through the **[Focus DSL](optics/focus_dsl.md)**. Each is powerful alone. Together they form one approach to building robust applications, where effects and structure compose in the same vocabulary. At the edge of a service, **[Mapping at the Boundary](mapping/ch_intro.md)** turns the DTO-to-domain mapper into compile-time codegen that never loses an error, and for services that need several execution modes, **[Effect Handlers](effect/effect_handlers_intro.md)** let you define domain operations as data and interpret them differently for production, testing, or audit.
 
 No more pyramids of nested checks. No more scattered validation logic. Just clean, flat pipelines that read like the business logic they represent.
 
 ---
 
-## The Effect Path API
+## What You Get
 
-At the heart of Higher-Kinded-J lies the **Effect Path API**: a railway model for computation where success travels one track and failure travels another. Operations like `map`, `via`, and `recover` work identically across all effect types, whether you are handling optional values, typed errors, accumulated validations, or deferred side effects.
+Two artefacts, before any theory. The first is the shape of the code you write: a railway where success travels one track and failure the other, and every step reads top-to-bottom.
 
 ```java
 // Traditional Java: pyramid of nested checks
@@ -55,47 +55,78 @@ return Path.maybe(findUser(userId))
     .map(OrderResult::success);
 ```
 
-The nesting is gone. Each step follows the same pattern. Failures propagate automatically. The business logic reads top-to-bottom, not outside-in.
+The nesting is gone. Each step follows the same pattern. Failures propagate automatically.
 
-**[Explore the Effect Path API →](effect/ch_intro.md)**
+The second is what a client sees when the data is bad. A request with five defects (one inside a nested record, one on the second element of a list), answered by one response, with nobody writing a line of error-handling code to produce it:
+
+```json
+{
+  "valid": false,
+  "errors": [
+    { "path": "id",             "message": "not a UUID (expected e.g. 123e4567-e89b-12d3-a456-426614174000)" },
+    { "path": "customer.email", "message": "not an email address" },
+    { "path": "lines.1.price",  "message": "not a number in plain notation (expected e.g. 123.45)" },
+    { "path": "placedAt",       "message": "not an ISO-8601 instant (expected e.g. 2026-07-28T12:34:56Z)" },
+    { "path": "status",         "message": "unknown OrderStatus (expected one of NEW, PAID, SHIPPED)" }
+  ],
+  "errorCount": 5
+}
+```
+
+It falls out of one spec interface and one annotation, and the [mapping capstone](mapping/capstone.md) builds it end to end, proven by a test the build runs. The client fixes all five and resubmits once.
+
+---
+
+## Getting Started
+
+One line configures the dependencies, the annotation processors, `-parameters`, the preview flags and compile-time Path checking:
+
+```gradle
+// build.gradle.kts
+plugins {
+    id("io.github.higher-kinded-j.hkj") version "LATEST_VERSION"
+}
+```
+
+* **[Quickstart](quickstart.md)**: Gradle and Maven setup, including the Maven plugin and the required Java 25 preview flags, and your first Effect Paths in five minutes
+* **[Where to Start](where_to_start.md)**: one question, five answers, and the tool each one points at
+* **[Cheat Sheet](cheatsheet.md)**: a one-page operator reference
 
 ---
 
 ## The Bridge: Effects Meet Optics
 
-What makes Higher-Kinded-J unique is the seamless integration between **Effect Paths** and the **Focus DSL**. Where Effect Paths navigate *computational effects*, Focus Paths navigate *data structures*. Both use the same vocabulary. Both compose with `via`. And when you need to cross between them, the bridge API connects both worlds.
+What makes Higher-Kinded-J unique is that **Effect Paths** and the **Focus DSL** speak the same language. Effect Paths are the *effects*, what the computation does: fetch, fail, wait, accumulate. Focus Paths are the *optics*, where the data lives: a field, an optional field, every element of a list. Both compose with `via`, and when you need to cross between them, the bridge connects the two worlds:
 
-```
-                    THE EFFECT-OPTICS BRIDGE
+```mermaid
+flowchart TB
+    subgraph effects["Effects: Effect Paths"]
+        direction TB
+        E1["MaybePath"] ~~~ E2["EitherPath"] ~~~ E3["TryPath"] ~~~ E4["ValidationPath"]
+        E5["EitherOrBothPath"] ~~~ E6["IOPath"] ~~~ E7["VTaskPath"] ~~~ E8["VStreamPath"]
+    end
+    subgraph optics["Optics: Focus Paths"]
+        direction TB
+        O1["FocusPath"] ~~~ O2["AffinePath"]
+        O3["TraversalPath"]
+    end
+    effects -->|".focus(path)<br/>navigate the data inside the effect"| B["The bridge"]
+    optics -->|".toEitherPath()<br/>.toMaybePath()<br/>lift the optic into an effect"| B
+    subgraph one["One composition"]
+        direction TB
+        S1["userService.findById(id)<br/>effect: fetch"] --> S2[".focus(UserFocus.address())<br/>optics: navigate"]
+        S2 --> S3[".via(validateAddress)<br/>effect: validate"]
+        S3 --> S4[".focus(AddressFocus.city())<br/>optics: extract"]
+        S4 --> S5[".map(String::toUpperCase)<br/>effect: transform"]
+    end
+    B --> S1
 
-  EFFECTS DOMAIN                           OPTICS DOMAIN
-  ══════════════                           ═════════════
-
-  MaybePath<User>      ────┐         ┌──── FocusPath<User, Address>
-  EitherPath<E, User>  ────┤         ├──── AffinePath<User, Email>
-  TryPath<Config>      ────┤         └──── TraversalPath<Team, Player>
-  IOPath<Data>         ────┤
-  VTaskPath<A>         ────┤
-  VStreamPath<A>       ────┤
-  ValidationPath<E, A> ────┤
-  EitherOrBothPath<L, A>───┘
-                            │       │
-                            ▼       ▼
-                       ┌─────────────────┐
-                       │  .focus(path)   │
-                       │  .toEitherPath  │
-                       │  .toMaybePath   │
-                       └─────────────────┘
-                              │
-                              ▼
-                    UNIFIED COMPOSITION
-                    ════════════════════
-
-  userService.findById(id)        // Effect: fetch
-      .focus(UserFocus.address()) // Optics: navigate
-      .via(validateAddress)       // Effect: validate
-      .focus(AddressFocus.city()) // Optics: extract
-      .map(String::toUpperCase)   // Transform
+    classDef effect fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef optic fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef bridge fill:#e5c890,stroke:#df8e1d,color:#232634
+    class E1,E2,E3,E4,E5,E6,E7,E8,S1,S3,S5 effect
+    class O1,O2,O3,S2,S4 optic
+    class B bridge
 ```
 
 ```java
@@ -108,58 +139,9 @@ EitherPath<Error, String> result =
         .via(code -> validatePostcode(code));
 ```
 
-This is the unification that Java has been missing: effects and structure, composition and navigation, all speaking the same language.
+This is the unification Java has been missing: effects and structure, composition and navigation, one vocabulary.
 
 **[Discover Optics Integration →](effect/focus_integration.md)**
-
----
-
-## Two Foundations
-
-The Effect Path API is built on two powerful functional programming pillars:
-
-### [Higher-Kinded Types](hkts/hkt_introduction.md)
-
-Java lacks native support for abstracting over type constructors like `Optional<A>`, `List<A>`, or `CompletableFuture<A>`. Higher-Kinded-J simulates HKTs using defunctionalisation, unlocking:
-
-* **Polymorphic functions** that work across optionality, asynchrony, and error handling
-* **Type classes** like `Functor`, `Applicative`, and `Monad` with consistent interfaces
-* **Monad transformers** for composing effect stacks (`EitherT`, `StateT`, `ReaderT`)
-
-### [Advanced Optics](optics/ch_intro.md)
-
-Higher-Kinded-J provides the most comprehensive optics implementation available for Java. Working with immutable records means verbose "copy-and-update" logic; the Optics library treats data access as first-class values. The chapter opens with an annotation-led [Quickstart](optics/quickstart.md) and the [Annotations at a Glance](optics/annotations_at_a_glance.md) lookup table; you write a record, add `@GenerateLenses` and `@GenerateFocus`, and the processor writes a typed path builder for you.
-
-* **Complete optic hierarchy:** Lenses, Prisms, Isos, Affines, Traversals, Folds, and Setters
-* **Annotation-driven generation** for records, sealed interfaces, and enums; see [Annotations at a Glance](optics/annotations_at_a_glance.md) for the full surface
-* **[External type import](optics/importing_optics.md)** via `@ImportOptics` for types you don't own
-* **[Spec interfaces](optics/optics_spec_interfaces.md)** for complex external types with copy strategy annotations (`@ViaBuilder`, `@Wither`, `@ViaCopyAndSet`)
-* **[Third-party integration](optics/focus_external_bridging.md)** with Jackson, JOOQ, Immutables, Lombok, AutoValue, and Protocol Buffers
-* **[ValidatedPrism](optics/validated_prism.md)** for parse-don't-validate boundaries: `parse` returns a `Validated` locating every failure, `build` is total, and both round-trip laws ship in `hkj-test`
-* **Filtered traversals** for predicate-based focusing within collections
-* **Indexed optics** for position-aware transformations
-* **Profunctor architecture** enabling adaptation between different data shapes
-* **Focus DSL** for type-safe, fluent path navigation with seamless bridging into external libraries
-* **[SPI-aware container types](optics/focus_containers.md)** with automatic `AffinePath` and `TraversalPath` generation via cardinality-based widening, supporting 30 container types across JDK, Apache Commons, Eclipse Collections, Guava, Vavr, PCollections, and HKJ native types
-* **Effect integration** bridging optics with the Effect Path API
-
-### [Effect Handlers](effect/effect_handlers_intro.md)
-
-For services with complex domain workflows, Higher-Kinded-J provides algebraic-effect-style programming via Free monads and interpreters. Define your domain operations as sealed interfaces with record variants, then write different interpreters for production, testing, dry-run, or audit modes:
-
-* **[`@EffectAlgebra`](effect/effect_handlers.md)** generates boilerplate (Functor, smart constructors, interpreter skeleton)
-* **[`@ComposeEffects`](effect/effect_handlers.md#composing-effects)** composes multiple operation types into a single program
-* **Mock-free testing** via `Id` monad interpreters
-* **[Program inspection](effect/effect_handlers.md#program-analysis)** with `ProgramAnalyser` before any side effects execute
-
-### [Record Mapping and Typed-Error Codegen](mapping/ch_intro.md)
-
-The boundary between your domain records and the wire is usually hand-written mappers or a reflective bean-mapper. Higher-Kinded-J turns it into compile-time codegen that never loses an error:
-
-* **[`@GenerateMapping`](mapping/ch_intro.md)** maps a record domain to the wire both ways, whatever the wire's shape: record or bean-shaped (getters/setters or builder) DTOs, generic records, sealed hierarchies, with shared mix-in vocabularies across specs. A total `build` out; an accumulating `parse` back returning `Validated<NonEmptyList<FieldError>, T>`; and both PATCH styles as write-backs (a dense validated `patch`, a sparse null-as-absent `updateFrom`). One null doctrine throughout: a missing value is a located error (`customer.email: must not be null`, `emails.1: ...`), never an exception. Every emission tier is law-checked against `hkj-test` and pinned by golden files
-* **[`@GenerateMerge`](mapping/merge_envelopes.md)** assembles one target record from several source records, filling each component by name
-* **[Open-arity accumulating assembly](monads/validated_assembly.md)** (`fields()` / `accumulate()` / `@GenerateAssembly`) builds a record from N independently-validated fields, collecting every error in declaration order with no `Semigroup` ceremony
-* **[`@GenerateErrorEnvelope`](mapping/merge_envelopes.md#generating-error-envelopes-generateerrorenvelope)** gives a sealed error hierarchy a typed context record (records-as-schema, not `Map<String, Object>`) with deterministic timestamps from a `TimeSource`
 
 ---
 
@@ -173,11 +155,15 @@ You don't need to learn an esoteric functional library to feel the benefit. Each
 |-------------|---------------------|---------------------------|
 | Nested `Optional`, thrown exceptions, and validation that stops at the first error | the standard library | one railway vocabulary (`map` / `via` / `recover`) across absence, typed errors, async, and **accumulating** validation |
 | `Option` / `Either` / `Try` from **Vavr** | the FP library most Java developers know | the same core types **plus** higher-kinded abstraction, a full optics suite, monad transformers, and an effect system, built natively on modern Java (records, sealed types, virtual threads), where Vavr keeps a Java 8 foundation |
-| Hand-written DTO↔domain mappers and validation glue | custom converter classes per pair | `@GenerateMapping` over record, bean-shaped and generic wires: a total `build`, an accumulating `parse` that reports every bad field (nulls located, never an NPE), and generated PATCH write-backs, all law-checked by the build's test suite |
+| Hand-written DTO↔domain mappers and validation glue | custom converter classes per pair | `@GenerateMapping` over record, bean-shaped and generic wires: a total `build`, an accumulating `parse` that reports every bad field (nulls located, never an NPE), a stock codec vocabulary, and generated PATCH write-backs, all law-checked by the build's test suite |
 | **Resilience4j** annotations for retry / circuit-breaker / bulkhead | AOP-style resilience | the same policies as composable path combinators (`withRetry` / `withCircuitBreaker` / `withBulkhead`) that treat a business `Left` as a value, never as a failure to retry |
 | Hand-written `wither` / copy-constructor updates on records | manual boilerplate | generated lenses, prisms, and traversals: the most comprehensive optics available for Java |
 
 And unlike any of those tools, effects and data navigation speak **the same language**: the [Effect-Optics bridge](#the-bridge-effects-meet-optics) above is something no other Java library offers.
+
+~~~admonish tip title="Why this matters"
+Every row in that table is a guarantee, not a convenience. An `Either` in a return type is checked by the compiler where an exception is not; an accumulating `parse` answers a client once where a first-failure mapper costs one round trip per defect; a generated lens is law-checked where a hand-written wither is trusted. The library holds itself to the same bar: every emission tier is pinned by golden files, the optic and mapping laws ship in `hkj-test` for your own types, and every HKJ module compiles under the HKJ checker at zero findings.
+~~~
 
 ~~~admonish note title="How the optics compare to other Java optics libraries" collapsible=true
 Higher-Kinded-J also offers the most advanced optics implementation in the Java ecosystem. Measured against the dedicated Java optics libraries:
@@ -208,8 +194,178 @@ Higher-Kinded-J also offers the most advanced optics implementation in the Java 
 
 ---
 
+## What's in the Library
+
+Each capability has a chapter that opens with the problem it solves and closes with a capstone. The short version of each, with a quick example folded underneath:
+
+### [Effect Path API](effect/ch_intro.md)
+
+A railway model for computation: `map`, `via` and `recover` work identically whether you are handling optional values, typed errors, accumulated validations, exceptions or deferred side effects. `ForPath` comprehensions sequence steps by name, `VTaskPath` and `VStreamPath` put structured concurrency on virtual threads behind the same vocabulary, and the lazy carriers chain **[path-native resilience](resilience/ch_intro.md)** that treats a business `Left` as a value, never as a failure to retry.
+
+~~~admonish example title="Quick example" collapsible=true
+```java
+VResultPath<OrderError, Reservation> guarded =
+    reserveInventory(order)
+        .withRetry(error -> error instanceof OrderError.SystemError,
+            RetryPolicy.exponentialBackoffWithJitter(3, Duration.ofMillis(200)))
+        .withTimeout(Duration.ofSeconds(5),
+            () -> OrderError.SystemError.timeout("inventory", Duration.ofSeconds(5)));
+```
+
+Only a `SystemError` is retried; a business `Left` such as an out-of-stock decision is a value on the failure track and passes straight through. The same `withRetry` / `withTimeout` / `withCircuitBreaker` / `withBulkhead` chain on `IOPath`, `VTaskPath` and `VResultPath` alike. See [Resilience Patterns](resilience/ch_intro.md).
+~~~
+
+**[Explore the Effect Path API →](effect/ch_intro.md)**
+
+### [Optics](optics/ch_intro.md)
+
+The most comprehensive optics implementation available for Java: lenses, prisms, isos, affines, traversals, folds and setters, all composable, generated from annotations on records, sealed interfaces, collections and [types you don't own](optics/importing_optics.md) (Jackson, JOOQ, Immutables, Lombok, AutoValue, Protocol Buffers). Filtered and indexed traversals, and [31 container types](optics/focus_containers.md) across the JDK and five third-party collection libraries widening to the right path type automatically.
+
+~~~admonish example title="Quick example" collapsible=true
+```java
+@GenerateLenses @GenerateFocus
+public record Street(String name, int number) {}
+
+@GenerateLenses @GenerateFocus
+public record Address(Street street, String city) {}
+
+@GenerateLenses @GenerateFocus
+public record User(String name, Address address) {}
+
+User updated = UserFocus.address().street().name().set("New Street", user);
+```
+
+Write the records, add the annotations, and the processor writes `StreetLenses`, `AddressFocus`, `UserFocus` and the rest: a typed path builder for every field, three layers down in one line, with no reflection and no copy-and-rebuild code. Start at the [Quickstart](optics/quickstart.md) or the [Annotations at a Glance](optics/annotations_at_a_glance.md) table.
+~~~
+
+**[Explore Optics →](optics/ch_intro.md)**
+
+### [Mapping at the Boundary](mapping/ch_intro.md)
+
+One spec interface and one annotation replace the hand-written mapper. `@GenerateMapping` derives both directions at compile time for record, bean-shaped and generic wires of any width: a total `build` out, an accumulating `parse` back that locates every bad field, and both PATCH styles as write-backs. A [stock codec vocabulary](mapping/codecs.md#standard-codecs) covers the standard conversions, so a typical boundary needs no hand-written leaves, and every tier is law-checked and pinned by golden files.
+
+~~~admonish example title="Quick example" collapsible=true
+```java
+@GenerateMapping
+interface OrderMapping extends MappingSpec<Order, OrderDto> {
+  default ValidatedPrism<String, UUID> id()            { return uuid(); }
+  default ValidatedPrism<String, LocalDate> placedOn() { return localDate(); }
+  default ValidatedPrism<String, OrderStatus> status() { return enumByName(OrderStatus.class); }
+  default ValidatedPrism<String, BigDecimal> total()   { return bigDecimal(); }
+}
+
+OrderMappingImpl.INSTANCE.parse(new OrderDto("NOPE", "28/07/2026", "SHIPPED", "1E+3"));
+// Invalid(NonEmptyList[
+//   id: not a UUID (expected e.g. 123e4567-e89b-12d3-a456-426614174000),
+//   placedOn: not an ISO-8601 date (expected e.g. 2026-07-28),
+//   status: unknown OrderStatus (expected one of NEW, PAID, CANCELLED),
+//   total: not a number in plain notation (expected e.g. 123.45)])
+```
+
+Four leaves from `StandardCodecs`, no other code, and every failure located and worded for the client. The 422 payload shown at the top of this page is what this `Invalid` becomes at a Spring controller. `@GenerateMerge` assembles one record from several and `@GenerateErrorEnvelope` gives a sealed error hierarchy a typed context; see [Merge and Error Envelopes](mapping/merge_envelopes.md).
+~~~
+
+**[Explore Mapping at the Boundary →](mapping/ch_intro.md)**
+
+### [Effect Handlers](effect/effect_handlers_intro.md)
+
+Algebraic-effect-style programming via Free monads and interpreters. Define domain operations as a sealed interface with record variants, compose several algebras with `@ComposeEffects`, then write one interpreter per mode (production, test, dry-run, audit) and run the same program unchanged through each. Testing is mock-free through `Id` interpreters, and `ProgramAnalyser` inspects a program before any side effect executes.
+
+~~~admonish example title="Quick example" collapsible=true
+```java
+@EffectAlgebra
+public sealed interface PaymentGatewayOp<A>
+    permits PaymentGatewayOp.Authorise, PaymentGatewayOp.Charge, PaymentGatewayOp.Refund {
+
+  record Authorise<A>(Money amount, PaymentMethod method,
+      Function<AuthorisationToken, A> k) implements PaymentGatewayOp<A> { /* ... */ }
+
+  record Charge<A>(Money amount, PaymentMethod method,
+      Function<ChargeResult, A> k) implements PaymentGatewayOp<A> { /* ... */ }
+
+  record Refund<A>(TransactionId txId, Money amount,
+      Function<RefundResult, A> k) implements PaymentGatewayOp<A> { /* ... */ }
+}
+```
+
+`@EffectAlgebra` generates the functor, the smart constructors and an interpreter skeleton, so a program is written once against `PaymentGatewayOps` and a production interpreter, a fake, a dry-run and an audit log are four small classes. The [Payment Processing](examples/payment_processing.md) example runs one program through all four.
+~~~
+
+**[Explore Effect Handlers →](effect/effect_handlers_intro.md)**
+
+### [Spring Boot Integration](spring/spring_boot_integration.md)
+
+The `hkj-spring-boot-starter` lets controllers return `Either`, `Validated`, `EitherPath`, `VTaskPath` and the rest directly, and an `Invalid` of located field errors renders as **one 422 listing every bad field by path**, with no exception handler and no hand-rolled error DTO. `@HkjHttpClient` keeps the error channel intact when one service calls another.
+
+~~~admonish example title="Quick example" collapsible=true
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @GetMapping("/{id}")
+    public Either<DomainError, User> getUser(@PathVariable String id) {
+        return userService.findById(id);
+        // Right(user) → HTTP 200 with JSON
+        // Left(UserNotFoundError) → HTTP 404 with error details
+    }
+
+    @PostMapping
+    public Validated<NonEmptyList<FieldError>, User> createUser(@RequestBody UserDto dto) {
+        return userCodec.parse(dto);
+        // Valid(user) → HTTP 200
+        // Invalid(errors) → one HTTP 422 listing EVERY bad field by path
+    }
+}
+```
+
+```java
+@HttpExchange("/users")
+@HkjHttpClient
+public interface UserClientApi {
+
+    @GetExchange("/{id}")
+    EitherPath<DomainError, User> getUser(@PathVariable String id);
+    // HTTP 200 → Right(user); HTTP 404 → Left(UserNotFoundError), decoded from the response
+}
+```
+
+Auto-configuration handles the conversions; `Right` is a 200 and a typed `Left` maps to its status. Actuator metrics for success rates and error distributions, Spring Security integration with `Either`-based authentication, and an `EffectBoundary` that selects interpreters by profile come with it. See [Declarative HTTP Clients](spring/declarative_http_clients.md) and [Migrating to Functional Errors](spring/migrating_to_functional_errors.md).
+~~~
+
+**[Get Started with Spring Boot Integration →](spring/spring_boot_integration.md)**
+
+### [Testing With hkj-test](tooling/test_assertions.md)
+
+Fluent AssertJ assertions for every type in the library, the optic laws (`LensLaws`, `PrismLaws`, `TraversalLaws`, `ValidatedPrismLaws`) and the `MappingLaws` every generated mapping is checked against, and a `SteppableClock` for deterministic time. Tests read in the same vocabulary as the code under test.
+
+~~~admonish example title="Quick example" collapsible=true
+```java
+import static org.higherkindedj.hkt.assertions.EitherAssert.assertThatEither;
+import static org.higherkindedj.hkt.assertions.MaybeAssert.assertThatMaybe;
+import static org.higherkindedj.hkt.assertions.TryAssert.assertThatTry;
+
+assertThatEither(result).isRight().hasRight(42);
+assertThatMaybe(value).isJust().hasValue("hello");
+assertThatTry(computation).isFailure().hasExceptionOfType(IOException.class);
+```
+
+Coverage spans the discriminated unions, the effect types (`IO`, `VTask`, `VStream`), the Reader / Writer / State trio, every monad transformer, the `Free` / `EitherF` algebras and the `VTaskPath` / `VStreamPath` / `VTaskContext` Path-and-context assertions. On Java 25 with `--enable-preview`, `import module org.higherkindedj.test;` brings every helper into scope in one line.
+~~~
+
+**[Explore hkj-test →](tooling/test_assertions.md)**
+
+### [Foundations](hkts/foundations_intro.md)
+
+Underneath it all: a simulation of higher-kinded types by defunctionalisation, so `Functor`, `Applicative`, `Monad`, `Traverse` and friends can be written once and applied across `Optional`, `List`, `CompletableFuture`, `VTask` and your own types; the core types (`Either`, `Maybe`, `Try`, `Validated`, `IO`, `Reader`, `Writer`, `State`, `Free`); and the [monad transformers and MTL capabilities](transformers/ch_intro.md) for the cases the Path API does not fit: a different outer monad, or polymorphic library code. Most applications start with Effect Paths and never need to look down here; the [triage page](transformers/when_to_drop_to_transformers.md) says when you do.
+
+---
+
 ## Path Types at a Glance
 
+Twenty-one Path types share one vocabulary. Most applications start with `EitherPath` (typed errors), `MaybePath` (absence), `ValidationPath` (every error at once) and `IOPath` (deferred effects), and reach for the rest as a need appears. The lazy carriers (`IOPath`, `VTaskPath`, `VResultPath`) additionally chain **[path-native resilience](resilience/ch_intro.md)** (`withRetry` / `withTimeout` / `withCircuitBreaker` / `withBulkhead`) that treats a business `Left` as a value, never as a failure to retry.
+
+~~~admonish note title="All twenty-one Path types" collapsible=true
 | Path Type | When to Reach for It |
 |-----------|---------------------|
 | `MaybePath<A>` | Absence is normal, not an error |
@@ -234,14 +390,16 @@ Higher-Kinded-J also offers the most advanced optics implementation in the Java 
 | `VTaskPath<A>` | Virtual thread-based concurrency with Par combinators |
 | `VStreamPath<A>` | Lazy pull-based streaming on virtual threads |
 
-Each Path wraps its underlying effect and provides `map`, `via`, `run`, `recover`, and integration with the Focus DSL. The lazy carriers (`IOPath`, `VTaskPath`, `VResultPath`) additionally chain **[path-native resilience](resilience/ch_intro.md)** (`withRetry` / `withTimeout` / `withCircuitBreaker` / `withBulkhead`) that treats a business `Left` as a value, never as a failure to retry.
+Each Path wraps its underlying effect and provides `map`, `via`, `run`, `recover`, and integration with the Focus DSL. See [Core Paths](effect/effect_path_overview.md) for the railway model behind them.
+~~~
 
 ---
 
 ## Learn by Doing
 
-The fastest way to master Higher-Kinded-J is through our **interactive tutorial series**. Thirteen journeys guide you through hands-on exercises with immediate test feedback.
+The fastest way to master Higher-Kinded-J is through our **interactive tutorial series**: seventeen journeys of hands-on exercises with immediate test feedback. Start with **[Effect API](tutorials/effect/effect_journey.md)** (~65 min) for the railway, **[Optics: Lens & Prism](tutorials/optics/lens_prism_journey.md)** (~40 min) for immutable updates, or **[Optics: Boundary Mapping](tutorials/optics/boundary_mapping_journey.md)** (~35 min) for the 422 leg.
 
+~~~admonish note title="All seventeen journeys" collapsible=true
 | Journey | Focus | Duration | Exercises |
 |---------|-------|----------|-----------|
 | **[Core: Foundations](tutorials/coretypes/foundations_journey.md)** | HKT simulation, Functor, Applicative, Monad | ~40 min | 24 |
@@ -250,6 +408,7 @@ The fastest way to master Higher-Kinded-J is through our **interactive tutorial 
 | **[Effect API](tutorials/effect/effect_journey.md)** | Effect paths, ForPath, Effect Contexts | ~65 min | 15 |
 | **[Monad Transformers](tutorials/transformers/transformers_journey.md)** | When Path isn't enough, async + absence, stacking, MTL | ~90 min | 28 |
 | **[Expression: ForState](tutorials/expression/forstate_journey.md)** | Named fields, guards, pattern matching, zoom | ~25 min | 11 |
+| **[Expression: ForPath Parallel](tutorials/expression/forpath_parallel_journey.md)** | Parallel composition, accumulating and racing steps | ~20 min | 9 |
 | **[Concurrency: VTask](tutorials/concurrency/vtask_journey.md)** | Virtual threads, VTaskPath, Par combinators | ~45 min | 16 |
 | **[Concurrency: Scope & Resource](tutorials/concurrency/scope_resource_journey.md)** | Structured concurrency, resource management | ~30 min | 12 |
 | **[Resilience Patterns](tutorials/resilience/resilience_journey.md)** | Circuit breaker, saga, retry, bulkhead | ~45 min | 22 |
@@ -257,97 +416,48 @@ The fastest way to master Higher-Kinded-J is through our **interactive tutorial 
 | **[Optics: Traversals](tutorials/optics/traversals_journey.md)** | Traversals, composition, practical applications | ~40 min | 27 |
 | **[Optics: Fluent & Free](tutorials/optics/fluent_free_journey.md)** | Fluent API, Free Monad DSL | ~35 min | 22 |
 | **[Optics: Focus DSL](tutorials/optics/focus_dsl_journey.md)** | Type-safe path navigation, container widening | ~35 min | 29 |
-
-Perfect for developers who prefer learning by building. [Get started →](tutorials/tutorials_intro.md)
-
----
-
-## [Spring Boot Integration](spring/spring_boot_integration.md)
-
-Building enterprise applications with Spring Boot? The **hkj-spring-boot-starter** brings functional programming patterns seamlessly into your REST APIs, eliminating exception-based error handling whilst maintaining Spring's familiar conventions.
-
-**With Spring Boot Integration, you can:**
-
-* **Return Functional Types from Controllers:** Use `Either<Error, Data>`, `Validated<Errors, Data>`, and `CompletableFuturePath` as return types with automatic HTTP response conversion.
-* **Eliminate Exception Handling Boilerplate:** No more try-catch blocks or `@ExceptionHandler` methods; errors are explicit in your return types.
-* **Compose Operations Naturally:** Chain operations with `map` and `via` whilst preserving type safety and error information.
-* **Render Validation as One 422:** A mapper `parse` or `patch` result returned from a controller (or an `updateFrom` update applied first, via `.applyPath(current)`) renders as one response listing every bad field by path, status `hkj.web.validation-field-error-status` (default 422); no exception handler, no manual error DTO.
-* **Call Other Services Safely:** Generate declarative HTTP clients with `@HkjHttpClient` that return `EitherPath`/`VTaskPath` and decode the response back into a typed error, keeping the error channel intact across services.
-* **Accumulate Validation Errors:** Use `Validated` to collect **all** validation errors in a single request, improving user experience.
-* **Handle Async Operations:** Use `CompletableFuturePath` to compose asynchronous operations seamlessly.
-* **Monitor in Production:** Track EitherPath success rates, ValidationPath error distributions, and CompletableFuturePath async performance with Spring Boot Actuator metrics.
-* **Secure Functionally:** Integrate Spring Security with Either-based authentication and Validated-based authorisation logic.
-* **Zero Configuration Required:** Auto-configuration handles everything; just add the dependency and start coding.
-
-~~~admonish example title="Quick Example"
-```java
-@RestController
-@RequestMapping("/api/users")
-public class UserController {
-
-    @GetMapping("/{id}")
-    public Either<DomainError, User> getUser(@PathVariable String id) {
-        return userService.findById(id);
-        // Right(user) → HTTP 200 with JSON
-        // Left(UserNotFoundError) → HTTP 404 with error details
-    }
-
-    @PostMapping
-    public Validated<List<ValidationError>, User> createUser(@RequestBody UserRequest request) {
-        return userService.validateAndCreate(request);
-        // Valid(user) → HTTP 200
-        // Invalid(errors) → HTTP 400 with ALL validation errors
-    }
-}
-```
+| **[Optics: Batching & Coupled Updates](tutorials/optics/batching_journey.md)** | Optic-driven request batching, `Edits`, coupled fields | ~40 min | 13 |
+| **[Optics: Boundary Mapping](tutorials/optics/boundary_mapping_journey.md)** | Multi-edit and sparse updates, `@GenerateMapping`, the 422 leg | ~35 min | 13 |
+| **[Capstone: One Line, Six Layers](tutorials/capstone/capstone_journey.md)** | One pipeline across effects, optics, resilience and concurrency | ~30 min | 7 |
 ~~~
 
-**[Get Started with Spring Boot Integration →](spring/spring_boot_integration.md)**
-
----
-
-## [Testing With hkj-test](tooling/test_assertions.md)
-
-The **hkj-test** module ships fluent AssertJ assertion helpers for every Higher-Kinded-J type, so tests read in the same vocabulary as the code under test. Add it as a test-scope dependency and assert directly on the railway:
-
-```java
-import static org.higherkindedj.hkt.assertions.EitherAssert.assertThatEither;
-import static org.higherkindedj.hkt.assertions.MaybeAssert.assertThatMaybe;
-import static org.higherkindedj.hkt.assertions.TryAssert.assertThatTry;
-
-assertThatEither(result).isRight().hasRight(42);
-assertThatMaybe(value).isJust().hasValue("hello");
-assertThatTry(computation).isFailure().hasExceptionOfType(IOException.class);
-```
-
-Coverage spans the discriminated unions (`Either`, `Maybe`, `Try`, `Validated`, `Lazy`), the effect types (`IO`, `VTask`, `VStream`), the Reader / Writer / State trio, every monad transformer, the `Free` / `EitherF` algebras, the `List` / `OptionalKind` / `Stream` / `Id` Kind-narrowing wrappers, the `NonEmptyList` non-empty list, and the `VTaskPath` / `VStreamPath` / `VTaskContext` Path-and-context assertions. On Java 25 with `--enable-preview`, `import module org.higherkindedj.test;` brings every helper into scope in one line.
-
-**[Explore hkj-test →](tooling/test_assertions.md)**
-
----
-
-## Getting Started
-
-Ready to start? See the **[Quickstart](quickstart.md)** for Gradle and Maven setup (including required Java 25 preview flags) and your first Effect Paths in 5 minutes.
-
-For a one-page operator reference, see the **[Cheat Sheet](cheatsheet.md)**.
+Perfect for developers who prefer learning by building. [Get started →](tutorials/tutorials_intro.md)
 
 ---
 
 ## Documentation Guide
 
 ~~~admonish tip title="Recommended Starting Point"
-If you want working code immediately, start with the **[Quickstart](quickstart.md)**. For a deeper understanding, continue with the **Effect Path API** section below.
+If you want working code immediately, start with the **[Quickstart](quickstart.md)**. For a deeper understanding, continue with the **Effect Path API** chapter. Every chapter below unfolds to its reading order; the sidebar carries the same structure.
 ~~~
 
-### Effect Path API (Start Here)
+~~~admonish note title="Effect Path API (start here)" collapsible=true
 1. **[Quickstart](effect/quickstart.md):** Three runnable examples showing MaybePath, EitherPath, and ForPath in about 150 lines
 2. **[Core Paths](effect/effect_path_overview.md):** The railway model, the six core path types, composition, and basic ForPath comprehensions
 3. **[Optics Integration](effect/focus_integration.md):** Bridging Effect Paths with the Focus DSL
 4. **[Advanced Paths](effect/advanced_topics.md):** Free monads, effect handlers, contexts, ForPath parallelism, and resilience
 5. **[Reference](effect/capabilities.md):** Capability type classes, type conversions, compiler errors, and production readiness
+~~~
 
-### Monad Transformers
+~~~admonish note title="Optics" collapsible=true
+1. **[Quickstart](optics/quickstart.md):** Three runnable examples covering generated lenses, prisms and traversals, plus `@ImportOptics` for Jackson
+2. **[Annotations at a Glance](optics/annotations_at_a_glance.md):** Every annotation, what it generates, and when to reach for each one
+3. **[Fundamentals](optics/ch1_intro.md):** Lens, Prism, Affine, Iso, composition rules, and coupled fields
+4. **[Java-Friendly APIs](optics/ch4_intro.md):** Focus DSL, optics for external types, Kind field support, and the Fluent API
+5. **[Integration and Recipes](optics/ch5_intro.md):** Validation pipelines, core-type integration, and the cookbook
+6. **[Advanced Optics](optics/ch6_intro.md):** Free Monad DSL and interpreters for programs-as-data
+7. **[Reference](optics/ch7_intro.md):** Capabilities, conversions, compiler errors, production readiness, and consolidated decision trees
+~~~
+
+~~~admonish note title="Mapping at the Boundary" collapsible=true
+1. **[Introduction](mapping/ch_intro.md):** The mapper every service carries, and the one response that replaces it
+2. **[Basics](mapping/basics.md):** One spec interface, both directions, every bad field located
+3. **[Standard Codecs and Shared Vocabulary](mapping/codecs.md):** The stock `ValidatedPrism` leaves, custom codecs, and mix-in interfaces
+4. **[Beans and Sparse PATCH](mapping/beans_patch.md):** Bean-shaped wires and the `UpdateSpec` write-back
+5. **[Capstone](mapping/capstone.md):** One 422, every bad field, compiled and law-checked
+~~~
+
+~~~admonish note title="Monad Transformers" collapsible=true
 For the cases where the Path API does not fit (a different outer monad, polymorphic library code, or integrating with raw `Kind` shapes).
 
 1. **[Path or Transformer?](transformers/when_to_drop_to_transformers.md):** The triage page; read this first to know whether the rest of the chapter applies to you
@@ -356,28 +466,31 @@ For the cases where the Path API does not fit (a different outer monad, polymorp
 4. **[MTL Capabilities](transformers/mtl_capabilities.md):** Stack-independent capability abstractions for polymorphic library code
 5. **[Capstone](transformers/transformer_capstone.md):** End-to-end multi-capability workflow combining typed errors, configuration, audit, and async
 6. **[Common Compiler Errors](transformers/common_errors.md):** Six common errors and the fix for each
+~~~
 
-### Optics
-1. **[Quickstart](optics/quickstart.md):** Three runnable examples covering generated lenses, prisms and traversals, plus `@ImportOptics` for Jackson
-2. **[Annotations at a Glance](optics/annotations_at_a_glance.md):** Every annotation, what it generates, and when to reach for each one
-3. **[Fundamentals](optics/ch1_intro.md):** Lens, Prism, Affine, Iso, composition rules, and coupled fields
-4. **[Java-Friendly APIs](optics/ch4_intro.md):** Focus DSL, optics for external types, Kind field support, and the Fluent API
-5. **[Integration and Recipes](optics/ch5_intro.md):** Validation pipelines, core-type integration, and the cookbook
-6. **[Advanced Optics](optics/ch6_intro.md):** Free Monad DSL and interpreters for programs-as-data
-7. **[Reference](optics/ch7_intro.md):** Capabilities, conversions, compiler errors, production readiness, and consolidated decision trees
-
-### Effect Handlers
+~~~admonish note title="Effect Handlers" collapsible=true
 1. **[Effect Handlers Introduction](effect/effect_handlers_intro.md):** Motivation, terminology, and when to use
 2. **[Effect Handler Reference](effect/effect_handlers.md):** Defining, composing, and interpreting effects
 3. **[Payment Processing Example](examples/payment_processing.md):** Complete worked example with four interpreters
+~~~
 
-### Foundations (Reference)
+~~~admonish note title="Foundations (reference)" collapsible=true
 These sections document the underlying machinery. Most users can start with Effect Paths directly.
 
 1. **[Higher-Kinded Types](hkts/hkt_introduction.md):** The simulation and why it matters
 2. **[Type Classes](functional/ch_intro.md):** Functor, Monad, and other type classes
 3. **[Core Types](monads/ch_intro.md):** Either, Maybe, Try, and other effect types
 4. **[Order Example Walkthrough](hkts/order-walkthrough.md):** A complete workflow with monad transformers
+~~~
+
+~~~admonish info title="Key Takeaways"
+* **One vocabulary**: `map`, `via` and `recover` work the same across absence, typed errors, exceptions, accumulating validation, deferred I/O and virtual-thread concurrency
+* **Effects and structure compose**: `.focus(path)` takes an Effect Path through a Focus Path and back, which no other Java library offers
+* **Optics are generated, not written**: `@GenerateLenses`, `@GenerateFocus`, `@GeneratePrisms`, `@GenerateTraversals` and `@ImportOptics` cover records, sealed types, collections and types you don't own
+* **The boundary never loses an error**: `@GenerateMapping` derives both directions, locates every bad field, and renders as one 422 at a Spring controller
+* **Everything is law-checked**: the optic and mapping laws ship in `hkj-test`, and the library compiles under its own checker
+* **Start with the [Quickstart](quickstart.md)**, and reach for the foundations only when the [triage page](transformers/when_to_drop_to_transformers.md) says so
+~~~
 
 ### History
 
@@ -88665,7 +88778,7 @@ List<VTask<Result>> tasks = ids.stream()
 This page documents the evolution of Higher-Kinded-J from its initial release through to the current version. Each release builds on the foundations established by earlier versions, progressively adding type classes, monads, optics, and the Effect Path API.
 
 ~~~admonish info title="What You'll Find"
-- Detailed release notes for recent versions (0.3.0–0.4.10) with links to documentation
+- Detailed release notes for recent versions (0.3.0–0.4.11) with links to documentation
 - Summary release notes for earlier versions (pre-0.3.0)
 - Links to GitHub release pages for full changelogs
 ~~~
@@ -88674,89 +88787,78 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 
 ## Recent Releases
 
-### 0.4.10-SNAPSHOT (Latest)
+### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
 
-- **The mapping documentation becomes its own chapter**: the record-mapping material moved from a single page under Optics into a dedicated [Mapping at the Boundary](mapping/ch_intro.md) chapter (basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing), opening with a problem-first introduction and closing with a compiled, law-checked capstone: [One 422, Every Bad Field](mapping/capstone.md). The old `optics/record_mapping.html` URL redirects to the new chapter.
-- **`@GenerateTraversals` sees a `Collection` component, and says so when it cannot see one** ([#756](https://github.com/higher-kinded-j/higher-kinded-j/issues/756)): `@GenerateTraversals` asks the `TraversableGenerator` SPI for each record component, and no generator claimed `java.util.Collection`, so `record Job(Collection<String> tags, List<String> notes)` generated `notes()` and nothing else — no error, no warning, and the gap surfaced as a missing method at the call site. `@GenerateFocus` had recognised `Collection` since #725, which left the two annotations disagreeing about a container. A `CollectionGenerator` now ships with the JDK generators, and the traversal it writes calls the new `Traversals.traverseCollection`, which `Traversals.forCollection()` now delegates to as well: a set source comes back an unmodifiable set in its own iteration order, and every other source comes back a list. The decision is made in that one helper rather than written into generated source, so a `Collection` reached through `@GenerateTraversals`, `@GenerateFocus`, `@ImportOptics` and `@ThroughField` rebuilds the same way. `@ThroughField` auto-detects a `Collection` field too — the interface itself, not a `Deque` or a `Queue`, which the rebuilt list could not be handed back to — and `@ImportOptics` names `Traversals.forCollection()` for it. The silence is fixed on its own terms: a component that holds elements but reaches no method — a `Collection` or `Map` subtype no generator on the processor path supports, or a claimed container whose element type cannot be read — is reported as a **note** on the component, in the what/why/fix format. A component that is not a container at all is passed over silently, as before. See [Collection Components](optics/traversals.md#collection-components) and [Compiler Errors](optics/compiler_errors.md#generatetraversals-no-traversal-was-generated-for-component-xy-of-type-dequet-a-note).
+### [v0.4.10](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.10) (30 August 2026)
 
-  _Behaviour change, a new note:_ a `@GenerateTraversals` record with a `Deque`, `Queue`, `SortedMap` or `ArrayList` component, or a raw `List` or `Set`, compiled silently in 0.4.9 and now compiles with a note at that component. It is a note rather than a warning on purpose: the annotation has no per-component opt-out and a processor warning cannot be suppressed, so a warning would have failed every `-Werror` build with no remedy short of changing the record. Nothing generated changes, and no build that passed fails. Declare the component as a container a generator supports — `List`, `Set`, `Collection`, `Map`, `Optional`, an array, or a plugin-supported type — or put a `TraversableGenerator` for its type on the annotation processor path. The limits `Traversals.forCollection()` states are inherited by the generated traversal: a `SortedSet` source keeps its elements but not its comparator, and a source that is neither a list nor a set comes back a list.
+This release gives the mapper a stock vocabulary and takes every generating annotation through a generics pass: each one now emits source the consuming build compiles under `-Werror`, or explains at the declaration what it needs instead. The book gains a **Mapping at the Boundary** chapter with a law-checked capstone, and the house style it introduced now runs through the Optics and Resilience chapters.
 
-- **`@GenerateMapping` reads a generic mix-in under the spec's instantiation** ([#752](https://github.com/higher-kinded-j/higher-kinded-j/issues/752)): a mix-in declaring type parameters was refused at the declaration, with a message saying substitution "is not supported yet". It is supported now: a member inherited from `Emails<T>` is read as the spec has it, so `extends Emails<EmailAddress>` contributes `ValidatedPrism<String, EmailAddress>` and the generated Impl carries that rather than a name nothing declares. This is the shape a shared vocabulary interface exists for, and the previous remedy, declaring the members directly on each spec, cost exactly the reuse it was there to provide. Every place a spec member's type is read now goes through one helper: the two that reach generated code (the element-mapped leaf fields and the `@MapField` rename stubs), the three that compare a member against the instantiated pair (`findLeaf`, the derived-field `Getter` shape, and the hand-written-mapper heuristic, that last reading both halves of the signature), and two diagnostics where a free type variable had been leaking into the message text. A **generic** ancestor reached through a raw supertype is still refused where it contributes something to read, because erasure travels downwards and leaves the spec inheriting members it never declared; a non-generic one is untouched by erasure and is left alone. The diagnostic names the interface whose clause is raw, which is not always the spec's own, and a raw or wildcard argument on the spec's own mix-in clause is refused for the same reason its `MappingSpec` clause always was. See [Generic Specs](mapping/generics.md#generic-mix-ins).
+**Mapping at the Boundary** ([#670](https://github.com/higher-kinded-j/higher-kinded-j/issues/670), [#671](https://github.com/higher-kinded-j/higher-kinded-j/issues/671), [#672](https://github.com/higher-kinded-j/higher-kinded-j/issues/672), [#690](https://github.com/higher-kinded-j/higher-kinded-j/issues/690), [#752](https://github.com/higher-kinded-j/higher-kinded-j/issues/752))
 
-  _Behaviour change, accepting where it refused:_ a spec extending a generic mix-in compiled with an error before and generates now, so nothing that worked stops working. The one direction to check is a spec that was relying on the refusal to catch a raw `extends` clause: that is still refused when the ancestor beneath it is generic, with the message changed from "is generic" to "is extended raw by ..."; a raw route to a non-generic ancestor is now accepted, since nothing of its is erased.
+- **A chapter of its own**: the record-mapping material becomes [Mapping at the Boundary](mapping/ch_intro.md), covering basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing. It opens with the response a client sees and closes with a compiled, law-checked capstone, [One 422, Every Bad Field](mapping/capstone.md). The old `optics/record_mapping.html` URL redirects. Two hands-on journeys sit beside it: [Batching & Coupled Updates](tutorials/optics/batching_journey.md) and [Boundary Mapping](tutorials/optics/boundary_mapping_journey.md).
+- **Stock codec vocabulary**: `StandardCodecs` ships one `ValidatedPrism` per standard conversion family (`uuid`, `uri`, `localDate`, `instant`, `offsetDateTime`, `enumByName`, `bigDecimal`, the numeric-from-string trio, `booleanStrict`, `currency`, `locale`), so a typical DTO boundary maps with no hand-written leaves. Every codec accepts exactly the canonical form it renders, and every failure is a located `FieldError` that feeds the 422 leg unchanged. See [Standard codecs](mapping/codecs.md#standard-codecs).
+- **`ValidatedPrism.canonical(message, parse, render)`** (plus a `FieldError` overload) wraps a throwing parser and a total render with the build-parse section law guarded per value: an accepted source must render back to itself, so a custom-canon codec is lawful without hand-writing the check. See [Laws](optics/validated_prism.md#laws).
+- **Records of any width**: `parse`, the validated `patch` and fallible `@GenerateMerge` legs assemble records beyond 16 components through chunked `Validated.fields()` ladders, with the same located labels and declaration-order accumulation, law-checked at width. The only remaining bound is the JVM's constructor-slot limit on the record itself; the hand-written `fields()` ladder keeps its 16-field arity. See [Diagnostics and limits](mapping/testing.md#diagnostics-and-limits).
+- **One leaf vocabulary across tiers**: the sparse `UpdateSpec` tier lifts element leaves over present `List`, `Optional` and `Map` properties exactly as the dense tiers do, every failing element located (`phones.1`), so one mix-in vocabulary serves a spec and its PATCH sibling. See [Sparse PATCH write-back](mapping/beans_patch.md#sparse-patch-write-back-updatespec).
+- **Generic mix-ins**: a spec may extend a mix-in declaring type parameters, so `extends Emails<EmailAddress>` contributes `ValidatedPrism<String, EmailAddress>`, read under the spec's instantiation. A generic ancestor reached through a raw `extends` clause is still refused, naming the interface whose clause is raw. See [Generic Specs](mapping/generics.md#generic-mix-ins).
 
-- **A `Set` or `Collection` component reaches a traversal that rebuilds it** ([#725](https://github.com/higher-kinded-j/higher-kinded-j/issues/725)): `@GenerateFocus` recognises five containers by name, and widened three of them — `List`, `Set` and `Collection` — through the same no-argument `.each()`. That method carries a `List` traversal behind an unchecked cast, so a `Set` component compiled and then threw `class java.util.HashSet cannot be cast to class java.util.List` on its first traversal, read or write; a `Collection` component threw the same way whenever the runtime value was not a `List`, and worked by accident when it was. No `Set`-valued Focus path has ever worked. The recognised-container table now pairs each type with the `Each` that rebuilds it: `List` keeps the no-argument `.each()`, a `Set` widens through `EachInstances.setEach()`, and a `Collection` through the new `EachInstances.collectionEach()`. The tiers are unchanged, so no generated signature moves. See [Custom Containers](optics/focus_containers.md#supported-container-types).
+_Behaviour changes:_ a present same-typed identity container in a sparse PATCH now carries the dense tiers' null scan (`tags.1: must not be null` rather than a null reaching the domain); an `Optional`-typed PATCH property with a differing element type, previously rejected, patches through its element leaf; a spec extending a generic mix-in, previously refused, generates.
 
-  _Behaviour change, source-breaking at the declaration:_ naming an `Each` gives the widening type arguments javac infers from the component, which is the same rule raw and wildcard-carrying SPI containers already fall under. A `Set` or `Collection` component that is raw, or carries a wildcard of any kind — `Set<?>`, `Set<? extends T>`, `Set<? super T>`, `Collection<?>` — is now rejected where it is declared, at any nesting depth the analysis reaches: `List<Set<?>>` and `Optional<Set<?>>` at the default settings, and `Map<String, Set<?>>` under `widenCollections = true`. Every one of those compiled in 0.4.9 and threw `ClassCastException` on the first traversal, so nothing that worked stops working. Name the type argument — `Set<Object>` for an unbounded wildcard, `Set<Leaf>` for `? extends Leaf` — or drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance and take the component as written. `Optional`, `Maybe` and `List` are unaffected and still take a wildcard silently. See [Compiler Errors](optics/compiler_errors.md#generatefocus-record-component-xy-has-a-wildcard-type-argument-in-set-extends-t).
+**Generated optics for generic types** ([#721](https://github.com/higher-kinded-j/higher-kinded-j/issues/721), [#723](https://github.com/higher-kinded-j/higher-kinded-j/issues/723), [#730](https://github.com/higher-kinded-j/higher-kinded-j/issues/730), [#733](https://github.com/higher-kinded-j/higher-kinded-j/issues/733), [#736](https://github.com/higher-kinded-j/higher-kinded-j/issues/736), [#740](https://github.com/higher-kinded-j/higher-kinded-j/issues/740), [#742](https://github.com/higher-kinded-j/higher-kinded-j/issues/742), [#746](https://github.com/higher-kinded-j/higher-kinded-j/issues/746), [#750](https://github.com/higher-kinded-j/higher-kinded-j/issues/750))
 
-  _Behaviour change, one set-rebuild policy:_ `EachInstances.setEach()` traversed through `Set.copyOf`, whose iteration order the JDK randomises per JVM run and which rejects a null element — so the same modification returned a differently-ordered set on each run, and `getAll`, which kept source order, disagreed with it. It now uses `Traversals.forSet()`, which every other annotation already emitted, so a `Set` reached through `@GenerateFocus`, `@GenerateTraversals`, `@ImportOptics` and `@ThroughField` rebuilds the same way: source iteration order preserved, nulls carried through, and — as `traverseList` already did — an **unmodifiable** set handed back. `Traversals.forSet()` and `Traversals.traverseSet` previously returned a mutable `LinkedHashSet`; code that mutated the result of a set traversal in place now meets an `UnsupportedOperationException`, and should build its own copy.
+Every processor now reads a member or type under the *instantiation* the spec names rather than the source's own declaration, so a generic spec generates the signature it means, whatever it calls its parameters. Axis tests hold each generating annotation to the consuming build's `-Xlint:unchecked,rawtypes -Werror`.
 
-  _Also:_ `Traversals.forCollection()` and `EachInstances.collectionEach()` are new. A `Collection` says nothing about ordering or uniqueness, so they rebuild the shape they were handed — a set source comes back a set, anything else a `List`. Rebuilding every source as a list would let a modification that maps two elements onto one value leave duplicates in a collection that had none. Two limits follow from `Collection` being all the declaration says: a `SortedSet` source keeps its elements but not its comparator, and a source that is neither `List` nor `Set` — an `ArrayDeque`, a `PriorityQueue` — comes back a `List`, so the identity modification does not return an *equal* collection; those types inherit identity `equals`, and no rebuild could satisfy it.
+- **`@ImportOptics` declares the type parameters its signatures name**, in the spec's declaration order with bounds carried along: `BoxOpticsSpec<U> extends OpticsSpec<Box<U>>` generates `<U>`, and a concrete instantiation declares none. An optic method declaring parameters of its own is refused. `@GeneratePrisms` on a generic sealed hierarchy emits parameterised prisms. See [Generic spec interfaces](optics/optics_spec_interfaces.md#generic-spec-interfaces).
+- **`@InstanceOf` narrows to what its test can check**: the generated `instanceof` is written under the type arguments the source type pins (`Circle<U>` from `Shape<U>`), an unbounded wildcard elsewhere, and an array target through its component, and the generated methods no longer need `@SuppressWarnings`. A focus asking for more is refused with both remedies, widening to the wildcard or narrowing through `@MatchWhen`. See [Parameterised targets](optics/optics_spec_interfaces.md#parameterised-targets).
+- **`@GenerateIsos` answers a generic declaration at the declaration**: an iso naming a type variable, an instance method, one taking arguments, one the generated package cannot see, or a return type that is not a two-argument `Iso` is each refused where it is written, with the remedy, rather than reported by javac inside the generated file. See [Compiler Errors](optics/compiler_errors.md#generateisos-the-iso-returned-by-x-names-a-type-variable).
+- **`@ViaCopyAndSet(copyConstructor = ...)` selects the constructor it names**: the attribute resolves to the supertype of `S` it stands for and is emitted as a cast on the argument, `new Config((BaseConfig) source)`, which is what picks between overloaded copy constructors. A name that does not resolve, is not a supertype, cannot be seen, or no constructor accepts is refused at the declaration. See [Copy Strategies](optics/copy_strategies.md#viacopyandset-legacy-types-with-a-copy-constructor-and-setters).
+- **Type-use annotations reach generated source**: a generated signature now carries the annotations the author wrote at every depth, so `@Nullable String note` stays `@Nullable` in the generated lens, which matters inside a consumer's `@NullMarked` package where a bare type means non-null. One exception by design: a focus widened through `.nullable()` drops the nullness the widening consumed, so `@Nullable String label` is `AffinePath<Box, String>` while `List<@Nullable String> tags` is `TraversalPath<Box, @Nullable String>`.
 
-- **A generated prism's focus has to be a variant of its source** ([#755](https://github.com/higher-kinded-j/higher-kinded-j/issues/755)): a prism runs both ways, and every prism generated from a spec interface builds back with identity — `value -> value`, the function `Prism.build` stands up. That is only a source when the focus is one, and nothing checked it. A focus that was a *value* rather than a variant, `Prism<JsonNode, String>`, reached javac as *"incompatible types: cannot infer type-variable(s) S,A,T,T"* inside the generated file, with no line of the spec interface in it and no diagnostic from the processor at all. The requirement belongs to the prism rather than to either hint, so `@InstanceOf` and `@MatchWhen` are now both held to it, at the declaration, in what/why/fix form. It is asked after the hint parses, so a method carrying no hint is still told that first — the nearer problem. See [Compiler Errors](optics/compiler_errors.md).
+_Behaviour changes, source-breaking in narrow places:_ a generated `@ImportOptics` method's arity can fall (`OpticsSpec<Pair<A, String>>` now generates `<A>`, not `<A, B>`), so a call supplying explicit type witnesses stops compiling; drop them, the inferred result is unchanged. An `@InstanceOf` focus naming a type argument the source does not pin (`Prism<Shape, Circle<T>>` on `OpticsSpec<Shape>`), and a target that is a parameterised member of a generic type, are refused. A `copyConstructor` name that resolves now emits a cast, which can select a different constructor than ran in 0.4.9; check overloaded types with `LensLaws`. Generated signatures that now carry `@Nullable` can change what a nullness checker reports in the consuming build.
 
-  _Documentation change:_ the shape was one the documentation recommended in three places, none of which compiled — `@MatchWhen`'s own javadoc (`Prism<JsonNode, String> text()`), the [Spec Interfaces](optics/optics_spec_interfaces.md) page (`Prism<Value, String> string()`), and that page's Protocol Buffers suggestion, where a oneof field's type is often a scalar. All three now focus a variant, and the page says why. Where the value type is genuinely the point, `Prism.of` with a real build side is the hand-written route; the spec interface has no way to name one.
+**The Focus DSL gives one answer** ([#711](https://github.com/higher-kinded-j/higher-kinded-j/issues/711), [#718](https://github.com/higher-kinded-j/higher-kinded-j/issues/718), [#719](https://github.com/higher-kinded-j/higher-kinded-j/issues/719), [#725](https://github.com/higher-kinded-j/higher-kinded-j/issues/725), [#756](https://github.com/higher-kinded-j/higher-kinded-j/issues/756))
 
-  _Behaviour change, source-breaking:_ a spec declaring such a prism compiled in 0.4.9 only in the sense that the processor accepted it — the generated file never compiled — so nothing that ever built can break. What changes is where the error appears: on the offending method, naming the remedy, rather than in a file the author never wrote.
+- **One widening analysis**: `ShapesFocus.tags()` and `OuterFocus.shapes().tags()` come from one declaration and now report one path type. A navigation method composes the static Focus method for the field it reaches, so the two cannot drift, and a navigated path carries its field-name segments for `pathString()`. See [Path widening](optics/focus_navigation.md#path-widening).
+- **`Set` and `Collection` components widen through the `Each` that rebuilds them**: a `Set` through `EachInstances.setEach()`, a `Collection` through the new `EachInstances.collectionEach()`, and `@GenerateTraversals` gains a `Collection` generator. Every route to either, whether Focus, `@GenerateTraversals`, `@ImportOptics` or `@ThroughField`, bottoms out in one rebuild policy in `Traversals`: source iteration order preserved, nulls carried through, an unmodifiable set for a set source and an unmodifiable list for anything else. See [Supported container types](optics/focus_containers.md#supported-container-types) and [Collection Components](optics/traversals.md#collection-components).
+- **`@Nullable` detection reaches every recognised annotation**: JSpecify's (`TYPE_USE`), JetBrains', AndroidX's and SpotBugs' `@Nullable` now widen to an `AffinePath` alongside JSR-305's and Jakarta's, and a container decides its own widening before `@Nullable` is consulted. See [Focus DSL Reference](optics/focus_reference.md).
+- **A container the widening cannot be written for is explained at the declaration**: an SPI container with a raw or wildcard type argument (`Either<String, ? extends Leaf>`, `Set<?>`) has no ground instantiation to infer its optic instance from, so the diagnostic names the component and the concrete alternative, and the generated file still compiles, leaving one message rather than two. See [Compiler Errors](optics/compiler_errors.md#generatefocus-record-component-xy-has-a-wildcard-type-argument-in-set-extends-t).
+- **`@GenerateTraversals` says when it passes over a container**: a component that is a `Collection` or `Map` by erasure and reaches no generator (a `Deque`, a `SortedMap`, a raw `List`) draws a what/why/fix **note** where it is declared. A note rather than a warning, because the annotation has no per-component opt-out and a processor warning cannot be suppressed under `-Werror`. See [Compiler Errors](optics/compiler_errors.md#generatetraversals-no-traversal-was-generated-for-component-xy-of-type-dequet-a-note).
 
-- **An `@InstanceOf` prism narrows to what its test can check** ([#733](https://github.com/higher-kinded-j/higher-kinded-j/issues/733)): the annotation takes a class constant, which is always raw, so a prism onto a parameterised target narrowed through a raw `instanceof` and handed the value back under whatever instantiation the caller asked for. `ShapeOptics.<String>circle()` matched a `Circle<Integer>`, returned a populated `Optional<Circle<String>>`, and threw `ClassCastException` on the first read of `tag()`. The generated test is now written under the type arguments the *source type* pins down — `Circle<X> implements Shape<X>` reached from `Shape<U>` pins `X` to `U`, so the test is `source instanceof Circle<U>`, which javac itself accepts as a checked one — and an unbounded wildcard wherever the source pins nothing, so `Prism<Shape, Circle<?>>` is generated as `source instanceof Circle<?>`. An array target is narrowed through its component, `List[].class` reaching `source instanceof List<?>[]`, because a class constant naming an array is exactly as raw as one naming its element type. A focus asking for more than that is refused at the declaration, naming both remedies: widen it to the wildcard, or narrow through `@MatchWhen`, which reads the argument off the source rather than inventing it. The `@SuppressWarnings({"unchecked", "rawtypes"})` those methods had been carrying is gone with the hazard it was hiding. See [Spec Interfaces](optics/optics_spec_interfaces.md#parameterised-targets) and [Compiler Errors](optics/compiler_errors.md#instanceof--declares-its-focus-as-circlet-which-the-test-cannot-narrow-to).
+_Behaviour changes, each replacing a path that threw `ClassCastException` on first use:_ a raw or wildcard `Set` or `Collection` component under `@GenerateFocus` is rejected; name the argument, or keep `@GenerateLenses` and `@GenerateTraversals` alone. Three navigator return types move to what the static method reports: a `Collection` *subtype* such as `ArrayList` is a `FocusPath` over the container; an SPI container of non-navigable elements stops at the container until the declaring record sets `widenCollections = true`; a nested `List<Optional<String>>` composes to the leaf, so drop the trailing `.some()`. A component carrying one of the four newly recognised `@Nullable`s generates `AffinePath` where it generated `FocusPath`; read it with `getOptional`. `Traversals.forSet()` and `traverseSet` hand back an **unmodifiable** set (previously a mutable `LinkedHashSet`), and `EachInstances.setEach()` keeps source order across JVM runs.
 
-  _Behaviour change, source-breaking in three narrow places:_ a spec whose `@InstanceOf` focus names a type argument the source type does not pin — `Prism<Shape, Circle<T>>` on `OpticsSpec<Shape>`, or `Prism<Object, List<String>[]>` for an `@InstanceOf(List[].class)` — compiled with warnings in 0.4.9, and is now refused; widen the focus to `Circle<?>` or `List<?>[]`, or narrow through `@MatchWhen`. A prism whose focus does not accept the class the annotation names is refused too, where before it generated source javac rejected in a file the author never wrote. And a target that is a parameterised member of a *generic* type — `Outer<X>.Inner<Y>` — is refused, because the test cannot name it with its own arguments at all; declare the member `static`, or use `@MatchWhen`. Prisms whose arguments the source does pin are unaffected, and lose only the suppression.
+**Traversals for every component shape** ([#721](https://github.com/higher-kinded-j/higher-kinded-j/issues/721))
 
-- **`@GeneratePathBridge` emits a bridge the consuming build compiles** ([#748](https://github.com/higher-kinded-j/higher-kinded-j/issues/748)): the processor accepted several shapes it had no compiling rendering of, and the author met the result as an error in a file they never wrote. The whole `IO` row was non-functional: it mapped to `Path.io`, which takes a `Supplier`; the factory that takes an `IO` is `Path.ioPath`. So every `IO<T>` bridge the annotation advertised was source javac refused. A `Validated` whose error type is a wildcard emitted a `ValidationPath` and a `Semigroup` naming that type twice, which capture makes two different types. A raw type anywhere the bridge copies, `Optional` as a return type or `List` as a parameter, landed as a `[rawtypes]` warning in the one file the author's own `@SuppressWarnings` cannot reach. An inherited `@PathVia` was invisible, because the walk read enclosed elements rather than members, so a bridge for `StringStore extends Store<String>` was generated with a constructor and nothing else, silently. Members are now read under the annotated interface's own instantiation, an inherited `<R extends T>` becoming `<R extends String>` where the bridge can name it, and deduplicated so that two unrelated superinterfaces declaring one method do not produce a class that declares it twice. Along the way: a `throws` clause is carried across rather than dropped, varargs are kept rather than erased to an array, the delegate is called as `this.delegate` so a parameter named `delegate` no longer redirects the call to itself, an appended `Semigroup` takes a name no parameter has claimed, and a generic method's call carries an explicit type witness so a self-referential bound such as `<R extends Enum<R>>` still infers. Six shapes with no correct rendering are refused at the declaration instead, each with what, why and a remedy: see [Compiler Errors](optics/compiler_errors.md#generatepathbridge-and-pathvia).
+- **`@GenerateTraversals` reads a wildcard type argument**: `List<? extends Leaf>` focuses `Leaf`, and `?` or `? super T` focuses `Object`, for `List`, `Map` and every HKJ and third-party container alike. Four more shapes now generate: an array of a type that cannot be created by name (`List<Leaf>[]`, `Leaf[][]`), a primitive array (boxed through, unboxed back), a generic record (`record Holder<T>(List<T> items)` gets `<T>` on the method), and a record naming its own `F`. Every container shape is compiled through the real processor by a sweep that also pins the element type each one focuses. See [Wildcard Element Types](optics/traversals.md#wildcard-element-types) and [Generic Records](optics/traversals.md#generic-records).
+- **Map traversals are linear**: `Traversals.traverseMapValues` builds the result once rather than copying the map per entry (a 16 000-entry map traverses in 1.3 ms, down from 851 ms), and accepts a null key or a null the function hands back.
 
-  _Behaviour change, source-breaking in three narrow places:_ a varargs delegate's bridge method is now varargs rather than `T[]`, so an existing call passing a bare `null` for that parameter draws *"non-varargs call of varargs method with inexact argument type"*, a mandatory warning and therefore a failure under `-Werror`; write `(String[]) null`. A raw effect return type and a wildcard `Validated` error type previously generated source (uncompilable, or warning-laden) and are now refused at the declaration; name the type arguments. And an interface with no `@PathVia` method anywhere now draws a processor warning, which cannot be suppressed and so fails a `-Werror` build; the annotation is not inherited by an override, so a method overriding an annotated one needs its own. Bridges that already compiled are unaffected, apart from picking up any `@PathVia` methods they inherit.
+**Spec interfaces explain what they cannot generate** ([#712](https://github.com/higher-kinded-j/higher-kinded-j/issues/712), [#723](https://github.com/higher-kinded-j/higher-kinded-j/issues/723), [#755](https://github.com/higher-kinded-j/higher-kinded-j/issues/755))
 
-- **`@ImportOptics` declares the type parameters the generated signature names** ([#730](https://github.com/higher-kinded-j/higher-kinded-j/issues/730)): a generated optic method took its type parameters from the **source type's own declaration** while building the rest of the signature from the instantiated source type, so the two agreed only by name coincidence. A spec that renamed them — `interface BoxOpticsSpec<U> extends OpticsSpec<Box<U>>` — emitted `static <T> Lens<Box<U>, String> label()`, which javac rejected inside the generated file; a spec naming a concrete instantiation, `OpticsSpec<Box<String>>`, declared an unused `<T>`; a partial application, `OpticsSpec<Pair<A, String>>`, declared `<A, B>` where nothing could ever infer `B`; and a generic spec over a *non-generic* source, `Prism<Shape, Circle<T>>` on `OpticsSpec<Shape>`, declared nothing at all and named `T` anyway. Each method now declares the parameters its own source and focus types reach, in the spec's declaration order, carrying along any that a kept parameter's bound names so the bound still resolves. An optic method that declares parameters of *its own* is rejected at the declaration, rather than generating a method no call could resolve. An `@InstanceOf` prism onto a parameterised target answered its own `unchecked`/`rawtypes` warnings, since the class constant it tests carries no type arguments; [#733](https://github.com/higher-kinded-j/higher-kinded-j/issues/733) then removed the need for them by narrowing the test to what the source type pins down. See [Spec Interfaces](optics/optics_spec_interfaces.md#generic-spec-interfaces).
+- **A generated prism's focus is a variant of its source**: `@InstanceOf` and `@MatchWhen` are both held to the rule at the declaration, since a prism built back with identity needs a focus that is itself a source. The book's examples now focus a variant, and `Prism.of` is the route where the value type is the point. See [Spec Interfaces](optics/optics_spec_interfaces.md).
+- **A `default` method on a spec interface is explained**: a method body cannot be read during annotation processing, so the diagnostic names the two alternatives, a `static` method on the interface or a utility class calling the generated statics, rather than generating a stub. See [Compiler Errors](optics/compiler_errors.md#xopticsspecfoo-is-a-default-method).
+- **One error per problem**: a rejected `@InstanceOf` target, an undetectable `@ThroughField` container or an unresolvable `copyConstructor` reports once, without a second "requires a hint annotation" message.
 
-  _Behaviour change, source-breaking for explicit type arguments:_ a generated method's arity can fall. `OpticsSpec<Pair<A, String>>` generated `<A, B> … left()` and now generates `<A> … left()`; `OpticsSpec<Box<String>>` generated an unused `<T>` and now generates no parameters at all. Both compiled in 0.4.9, so a call site that supplied the witnesses explicitly — `PairOptics.<String, Object>left()` — stops compiling. Drop the explicit arguments and let inference do it; the inferred result is unchanged. A spec that renamed the source type's parameters never compiled at all, so nothing can depend on that.
+**`@GeneratePathBridge` emits a bridge the consuming build compiles** ([#746](https://github.com/higher-kinded-j/higher-kinded-j/issues/746), [#748](https://github.com/higher-kinded-j/higher-kinded-j/issues/748))
 
-- **`@ViaCopyAndSet(copyConstructor = ...)` reaches the generated code** ([#723](https://github.com/higher-kinded-j/higher-kinded-j/issues/723)): the attribute was read, carried through the analyser and stored on the strategy, and then dropped — the generator's two branches built the same `new SourceType(source)`, so a spec that named a copy constructor parameter type silently got the default. The branch was covered by tests the default arm satisfied equally, so nothing caught it. The name now resolves to the supertype of `S` it stands for and is emitted as a cast on the argument, `new Config((BaseConfig) source)` — which is what picks between overloaded copy constructors, the one case `new Config(source)` cannot express, since a lone `Config(BaseConfig other)` already takes the source by widening. The supertype is cast as `S`'s own `extends` clause instantiates it, so a base declared `Holder<String>` is cast as `Holder<String>` rather than raw — name the class alone, `com.example.Holder`, and the processor supplies the arguments. Naming `S` itself emits no cast. A name that does not resolve — the attribute is a plain string, so it is not read against the interface's imports — or one naming a type `S` does not extend or implement is now rejected at the declaration, rather than generating a cast javac cannot compile — as are two more the cast introduces: a supertype the generated class cannot see, and one no constructor of `S` accepts. See [Copy Strategies](optics/copy_strategies.md#viacopyandset-legacy-types-with-a-copy-constructor-and-setters) and [Compiler Errors](optics/compiler_errors.md).
+Members are read under the annotated interface's own instantiation and deduplicated across superinterfaces, with `throws` carried, varargs kept, a self-referential bound still inferring, and the bridge class declaring the interface's type parameters, so a generic service interface bridges cleanly under `-Werror`. `IO<T>` methods bridge through `Path.ioPath`, an inherited `@PathVia` is picked up, and the six shapes with no correct rendering are explained at the declaration. See [Compiler Errors](optics/compiler_errors.md#generatepathbridge-and-pathvia).
 
-  _Behaviour change, both ways:_ the attribute was ignored outright before, so a spec that set it compiled and silently got `new Config(source)`. A name that resolves to a supertype now emits a cast, which can select a **different** copy constructor than the one that ran in 0.4.9 — and a copy constructor can only copy what its parameter type can see, so a narrower one drops the state declared below it. Check any spec that sets `copyConstructor` against an overloaded type, and run `LensLaws` over it. A name that was previously discarded — a simple name rather than a fully qualified one, one carrying type arguments, a non-supertype, a package-private type, or one no constructor accepts — is now rejected at the declaration; qualify it, or drop the attribute to restore the 0.4.9 behaviour exactly.
+_Behaviour changes:_ a varargs delegate's bridge method is varargs, so a bare `null` argument now needs `(String[]) null`; a raw effect return type, a wildcard `Validated` error type, and a `static` or `private` `@PathVia` method are refused; an interface with no `@PathVia` method draws a processor warning.
 
-  _Also:_ the same one-error-per-problem rule now holds for the two sibling hints. A rejected `@InstanceOf` target or an undetectable `@ThroughField` container used to draw its own error **and** a misleading "requires a … hint annotation" from the caller; each parse method now reports where the problem is found, and all three assert `hadErrorCount(1)`.
+**Effect handlers** ([#697](https://github.com/higher-kinded-j/higher-kinded-j/issues/697), [#699](https://github.com/higher-kinded-j/higher-kinded-j/issues/699))
 
-- **`@GenerateTraversals` reads a wildcard type argument** ([#721](https://github.com/higher-kinded-j/higher-kinded-j/issues/721)): a component written `List<? extends Leaf>` copied its type argument verbatim into the generated optic, which emitted `new Traversal<Holder, ? extends Leaf>() {` — a wildcard where javac wants a class or interface — so the generated file did not compile. It was not confined to third-party containers: `List` and `Map<String, ? extends Leaf>` failed as readily as `Either<String, ? extends Leaf>`, as did every unbounded and super-bounded form, and `Map<?, Leaf>`, where the wildcard sits in an argument the generator does not even focus. The argument is now resolved where it is read, the way `@GenerateFocus` reads it wherever it looks inside a container — `? extends T` is `T`, `?` and `? super T` are `Object` — so `HolderTraversals.items()` hands back `Traversal<Holder, Leaf>`. See [Wildcard Element Types](optics/traversals.md#wildcard-element-types).
+- **`@ComposeEffects` generates typed composition support**: `injectX()` returns `Inject<XKind.Witness, …>`, `functor(...)` takes one `Functor` per effect and returns the composed `EitherFFunctor`, and `BoundSet`'s components are each algebra's `Bound`, with no casts and no suppression. See [Composing effects](effect/effect_handlers.md#composing-effects).
+- **`@EffectAlgebra` accepts any name for the result type parameter**, so `RenamedOp<T>` generates as `Op<A>` does, and the three permit shapes it cannot generate for (dropping, pinning or bounding the algebra's parameter) are explained at the declaration. See [Defining effects](effect/effect_handlers.md#defining-effects).
 
-  _Also:_ the generated map traversal calls `Traversals.traverseMapValues` rather than rebuilding the map from a list of entries, four statements becoming one, and that helper stopped copying the map it is building on every entry — a 16 000-entry map traverses in 1.3 ms where it took 851 ms, and `Traversals.forMapValues()` was already on that quadratic path. `Traversals.traverseList` takes its function as `Function<? super A, ? extends Kind<F, ? extends B>>`, matching `traverseSet`, `traverseArray` and `traverseMapValues`, which lets the first two drop an unchecked cast each, and its list as `List<? extends A>`, which is what lets a wildcard-typed field be handed over directly. Every JDK, HKJ and third-party container shape is now compiled through the real processor by a sweep that also pins the element type each one focuses, so a shape that generates uncompilable source fails a test rather than a user's build.
+_Behaviour changes / migration:_ the last effect in a composition is now injected at the depth its arity implies, which corrects the dispatch of programs that reach it through the generated `*Support`. Each `@ComposeEffects` field must be `Class<XOp<?>>` naming an `@EffectAlgebra`; `BoundSet<F>` becomes `BoundSet`; `functor()` and `BoundSet`'s accessors change erasure. A `*Support` is generated in your own build, so recompiling is the whole migration.
 
-  _Four more component shapes that generated uncompilable source:_ an **array of a type that cannot be created by name** (`List<Leaf>[]`, `Leaf[][]`) emitted `new List<Leaf>[size]` or `new Leaf[][size]`; the array is copied to length instead, which keeps its runtime component type. An **array of a primitive** (`int[]`, and every one of the eight — `Arrays.stream` has an overload for only three, and those return a stream that cannot collect to a `List`) is now walked and boxed an element at a time, and unboxed back into a fresh array. A **generic record** (`record Holder<T>(List<T> items)`) generated `Traversal<Holder, T>` in a static method that had never heard of `T`; the method now carries the record's own type variables, as `@GenerateLenses` and `@GenerateFocus` already did. Where a record claims `F` for a type parameter of its own, the effect takes another name — one the processor declaring it and the generators writing uses of it both read from a single place, since a body that says `Kind<F, …>` against a record's `F` names the wrong variable.
+**Compile-time checks**
 
-  _Behaviour change, narrow:_ a `Map` component's traversal no longer throws on a null **key** in the source map, nor on a null the function hands back. It used to rebuild the map through `Map.entry` and `Collectors.toMap`, which reject both — the key too, though a values traversal never touches it. A null value already in the map was always handed to the function, and still is. The `List`, `Set` and array siblings have always stored whatever the function returned, null included.
+- **HKJ compiles under its own checker**: every module builds with `-Xplugin:HKJChecker` at zero findings. `discarded-effect` now gates on a sealed `Deferred` capability, so `Path.io(() -> 1).peek(log)` (a silent no-op) is reported while `Path.just(1).peek(log)` (already run) is not, and a `requireNonNull` guard that hands the effect back is read as the pass-through it is. The checker skips `@Generated` types, and a single declaration opts out of one check with `@SuppressWarnings("<check-id>")`, or of all of them with `@SuppressWarnings("hkj-checker")`. See [Compile-Time Checks](tooling/compile_checks.md#opting-out-one-declaration).
 
-- **A component reports one path type, whichever way you reach it** ([#719](https://github.com/higher-kinded-j/higher-kinded-j/issues/719)): `ShapesFocus.tags()` and `OuterFocus.shapes().tags()` are generated from one declaration by one processor run, and disagreed about it — two analyses answered the same question and nothing reconciled them. An `ArrayList<String>` was a `FocusPath` at the static method and a `TraversalPath` at the navigator; a `Map<String, String>` widened at the navigator whatever `widenCollections` said; a nested `List<Optional<String>>` composed to the element in one and stopped at the `Optional` in the other. There is now one widening analysis, and a navigation method composes the static Focus method for the field it reaches rather than re-deriving the widening, so the two cannot drift apart. See [Navigation and Composition](optics/focus_navigation.md#path-widening).
+**Documentation**
 
-  _Shapes that generated source javac rejected, now compiling:_ a `Kind<F, A>` component on a navigator-reachable record (the navigator asked a widened path for its lens); a navigator over an SPI container of records whose target record has a plain navigable field of its own (`Map<String, Mid>` where `Mid` holds a `Leaf` — the composed path is now handed back where the target's navigator cannot hold it, rather than being passed to it); and a record whose `targetPackage` sends its companion elsewhere, which navigators looked for where the record was declared.
-
-  _Also:_ a navigated path carries its field-name segments now, so `pathString()` locates it the way a static path does.
-
-  _Behaviour change, source-breaking for navigator callers:_ three navigator return types move to what the static method has always reported. A `Collection` **subtype** (`ArrayList`, `LinkedList`) is a `FocusPath` over the container, not a `TraversalPath` over its elements — the traversal it used to hand back rebuilds a plain `List`, which the component's declared type will not accept, and threw `ClassCastException` on a one-element list; declare the component as `List<E>`, or register a `TraversableGenerator` that knows how to rebuild the concrete type. An SPI `ZERO_OR_MORE` container holding a non-navigable element (`Map<String, String>`) stops at the container until the record that **declares** it sets `widenCollections = true`; set the flag, or widen at the call site with `.each(EachInstances.mapValuesEach())`. A nested container composes to the leaf: `List<Optional<String>>` reached through a navigator is `TraversalPath<S, String>`, so drop the `.some()` that used to follow it. A container whose element is itself a `@GenerateFocus` record is stepped into either way, flag or no flag, because that is how its navigator reaches the element.
-
-- **`@Nullable` detection reaches the annotation you actually write** ([#711](https://github.com/higher-kinded-j/higher-kinded-j/issues/711)): `@GenerateFocus` widened a `@Nullable` component to an `AffinePath` only when the annotation landed on the record component element. That is where JSR-305's and Jakarta's land, since they declare no `@Target` and so apply to every declaration, but it is not where the other four go. JSpecify's is `TYPE_USE`-only, so it lands on the component's type; JetBrains', AndroidX's and SpotBugs' are declaration annotations that reach the accessor. All four silently generated a plain `FocusPath`. The component's type and its accessor are now read alongside the component, so every recognised annotation widens, and the processor tests carry each vendor's real `@Target` instead of a stand-in wide enough to make any shape look detected. See [Focus DSL Reference](optics/focus_reference.md).
-
-  _Precedence, now that the flag is reachable:_ a container decides the widening on its own (`@Nullable Optional<T>` is `.some()`, `@Nullable List<T>` is `.each()`), and `@Nullable` widens a field that the container and SPI analysis leave as a plain focus. Navigators used the opposite order and applied `.nullable()` to a nullable container, which typed the path by the element while the path held the container; they now agree with the static Focus methods.
-
-  _Behaviour change, source-breaking where the annotation was silently inert:_ a component carrying JSpecify's, JetBrains', AndroidX's or SpotBugs' `@Nullable` now generates `AffinePath<S, A>` where it generated `FocusPath<S, A>`, so a declaration written against the old return type stops compiling. Read it with `getOptional` as the other absence-carrying paths are read, or drop a `.nullable()` that is now chained onto an `AffinePath`. Position counts as Java defines it: `String @Nullable []` is a nullable array, while `@Nullable String[]` and `List<@Nullable String>` annotate the elements and leave the field itself non-null.
-
-- **`@EffectAlgebra` accepts any name for the result type parameter** ([#699](https://github.com/higher-kinded-j/higher-kinded-j/issues/699)): the generated `*Ops` declared its own `<A>` while copying each record component's type verbatim, so an algebra written `RenamedOp<T>` failed with `cannot find symbol: class T` in generated source. The component's type variable is now rewritten to the one the generated method declares, at every depth — nested arguments, arrays and wildcards included. See [Defining Effects](effect/effect_handlers.md#defining-effects).
-
-  _Diagnostics:_ three permit shapes that used to emit uncompilable source are now rejected where they are declared: one that drops the algebra's type parameter, one that pins it (`record Fixed<T>(…) implements Op<String>`), and one that bounds it (`<T extends Number>`). A bound cannot be carried at all — the generated `Kind` and `Functor` range over every type — so a bounded parameter on the algebra is rejected too.
-
-- **`@ComposeEffects` generates typed composition support** ([#697](https://github.com/higher-kinded-j/higher-kinded-j/issues/697)): the generated `*Support` had raw `Inject` and `Functor` factories and a `BoundSet` of `Object` components. It now reads each field's `Class<XOp<?>>` to name `XKind.Witness`, so `injectX()` returns `Inject<XKind.Witness, <composed witness>>`, `functor(...)` takes one `Functor` per effect and returns the composed `EitherFFunctor`, and `BoundSet`'s components are each algebra's `Bound` at that witness — with no casts and no suppression. See [Effect Handlers](effect/effect_handlers.md#composing-effects).
-
-  _Behaviour change, observable:_ the last effect in a composition was injected one level too deep at every arity, so a program dispatching to it through the generated `*Support` mis-routed at runtime. The nesting now matches the arity.
-
-  _Breaking changes / migration:_ each field must be `Class<XOp<?>>` naming an `@EffectAlgebra` — declare the type argument. An algebra with more than one type parameter cannot take part, since its witness would itself be generic. `BoundSet<F>` becomes `BoundSet`: drop the argument, or use `var`. `functor()` and `BoundSet`'s accessors change erasure, so recompile — a `*Support` is generated in your own build and never ships inside an HKJ artefact, so for most projects that is the whole migration.
-
-- **HKJ compiles under its own checker**: every module builds with `-Xplugin:HKJChecker` (bar `hkj-checker` itself), at zero findings. Getting there took two fixes to `discarded-effect`. It now gates on a new sealed `Deferred` capability rather than `Chainable`, which is not uniformly lazy: `Path.io(() -> 1).peek(log)` is a silent no-op and is reported, while `Path.just(1).peek(log)` has already run `log` and is not — a new path type has to declare which it is. And a guard such as `Objects.requireNonNull(path, "…")` hands back the effect it was given, so it is no longer read as one built and dropped. See [Compile-Time Checks](tooling/compile_checks.md).
-- **Compile-time checks stop reporting on generated code**: `hkj-checker` skips any type annotated `org.higherkindedj.optics.annotations.Generated` — it had been telling `@EffectAlgebra`'s generated `*Ops` to use the generated `*Ops` smart constructors. A single declaration can now opt out of one check with `@SuppressWarnings("<check-id>")`, or of every check with `@SuppressWarnings("hkj-checker")`; `disable=` remains the project-wide switch. Suppression is per check and accumulates outward-in, and javac's blanket `"all"` is deliberately not honoured. Diagnostics are no longer duplicated in a file with several top-level types. See [Compile-Time Checks](tooling/compile_checks.md#opting-out-one-declaration).
-- **Mapper parse ceiling lifted** ([#670](https://github.com/higher-kinded-j/higher-kinded-j/issues/670)): `@GenerateMapping`'s `parse` and validated `patch`, and `@GenerateMerge`'s fallible merge, now assemble records wider than 16 components through chunked `Validated.fields()` ladders combined applicatively, so an externally fixed flat 20-30 field DTO maps without grouping into nested records. Error semantics are unchanged and law-checked at width: same located labels, same declaration-order accumulation. The only remaining width bound is the JVM's constructor parameter-slot limit on the record itself (254 components in practice, fewer with `long`/`double`), which javac enforces at the record declaration. The hand-written `fields()` ladder keeps its 16-field arity. See [Diagnostics and limits](mapping/testing.md#diagnostics-and-limits).
-- **Public canonical smart constructor** ([#690](https://github.com/higher-kinded-j/higher-kinded-j/issues/690)): `ValidatedPrism.canonical(message, parse, render)` (plus a `FieldError` overload) wraps a throwing parser and a total render with the build-parse section law guarded per value: an accepted source must render back to itself, so a spelling the render cannot reproduce is a located rejection, never a silent normalisation. Generic in the source type, it is the guard `StandardCodecs` uses internally, now public so a custom-canon codec (an uppercase-UUID wire, say) is lawful without hand-writing the check. See [Laws](optics/validated_prism.md#laws).
-- **Stock codec vocabulary** ([#671](https://github.com/higher-kinded-j/higher-kinded-j/issues/671)): `StandardCodecs` in hkj-core ships one `ValidatedPrism` factory per standard conversion family (`uuid`, `uri`, `localDate` with optional `DateTimeFormatter`, `instant`, `offsetDateTime`, `enumByName` naming the permitted constants, `bigDecimal`, `intFromString`/`longFromString`/`doubleFromString`, `booleanStrict`, `currency`, `locale`), so a typical DTO boundary maps without hand-written leaves. Every failure is a located, copy-worthy `FieldError` that feeds the 422 leg unchanged, and every codec accepts only the canonical form it renders, honouring the `ValidatedPrism` section law (rejections, never silent normalisations). See [Standard codecs](mapping/codecs.md#standard-codecs).
-- **One leaf vocabulary across mapper tiers** ([#672](https://github.com/higher-kinded-j/higher-kinded-j/issues/672)): the sparse `UpdateSpec` tier now lifts element leaves over present containers, exactly as the dense tiers do: a present `List`/`Optional`/`Map`-valued PATCH property parses through the element leaf named after the component, replacing wholesale with every failing element located (`phones.1`), so one mix-in vocabulary serves a full spec and its PATCH sibling. A whole-container leaf wins as the more specific declaration. Two 0.4.9 behaviours change deliberately: a present same-typed identity container was previously written unscanned (a null element could reach the domain record), and now carries the dense tiers' null scan, under which a null element or value is a located rejection (`tags.1: must not be null`); and an `Optional`-typed PATCH property with a differing element type, previously rejected, now patches through its element leaf (a present empty Optional expresses "set to empty", as same-typed Optional pairs already did by identity). See [Sparse PATCH write-back](mapping/beans_patch.md#sparse-patch-write-back-updatespec).
+- **The house style**: the mapping chapter established it (the payoff shown before the theory, the common case served before the fine print, mermaid for flows and decisions in a theme-safe palette, "Why this matters" beside the rule it justifies, Key Takeaways on every page), and it now runs through the [Resilience](resilience/ch_intro.md) chapter and every sub-chapter of [Optics](optics/ch_intro.md), the optics diagrams included. The [style guide](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/docs/STYLE-GUIDE.md) records the conventions.
 
 ### [v0.4.9](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.9) (31 July 2026)
 
