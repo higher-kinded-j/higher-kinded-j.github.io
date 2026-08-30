@@ -21875,7 +21875,7 @@ The library provides a rich set of tools for creating `Traversal` instances, fou
 | `Traversals.forMapValues()` | `Map<K, V>` | Traverses all values in a map |
 | `Traversals.forMap(key)` | `Map<K, V>` | Traverses a specific key's value |
 
-These traversals also work with subtypes. For example, `forList()` works with `ArrayList`, `LinkedList`, and any other `List` implementation.
+These traversals accept any implementation as input: `forList()` reads an `ArrayList` or a `LinkedList` as readily as a `List.of(...)`. What each hands back is a value of the interface type (`forList()` rebuilds an unmodifiable `List`), which is why `@ThroughField` auto-detection matches the interface only and refuses a field declared as `ArrayList`; see [`@ThroughField` auto-detection](copy_strategies.md#throughfield-auto-detection). (`@GenerateTraversals` reports the same component with a note rather than an error: it has no per-component opt-out, where `@ThroughField` is an explicit request on one method.)
 
 ```java
 import org.higherkindedj.optics.annotations.GenerateTraversals;
@@ -35064,16 +35064,16 @@ Order topUp =
 
 ### `@ThroughField` Auto-Detection
 
-| Field Type | Auto-detected traversal |
-|------------|-------------------------|
-| `List<A>` (including `ArrayList`, `LinkedList`, ...) | `Traversals.forList()` |
-| `Set<A>` (including `HashSet`, `TreeSet`, ...) | `Traversals.forSet()` |
-| `Collection<A>` (the interface itself, not `Deque`, `Queue`, ...) | `Traversals.forCollection()` |
+| Lens focus for the field | Auto-detected traversal |
+|--------------------------|-------------------------|
+| `List<A>` | `Traversals.forList()` |
+| `Set<A>` | `Traversals.forSet()` |
+| `Collection<A>` | `Traversals.forCollection()` |
 | `Optional<A>` | `Traversals.forOptional()` |
-| `A[]` | `Traversals.forArray()` |
-| `Map<K, V>` (including `HashMap`, `TreeMap`, ...) | `Traversals.forMapValues()` |
+| `A[]`, `A` a reference type | `Traversals.forArray()` |
+| `Map<K, V>` | `Traversals.forMapValues()` |
 
-Subtypes are recognised, so a field declared `ArrayList<LineItem>` still detects as a list; `Collection` is the exception, matched only when the field is declared as the interface itself, because its traversal rebuilds a set as a set and anything else as a list, which a `Deque` or a `Queue` field could not take back. For a container outside that set, name the traversal yourself:
+Detection reads the focus of the spec's own lens for the field, which is the lens the generated traversal composes with (a spec that declares no lens for the field is refused), and the match is on the interface itself. A lens focusing something narrower, a concrete container (`ArrayList<LineItem>`, `HashSet<Tag>`, `TreeMap<K, V>`) or another interface (`Deque`, `SortedSet`), is refused at the declaration, because each standard traversal promises no more than the interface type (`forList()` hands back an unmodifiable `List`) and the field could not take that value back: the generated traversal would throw `ClassCastException` on first use. (Under the subtype matching of earlier releases a `HashMap` field survived, because the map traversal rebuilds a `HashMap`; that was an implementation detail the promise does not cover, and `HashMap` is refused like any other concrete type.) An array of a primitive (`int[]`) is refused for the same reason, since the array traversal walks an `Object[]`. Name a traversal that rebuilds the declared type, built with `Traversals.forIterableCollecting(ArrayList::new)` for a list-shaped container or `Traversals.forMapValuesCollecting(TreeMap::new)` for a map and exposed as a static method, or, where the type is yours, declare the field as the interface:
 
 ```java
 @ThroughField(field = "entries", traversal = "com.example.CustomTraversals.forMyContainer()")
@@ -35232,7 +35232,7 @@ Start with `@ViaBuilder`: it is the pattern most generated code uses. Fall back 
 ~~~admonish info title="Key Takeaways"
 * **`@ViaBuilder` is the default choice**, and covers JOOQ, Lombok, AutoValue and Protobuf between them. Immutables generates both a builder and withers, so either strategy works there.
 * **Every name is overridable.** Getter, builder accessor, setter and build method can each be spelled out when a library's conventions differ, and `@ViaCopyAndSet(copyConstructor = ...)` picks between overloaded copy constructors.
-* **`@ThroughField` reaches into collection fields**, auto-detecting the traversal for lists, sets, optionals, arrays and maps, subtypes included, and for a field declared as `Collection` itself.
+* **`@ThroughField` reaches into collection fields**, auto-detecting the traversal for a field declared as `List`, `Set`, `Collection`, `Map`, `Optional` or an array; a concrete container type is refused with the remedy named, and an explicit `traversal` covers it.
 * **`Traversal` reads and writes through `Traversals`**, not through a plain instance `modify`; `andThen`, `filtered`, `filterBy`, `asFold`, `modifyF`, `modifyWhen` and `branch` do live on the optic.
 * **Not everything needs a strategy.** A type that already implements `List`, `Map` or `Optional` works with the standard traversals for reads, though rebuilding the exact container type needs `forIterableCollecting`.
 ~~~
@@ -42077,6 +42077,18 @@ It is a note rather than a warning on purpose. `@GenerateTraversals` has no per-
 **Fix.** Name the type the optics are for as the type argument: `OpticsSpec<Box>`. Where the bound names a single type, the message suggests it for you.
 
 A source type that is itself generic is supported, and the spec names its own type parameters: `interface BoxOpticsSpec<U> extends OpticsSpec<Box<U>>` generates `static <U> Lens<Box<U>, String> label()`. See [Spec Interfaces](optics_spec_interfaces.md#generic-spec-interfaces) for which parameters a generated method declares. It is only a bare type variable, standing for the whole source type, that has no source to read.
+
+### "@ThroughField: '...' reaches field 'items', which is declared as `ArrayList<String>` rather than as the List interface"
+
+**Cause.** `@ThroughField` auto-detects the traversal from the focus of the spec's own lens for the field (the lens the generated traversal composes with), for a focus of `List`, `Set`, `Collection`, `Map`, `Optional` or a reference-type array, and the match is on the interface itself. The type the message names is that lens focus. Each standard traversal promises no more than the interface type (`Traversals.forList()` hands back an unmodifiable `List`), and the composed optic writes that value back into the field through the lens; a field declared as something narrower, a concrete container (`ArrayList`, `HashSet`, `TreeMap`) or another interface (`Deque`, `SortedSet`), cannot take it, so the generated traversal would throw `ClassCastException` on first use, on a read as well as a write. The message names the interface the field's type implements. An array of a primitive (`int[]`) draws the sibling message: the array traversal walks an `Object[]`, which an `int[]` is not.
+
+**Fix.** Name a traversal that rebuilds the declared type, `Traversals.forIterableCollecting(ArrayList::new)` for a list-shaped container or `Traversals.forMapValuesCollecting(TreeMap::new)` for a map, exposed as a static method and named fully qualified: `@ThroughField(field = "items", traversal = "com.example.MyTraversals.forArrayList()")`. Where the type is yours, declaring the field as the interface (`List<String>`) is the simpler route. See [`@ThroughField` auto-detection](copy_strategies.md#throughfield-auto-detection).
+
+### "@ThroughField: '...' composes through a lens named 'items', which the spec does not declare"
+
+**Cause.** A `@ThroughField` traversal is generated as the spec's own lens for the field composed with the container traversal, `Spec.items().andThen(...)`, so the spec has to declare `Lens<S, F> items()` alongside it (with its copy strategy). Without one the generated file could only fail with `cannot find symbol`, so the processor refuses the declaration instead.
+
+**Fix.** Declare the lens method for the field on the spec, or use `@TraverseWith` to name a traversal over the source type that stands on its own.
 
 ### "@InstanceOf target 'com.example.Foo' is not a subtype of source type 'com.example.Base'"
 
@@ -88790,6 +88802,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **`@ThroughField` auto-detects the container interfaces, and explains a narrower one** ([#773](https://github.com/higher-kinded-j/higher-kinded-j/issues/773)): auto-detection matches a field declared as `List`, `Set`, `Collection`, `Map`, `Optional` or an array, on the interface itself. A field declared as something narrower, a concrete container (`ArrayList<String>`, `HashSet<Tag>`, `TreeMap<K, V>`) or another interface (`Deque`, `SortedSet`), is refused at the declaration with the interface it implements and both remedies named, because the standard traversal promises no more than the interface type, which the field could not take back; an array of a primitive (`int[]`) is refused on the same ground, since the array traversal walks an `Object[]`. Detection reads the focus of the spec's own lens for the field, which is what the generated traversal composes with, so an accessor returning `ArrayList` behind a `Lens<S, List<String>>` is accepted, and a spec declaring no lens for the field is told so at the declaration rather than by a `cannot find symbol` in the generated file. See [`@ThroughField` auto-detection](optics/copy_strategies.md#throughfield-auto-detection) and [Compiler Errors](optics/compiler_errors.md#throughfield--reaches-field-items-which-is-declared-as-arrayliststring-rather-than-as-the-list-interface).
+
+  _Behaviour change, replacing a path that threw:_ a spec whose `@ThroughField` reached an `ArrayList`, `HashSet`, `TreeSet` or `TreeMap` field compiled in 0.4.10 and threw `ClassCastException` on the first read or write through the generated traversal (a `HashMap` field survived by accident, since the map traversal rebuilds a `HashMap`). Such a spec is now refused; declare the field as the interface, or name a `traversal` that rebuilds the concrete type.
 
 ### [v0.4.10](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.10) (30 August 2026)
 
