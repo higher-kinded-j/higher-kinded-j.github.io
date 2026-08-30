@@ -21748,7 +21748,7 @@ This code is deeply nested and mixes the *what* (add 5 to a score) with the *how
 
 The library provides a rich set of tools for creating `Traversal` instances, found in the **`Traversals`** utility class and through annotations.
 
-* **`@GenerateTraversals`**: Annotating a record will automatically generate a `Traversal` for any `Iterable` field (like `List` or `Set`).
+* **`@GenerateTraversals`**: Annotating a record generates a `Traversal` for every component whose container a generator recognises: `List`, `Set`, `Collection`, `Map` (its values), `Optional` and arrays from the JDK; `Maybe`, `Either`, `Try` and `Validated` from HKJ; and the third-party collections the [generator plugins](../tooling/generator_plugins.md) cover. A component that holds elements but reaches no traversal — a `Deque`, a `SortedMap`, a raw `List` — is reported as a compile-time **note** where it is declared, because the generated class compiles perfectly well without the method and the gap would otherwise be found at the call site. A component that is not a container at all is passed over silently.
 
 **Standard Container Traversals:**
 
@@ -21756,6 +21756,7 @@ The library provides a rich set of tools for creating `Traversal` instances, fou
 |--------|---------------|-------------|
 | `Traversals.forList()` | `List<A>` | Traverses all elements of a list |
 | `Traversals.forSet()` | `Set<A>` | Traverses all elements of a set |
+| `Traversals.forCollection()` | `Collection<A>` | Traverses all elements; rebuilds a set source as a set and any other source as a list |
 | `Traversals.forOptional()` | `Optional<A>` | Traverses the value if present (0 or 1 element) |
 | `Traversals.forArray()` | `A[]` | Traverses all elements of an array |
 | `Traversals.forMapValues()` | `Map<K, V>` | Traverses all values in a map |
@@ -21823,6 +21824,24 @@ Traversal<Squad<Player>, Player> everyMember = SquadTraversals.members();
 ```
 
 Arrays work the same way, whatever their element type: an `int[]` is focused as `Integer` and boxed on the way through, and an element type the traversal cannot name in a `new` expression — `List<Player>[]`, `Player[][]`, `T[]` — is rebuilt by copying the source array to length, which keeps its runtime component type.
+
+#### Collection Components
+
+A component declared as the `Collection` interface itself gets a traversal too:
+
+<!-- verify -->
+```java
+@GenerateTraversals
+record Crew(String name, Collection<Player> members) {}
+
+Traversal<Crew, Player> everyMember = CrewTraversals.members();
+```
+
+A `Collection` names no more than "holds elements", so the generated traversal does not settle on a shape of its own. It calls `Traversals.traverseCollection`, which rebuilds a `Set` source as an unmodifiable set in the source's iteration order and every other source as a list — the one rebuild policy behind `Traversals.forCollection()` and `EachInstances.collectionEach()`, so a `Collection` reached through `@GenerateTraversals`, [`@GenerateFocus`](focus_containers.md#supported-container-types), `@ImportOptics` or `@ThroughField` comes back the same way. Rebuilding a set as a list would let a modification that maps two elements onto the same value leave duplicates in a collection that had none.
+
+Two limits follow from `Collection` being all the declaration says, and `Traversals.forCollection()` documents both: a `SortedSet` source keeps its elements but not its comparator, and a source that is neither a `List` nor a `Set` — an `ArrayDeque`, a `PriorityQueue` — comes back a `List`. Declare the component as the `List` or `Set` it really is if that matters.
+
+A component declared as some *other* `Collection` subtype — `Deque<Task>`, `SortedSet<Tag>`, `ArrayList<String>` — has no generator, and is not silently skipped: the processor reports a note on the component, naming the type nothing supports and what to do about it. A note rather than a warning, because the annotation has no per-component opt-out and a processor warning would fail a `-Werror` build with no way to answer it. See [Compiler Errors](compiler_errors.md#generatetraversals-no-traversal-was-generated-for-component-xy-of-type-dequet-a-note).
 
 ### Step 2: Composing a Deep Traversal
 
@@ -33633,7 +33652,7 @@ flowchart TD
     C{"How many values<br/>can the container hold?"}
     C -->|"exactly one<br/>(a plain field)"| F(["FocusPath"])
     C -->|"zero or one<br/>Optional, Maybe, Either, Try, Validated"| A(["AffinePath"])
-    C -->|"zero or more<br/>List, Set, Map, arrays, third-party collections"| T(["TraversalPath"])
+    C -->|"zero or more<br/>List, Set, Collection, Map, arrays, third-party collections"| T(["TraversalPath"])
 
     classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
     classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
@@ -34936,11 +34955,12 @@ Order topUp =
 |------------|-------------------------|
 | `List<A>` (including `ArrayList`, `LinkedList`, ...) | `Traversals.forList()` |
 | `Set<A>` (including `HashSet`, `TreeSet`, ...) | `Traversals.forSet()` |
+| `Collection<A>` (the interface itself, not `Deque`, `Queue`, ...) | `Traversals.forCollection()` |
 | `Optional<A>` | `Traversals.forOptional()` |
 | `A[]` | `Traversals.forArray()` |
 | `Map<K, V>` (including `HashMap`, `TreeMap`, ...) | `Traversals.forMapValues()` |
 
-Subtypes are recognised, so a field declared `ArrayList<LineItem>` still detects as a list. For a container outside that set, name the traversal yourself:
+Subtypes are recognised, so a field declared `ArrayList<LineItem>` still detects as a list; `Collection` is the exception, matched only when the field is declared as the interface itself, because its traversal rebuilds a set as a set and anything else as a list, which a `Deque` or a `Queue` field could not take back. For a container outside that set, name the traversal yourself:
 
 ```java
 @ThroughField(field = "entries", traversal = "com.example.CustomTraversals.forMyContainer()")
@@ -35099,7 +35119,7 @@ Start with `@ViaBuilder`: it is the pattern most generated code uses. Fall back 
 ~~~admonish info title="Key Takeaways"
 * **`@ViaBuilder` is the default choice**, and covers JOOQ, Lombok, AutoValue and Protobuf between them. Immutables generates both a builder and withers, so either strategy works there.
 * **Every name is overridable.** Getter, builder accessor, setter and build method can each be spelled out when a library's conventions differ, and `@ViaCopyAndSet(copyConstructor = ...)` picks between overloaded copy constructors.
-* **`@ThroughField` reaches into collection fields**, auto-detecting the traversal for lists, sets, optionals, arrays and maps, subtypes included.
+* **`@ThroughField` reaches into collection fields**, auto-detecting the traversal for lists, sets, optionals, arrays and maps, subtypes included, and for a field declared as `Collection` itself.
 * **`Traversal` reads and writes through `Traversals`**, not through a plain instance `modify`; `andThen`, `filtered`, `filterBy`, `asFold`, `modifyF`, `modifyWhen` and `branch` do live on the optic.
 * **Not everything needs a strategy.** A type that already implements `List`, `Map` or `Optional` works with the standard traversals for reads, though rebuilding the exact container type needs `forIterableCollecting`.
 ~~~
@@ -41910,6 +41930,16 @@ Note this is about what the *iso* names, not what the method declares: `<T> Iso<
 **Cause.** Also reported as *"has a raw Set"*, and for `Collection`, `Map`, `Either`, `Try` and every other container the processor widens through an optic **instance**. That instance — `EachInstances.setEach()`, `Affines.eitherRight()` — has its own type arguments inferred from the component's type, and a raw container offers none to infer from while a wildcard has no ground instantiation. `Optional`, `Maybe` and `List` are exempt: they widen through the no-argument `.some()` and `.each()`, whose free type variable takes either without complaint.
 
 **Fix.** Name the type argument — `Set<Leaf>` rather than `Set<? extends Leaf>` — or drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance and take the component as written. See [Custom Containers](focus_containers.md#supported-container-types).
+
+### "@GenerateTraversals: no traversal was generated for component 'X.y' of type `Deque<T>`" (a note)
+
+**Cause.** `@GenerateTraversals` asks the `TraversableGenerator` SPI for each record component, and no generator on the annotation processor path claimed this one. The component unmistakably holds elements — it is a `java.util.Collection` or a `java.util.Map` by erasure — so not generating for it is a gap rather than the expected outcome, and the generated class would otherwise compile with the method silently missing. The second sentence names the unsupported type (`No TraversableGenerator on the annotation processor path supports Deque`). The same note is raised, with a different second sentence, for a container a generator *did* claim but cannot read: a raw `List` or `Set` "is written without a type argument, so there is no element type to focus", and a generator whose focused type argument the type does not have says which argument it wanted.
+
+A component that is not a container at all — a `String`, an `int`, a `java.nio.file.Path` (which implements `Iterable`, and is why a bare `Iterable` is not the bar) — is passed over without comment.
+
+It is a note rather than a warning on purpose. `@GenerateTraversals` has no per-component opt-out, and a processor warning cannot be suppressed, so a warning would have failed every `-Werror` build with no remedy short of changing the record. A note shows in the compiler output as `Note: ...` and fails nothing.
+
+**Fix.** Declare the component as a container a generator supports: `List`, `Set`, `Collection`, `Map`, `Optional`, an array, or a type one of the [generator plugins](../tooling/generator_plugins.md) covers. For a raw container, give it its element type. For a third-party type, put a `TraversableGenerator` for it on the annotation processor path. A mixed record — one supported container beside one unsupported — keeps the traversals it can have and carries the note for the one it cannot; the note is the reminder, not a gate. A record that wants no traversal for any of its components should not carry `@GenerateTraversals` at all; `@GenerateLenses` on its own still gives every component a lens.
 
 ---
 
@@ -80967,7 +80997,7 @@ When you annotate a record with `@GenerateTraversals`, the annotation processor 
 
 Each container type is handled by a **generator plugin**: a small class that implements the `TraversableGenerator` SPI (Service Provider Interface). The processor discovers these plugins at compile time via Java's `ServiceLoader` and delegates code generation to whichever plugin claims support for the field's type.
 
-Higher-Kinded-J ships 30 generator plugins covering JDK types, HKJ core types, and five popular third-party collection libraries.
+Higher-Kinded-J ships 31 generator plugins covering JDK types, HKJ core types, and five popular third-party collection libraries.
 
 ---
 
@@ -80981,6 +81011,7 @@ These generators are always active. No additional dependencies are required.
 |------|-------|-----------|
 | `List<A>` | Each element | Traverses all elements via `Traversals.traverseList()` |
 | `Set<A>` | Each element | Converts to list, traverses, converts back |
+| `Collection<A>` | Each element | Rebuilds a set source as a set and any other source as a list, via `Traversals.traverseCollection()` |
 | `Optional<A>` | 0 or 1 element | Applies function if present; returns unchanged if empty |
 | `Map<K, V>` | Each value | Traverses values whilst preserving keys |
 | `A[]` | Each element | Converts to list, traverses, converts back to array |
@@ -81120,13 +81151,16 @@ TraversalProcessor
 ServiceLoader.load(TraversableGenerator.class)
     │
     ├── ListGenerator         (supports List<A>)
+    ├── CollectionGenerator   (supports Collection<A>)
     ├── OptionalGenerator     (supports Optional<A>)
     ├── EitherGenerator       (supports Either<L, R>)
     ├── GuavaImmutableListGenerator  (supports ImmutableList<A>)
-    └── ... 18 more generators
+    └── ... 26 more generators
 ```
 
 For each record component, the processor iterates through all loaded generators and calls `supports(TypeMirror)`. The first generator that returns `true` handles code generation for that field.
+
+A component that holds elements but reaches no generator is not passed over silently. A `java.util.Collection` or `java.util.Map` subtype that no loaded generator supports — a `Deque`, a `SortedMap`, a Guava, Apache Commons or PCollections type whose plugin is not on the processor path — draws a compile-time **note** on the component, naming the unsupported type and the remedy: declare the component as a supported container, or put a `TraversableGenerator` for it on the annotation processor path. A container that is not a `java.util.Collection` or `Map` at all — Vavr's collections and Eclipse Collections' `Immutable*` types are `Iterable` only — is passed over silently, as is a `String` or an `int`, for the same reason a bare `Iterable` is not the bar: `java.nio.file.Path` implements it.
 
 ---
 
@@ -81286,7 +81320,7 @@ The `TraversalProcessor` will now discover your `NonEmptyListGenerator` via `Ser
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **30 built-in generators** cover JDK types, HKJ core types, Eclipse Collections, Guava, Vavr, Apache Commons, and PCollections
+* **31 built-in generators** cover JDK types, HKJ core types, Eclipse Collections, Guava, Vavr, Apache Commons, and PCollections
 * **Third-party support activates automatically** when the library is on the classpath; no configuration required
 * **The SPI is extensible**: implement `TraversableGenerator`, register it with `@ServiceProvider`, and the processor discovers it at compile time
 * **Most generators follow a common pattern**: convert to `java.util.List`, traverse with `Traversals.traverseList()`, convert back to the original type; map-shaped ones traverse with `Traversals.traverseMapValues()` and rebuild from the JDK `Map` it returns
@@ -88645,6 +88679,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 _In development. Release notes will be added here as changes land on `main`._
 
 - **The mapping documentation becomes its own chapter**: the record-mapping material moved from a single page under Optics into a dedicated [Mapping at the Boundary](mapping/ch_intro.md) chapter (basics, codecs, structure, tiers, beans and sparse PATCH, generics, merge and envelopes, injection and testing), opening with a problem-first introduction and closing with a compiled, law-checked capstone: [One 422, Every Bad Field](mapping/capstone.md). The old `optics/record_mapping.html` URL redirects to the new chapter.
+- **`@GenerateTraversals` sees a `Collection` component, and says so when it cannot see one** ([#756](https://github.com/higher-kinded-j/higher-kinded-j/issues/756)): `@GenerateTraversals` asks the `TraversableGenerator` SPI for each record component, and no generator claimed `java.util.Collection`, so `record Job(Collection<String> tags, List<String> notes)` generated `notes()` and nothing else — no error, no warning, and the gap surfaced as a missing method at the call site. `@GenerateFocus` had recognised `Collection` since #725, which left the two annotations disagreeing about a container. A `CollectionGenerator` now ships with the JDK generators, and the traversal it writes calls the new `Traversals.traverseCollection`, which `Traversals.forCollection()` now delegates to as well: a set source comes back an unmodifiable set in its own iteration order, and every other source comes back a list. The decision is made in that one helper rather than written into generated source, so a `Collection` reached through `@GenerateTraversals`, `@GenerateFocus`, `@ImportOptics` and `@ThroughField` rebuilds the same way. `@ThroughField` auto-detects a `Collection` field too — the interface itself, not a `Deque` or a `Queue`, which the rebuilt list could not be handed back to — and `@ImportOptics` names `Traversals.forCollection()` for it. The silence is fixed on its own terms: a component that holds elements but reaches no method — a `Collection` or `Map` subtype no generator on the processor path supports, or a claimed container whose element type cannot be read — is reported as a **note** on the component, in the what/why/fix format. A component that is not a container at all is passed over silently, as before. See [Collection Components](optics/traversals.md#collection-components) and [Compiler Errors](optics/compiler_errors.md#generatetraversals-no-traversal-was-generated-for-component-xy-of-type-dequet-a-note).
+
+  _Behaviour change, a new note:_ a `@GenerateTraversals` record with a `Deque`, `Queue`, `SortedMap` or `ArrayList` component, or a raw `List` or `Set`, compiled silently in 0.4.9 and now compiles with a note at that component. It is a note rather than a warning on purpose: the annotation has no per-component opt-out and a processor warning cannot be suppressed, so a warning would have failed every `-Werror` build with no remedy short of changing the record. Nothing generated changes, and no build that passed fails. Declare the component as a container a generator supports — `List`, `Set`, `Collection`, `Map`, `Optional`, an array, or a plugin-supported type — or put a `TraversableGenerator` for its type on the annotation processor path. The limits `Traversals.forCollection()` states are inherited by the generated traversal: a `SortedSet` source keeps its elements but not its comparator, and a source that is neither a list nor a set comes back a list.
+
 - **`@GenerateMapping` reads a generic mix-in under the spec's instantiation** ([#752](https://github.com/higher-kinded-j/higher-kinded-j/issues/752)): a mix-in declaring type parameters was refused at the declaration, with a message saying substitution "is not supported yet". It is supported now: a member inherited from `Emails<T>` is read as the spec has it, so `extends Emails<EmailAddress>` contributes `ValidatedPrism<String, EmailAddress>` and the generated Impl carries that rather than a name nothing declares. This is the shape a shared vocabulary interface exists for, and the previous remedy, declaring the members directly on each spec, cost exactly the reuse it was there to provide. Every place a spec member's type is read now goes through one helper: the two that reach generated code (the element-mapped leaf fields and the `@MapField` rename stubs), the three that compare a member against the instantiated pair (`findLeaf`, the derived-field `Getter` shape, and the hand-written-mapper heuristic, that last reading both halves of the signature), and two diagnostics where a free type variable had been leaking into the message text. A **generic** ancestor reached through a raw supertype is still refused where it contributes something to read, because erasure travels downwards and leaves the spec inheriting members it never declared; a non-generic one is untouched by erasure and is left alone. The diagnostic names the interface whose clause is raw, which is not always the spec's own, and a raw or wildcard argument on the spec's own mix-in clause is refused for the same reason its `MappingSpec` clause always was. See [Generic Specs](mapping/generics.md#generic-mix-ins).
 
   _Behaviour change, accepting where it refused:_ a spec extending a generic mix-in compiled with an error before and generates now, so nothing that worked stops working. The one direction to check is a spec that was relying on the refusal to catch a raw `extends` clause: that is still refused when the ancestor beneath it is generic, with the message changed from "is generic" to "is extended raw by ..."; a raw route to a non-generic ancestor is now accepted, since nothing of its is erased.

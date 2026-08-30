@@ -331,14 +331,17 @@
 <h2 id="what-are-generator-plugins"><a class="header" href="#what-are-generator-plugins">What Are Generator Plugins?</a></h2>
 <p>When you annotate a record with <code>@GenerateTraversals</code>, the annotation processor needs to know <em>how</em> to traverse each field's container type. A <code>List&lt;String&gt;</code> field requires different generated code than an <code>Optional&lt;String&gt;</code> or an <code>Either&lt;Error, String&gt;</code>.</p>
 <p>Each container type is handled by a <strong>generator plugin</strong>: a small class that implements the <code>TraversableGenerator</code> SPI (Service Provider Interface). The processor discovers these plugins at compile time via Java's <code>ServiceLoader</code> and delegates code generation to whichever plugin claims support for the field's type.</p>
-<p>Higher-Kinded-J ships 30 generator plugins covering JDK types, HKJ core types, and five popular third-party collection libraries.</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyIzMSJd" data-since="v0.4.9"></div>
+<p>Higher-Kinded-J ships 31 generator plugins covering JDK types, HKJ core types, and five popular third-party collection libraries.</p>
 <hr />
 <h2 id="supported-types-at-a-glance"><a class="header" href="#supported-types-at-a-glance">Supported Types at a Glance</a></h2>
 <h3 id="jdk-standard-library-always-available"><a class="header" href="#jdk-standard-library-always-available">JDK Standard Library (Always Available)</a></h3>
 <p>These generators are always active. No additional dependencies are required.</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJ8IiwgInwiLCAiQ29sbGVjdGlvbjxBIiwgInwiLCAiRWFjaCIsICJlbGVtZW50IiwgInwiLCAiUmVidWlsZHMiLCAiYSIsICJzZXQiLCAic291cmNlIiwgImFzIiwgImEiLCAic2V0IiwgImFuZCIsICJhbnkiLCAib3RoZXIiLCAic291cmNlIiwgImFzIiwgImEiLCAibGlzdCIsICJ2aWEiLCAiVHJhdmVyc2Fscy50cmF2ZXJzZUNvbGxlY3Rpb24iXQ==" data-since="v0.4.9"></div>
 <div class="table-wrapper"><table><thead><tr><th>Type</th><th>Focus</th><th>Behaviour</th></tr></thead><tbody>
 <tr><td><code>List&lt;A&gt;</code></td><td>Each element</td><td>Traverses all elements via <code>Traversals.traverseList()</code></td></tr>
 <tr><td><code>Set&lt;A&gt;</code></td><td>Each element</td><td>Converts to list, traverses, converts back</td></tr>
+<tr><td><code>Collection&lt;A&gt;</code></td><td>Each element</td><td>Rebuilds a set source as a set and any other source as a list, via <code>Traversals.traverseCollection()</code></td></tr>
 <tr><td><code>Optional&lt;A&gt;</code></td><td>0 or 1 element</td><td>Applies function if present; returns unchanged if empty</td></tr>
 <tr><td><code>Map&lt;K, V&gt;</code></td><td>Each value</td><td>Traverses values whilst preserving keys</td></tr>
 <tr><td><code>A[]</code></td><td>Each element</td><td>Converts to list, traverses, converts back to array</td></tr>
@@ -450,18 +453,22 @@ Warehouse updated = Traversals.modify(
 <p><strong>Avaje SPI</strong>: Each generator class is annotated with <code>@ServiceProvider(TraversableGenerator.class)</code>. The <a href="https://avaje.io/spi/">Avaje SPI</a> annotation processor automatically generates the <code>META-INF/services</code> files and validates that the <code>module-info.java</code> <code>provides</code> clause is complete. A missing entry causes a compile error with a copy-pasteable fix.</p>
 </li>
 </ol>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyLilJzilIDilIAiLCAiQ29sbGVjdGlvbkdlbmVyYXRvciIsICJzdXBwb3J0cyIsICJDb2xsZWN0aW9uPEEiLCAiMjYiXQ==" data-since="v0.4.9"></div>
 <pre><code>TraversalProcessor
     │
     ▼
 ServiceLoader.load(TraversableGenerator.class)
     │
     ├── ListGenerator         (supports List&lt;A&gt;)
+    ├── CollectionGenerator   (supports Collection&lt;A&gt;)
     ├── OptionalGenerator     (supports Optional&lt;A&gt;)
     ├── EitherGenerator       (supports Either&lt;L, R&gt;)
     ├── GuavaImmutableListGenerator  (supports ImmutableList&lt;A&gt;)
-    └── ... 18 more generators
+    └── ... 26 more generators
 </code></pre>
 <p>For each record component, the processor iterates through all loaded generators and calls <code>supports(TypeMirror)</code>. The first generator that returns <code>true</code> handles code generation for that field.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="solo" data-since="v0.4.9"></div>
+<p>A component that holds elements but reaches no generator is not passed over silently. A <code>java.util.Collection</code> or <code>java.util.Map</code> subtype that no loaded generator supports — a <code>Deque</code>, a <code>SortedMap</code>, a Guava, Apache Commons or PCollections type whose plugin is not on the processor path — draws a compile-time <strong>note</strong> on the component, naming the unsupported type and the remedy: declare the component as a supported container, or put a <code>TraversableGenerator</code> for it on the annotation processor path. A container that is not a <code>java.util.Collection</code> or <code>Map</code> at all — Vavr's collections and Eclipse Collections' <code>Immutable*</code> types are <code>Iterable</code> only — is passed over silently, as is a <code>String</code> or an <code>int</code>, for the same reason a bare <code>Iterable</code> is not the bar: <code>java.nio.file.Path</code> implements it.</p>
 <hr />
 <h2 id="writing-a-custom-generator"><a class="header" href="#writing-a-custom-generator">Writing a Custom Generator</a></h2>
 <p>If your project uses a container type that is not covered by the built-in plugins, you can write your own generator and register it as a service provider.</p>
@@ -607,7 +614,7 @@ public class NonEmptyListGenerator extends BaseTraversableGenerator {
 <li><strong>Write integration tests</strong> using Google's compile-testing library to verify generated code compiles and contains the expected statements.</li>
 </ul>
 <hr />
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJtYXAtc2hhcGVkIiwgIm9uZXMiLCAidHJhdmVyc2UiLCAid2l0aCIsICJUcmF2ZXJzYWxzLnRyYXZlcnNlTWFwVmFsdWVzIiwgImFuZCIsICJyZWJ1aWxkIiwgImZyb20iLCAidGhlIiwgIkpESyIsICJNYXAiLCAiaXQiLCAicmV0dXJucyIsICJhbiIsICJhbHdheXMiLCAiYSIsICJ1bmRlciIsICJ3aWRlbkNvbGxlY3Rpb25zIiwgIj0iLCAidHJ1ZSIsICJvciIsICJ3aGVuIiwgInRoZSIsICJjb250YWluZXIncyIsICJlbGVtZW50IiwgImlzIiwgIml0c2VsZiIsICJhIiwgIm5hdmlnYWJsZSIsICJyZWNvcmQiLCAiU3RhdGljIiwgIkZvY3VzIiwgIm1ldGhvZHMiLCAiYW5kIiwgIm5hdmlnYXRvciIsICJtZXRob2RzIiwgInJlYWQiLCAidGhlIiwgInNhbWUiLCAiYW5zd2VyIl0=" data-since="v0.4.9"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyIzMSIsICJtYXAtc2hhcGVkIiwgIm9uZXMiLCAidHJhdmVyc2UiLCAid2l0aCIsICJUcmF2ZXJzYWxzLnRyYXZlcnNlTWFwVmFsdWVzIiwgImFuZCIsICJyZWJ1aWxkIiwgImZyb20iLCAidGhlIiwgIkpESyIsICJNYXAiLCAiaXQiLCAicmV0dXJucyIsICJhbiIsICJhbHdheXMiLCAiYSIsICJ1bmRlciIsICJ3aWRlbkNvbGxlY3Rpb25zIiwgIj0iLCAidHJ1ZSIsICJvciIsICJ3aGVuIiwgInRoZSIsICJjb250YWluZXIncyIsICJlbGVtZW50IiwgImlzIiwgIml0c2VsZiIsICJhIiwgIm5hdmlnYWJsZSIsICJyZWNvcmQiLCAiU3RhdGljIiwgIkZvY3VzIiwgIm1ldGhvZHMiLCAiYW5kIiwgIm5hdmlnYXRvciIsICJtZXRob2RzIiwgInJlYWQiLCAidGhlIiwgInNhbWUiLCAiYW5zd2VyIl0=" data-since="v0.4.9"></div>
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
 <div id="admonition-key-takeaways-title">
@@ -617,7 +624,7 @@ public class NonEmptyListGenerator extends BaseTraversableGenerator {
 </div>
 <div>
 <ul>
-<li><strong>30 built-in generators</strong> cover JDK types, HKJ core types, Eclipse Collections, Guava, Vavr, Apache Commons, and PCollections</li>
+<li><strong>31 built-in generators</strong> cover JDK types, HKJ core types, Eclipse Collections, Guava, Vavr, Apache Commons, and PCollections</li>
 <li><strong>Third-party support activates automatically</strong> when the library is on the classpath; no configuration required</li>
 <li><strong>The SPI is extensible</strong>: implement <code>TraversableGenerator</code>, register it with <code>@ServiceProvider</code>, and the processor discovers it at compile time</li>
 <li><strong>Most generators follow a common pattern</strong>: convert to <code>java.util.List</code>, traverse with <code>Traversals.traverseList()</code>, convert back to the original type; map-shaped ones traverse with <code>Traversals.traverseMapValues()</code> and rebuild from the JDK <code>Map</code> it returns</li>
