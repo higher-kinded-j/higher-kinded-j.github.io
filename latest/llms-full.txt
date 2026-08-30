@@ -42940,7 +42940,7 @@ interface PersonCardMapping extends MappingSpec<Person, PersonCardDto> {
 
 ```
 
-Each wire component takes exactly one domain source; colliding renames are compile errors, not surprises.
+Each wire component takes exactly one domain source; colliding renames are compile errors, not surprises. A rename declares a concrete return type (the generated stub only names it, never calls it), and agreeing renames inherited from [mix-ins](codecs.md#shared-vocabulary-mix-in-interfaces) fold into one stub returning the narrowest declared type.
 
 Error paths use **domain** component names, renames included: a wire sending `fullName` gets its errors at `name`. Every path in the system is domain-named, so paths stay consistent and stable under wire refactors; a client mapping errors back onto its own payload keys applies the rename in reverse.
 
@@ -43249,15 +43249,15 @@ An inherited member counts exactly as if it were declared on the spec: renames, 
 
 A mix-in **may be generic**: its members are read under the spec's instantiation, so `Emails<T>` extended as `Emails<EmailAddress>` contributes `ValidatedPrism<String, EmailAddress>`. See [Generic mix-ins](generics.md#generic-mix-ins).
 
-Two shapes are rejected, each naming the offender:
+Two mix-in shapes are rejected, each naming the offender:
 
 - a mix-in that **is itself a mapping spec** (directly or transitively extends `MappingSpec`/`UpdateSpec`): a mix-in shares vocabulary, a spec generates an Impl, and inheriting one spec from another would conflate the two;
 - a generic mix-in **reached raw**, either because the spec writes `extends Emails` or because an interface between them does: raw erases every member of the type below it, so the spec would inherit what it never declared.
 
-Diagnostics about an inherited member name its declaring interface, `abstract method 'bogus' (inherited from 'BrokenVocabulary') is neither a rename nor a leaf`, so the fix points at the right file.
+Diagnostics about an inherited member name its declaring interface, `abstract method 'bogus' (inherited from 'BrokenVocabulary') is neither a rename nor a leaf`, so the fix points at the right file. A member whose type only the mix-in's own package can see is refused the same way: the Impl is generated in the spec's package and writes the member's type out in full, so a package-private type a mix-in hands over from elsewhere has nowhere to be named.
 
 ~~~admonish note title="The inheritance edge cases, precisely"
-Conflicting inherited `default` methods are already a javac error before the processor runs. The one case javac leaves open, unrelated mix-ins both declaring the same *abstract* rename (override-equivalent abstracts may coexist, JLS 9.4.1), folds into a single rename when the targets agree and is rejected with a diagnostic naming both interfaces when they conflict. Interface `static` helpers are not inherited (JLS 8.4.8), so factory methods on a mix-in stay inert.
+Conflicting inherited `default` methods are already a javac error before the processor runs. The one case javac leaves open, unrelated mix-ins both declaring the same *abstract* rename (override-equivalent abstracts may coexist, JLS 9.4.1), folds into a single rename when the targets agree and is rejected with a diagnostic naming both interfaces when they conflict. Where the agreeing declarations differ covariantly (`String id()` beside `CharSequence id()`), the one generated stub returns the narrowest of them, which is the only one of the declared returns that satisfies the rest; a group with no narrowest (a raw return beside incomparable parameterised ones) is refused naming every declaration. Interface `static` helpers are not inherited (JLS 9.4.1), so factory methods on a mix-in stay inert.
 ~~~
 
 Mix-ins compose with the rest of the feature: [threaded generic specs](generics.md) can extend mix-ins, generic ones included, at their own type parameters, and [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) mappings inherit vocabulary the same way, element leaves included, so the leaf a full spec lifts over a `List` serves its PATCH sibling unchanged. [`@GenerateMerge`](merge_envelopes.md) specs still declare everything directly.
@@ -44050,7 +44050,7 @@ Element-mapped mappings nest as **compositions**. A use site whose pair unifies 
 and emits `CodecPageMappingImpl.of(entries()).asValidatedPrism()` in place. Failures locate through the whole composed path (`entries.items.1: not an email address`); an unresolvable element pair is a compile error naming the pair and both ways to supply it (a leaf on the using spec, or another registered mapping).
 
 ~~~admonish note title="Boundaries"
-Generic mappings are **record-to-record only** (bean-shaped wires and `UpdateSpec` mappings stay concrete); raw uses (including raw *nested* arguments) and wildcards are diagnosed, while array arguments (`Page<String[]>`) are concrete, map fine, and unify structurally at nested use sites. An abstract leaf belongs to a generic spec: on a concrete or sealed one it is diagnosed, since nothing defers its parser.
+Generic mappings are **record-to-record only** (bean-shaped wires and `UpdateSpec` mappings stay concrete); raw uses (including raw *nested* arguments) and wildcards are diagnosed, while array arguments (`Page<String[]>`) are concrete, map fine, and unify structurally at nested use sites. An abstract leaf belongs to a generic spec: on a concrete or sealed one it is diagnosed, since nothing defers its parser. A leaf or rename declaring type parameters of its own (`<R> ValidatedPrism<R, R> items()`) is diagnosed as well: the Impl carries a leaf as a constructor-supplied field and a rename as a stub, and neither has anywhere to declare `<R>`. A leaf's element types go on the spec's own type parameters; a rename simply declares a concrete return type, since the stub only names it.
 ~~~
 
 ---
@@ -44340,6 +44340,8 @@ Every rejection follows the processor's what/why/fix standard: the message state
 | A fallible projection emits the validated `patch`, never a fake `asLens()`; projections cannot carry derived fields | [The Emission Tiers](tiers.md#leaf-carrying-projections-the-validated-patch), [Derived wire fields](basics.md#derived-wire-fields) |
 | Generic mappings come in exactly three forms and stay record-to-record | [Generic Specs](generics.md) |
 | Sparse PATCH is bean-only, wrapper-typed, and never deep-merges | [Beans and Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec) |
+| A leaf or rename must not declare type parameters of its own; the element types go on the spec | [Generic Specs](generics.md#element-mapped-specs) |
+| A rename's or leaf's type must be visible from the spec's package, where the Impl is generated | [Shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) |
 
 ---
 
@@ -88802,6 +88804,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **`@GenerateMapping` holds spec members to what the Impl can carry** ([#762](https://github.com/higher-kinded-j/higher-kinded-j/issues/762)): the generated Impl writes a leaf as a constructor-supplied field and a rename as a stub, and three member shapes used to reach javac inside `<Spec>Impl.java` rather than being settled where they are declared. A leaf or rename declaring type parameters of its own (`<R> ValidatedPrism<R, R> items()`) is refused at the declaration, since neither a field nor a stub has anywhere to declare them. A member whose type the spec's package cannot see, whether a package-private type handed over by a mix-in from another package or a private type nested in the spec's own enclosing class, is refused naming the type and the package, the same check `@GenerateIsos` and `@GeneratePathBridge` already make. And same-named members with covariantly differing returns, renames and wildcard-differing leaves alike, fold into one member returning the narrowest declaration, the only one of the declared returns that satisfies the rest; a group with no narrowest (a raw return beside incomparable parameterised ones, which the language admits through unchecked conversion) is refused naming every declaration. See [Diagnostics and limits](mapping/testing.md#diagnostics-and-limits).
+
+  _Behaviour change, moving three javac errors to the declaration:_ each refused shape failed the build before, as `cannot find symbol` or an override error inside the generated file, and a covariant group could emit whichever member the scan reached first. Nothing that generated a compiling Impl changes.
 
 - **`@ThroughField` auto-detects the container interfaces, and explains a narrower one** ([#773](https://github.com/higher-kinded-j/higher-kinded-j/issues/773)): auto-detection matches a field declared as `List`, `Set`, `Collection`, `Map`, `Optional` or an array, on the interface itself. A field declared as something narrower, a concrete container (`ArrayList<String>`, `HashSet<Tag>`, `TreeMap<K, V>`) or another interface (`Deque`, `SortedSet`), is refused at the declaration with the interface it implements and both remedies named, because the standard traversal promises no more than the interface type, which the field could not take back; an array of a primitive (`int[]`) is refused on the same ground, since the array traversal walks an `Object[]`. Detection reads the focus of the spec's own lens for the field, which is what the generated traversal composes with, so an accessor returning `ArrayList` behind a `Lens<S, List<String>>` is accepted, and a spec declaring no lens for the field is told so at the declaration rather than by a `cannot find symbol` in the generated file. See [`@ThroughField` auto-detection](optics/copy_strategies.md#throughfield-auto-detection) and [Compiler Errors](optics/compiler_errors.md#throughfield--reaches-field-items-which-is-declared-as-arrayliststring-rather-than-as-the-list-interface).
 
