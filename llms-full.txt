@@ -42054,6 +42054,12 @@ It is a note rather than a warning on purpose. `@GenerateTraversals` has no per-
 
 **Fix.** Declare the component as a container a generator supports: `List`, `Set`, `Collection`, `Map`, `Optional`, an array, or a type one of the [generator plugins](../tooling/generator_plugins.md) covers. For a raw container, give it its element type. For a third-party type, put a `TraversableGenerator` for it on the annotation processor path. A mixed record — one supported container beside one unsupported — keeps the traversals it can have and carries the note for the one it cannot; the note is the reminder, not a gate. A record that wants no traversal for any of its components should not carry `@GenerateTraversals` at all; `@GenerateLenses` on its own still gives every component a lens.
 
+### "Multiple TraversableGenerator SPI providers with equal priority (N) support type X" (a warning)
+
+**Cause.** Two generators on the annotation processor path both claim the type, and neither outranks the other: `supports()` answers true from both at the same `priority()`. Selection is still deterministic, the first registered wins, but which one that is depends on registration order alone, which is what the warning points out. The same warning is raised whichever annotation asks: `@GenerateTraversals`, `@GenerateFocus` widening or `@ImportOptics`.
+
+**Fix.** Rank one of the providers: return `PRIORITY_OVERRIDE` from the one that should win, or `PRIORITY_FALLBACK` from the one that should yield, or drop one from the annotation processor path. The message names both provider classes. A consuming build running javac with `-Werror` turns the warning into an error, so the ranking is the remedy, not optional tidiness. See [How Plugin Discovery Works](../tooling/generator_plugins.md#how-plugin-discovery-works).
+
 ---
 
 ## `@ImportOptics` and `OpticsSpec` interfaces
@@ -81267,12 +81273,12 @@ The processor uses a three-layer mechanism to discover generators:
 
 1. **SPI Interface**: `TraversableGenerator` in `hkj-processor` defines the contract. Any class implementing this interface can be discovered.
 
-2. **ServiceLoader**: At compile time, the `TraversalProcessor` calls `ServiceLoader.load(TraversableGenerator.class)` to find all registered implementations.
+2. **ServiceLoader**: At compile time, the processors discover every registered implementation through `ServiceLoader.load(TraversableGenerator.class)`; `@GenerateTraversals` and `@GenerateFocus` load directly, and `@ImportOptics` loads through the shared registry.
 
 3. **Avaje SPI**: Each generator class is annotated with `@ServiceProvider(TraversableGenerator.class)`. The [Avaje SPI](https://avaje.io/spi/) annotation processor automatically generates the `META-INF/services` files and validates that the `module-info.java` `provides` clause is complete. A missing entry causes a compile error with a copy-pasteable fix.
 
-```
-TraversalProcessor
+```text
+Annotation processors
     │
     ▼
 ServiceLoader.load(TraversableGenerator.class)
@@ -81285,7 +81291,7 @@ ServiceLoader.load(TraversableGenerator.class)
     └── ... 26 more generators
 ```
 
-For each record component, the processor iterates through all loaded generators and calls `supports(TypeMirror)`. The first generator that returns `true` handles code generation for that field.
+For each record component, the processor asks every loaded generator `supports(TypeMirror)`, and the highest-priority generator that answers `true` handles code generation for that field, wherever its registration entry lands. Generators rank themselves through `priority()`: `PRIORITY_OVERRIDE` (100) beats `PRIORITY_DEFAULT` (0) beats `PRIORITY_FALLBACK` (-100). Two generators claiming the same type at the same priority draw a compile-time warning naming both, and the first registered wins. The same resolution serves `@GenerateTraversals`, the Focus DSL's widening and `@ImportOptics`, so the three annotations always agree about which generator claims a type.
 
 A component that holds elements but reaches no generator is not passed over silently. A `java.util.Collection` or `java.util.Map` subtype that no loaded generator supports — a `Deque`, a `SortedMap`, a Guava, Apache Commons or PCollections type whose plugin is not on the processor path — draws a compile-time **note** on the component, naming the unsupported type and the remedy: declare the component as a supported container, or put a `TraversableGenerator` for it on the annotation processor path. A container that is not a `java.util.Collection` or `Map` at all — Vavr's collections and Eclipse Collections' `Immutable*` types are `Iterable` only — is passed over silently, as is a `String` or an `int`, for the same reason a bare `Iterable` is not the bar: `java.nio.file.Path` implements it.
 
@@ -81326,6 +81332,15 @@ public interface TraversableGenerator {
     }
 
     /**
+     * Rank among generators claiming the same type: the highest priority wins.
+     * PRIORITY_OVERRIDE (100) replaces a built-in generator; PRIORITY_FALLBACK
+     * (-100) yields to any default. Default is PRIORITY_DEFAULT (0).
+     */
+    default int priority() {
+        return PRIORITY_DEFAULT;
+    }
+
+    /**
      * Generate the body of the modifyF method.
      * Returns a Palantir JavaPoet CodeBlock.
      */
@@ -81338,6 +81353,10 @@ public interface TraversableGenerator {
 
 ~~~admonish note title="Cardinality and Navigator Generation"
 The `getCardinality()` method influences both `@GenerateTraversals` and `@GenerateFocus(generateNavigators = true)`. When the Focus processor generates navigator classes, it consults each SPI generator's cardinality to determine whether a field should produce an `AffinePath` (zero or one element) or a `TraversalPath` (zero or more elements). Without this, SPI-registered types would default to `FocusPath`, losing the correct widening semantics.
+~~~
+
+~~~admonish tip title="Replacing a Built-in Generator"
+To take over a type a built-in generator already claims, implement `supports()` for that type and return `PRIORITY_OVERRIDE` from `priority()`. Registration order does not matter: the higher priority wins on every route that chooses a generator, so no fork of the built-in plugin is needed.
 ~~~
 
 ### Step-by-Step Example
@@ -88812,6 +88831,10 @@ _In development. Release notes will be added here as changes land on `main`._
 - **`@ThroughField` auto-detects the container interfaces, and explains a narrower one** ([#773](https://github.com/higher-kinded-j/higher-kinded-j/issues/773)): auto-detection matches a field declared as `List`, `Set`, `Collection`, `Map`, `Optional` or an array, on the interface itself. A field declared as something narrower, a concrete container (`ArrayList<String>`, `HashSet<Tag>`, `TreeMap<K, V>`) or another interface (`Deque`, `SortedSet`), is refused at the declaration with the interface it implements and both remedies named, because the standard traversal promises no more than the interface type, which the field could not take back; an array of a primitive (`int[]`) is refused on the same ground, since the array traversal walks an `Object[]`. Detection reads the focus of the spec's own lens for the field, which is what the generated traversal composes with, so an accessor returning `ArrayList` behind a `Lens<S, List<String>>` is accepted, and a spec declaring no lens for the field is told so at the declaration rather than by a `cannot find symbol` in the generated file. See [`@ThroughField` auto-detection](optics/copy_strategies.md#throughfield-auto-detection) and [Compiler Errors](optics/compiler_errors.md#throughfield--reaches-field-items-which-is-declared-as-arrayliststring-rather-than-as-the-list-interface).
 
   _Behaviour change, replacing a path that threw:_ a spec whose `@ThroughField` reached an `ArrayList`, `HashSet`, `TreeSet` or `TreeMap` field compiled in 0.4.10 and threw `ClassCastException` on the first read or write through the generated traversal (a `HashMap` field survived by accident, since the map traversal rebuilds a `HashMap`). Such a spec is now refused; declare the field as the interface, or name a `traversal` that rebuilds the concrete type.
+
+- **Generator priority decides everywhere** ([#774](https://github.com/higher-kinded-j/higher-kinded-j/issues/774)): when several `TraversableGenerator` SPI providers support one type, the highest `priority()` now wins on every route that chooses a generator. `@GenerateTraversals`, the Focus DSL's widening and `@ImportOptics` read their choice from one shared registry, so `PRIORITY_OVERRIDE` replaces a built-in generator and `PRIORITY_FALLBACK` yields to any default, wherever the `META-INF/services` entry lands. Two providers tied at the winning priority draw a compile-time warning naming both, on each of the three routes, and the first registered wins. See [How Plugin Discovery Works](tooling/generator_plugins.md#how-plugin-discovery-works) and the warning's entry in [Compiler Errors](optics/compiler_errors.md#multiple-traversablegenerator-spi-providers-with-equal-priority-n-support-type-x-a-warning).
+
+  _Behaviour change:_ selection previously followed registration order on some routes, so an override could win or lose by where its services entry landed, and only the Focus DSL's widening reported a tie. Two equal-priority providers claiming one type now draw the warning on every route, which a consuming build running javac with `-Werror` turns into an error; rank one of them, or drop one from the processor path.
 
 ### [v0.4.10](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.10) (30 August 2026)
 
