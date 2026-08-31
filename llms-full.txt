@@ -42080,9 +42080,15 @@ It is a note rather than a warning on purpose. `@GenerateTraversals` has no per-
 
 **Cause.** The spec interface is generic, and its own type parameter is the source type: `interface BoxOpticsSpec<S extends Box> extends OpticsSpec<S>`. Optics are generated against one named type, read for its members and rebuilt through its constructor, wither or setter, so a type parameter standing for whatever a caller picks has nothing to generate from. An array source type produces the same diagnostic with a different opening, `declares OpticsSpec<String[]>, which is an array type`, and the same remedy.
 
-**Fix.** Name the type the optics are for as the type argument: `OpticsSpec<Box>`. Where the bound names a single type, the message suggests it for you.
+**Fix.** Name the type the optics are for as the type argument, with its own type arguments where it has any: `OpticsSpec<Box>`. Where the bound names a single type that is not raw, the message suggests it for you.
 
 A source type that is itself generic is supported, and the spec names its own type parameters: `interface BoxOpticsSpec<U> extends OpticsSpec<Box<U>>` generates `static <U> Lens<Box<U>, String> label()`. See [Spec Interfaces](optics_spec_interfaces.md#generic-spec-interfaces) for which parameters a generated method declares. It is only a bare type variable, standing for the whole source type, that has no source to read.
+
+### "'XOpticsSpec' declares `OpticsSpec<Box>`, which names the raw type 'Box'"
+
+**Cause.** The source type names a generic type without its arguments. Every generated optic repeats the source type verbatim, so the generated file, which you cannot edit, would carry a `[rawtypes]` warning that the `@SuppressWarnings` on your own spec does not cover, and a `@ViaConstructor` rebuild read under a raw type erases its parameters into an `[unchecked]` call besides. Three shapes draw the error: the source type itself written bare (`OpticsSpec<Box>` for a `Box<X>`), a member type behind a generic outer written bare (`OpticsSpec<Outer.Holder>`, raw by JLS 4.8 even though `Holder` declares nothing of its own), and a raw type argument (`OpticsSpec<Box<List>>`). Raw is not the same as bare: a non-generic source type, or a static nested type of a generic outer, has no arguments to supply and is accepted as written.
+
+**Fix.** Name the raw type's arguments in the `OpticsSpec` clause: `OpticsSpec<Box<String>>`, `OpticsSpec<Outer<String>.Holder>`, `OpticsSpec<Box<List<String>>>`. A spec whose optics should stay generic declares its own type parameters and passes them on, `interface BoxOpticsSpec<U> extends OpticsSpec<Box<U>>`, as above. See [Spec Interfaces](optics_spec_interfaces.md#generic-spec-interfaces).
 
 ### "@ThroughField: '...' reaches field 'items', which is declared as `ArrayList<String>` rather than as the List interface"
 
@@ -88835,6 +88841,10 @@ _In development. Release notes will be added here as changes land on `main`._
 - **Generator priority decides everywhere** ([#774](https://github.com/higher-kinded-j/higher-kinded-j/issues/774)): when several `TraversableGenerator` SPI providers support one type, the highest `priority()` now wins on every route that chooses a generator. `@GenerateTraversals`, the Focus DSL's widening and `@ImportOptics` read their choice from one shared registry, so `PRIORITY_OVERRIDE` replaces a built-in generator and `PRIORITY_FALLBACK` yields to any default, wherever the `META-INF/services` entry lands. Two providers tied at the winning priority draw a compile-time warning naming both, on each of the three routes, and the first registered wins. See [How Plugin Discovery Works](tooling/generator_plugins.md#how-plugin-discovery-works) and the warning's entry in [Compiler Errors](optics/compiler_errors.md#multiple-traversablegenerator-spi-providers-with-equal-priority-n-support-type-x-a-warning).
 
   _Behaviour change:_ selection previously followed registration order on some routes, so an override could win or lose by where its services entry landed, and only the Focus DSL's widening reported a tie. Two equal-priority providers claiming one type now draw the warning on every route, which a consuming build running javac with `-Werror` turns into an error; rank one of them, or drop one from the processor path.
+
+- **`@ImportOptics` asks a raw source type for its arguments** ([#771](https://github.com/higher-kinded-j/higher-kinded-j/issues/771)): a spec interface whose source type names a raw type anywhere, the type itself (`OpticsSpec<Box>` for a `Box<X>`), a member type behind a generic outer written bare (`OpticsSpec<Outer.Holder>`), or a raw type argument (`OpticsSpec<Box<List>>`), is refused at the declaration, pointing at the type to complete and at the generic-spec form (`OpticsSpec<Box<U>>`) for optics that should stay generic. See the entry in [Compiler Errors](optics/compiler_errors.md#xopticsspec-declares-opticsspecbox-which-names-the-raw-type-box).
+
+  _Behaviour change, moving a javac failure to the declaration:_ the shape previously generated a file naming the type raw throughout, which failed the consuming build under `-Xlint:rawtypes -Werror` in a file the spec author cannot edit; the spec now hears about it at its own declaration.
 
 ### [v0.4.10](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.10) (30 August 2026)
 
