@@ -841,6 +841,7 @@ Getting back to standard Java from any Path:
 |------|----|-----|
 | `MaybePath<A>` | `Maybe<A>` | `.run()` |
 | `MaybePath<A>` | `Optional<A>` | `.run().toOptional()` |
+| `MaybePath<A>` | `Stream<A>` | `.run().stream()` |
 | `MaybePath<A>` | `A` (or default) | `.getOrElse(defaultValue)` |
 | `EitherPath<E, A>` | `Either<E, A>` | `.run()` |
 | `EitherPath<E, A>` | `A` (or default) | `.getOrElse(defaultValue)` |
@@ -61490,6 +61491,13 @@ For working with Java's standard `Optional` type in the HKT system, see [Optiona
   Maybe<String> fromNull = Maybe.fromNullable(null);     // Nothing
   ```
   ~~~
+  ~~~admonish  title="_Maybe.fromOptional(Optional<T> optional)_"
+ Bridges in from the JDK: a present `Optional` becomes `Just`, an empty one `Nothing`. The inverse of `toOptional()`.
+  ```java
+  Maybe<String> fromPresent = Maybe.fromOptional(Optional.of("Present")); // Just("Present")
+  Maybe<String> fromEmpty = Maybe.fromOptional(Optional.empty());         // Nothing
+  ```
+  ~~~
 
 **`MaybeKindHelper` (for HKT wrapping):**
 ~~~admonish  title="_MaybeKindHelper.widen(Maybe<A> maybe)_"
@@ -61552,6 +61560,8 @@ The `Maybe` interface itself provides useful methods:
 * `orElseGet(@NonNull Supplier<? extends @NonNull T> other)`: Returns the value if `Just`, otherwise invokes `other.get()`.
 * `toEither(L leftValue)`: Converts to `Either<L, T>`. `Just(t)` becomes `Right(t)`, `Nothing` becomes `Left(leftValue)`.
 * `toEither(Supplier<L> leftSupplier)`: Lazy variant that only evaluates the supplier for `Nothing`.
+* `toOptional()`: The inverse of `Maybe.fromOptional`. `Just(t)` becomes `Optional.of(t)`, `Nothing` becomes `Optional.empty()`. Total in both directions, because a `Just` never holds null.
+* `stream()`: Renders the `Maybe` as a `Stream` of zero or one element, with the same contract as `Optional.stream()`.
 * The `Maybe` interface also has its own `map` and `flatMap` methods, which are similar in behaviour to those on `MaybeMonad` but operate directly on `Maybe` instances.
 
 ~~~admonish example title="Converting Maybe to Either"
@@ -61571,6 +61581,19 @@ Either<UserError, User> result2 = maybeUser.toEither(
 // Just(user) -> Right(user)
 // Nothing    -> Left("User not found")
 ```
+~~~
+
+~~~admonish example title="Bridging to the JDK"
+`toOptional()` and `stream()` hand a `Maybe` to code that speaks `Optional` or `java.util.stream`. The stream form is the one to reach for when a pipeline of lookups should keep only its hits:
+
+```java
+List<Order> found = ids.stream()
+    .map(repository::findOrder)   // Stream<Maybe<Order>>
+    .flatMap(Maybe::stream)
+    .toList();
+```
+
+`Maybe` carries `stream()` deliberately alone among the optional-shaped types: an empty stream renders absence faithfully, while the same conversion on `Either` or `Try` would silently discard the error the value carries. Those types convert through `toEither` and `fold` instead.
 ~~~
 
 ### Key Operations (via `MaybeMonad`)
@@ -61779,7 +61802,7 @@ See [One Line, Six Layers](../hkts/one_line_six_layers.md) for the wider picture
 | Scenario | Use |
 |----------|-----|
 | Green-field code representing optional values | `Maybe`: strict non-null guarantee in `Just` |
-| JDK interop (APIs returning `java.util.Optional`) | Prefer [Optional](./optional_monad.md) to avoid conversion overhead |
+| JDK interop (APIs returning `java.util.Optional`) | Prefer [Optional](./optional_monad.md), or bridge at the edge with `fromOptional`/`toOptional` |
 | Optional values with typed error context | Convert with `maybeUser.toEither("not found")` → use [Either](./either_monad.md) |
 | Generic monadic code that works across any `Kind<F, A>` | `MaybeMonad`: implements `MonadError<MaybeKind.Witness, Unit>` |
 | Application-level pipelines with fluent API | Prefer [MaybePath](../effect/path_maybe.md) |
@@ -62035,7 +62058,7 @@ See [One Line, Six Layers](../hkts/one_line_six_layers.md) for the wider picture
 | You control the data model and want non-null guarantees | Use [MaybeMonad](maybe_monad.md): `Just` rejects null at construction |
 | Writing generic code that must accept `Optional` from callers | Use `OptionalMonad`: wrap with `OPTIONAL.widen()` |
 | Green-field code with no `Optional` dependency | Prefer [MaybeMonad](maybe_monad.md): stricter and more predictable |
-| Need to convert between the two | `Optional` to `Maybe`: `Maybe.fromNullable(opt.orElse(null))`; `Maybe` to `Optional`: `Optional.ofNullable(maybe.orElse(null))` |
+| Need to convert between the two | `Optional` to `Maybe`: `Maybe.fromOptional(opt)`; `Maybe` to `Optional`: `maybe.toOptional()` |
 | Application-level fluent composition | Prefer [OptionalPath](../effect/path_optional.md) or [MaybePath](../effect/path_maybe.md) |
 
 ~~~admonish important title="Key Points"
@@ -88846,7 +88869,9 @@ _In development. Release notes will be added here as changes land on `main`._
 
   _Behaviour change, moving a javac failure to the declaration:_ the shape previously generated a file naming the type raw throughout, which failed the consuming build under `-Xlint:rawtypes -Werror` in a file the spec author cannot edit; the spec now hears about it at its own declaration.
 
-- **Diagnostics render a type without its type-use annotations** ([#759](https://github.com/higher-kinded-j/higher-kinded-j/issues/759)): a type named in a compile-time message is now built from its element and resolved arguments rather than the mirror's string form, so a component declared `@Nullable Set<?>` is reported as `Set<?>`, the same rendering as the corrected declaration suggested beside it. A message no longer reads as advice to drop a nullness contract it never meant to touch.
+- **Diagnostics render a type without its type-use annotations** ([#759](https://github.com/higher-kinded-j/higher-kinded-j/issues/759)): a type named in a compile-time message is now built from its element and resolved arguments rather than the mirror's string form, so a component declared `@Nullable Set<?>` is reported as `Set<?>`, the same rendering as the corrected declaration suggested beside it. A message no longer reads as advice to drop a nullness contract it never meant to touch. See [Compiler Errors](optics/compiler_errors.md).
+
+- **`Maybe` bridges to the JDK**: `toOptional()` completes the round-trip `fromOptional` started, and `stream()` renders a `Maybe` as a zero-or-one-element `Stream` with `Optional.stream()`'s contract, so a pipeline of lookups keeps its hits with `.flatMap(Maybe::stream)`. `Maybe` carries `stream()` deliberately alone among the optional-shaped types: an empty stream renders absence faithfully, where the same conversion on `Either` or `Try` would silently discard the error it holds; their discarding conversions stay named for what they drop, the way `EitherPath.toOptionalPath()` is. Four book snippets that already wrote `maybePath.run().toOptional()` now compile as written. See [Maybe Monad](monads/maybe_monad.md#interacting-with-maybe-values).
 
 ### [v0.4.10](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.10) (30 August 2026)
 
