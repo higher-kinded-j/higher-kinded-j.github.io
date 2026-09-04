@@ -33874,7 +33874,7 @@ public record Holder(Either<String, Leaf> either) {}
 
 Both of the container's own type arguments count, focused or not, so `Either<?, Leaf>` is rejected too. A wildcard nested *inside* an argument is fine: `Either<String, List<? extends Leaf>>` still has a ground instantiation and widens to `.some(Affines.eitherRight()).each()`.
 
-The recognised `Optional`, `Maybe` and `List` widenings take a wildcard without complaint, because `.some()` and the no-argument `.each()` are methods with a free type variable and no optic argument to unify. `List<? extends Leaf>` widens to `TraversalPath<Holder, Leaf>` as usual.
+The recognised `Optional`, `Maybe` and `List` widenings take a wildcard without complaint, because `.some()` and the no-argument `.each()` are methods with a free type variable and no optic argument to unify. `List<? extends Leaf>` widens to `TraversalPath<Holder, Leaf>` as usual. A `Kind` field reaches the same result by a different route: its `Traverse` is named by the witness rather than inferred from the element, so `Kind<ListKind.Witness, ? extends Leaf>` widens to `TraversalPath<Holder, Leaf>` with the wildcard resolved to its bound before it is written out as `traverseOver`'s type argument, whereas `Kind<?, Leaf>` names no `Traverse` and stays a plain `FocusPath` (see [Kind Field Support](kind_field_support.md#convention-based-detection)).
 
 `Set` and `Collection` are recognised directly too, but each widens by naming an `Each` instance, so the rule above applies to them exactly as it does to an SPI container: `Set<?>`, `Set<? extends Leaf>` and a raw `Set` are rejected at the declaration.
 
@@ -35604,6 +35604,8 @@ A *witness* is the marker type that stands in for the higher-kinded `F` (see [Hi
 
 Parameterised witnesses are handled too: an `EitherKind.Witness<String>` field generates a call to `EitherTraverse.<String>instance()` with the type argument carried through.
 
+A wildcard resolves to the type it stands for, as it does for `List<? extends Member>` through `.each()`: `Kind<ListKind.Witness, ? extends Member>` widens to `TraversalPath<Team, Member>`, and an unbounded or super-bounded wildcard focuses `Object`. A wildcard inside a parameterised witness resolves the same way, so `Kind<EitherKind.Witness<? extends CharSequence>, Member>` reads `EitherTraverse.<CharSequence>instance()`. The traversal rebuilds the container rather than writing into it, so a component declared with the wildcard comes back holding a `Kind<ListKind.Witness, Member>`, which its declaration admits. A wildcard in the witness position itself, `Kind<?, Member>`, names no `Traverse` instance, and the field keeps its plain `FocusPath`, with or without `@TraverseField`.
+
 <!-- verify -->
 ```java
 // One record, three witnesses, three path types
@@ -35661,6 +35663,8 @@ The expression is emitted verbatim, so any of these forms works:
 ```
 
 A `Kind<F, A>` field with an unrecognised witness and no `@TraverseField` is not an error: the processor falls back to a plain `FocusPath` focusing the raw `Kind`, and you apply `traverseOver` yourself.
+
+The same fallback applies to a witness that names no `Traverse` instance at all, a wildcard or one of the record's own type variables, whether or not `@TraverseField` is present: the field keeps its plain `FocusPath`.
 
 ---
 
@@ -88888,6 +88892,10 @@ _In development. Release notes will be added here as changes land on `main`._
 - **`@GenerateFocus` leaves a wildcard container alone when nothing would widen it** ([#758](https://github.com/higher-kinded-j/higher-kinded-j/issues/758)): a `ZERO_OR_MORE` container whose element is a generic navigable record, such as `Map<String, ? extends Box<String>>` under `generateNavigators = true`, gets no navigator whatever its arguments, so its wildcard is no longer reported and the component stays a plain `FocusPath`, as its concrete twin `Map<String, Box<String>>` already did. The check that refuses a raw or wildcard-carrying container now reads the same result the generated method is built from, so the two cannot disagree. See [Custom Containers](optics/focus_containers.md#supported-container-types).
 
   _Behaviour change, in that one corner:_ the shape was refused in 0.4.10 although nothing widened it; it now compiles as written. Every container that was rejected because something did widen it is rejected still, with the same message.
+
+- **`Kind` fields take a wildcard element** ([#787](https://github.com/higher-kinded-j/higher-kinded-j/issues/787)): a record component declared `Kind<ListKind.Witness, ? extends Role>` now widens to `TraversalPath<Holder, Role>`, the wildcard resolved to its bound the way `List<? extends Role>` already is, and an unbounded or super-bounded wildcard focuses `Object`. A wildcard inside a parameterised witness resolves the same way, so `Kind<EitherKind.Witness<? extends CharSequence>, Role>` reads `EitherTraverse.<CharSequence>instance()`. The traversal rebuilds the container rather than writing into it, so the component comes back holding a `Kind<ListKind.Witness, Role>`, which its declaration admits. A wildcard in the witness position itself, `Kind<?, Role>`, names no `Traverse` instance and keeps its plain `FocusPath`, with or without `@TraverseField`. See [Kind Field Support](optics/kind_field_support.md#convention-based-detection).
+
+  _Behaviour change, replacing generated source that did not compile:_ in 0.4.10 a wildcard element under a recognised witness, a wildcard inside a parameterised witness's own type arguments, or a wildcard in either position under `@TraverseField` made the generated Focus class fail with `illegal start of type` at the `traverseOver` call, with no diagnostic at the declaration. One family of shapes that did compile changes signature: a witness bounded by a wildcard, `Kind<? extends ListKind.Witness, Role>` or `Kind<? extends EitherKind.Witness<String>, Role>`, was left a plain `FocusPath` because the wildcard witness went unrecognised, and now widens exactly as the plainly declared witness does, so code that assigned the old `FocusPath` or applied `traverseOver` to it by hand stops compiling; take the `TraversalPath` or `AffinePath` and drop the hand-applied step.
 
 ### [v0.4.10](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.10) (30 August 2026)
 
