@@ -35604,7 +35604,7 @@ A *witness* is the marker type that stands in for the higher-kinded `F` (see [Hi
 
 Parameterised witnesses are handled too: an `EitherKind.Witness<String>` field generates a call to `EitherTraverse.<String>instance()` with the type argument carried through.
 
-A wildcard resolves to the type it stands for, as it does for `List<? extends Member>` through `.each()`: `Kind<ListKind.Witness, ? extends Member>` widens to `TraversalPath<Team, Member>`, and an unbounded or super-bounded wildcard focuses `Object`. A wildcard inside a parameterised witness resolves the same way, so `Kind<EitherKind.Witness<? extends CharSequence>, Member>` reads `EitherTraverse.<CharSequence>instance()`. The traversal rebuilds the container rather than writing into it, so a component declared with the wildcard comes back holding a `Kind<ListKind.Witness, Member>`, which its declaration admits. A wildcard in the witness position itself, `Kind<?, Member>`, names no `Traverse` instance, and the field keeps its plain `FocusPath`, with or without `@TraverseField`.
+A wildcard resolves to the type it stands for, as it does for `List<? extends Member>` through `.each()`: `Kind<ListKind.Witness, ? extends Member>` widens to `TraversalPath<Team, Member>`, and an unbounded or super-bounded wildcard focuses `Object`. A wildcard inside a parameterised witness resolves the same way, so `Kind<EitherKind.Witness<? extends CharSequence>, Member>` reads `EitherTraverse.<CharSequence>instance()`. The traversal rebuilds the container rather than writing into it, so a component declared with the wildcard comes back holding a `Kind<ListKind.Witness, Member>`, which its declaration admits. A wildcard in the witness position itself, `Kind<?, Member>`, names no `Traverse` instance, and the field keeps its plain `FocusPath`, with or without `@TraverseField`, and with the annotation a note says so.
 
 <!-- verify -->
 ```java
@@ -35662,9 +35662,9 @@ The expression is emitted verbatim, so any of these forms works:
 @TraverseField(traverse = "com.example.TreeTraverse.TRAVERSE")     // static field
 ```
 
-A `Kind<F, A>` field with an unrecognised witness and no `@TraverseField` is not an error: the processor falls back to a plain `FocusPath` focusing the raw `Kind`, and you apply `traverseOver` yourself.
+A `Kind<F, A>` field with an unrecognised witness and no `@TraverseField` is not an error: the processor falls back to a plain `FocusPath` focusing the raw `Kind`, and you apply `traverseOver` yourself. For one of the library's own witnesses it says so with a note, since a Higher-Kinded-J witness with no registered `Traverse` is a gap rather than a choice.
 
-The same fallback applies to a witness that names no `Traverse` instance at all, a wildcard or one of the record's own type variables, whether or not `@TraverseField` is present: the field keeps its plain `FocusPath`.
+The same fallback applies to a witness that names no `Traverse` instance: a bare or `? super` wildcard, whether or not `@TraverseField` is present, or one of the record's own type variables without the annotation (with it, the expression you name is applied as written, and must be a `Traverse` for that variable). With `@TraverseField` on a `Kind` whose witness is such a wildcard, on a raw `Kind`, or on a component that is not declared as a `Kind` at all, the processor says so with a note naming the component and what would make the annotation apply, so an annotation that asked for a traversal is never dropped in silence. See the two notes' entries in [Compiler Errors](compiler_errors.md#traversefield-the-annotation-on-record-component-xy-is-not-applied-a-note).
 
 ---
 
@@ -42066,6 +42066,20 @@ It is a note rather than a warning on purpose. `@GenerateTraversals` has no per-
 **Cause.** Two generators on the annotation processor path both claim the type, and neither outranks the other: `supports()` answers true from both at the same `priority()`. Selection is still deterministic, the first registered wins, but which one that is depends on registration order alone, which is what the warning points out. The same warning is raised whichever annotation asks: `@GenerateTraversals`, `@GenerateFocus` widening or `@ImportOptics`.
 
 **Fix.** Rank one of the providers: return `PRIORITY_OVERRIDE` from the one that should win, or `PRIORITY_FALLBACK` from the one that should yield, or drop one from the annotation processor path. The message names both provider classes. A consuming build running javac with `-Werror` turns the warning into an error, so the ranking is the remedy, not optional tidiness. See [How Plugin Discovery Works](../tooling/generator_plugins.md#how-plugin-discovery-works).
+
+### "@TraverseField: the annotation on record component 'X.y' is not applied" (a note)
+
+**Cause.** `@TraverseField` names a `Traverse` for a `Kind<F, A>` component with a declared witness, and this component is not one. The second sentence says which way: the component is not declared as a `Kind` at all (`List<String> is not declared as a Kind<F, A> component`), the `Kind` is written raw and so names neither a witness nor an element, or its witness is a bare or `? super` wildcard (`Kind<?, String>`) that stands for no type and so names no `Traverse` instance. The component keeps the path it would have had without the annotation, a plain `FocusPath`, or `.each()` for a `List`, which compiles and is correct as far as it goes; what is missing is the traversal the annotation asked for.
+
+It is a note rather than an error because nothing is broken: the generated class is sound, and the same declaration without the annotation passes without comment. A warning cannot be suppressed and would fail a `-Werror` build with no remedy short of editing the record.
+
+**Fix.** Declare the component as the `Kind<F, A>` the `Traverse` is written for, `Kind<TreeKind.Witness, Tree>` for a `Traverse<TreeKind.Witness>`, with both type arguments given and a witness that is a type rather than a bare or `? super` wildcard; or drop the annotation and take the path the component gets on its own. See [Custom `Kind` Types with `@TraverseField`](kind_field_support.md#custom-kind-types-with-traversefield).
+
+### "@GenerateFocus: record component 'X.y' names a witness the processor does not recognise" (a note)
+
+**Cause.** The component is a `Kind<F, A>` whose witness is one of Higher-Kinded-J's own, but not one the Focus processor has a `Traverse` registered for, so nothing widens it: the generated method is a plain `FocusPath` focusing the `Kind`. A witness of your own draws no note, since not traversing it is an ordinary choice; a library witness with no registered `Traverse` is a gap you would want to hear about. The note is written once for the component, however many navigators reach the record.
+
+**Fix.** Add `@TraverseField` naming the `Traverse` instance for the witness, or keep the plain path and apply `traverseOver` yourself. See [Kind Field Support](kind_field_support.md#convention-based-detection).
 
 ---
 
@@ -88896,6 +88910,8 @@ _In development. Release notes will be added here as changes land on `main`._
 - **`Kind` fields take a wildcard element** ([#787](https://github.com/higher-kinded-j/higher-kinded-j/issues/787)): a record component declared `Kind<ListKind.Witness, ? extends Role>` now widens to `TraversalPath<Holder, Role>`, the wildcard resolved to its bound the way `List<? extends Role>` already is, and an unbounded or super-bounded wildcard focuses `Object`. A wildcard inside a parameterised witness resolves the same way, so `Kind<EitherKind.Witness<? extends CharSequence>, Role>` reads `EitherTraverse.<CharSequence>instance()`. The traversal rebuilds the container rather than writing into it, so the component comes back holding a `Kind<ListKind.Witness, Role>`, which its declaration admits. A wildcard in the witness position itself, `Kind<?, Role>`, names no `Traverse` instance and keeps its plain `FocusPath`, with or without `@TraverseField`. See [Kind Field Support](optics/kind_field_support.md#convention-based-detection).
 
   _Behaviour change, replacing generated source that did not compile:_ in 0.4.10 a wildcard element under a recognised witness, a wildcard inside a parameterised witness's own type arguments, or a wildcard in either position under `@TraverseField` made the generated Focus class fail with `illegal start of type` at the `traverseOver` call, with no diagnostic at the declaration. One family of shapes that did compile changes signature: a witness bounded by a wildcard, `Kind<? extends ListKind.Witness, Role>` or `Kind<? extends EitherKind.Witness<String>, Role>`, was left a plain `FocusPath` because the wildcard witness went unrecognised, and now widens exactly as the plainly declared witness does, so code that assigned the old `FocusPath` or applied `traverseOver` to it by hand stops compiling; take the `TraversalPath` or `AffinePath` and drop the hand-applied step.
+
+- **`@TraverseField` says when it is not applied** ([#789](https://github.com/higher-kinded-j/higher-kinded-j/issues/789)): the annotation names a `Traverse` for a `Kind<F, A>` component with a declared witness. Placed anywhere else, on a component that is not a `Kind`, on a raw `Kind`, or on a `Kind` whose witness is a bare or `? super` wildcard, it used to be passed over without a word, and the component quietly kept the path it would have had anyway. The processor now reports a note naming the component and what would make the annotation apply; the generated class is unchanged, and a note fails no build. The note a `Kind` field already drew for one of the library's own witnesses with no registered `Traverse` is written in the same form and once per component, where before it repeated for every navigator that reached the record. See the two notes' entries in [Compiler Errors](optics/compiler_errors.md#traversefield-the-annotation-on-record-component-xy-is-not-applied-a-note).
 
 ### [v0.4.10](https://github.com/higher-kinded-j/higher-kinded-j/releases/tag/v0.4.10) (30 August 2026)
 
