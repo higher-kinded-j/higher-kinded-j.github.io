@@ -398,20 +398,25 @@ navigable.</p>
 EitherPath&lt;String, User&gt; withError =
     maybeUser.toEitherPath("User not found");
 
-// The error is built whichever way the Maybe went
-EitherPath&lt;UserError, User&gt; withTypedError =
-    maybeUser.toEitherPath(new UserError("User " + id + " not found"));
+// With lazy error: the supplier runs only on the Nothing branch
+EitherPath&lt;UserError, User&gt; withLazyError =
+    maybeUser.toEitherPath(() -&gt; new UserError("User " + id + " not found"));
+
+// Mid-chain nothing downstream settles E, so the witness names it here
+EitherPath&lt;UserError, String&gt; named =
+    maybeUser.&lt;UserError&gt;toEitherPath(() -&gt; new UserError("not found")).map(User::name);
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.10"></div>
-<div id="admonition-the-error-is-eager" class="admonition admonish-note" role="note" aria-labelledby="admonition-the-error-is-eager-title">
+<div id="admonition-which-of-the-two-overloads-runs" class="admonition admonish-tip" role="note" aria-labelledby="admonition-which-of-the-two-overloads-runs-title">
 <div class="admonition-title">
-<div id="admonition-the-error-is-eager-title">
-<p>The error is eager</p>
+<div id="admonition-which-of-the-two-overloads-runs-title">
+<p>Which of the two overloads runs</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-the-error-is-eager"></a>
+<a class="admonition-anchor-link" href="#admonition-which-of-the-two-overloads-runs"></a>
 </div>
 <div>
-<p><code>toEitherPath</code> takes the error <em>value</em>, so it is constructed even when the <code>Maybe</code> is a <code>Just</code> and it is thrown away. For a record that costs nothing; for an error that formats a message or captures a stack trace, hoist it or accept the cost. <code>Maybe.toEither</code> has a <code>Supplier</code> overload for exactly this, and the Path layer does not: <a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/794">#794</a>.</p>
+<p>A lambda, a method reference, or a variable whose type is a <code>Supplier</code> picks the deferred overload; every other argument picks the eager one. Reach for the deferred form when building the error is not free - it formats a message, reads a <code>MessageSource</code>, or captures a stack trace - because on the <code>Just</code> branch the supplier is never called. For a plain record the eager form reads better and costs nothing.</p>
+<p>An error whose own type is a functional interface is unaffected, since it is not a <code>Supplier</code>. Two shapes do need a hand, and both name the error type to reach the eager overload: such an error written <em>as a lambda</em>, which reads as a supplier and fails to infer (<code>maybeUser.&lt;MyError&gt;toEitherPath(() -&gt; "boom")</code>); and a bare <code>null</code>, which selects the deferred overload and is rejected as a null supplier (<code>maybeUser.toEitherPath((MyError) null)</code> if a null left was meant - note the <strong>cast</strong>, since a type witness still picks the deferred overload here).</p>
 </div>
 </div>
 <p>This is useful when:</p>
@@ -425,7 +430,7 @@ EitherPath&lt;UserError, User&gt; withTypedError =
 <pre><code class="language-java">// Service that returns Maybe internally but Either externally
 public EitherPath&lt;AppError, User&gt; getUserOrError(String id) {
     return Path.maybe(userRepository.findById(id))
-        .toEitherPath(AppError.notFound(id));
+        .toEitherPath(() -&gt; AppError.notFound(id));
 }
 </code></pre>
 <h3 id="eitherpath--maybepath"><a class="header" href="#eitherpath--maybepath">EitherPath → MaybePath</a></h3>
@@ -646,6 +651,9 @@ Optional&lt;String&gt; javaOpt2 = optPath2.run();
 
 // Provide error for empty case
 EitherPath&lt;String, User&gt; either = optUser.toEitherPath("User not found");
+
+// Or defer building it to the empty branch
+EitherPath&lt;AppError, User&gt; lazy = optUser.toEitherPath(() -&gt; AppError.notFound(id));
 </code></pre>
 <h3 id="when-to-use-optionalpath"><a class="header" href="#when-to-use-optionalpath">When to Use OptionalPath</a></h3>
 <p>Use <code>OptionalPath</code> when:</p>

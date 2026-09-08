@@ -703,7 +703,9 @@ public EitherPath<AppError, Receipt> processPayment(String userId, BigDecimal am
 ```
 
 ~~~admonish note title="Why the explicit `<AppError>`"
-`toEitherPath(error)` infers its error type from the argument it is given. At the *end* of a chain the assignment target supplies it, but in the middle of one there is nothing downstream to infer from, so a `new AppError.UserNotFound(...)` would pin the whole railway to `UserNotFound` and the method's declared `EitherPath<AppError, Receipt>` would not match. Naming the type once at the point the error channel opens widens it for every step after. See [Effect compiler errors](effect/compiler_errors.md) for the rest of this family.
+`toEitherPath` infers its error type from the argument it is given. At the *end* of a chain the assignment target supplies it, but in the middle of one there is nothing downstream to infer from, so a `new AppError.UserNotFound(...)` would pin the whole railway to `UserNotFound` and the method's declared `EitherPath<AppError, Receipt>` would not match. Naming the type once at the point the error channel opens widens it for every step after.
+
+The deferred overload needs the witness for the same reason and in the same place: `.<AppError>toEitherPath(() -> new AppError.UserNotFound(userId))`. `Supplier<? extends E>` looks as though its wildcard would widen the error on its own, but `E` is settled where the conversion is written, before anything downstream is read. See [Effect compiler errors](effect/compiler_errors.md) for the rest of this family.
 ~~~
 
 ---
@@ -906,10 +908,11 @@ import static org.higherkindedj.hkt.instances.Witnesses.*;
 
 | From | To | Method |
 |------|----|--------|
-| `MaybePath<A>` | `EitherPath<E, A>` | `.toEitherPath(error)` |
+| `MaybePath<A>` | `EitherPath<E, A>` | `.toEitherPath(error)`, `.toEitherPath(errorSupplier)` |
 | `MaybePath<A>` | `TryPath<A>` | `.toTryPath(exceptionSupplier)` |
 | `MaybePath<A>` | `ValidationPath<E, A>` | `.toValidationPath(error, semigroup)` |
 | `MaybePath<A>` | `OptionalPath<A>` | `.toOptionalPath()` |
+| `OptionalPath<A>` | `EitherPath<E, A>` | `.toEitherPath(error)`, `.toEitherPath(errorSupplier)` |
 | `EitherPath<E, A>` | `MaybePath<A>` | `.toMaybePath()` |
 | `EitherPath<E, A>` | `TryPath<A>` | `.toTryPath(errorToException)` |
 | `EitherPath<E, A>` | `ValidationPath<E, A>` | `.toValidationPath(semigroup)` |
@@ -926,7 +929,7 @@ import static org.higherkindedj.hkt.instances.Witnesses.*;
 | `FocusPath<S, A>` | `MaybePath<A>` | `.toMaybePath()` |
 | `FocusPath<S, A>` | `EitherPath<E, A>` | `.toEitherPath(errorFn)` |
 | `AffinePath<S, A>` | `MaybePath<A>` | `.toMaybePath()` |
-| `AffinePath<S, A>` | `EitherPath<E, A>` | `.toEitherPath(errorFn)` |
+| `AffinePath<S, A>` | `EitherPath<E, A>` | `.toEitherPath(source, error)`, `.toEitherPath(source, errorSupplier)` |
 
 ---
 
@@ -16634,13 +16637,19 @@ MaybePath<User> maybeUser = Path.maybe(findUser(id));
 EitherPath<String, User> withError =
     maybeUser.toEitherPath("User not found");
 
-// The error is built whichever way the Maybe went
-EitherPath<UserError, User> withTypedError =
-    maybeUser.toEitherPath(new UserError("User " + id + " not found"));
+// With lazy error: the supplier runs only on the Nothing branch
+EitherPath<UserError, User> withLazyError =
+    maybeUser.toEitherPath(() -> new UserError("User " + id + " not found"));
+
+// Mid-chain nothing downstream settles E, so the witness names it here
+EitherPath<UserError, String> named =
+    maybeUser.<UserError>toEitherPath(() -> new UserError("not found")).map(User::name);
 ```
 
-~~~admonish note title="The error is eager"
-`toEitherPath` takes the error *value*, so it is constructed even when the `Maybe` is a `Just` and it is thrown away. For a record that costs nothing; for an error that formats a message or captures a stack trace, hoist it or accept the cost. `Maybe.toEither` has a `Supplier` overload for exactly this, and the Path layer does not: [#794](https://github.com/higher-kinded-j/higher-kinded-j/issues/794).
+~~~admonish tip title="Which of the two overloads runs"
+A lambda, a method reference, or a variable whose type is a `Supplier` picks the deferred overload; every other argument picks the eager one. Reach for the deferred form when building the error is not free - it formats a message, reads a `MessageSource`, or captures a stack trace - because on the `Just` branch the supplier is never called. For a plain record the eager form reads better and costs nothing.
+
+An error whose own type is a functional interface is unaffected, since it is not a `Supplier`. Two shapes do need a hand, and both name the error type to reach the eager overload: such an error written *as a lambda*, which reads as a supplier and fails to infer (`maybeUser.<MyError>toEitherPath(() -> "boom")`); and a bare `null`, which selects the deferred overload and is rejected as a null supplier (`maybeUser.toEitherPath((MyError) null)` if a null left was meant - note the **cast**, since a type witness still picks the deferred overload here).
 ~~~
 
 This is useful when:
@@ -16652,7 +16661,7 @@ This is useful when:
 // Service that returns Maybe internally but Either externally
 public EitherPath<AppError, User> getUserOrError(String id) {
     return Path.maybe(userRepository.findById(id))
-        .toEitherPath(AppError.notFound(id));
+        .toEitherPath(() -> AppError.notFound(id));
 }
 ```
 
@@ -16899,6 +16908,9 @@ OptionalPath<User> optUser = Path.optional(findUserOptional(id));
 
 // Provide error for empty case
 EitherPath<String, User> either = optUser.toEitherPath("User not found");
+
+// Or defer building it to the empty branch
+EitherPath<AppError, User> lazy = optUser.toEitherPath(() -> AppError.notFound(id));
 ```
 
 ### When to Use OptionalPath
@@ -17486,7 +17498,7 @@ The `toEitherPath` method converts `Nothing` to a `Left` with the error you prov
 
 | From | To | Method |
 |------|----|--------|
-| `MaybePath<A>` | `EitherPath<E, A>` | `.toEitherPath(errorValue)` |
+| `MaybePath<A>` | `EitherPath<E, A>` | `.toEitherPath(errorValue)`, `.toEitherPath(errorSupplier)` |
 | `TryPath<A>` | `EitherPath<E, A>` | `.toEitherPath(exceptionMapper)` |
 | `EitherPath<E, A>` | `MaybePath<A>` | `.toMaybePath()` |
 | `ValidationPath<E, A>` | `EitherPath<E, A>` | `.toEitherPath()` |
@@ -92544,6 +92556,10 @@ _In development. Release notes will be added here as changes land on `main`._
   _Behaviour change, moving a javac failure to the declaration:_ the shape previously generated a file naming the type raw throughout, which failed the consuming build under `-Xlint:rawtypes -Werror` in a file the spec author cannot edit; the spec now hears about it at its own declaration.
 
 - **Diagnostics render a type without its type-use annotations** ([#759](https://github.com/higher-kinded-j/higher-kinded-j/issues/759)): a type named in a compile-time message is now built from its element and resolved arguments rather than the mirror's string form, so a component declared `@Nullable Set<?>` is reported as `Set<?>`, the same rendering as the corrected declaration suggested beside it. A message no longer reads as advice to drop a nullness contract it never meant to touch. See [Compiler Errors](optics/compiler_errors.md).
+
+- **`MaybePath`, `OptionalPath` and `AffinePath` take a supplier for the error** ([#794](https://github.com/higher-kinded-j/higher-kinded-j/issues/794)): all three now carry the deferred overload `Maybe.toEither` has had all along, so an error that is not free to build - one that formats a message, reads a `MessageSource`, or captures a stack trace - is built only on the branch that uses it. A lambda, a method reference, or a variable of a `Supplier` type picks the deferred overload; every other argument picks the eager one, an error whose own type is a functional interface included. The one shape to watch is such an error written *as a lambda*, which reads as a supplier and fails to infer; name the error type to pick the eager overload: `path.<MyError>toEitherPath(() -> "boom")`. `AffinePath.toEitherPath` gains the same overload, for the same reason. `toValidationPath` keeps only its eager form: its `Semigroup<E>` parameter pins the same `E` in both candidate signatures, so neither is more specific and the bare lambda - the idiomatic way to write a deferred error - is ambiguous. It compiles only with an explicit type witness or a hoisted `Supplier` variable, which is a worse method than a differently named one. Five book pages documented the deferred form before it existed; [Type Conversions](effect/conversions.md#maybepath--eitherpath) is the one that teaches it.
+
+  _Behaviour change, for two call shapes that compiled before:_ `toEitherPath(null)` used to yield `Left(null)` and now selects the supplier overload and throws; cast the null to the error type (`path.toEitherPath((MyError) null)`) if a null left was meant. And an argument that was a `Supplier` *used as the error itself* now supplies the error rather than becoming it. Neither draws a compiler warning. Every other call site is untouched.
 
 - **`Maybe` bridges to the JDK**: `toOptional()` completes the round-trip `fromOptional` started, and `stream()` renders a `Maybe` as a zero-or-one-element `Stream` with `Optional.stream()`'s contract, so a pipeline of lookups keeps its hits with `.flatMap(Maybe::stream)`. `Maybe` carries `stream()` deliberately alone among the optional-shaped types: an empty stream renders absence faithfully, where the same conversion on `Either` or `Try` would silently discard the error it holds; their discarding conversions stay named for what they drop, the way `EitherPath.toOptionalPath()` is. Four book snippets that already wrote `maybePath.run().toOptional()` now compile as written. See [Maybe Monad](monads/maybe_monad.md#interacting-with-maybe-values).
 
