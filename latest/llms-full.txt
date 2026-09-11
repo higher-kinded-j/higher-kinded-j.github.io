@@ -18340,6 +18340,7 @@ External types like `LocalDate`, Jackson's `JsonNode`, JOOQ records, and Protobu
 | [`@GenerateMapping`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) | interface extending `UpdateSpec<Domain, Wire>` (bean wire) | `XMappingImpl` with only `updateFrom(Wire) : Edits.Accumulated<Domain>` | Sparse PATCH write-back: fold the present (non-null) request fields into an update, leave the absent ones |
 | [`@MapField(to = "...")`](../mapping/ch_intro.md) | abstract method on the spec, named after the domain component | a rename in both directions | Domain and wire components with different names |
 | [`@OptionalBridge`](../mapping/basics.md#optional-bridge) | abstract marker method on the spec, or that component's `default` leaf | a domain `Optional<T>` mapped to a nullable wire component `T` | A record wire that encodes absence as `null`, the way a JSON binder writes it |
+| [`@Flatten`](../mapping/structure.md#flattening-a-nested-component-onto-a-flat-wire) | abstract marker method on the spec, named after a nested domain record component | that record's components spread across the wire's flat components by name, both directions | A wire fixed flat (`street`, `city`, `postcode`) where the domain nests an `Address` |
 | [`@GenerateAssembly`](../monads/validated_assembly.md) | `record` | `XAssembly`, a staged builder over `Validated<NonEmptyList<FieldError>, R>` with one method per component | Building a record from independently validated parts, collecting every error, with no arity ceiling |
 | [`@GenerateMerge`](../mapping/merge_envelopes.md) | interface whose abstract method names target and sources | a forward-only assembly of one target record from several sources | Merging several records into one; no inverse is generated, because the multi-source case has none |
 | [`@GenerateErrorEnvelope`](../mapping/merge_envelopes.md) | `sealed interface` whose variants each carry one `ErrorEnvelope<C>` | per-variant factories, a fluent context builder, and a context wither | Giving a sealed error hierarchy a typed context without repeating it on every variant |
@@ -45234,7 +45235,7 @@ flowchart TD
 That decision tree is the map of this chapter: [The Emission Tiers](tiers.md) names each of these surfaces and the laws it obeys.
 
 ~~~admonish note title="If you know MapStruct"
-This is not a MapStruct competitor on breadth, and does not try to be: MapStruct keeps its ground for mutable JPA entities, nested-path flattening, and Bean-Validation-centric shops. What this generator does differently is **boundary correctness for record domains**: the inbound direction is a validating parser with located, accumulated errors (where MapStruct throws on the first bad conversion, or silently maps an invalid value), the outbound direction is provably total, and no operation is generated whose laws the pair cannot satisfy. Adopt it where the boundary is the product; keep MapStruct where its breadth pays.
+This is not a MapStruct competitor on breadth, and does not try to be: MapStruct keeps its ground for mutable JPA entities, deep path flattening (`address.geo.lat` onto a wholly flat wire, where this generator spreads one level), and Bean-Validation-centric shops. What this generator does differently is **boundary correctness for record domains**: the inbound direction is a validating parser with located, accumulated errors (where MapStruct throws on the first bad conversion, or silently maps an invalid value), the outbound direction is provably total, and no operation is generated whose laws the pair cannot satisfy. Adopt it where the boundary is the product; keep MapStruct where its breadth pays.
 ~~~
 
 ~~~admonish note title="If you know Bean Validation"
@@ -45613,7 +45614,7 @@ Absence-as-a-meaning is deliberate everywhere it appears. A record component can
 Leaves are named after *domain* components and return `ValidatedPrism`; derived fields are named after *wire-only* components and return `Getter`. The processor matches the two differently:
 
 - A zero-parameter `default` returning `Getter` is *always* claimed as a derived field, and validated as one. So give getter-shaped utility helpers a parameter or a different return type, or they will be mistaken for derived fields.
-- A `default` returning `ValidatedPrism` is matched by name against the domain's components, and a *locally declared* leaf **must** match: an unmatched local leaf is a compile error with a nearest-name hint (`leaf 'emial' names no component of Customer. Did you mean 'email()'?`), because a silently inert leaf would silently stop validating that field. Prism-returning helpers belong in `private` or `static` methods, which are never leaf-shaped.
+- A `default` returning `ValidatedPrism` is matched by name against the domain's components (and against the members of any [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group), and a *locally declared* leaf **must** match: an unmatched local leaf is a compile error with a nearest-name hint (`leaf 'emial' names no component of Customer. Did you mean 'email()'?`), because a silently inert leaf would silently stop validating that field. Prism-returning helpers belong in `private` or `static` methods, which are never leaf-shaped.
 - *Inherited* [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) leaves that match nothing stay inert by design: a shared vocabulary may carry leaves for components only some extending specs have.
 - On a **sealed** mapping, locally declared leaves and derived fields are rejected outright (a dispatch has no components); inherited vocabulary stays inert there too.
 
@@ -45835,7 +45836,7 @@ interface SupplierMapping extends ContactVocabulary, MappingSpec<Supplier, Suppl
     SupplierMappingImpl.INSTANCE.parse(new SupplierDto("Acme Ltd", "sales@acme.example", "01"));
 ```
 
-An inherited member counts exactly as if it were declared on the spec: renames, leaves, derived fields *and* `@OptionalBridge` markers, collected across the whole hierarchy (a mix-in may extend further mix-ins, and a diamond counts once). Precedence is **Java's own**: a member re-declared on the spec (or on a nearer mix-in) hides the one it overrides.
+An inherited member counts exactly as if it were declared on the spec: renames, leaves, derived fields, `@OptionalBridge` markers *and* [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) markers, collected across the whole hierarchy (a mix-in may extend further mix-ins, and a diamond counts once). Precedence is **Java's own**: a member re-declared on the spec (or on a nearer mix-in) hides the one it overrides. An inherited leaf, bridge or `@Flatten` marker that names no component of the extending spec's domain stays inert, so one vocabulary can serve specs whose domains differ; the same declaration made locally is an error.
 
 A mix-in **may be generic**: its members are read under the spec's instantiation, so `Emails<T>` extended as `Emails<EmailAddress>` contributes `ValidatedPrism<String, EmailAddress>`. See [Generic mix-ins](generics.md#generic-mix-ins).
 
@@ -45882,6 +45883,7 @@ Real DTOs are not flat. An order carries a customer, the customer carries an add
 
 ~~~admonish info title="What You'll Learn"
 - How specs nest automatically, in one compilation or across modules, composing failures into dotted paths
+- How a nested domain record spreads across a flat wire with `@Flatten`, and where its failures locate
 - How `List`, `Optional`, and `Map` components lift, and how failing elements are located by index or key
 - Why recursion terminates by construction
 - Dispatching a mapping over two sealed interfaces, exhaustively in both directions
@@ -45936,9 +45938,52 @@ The rendered path uses each key's `toString()`, so a key containing a dot looks 
 
 ---
 
+## Flattening a nested component onto a flat wire
+
+Nesting assumes the wire nests too. Often it does not: the domain keeps an `Address` record, and the wire format, fixed by someone else, carries `street`, `city` and `postcode` as plain fields. No single wire component holds the address, so a leaf cannot map it; `@Flatten` on a marker named after the component spreads it instead:
+
+``` java
+record Address(String street, String city, String postcode) {}
+
+record Vendor(String name, Address address) {}
+
+record VendorDto(String name, String street, String city, String postcode) {} // fixed, flat
+
+@GenerateMapping
+interface VendorMapping extends MappingSpec<Vendor, VendorDto> {
+  @Flatten
+  Address address(); // spread by name: street, city and postcode
+}
+
+
+    VendorDto flat =
+        VendorMappingImpl.INSTANCE.build(
+            new Vendor("Acme", new Address("1 High St", "Leeds", "LS1 4AP")));
+    // VendorDto[name=Acme, street=1 High St, city=Leeds, postcode=LS1 4AP]
+    VendorMappingImpl.INSTANCE.parse(new VendorDto("Acme", null, "Leeds", null));
+    // Invalid(NonEmptyList[address.street: must not be null, address.postcode: must not be null])
+```
+
+The record's components, spread this way, are the **group**: `street`, `city` and `postcode` here. `build` fills each flat wire component from the group member of the same name. `parse` assembles the record through its own [`Validated.fields()` ladder](../monads/validated_assembly.md) inside the outer one, so every failure accumulates with the rest and locates under the **domain** path: `address.street`, a name the flat wire never sent. That is the [domain-named-paths contract](basics.md#renames-mapfield) reaching a nesting the wire does not have, and it is deliberate: the client learns which part of the address was wrong, not which position in a flat list.
+
+The group is spread by name, and the whole vocabulary applies inside it by name too:
+
+- a `@MapField(to = "addressLine1") String street();` rename points a group member at a differently named wire field,
+- a `default ValidatedPrism<String, Postcode> postcode()` leaf converts one, and makes the mapping fallible exactly as a top-level leaf would,
+- an `@OptionalBridge` named after a member that is `Optional` [bridges it](basics.md#optional-bridge) to a nullable wire field,
+- a member that is itself a record nests through its own spec, and containers lift.
+
+An all-identity group keeps the mapping lossless: `asIso()` survives and reassembles the record on the way back. A mapping carrying a group is nested by other specs like any other, in the same compilation or from a dependency.
+
+Names must be unambiguous, since every wire component takes exactly one source: a group member may not share its name with a domain component or with another group's member (so two components of the same record type cannot both be spread), a derived field may not be named after one, and a wire component named after the flattened component itself must be fed by a rename from another component. Each collision is a compile error naming both sides.
+
+Spreading is one level deep: a record inside the group nests through its own spec against a nested wire component, and a marker naming a group member is refused. Flattening otherwise stays on the full record-record tier for now: a bean-shaped wire, a generic spec, a projection, a sparse `UpdateSpec` and a group wider than one `fields()` ladder are each refused with a diagnostic, not supported yet.
+
+---
+
 ## Across modules
 
-The spec a component nests through may live in another module. Keep `Customer`, `CustomerDto` and `CustomerMapping` in `:orders-api`, put the invoice pair in `:billing`, and the spec above does not change: it stays empty, and the generated Impl delegates to the dependency's exactly as it would to a sibling.
+The spec a component nests through may live in another module. Keep `Customer`, `CustomerDto` and `CustomerMapping` in `:orders-api`, put the invoice pair in `:billing`, and the `InvoiceMapping` from the nesting section does not change: it stays empty, and the generated Impl delegates to the dependency's exactly as it would to a sibling.
 
 <!-- verify -->
 ```java
@@ -46025,6 +46070,7 @@ A domain subtype without a spec, or a wire subtype nothing produces, is a compil
 * **Error paths are dotted domain names**: `customers.1.email`, `attributes.en.email`
 * **Sealed dispatch is exhaustive both ways**: a missing subtype pair is a compile error, never a runtime surprise
 * **Dependencies count as siblings**: a spec compiled into another module nests, dispatches and merges through the classpath index, and your own spec shadows a dependency's for the same pair
+* **A flat wire can still nest on the domain side**: `@Flatten` spreads a nested record across flat wire fields by name, and failures locate under the domain path (`address.street`)
 ~~~
 
 ~~~admonish tip title="See Also"
@@ -46975,6 +47021,7 @@ Every rejection follows the processor's what/why/fix standard: the message state
 | Nested, sealed and merge resolution sees a dependency's specs only when that module was compiled with `hkj-processor` | [Across modules](structure.md#across-modules) |
 | Named modules neither write nor read the index, and two spec-carrying jars cannot be automatic modules together | [Across modules](structure.md#across-modules) |
 | A mix-in may be generic, but must not be reached raw | [Shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) |
+| A flattened component stays on the full record-record tier: not on a bean wire, a generic spec, a projection or a sparse `UpdateSpec`; its record fits one `fields()` ladder, and spreading is one level deep (a record inside the group nests through its own spec) | [Flattening a nested component](structure.md#flattening-a-nested-component-onto-a-flat-wire) |
 | `Map` components lift values only; keys are identity, so differing key types, raw `Map`s and wildcards are rejected | [Nesting and containers](structure.md) |
 | A fallible projection emits the validated `patch`, never a fake `asLens()`; projections cannot carry derived fields | [The Emission Tiers](tiers.md#leaf-carrying-projections-the-validated-patch), [Derived wire fields](basics.md#derived-wire-fields) |
 | Generic mappings come in exactly three forms and stay record-to-record | [Generic Specs](generics.md) |
@@ -92289,7 +92336,7 @@ OrderError error = OrderErrors.outOfStock(products)
 
 ## @GenerateMapping
 
-**Definition:** An annotation processor for the record-to-DTO boundary. Annotate an interface extending `MappingSpec<Domain, Wire>` and the processor generates, reflection-free at compile time, a total `build` (domain to wire) plus an accumulating `parse` (wire to domain) returning `Validated<NonEmptyList<FieldError>, Domain>`, so a bad DTO reports every bad field at once. Components match by name and type; `@MapField` declares renames, and `List`/`Optional`/`Map` containers lift automatically. The annotation sits on *your* spec interface, so third-party records map without being annotatable.
+**Definition:** An annotation processor for the record-to-DTO boundary. Annotate an interface extending `MappingSpec<Domain, Wire>` and the processor generates, reflection-free at compile time, a total `build` (domain to wire) plus an accumulating `parse` (wire to domain) returning `Validated<NonEmptyList<FieldError>, Domain>`, so a bad DTO reports every bad field at once. Components match by name and type; `@MapField` declares renames, `@Flatten` spreads a nested record across a flat wire, and `List`/`Optional`/`Map` containers lift automatically. The annotation sits on *your* spec interface, so third-party records map without being annotatable.
 
 **Example:**
 <!-- verify -->
@@ -92409,7 +92456,7 @@ MappingLaws.assertMappingLaws(
 
 ## MappingSpec
 
-**Definition:** The marker interface a mapping spec extends to name its pair: `interface UserMapping extends MappingSpec<Domain, Wire> {}`. The interface deliberately declares nothing callable (the generated `UserMappingImpl` carries the surface); the spec's members are the *declaration vocabulary*: `default` `ValidatedPrism` methods are leaves, `@MapField` abstracts are renames, `default` `Getter` methods are derived wire fields, `@OptionalBridge` marks a component whose `null` means absent. Its sparse sibling is [UpdateSpec](#updatespec), which swaps the whole generated surface for a single `updateFrom`.
+**Definition:** The marker interface a mapping spec extends to name its pair: `interface UserMapping extends MappingSpec<Domain, Wire> {}`. The interface deliberately declares nothing callable (the generated `UserMappingImpl` carries the surface); the spec's members are the *declaration vocabulary*: `default` `ValidatedPrism` methods are leaves, `@MapField` abstracts are renames, `default` `Getter` methods are derived wire fields, `@OptionalBridge` marks a component whose `null` means absent, `@Flatten` marks a nested record component spread across the wire's flat components. Its sparse sibling is [UpdateSpec](#updatespec), which swaps the whole generated surface for a single `updateFrom`.
 
 **Example:**
 <!-- verify -->
@@ -92960,6 +93007,8 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **`@GenerateMapping` spreads a nested component across a flat wire** ([#674](https://github.com/higher-kinded-j/higher-kinded-j/issues/674)): a domain record nested inside another (`Customer` holding an `Address`) can now map to a wire that carries the address as plain fields (`street`, `city`, `postcode`), in both directions. The wire format is often fixed by someone else, and a leaf could not help, since no single wire component carries the address. A `@Flatten` marker named after the domain component declares the spread: `build` fills each flat component from the record's same-named component, and `parse` assembles the record through its own `Validated.fields()` ladder, so every failure accumulates and locates under the domain path (`address.street: must not be null`), which the flat wire never named. The whole vocabulary applies inside the group by name: a `@MapField` rename points an inner component at a differently named wire field, a `default` leaf converts one, an `@OptionalBridge` bridges an inner `Optional`, an inner record nests through its own spec, and containers lift. An all-identity group keeps the mapping lossless, so `asIso()` survives and reassembles the record, and a mapping carrying a group is nested by other specs like any other, in the same compilation or from a dependency. Names must be unambiguous: an inner component may not share its name with a domain component or with another group's, a derived field may not be named after one, and a wire component named after the flattened one must be fed by a rename. Spreading is one level deep: a record inside the group nests through its own spec. Not supported yet, each refused with a diagnostic: bean-shaped wires, generic specs, projections, sparse `UpdateSpec`s, and a group wider than one `fields()` ladder. See [Flattening a nested component](mapping/structure.md#flattening-a-nested-component-onto-a-flat-wire).
 
 - **`@GenerateMapping` nests, dispatches and merges across modules** ([#676](https://github.com/higher-kinded-j/higher-kinded-j/issues/676)): a spec compiled in one module is found by the specs of another. Nested and sealed resolution, and `@GenerateMerge` fills, used to see the specs of their own compilation only, so a `CustomerMapping` in `:orders-api` was invisible to an `InvoiceMapping` in `:billing`, and the pair had to be delegated by hand through a leaf. The processor now writes an index entry beside every generated Impl of a `MappingSpec` (an empty class in `org.higherkindedj.mapping.index`, carrying `@MappingIndexEntry` with the spec's name), and a compilation reads the index off its classpath and registers each spec it names from its class file, exactly as if it were declared alongside; concrete, threaded and element-mapped specs alike, with the same unification at the use site. Your own spec wins: a spec in the compilation shadows a classpath spec for the same pair, so a new dependency never changes a resolution that already worked, and a note names the shadowed spec. Two dependencies mapping one pair draw the existing ambiguity error, each candidate listed with its qualified name and `(classpath)` provenance, and the fix names the remedy that applies: a leaf for a nested component, a spec of your own for a sealed subtype pair. A stale entry is passed over, and a use site that needed a spec whose Impl has gone missing is told which dependency to rebuild. Named modules neither write nor read the index, a package two modules cannot share, not supported yet; a resolution that fails inside one says so. See [Across modules](mapping/structure.md#across-modules) and [Multi-module builds](tooling/manual_setup.md#multi-module-builds).
 

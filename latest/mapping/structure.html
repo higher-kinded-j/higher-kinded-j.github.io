@@ -313,7 +313,7 @@
 <h1 id="nesting-containers-and-sealed-hierarchies"><a class="header" href="#nesting-containers-and-sealed-hierarchies">Nesting, Containers, and Sealed Hierarchies</a></h1>
 <p><em>Whole mappings plug in wherever a leaf does, so structure composes and error paths compose with it.</em></p>
 <p>Real DTOs are not flat. An order carries a customer, the customer carries an address, the order carries a list of lines, and the domain and wire sides are sealed hierarchies as often as they are single records. All of it maps with the machinery you already have: a nested spec is just a leaf, a container lifts its element's leaf or spec, and a sealed pair dispatches one spec per subtype pair.</p>
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJpbiIsICJvbmUiLCAiY29tcGlsYXRpb24iLCAib3IiLCAiYWNyb3NzIiwgIm1vZHVsZXMiXQ==" data-since="v0.4.10"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJpbiIsICJvbmUiLCAiY29tcGlsYXRpb24iLCAib3IiLCAiYWNyb3NzIiwgIm1vZHVsZXMiLCAiSG93IiwgImEiLCAibmVzdGVkIiwgImRvbWFpbiIsICJyZWNvcmQiLCAic3ByZWFkcyIsICJhY3Jvc3MiLCAiYSIsICJmbGF0IiwgIndpcmUiLCAid2l0aCIsICJARmxhdHRlbiIsICJhbmQiLCAid2hlcmUiLCAiaXRzIiwgImZhaWx1cmVzIiwgImxvY2F0ZSJd" data-since="v0.4.10"></div>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -324,6 +324,7 @@
 <div>
 <ul>
 <li>How specs nest automatically, in one compilation or across modules, composing failures into dotted paths</li>
+<li>How a nested domain record spreads across a flat wire with <code>@Flatten</code>, and where its failures locate</li>
 <li>How <code>List</code>, <code>Optional</code>, and <code>Map</code> components lift, and how failing elements are located by index or key</li>
 <li>Why recursion terminates by construction</li>
 <li>Dispatching a mapping over two sealed interfaces, exhaustively in both directions</li>
@@ -388,9 +389,53 @@ interface InvoiceMapping extends MappingSpec&lt;Invoice, InvoiceDto&gt; {}
 <div class="hkj-ct-mark" data-kind="new" data-run="start" data-since="v0.4.10"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<h2 id="flattening-a-nested-component-onto-a-flat-wire"><a class="header" href="#flattening-a-nested-component-onto-a-flat-wire">Flattening a nested component onto a flat wire</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>Nesting assumes the wire nests too. Often it does not: the domain keeps an <code>Address</code> record, and the wire format, fixed by someone else, carries <code>street</code>, <code>city</code> and <code>postcode</code> as plain fields. No single wire component holds the address, so a leaf cannot map it; <code>@Flatten</code> on a marker named after the component spreads it instead:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code class="language-java">record Address(String street, String city, String postcode) {}
+
+record Vendor(String name, Address address) {}
+
+record VendorDto(String name, String street, String city, String postcode) {} // fixed, flat
+
+@GenerateMapping
+interface VendorMapping extends MappingSpec&lt;Vendor, VendorDto&gt; {
+  @Flatten
+  Address address(); // spread by name: street, city and postcode
+}
+
+
+    VendorDto flat =
+        VendorMappingImpl.INSTANCE.build(
+            new Vendor("Acme", new Address("1 High St", "Leeds", "LS1 4AP")));
+    // VendorDto[name=Acme, street=1 High St, city=Leeds, postcode=LS1 4AP]
+    VendorMappingImpl.INSTANCE.parse(new VendorDto("Acme", null, "Leeds", null));
+    // Invalid(NonEmptyList[address.street: must not be null, address.postcode: must not be null])
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>The record's components, spread this way, are the <strong>group</strong>: <code>street</code>, <code>city</code> and <code>postcode</code> here. <code>build</code> fills each flat wire component from the group member of the same name. <code>parse</code> assembles the record through its own <a href="../monads/validated_assembly.html"><code>Validated.fields()</code> ladder</a> inside the outer one, so every failure accumulates with the rest and locates under the <strong>domain</strong> path: <code>address.street</code>, a name the flat wire never sent. That is the <a href="basics.html#renames-mapfield">domain-named-paths contract</a> reaching a nesting the wire does not have, and it is deliberate: the client learns which part of the address was wrong, not which position in a flat list.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>The group is spread by name, and the whole vocabulary applies inside it by name too:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<ul>
+<li>a <code>@MapField(to = "addressLine1") String street();</code> rename points a group member at a differently named wire field,</li>
+<li>a <code>default ValidatedPrism&lt;String, Postcode&gt; postcode()</code> leaf converts one, and makes the mapping fallible exactly as a top-level leaf would,</li>
+<li>an <code>@OptionalBridge</code> named after a member that is <code>Optional</code> <a href="basics.html#optional-bridge">bridges it</a> to a nullable wire field,</li>
+<li>a member that is itself a record nests through its own spec, and containers lift.</li>
+</ul>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>An all-identity group keeps the mapping lossless: <code>asIso()</code> survives and reassembles the record on the way back. A mapping carrying a group is nested by other specs like any other, in the same compilation or from a dependency.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>Names must be unambiguous, since every wire component takes exactly one source: a group member may not share its name with a domain component or with another group's member (so two components of the same record type cannot both be spread), a derived field may not be named after one, and a wire component named after the flattened component itself must be fed by a rename from another component. Each collision is a compile error naming both sides.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>Spreading is one level deep: a record inside the group nests through its own spec against a nested wire component, and a marker naming a group member is refused. Flattening otherwise stays on the full record-record tier for now: a bean-shaped wire, a generic spec, a projection, a sparse <code>UpdateSpec</code> and a group wider than one <code>fields()</code> ladder are each refused with a diagnostic, not supported yet.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<hr />
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <h2 id="across-modules"><a class="header" href="#across-modules">Across modules</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<p>The spec a component nests through may live in another module. Keep <code>Customer</code>, <code>CustomerDto</code> and <code>CustomerMapping</code> in <code>:orders-api</code>, put the invoice pair in <code>:billing</code>, and the spec above does not change: it stays empty, and the generated Impl delegates to the dependency's exactly as it would to a sibling.</p>
+<p>The spec a component nests through may live in another module. Keep <code>Customer</code>, <code>CustomerDto</code> and <code>CustomerMapping</code> in <code>:orders-api</code>, put the invoice pair in <code>:billing</code>, and the <code>InvoiceMapping</code> from the nesting section does not change: it stays empty, and the generated Impl delegates to the dependency's exactly as it would to a sibling.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <!-- verify -->
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -472,7 +517,7 @@ interface PaymentMapping extends MappingSpec&lt;Payment, PaymentDto&gt; {}
 </code></pre>
 <p>A domain subtype without a spec, or a wire subtype nothing produces, is a compile error: the dispatch cannot be partial.</p>
 <hr />
-<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJEZXBlbmRlbmNpZXMiLCAiY291bnQiLCAiYXMiLCAic2libGluZ3MiLCAiYSIsICJzcGVjIiwgImNvbXBpbGVkIiwgImludG8iLCAiYW5vdGhlciIsICJtb2R1bGUiLCAibmVzdHMiLCAiZGlzcGF0Y2hlcyIsICJhbmQiLCAibWVyZ2VzIiwgInRocm91Z2giLCAidGhlIiwgImNsYXNzcGF0aCIsICJpbmRleCIsICJhbmQiLCAieW91ciIsICJvd24iLCAic3BlYyIsICJzaGFkb3dzIiwgImEiLCAiZGVwZW5kZW5jeSdzIiwgImZvciIsICJ0aGUiLCAic2FtZSIsICJwYWlyIl0=" data-since="v0.4.10"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJEZXBlbmRlbmNpZXMiLCAiY291bnQiLCAiYXMiLCAic2libGluZ3MiLCAiYSIsICJzcGVjIiwgImNvbXBpbGVkIiwgImludG8iLCAiYW5vdGhlciIsICJtb2R1bGUiLCAibmVzdHMiLCAiZGlzcGF0Y2hlcyIsICJhbmQiLCAibWVyZ2VzIiwgInRocm91Z2giLCAidGhlIiwgImNsYXNzcGF0aCIsICJpbmRleCIsICJhbmQiLCAieW91ciIsICJvd24iLCAic3BlYyIsICJzaGFkb3dzIiwgImEiLCAiZGVwZW5kZW5jeSdzIiwgImZvciIsICJ0aGUiLCAic2FtZSIsICJwYWlyIiwgIkEiLCAiZmxhdCIsICJ3aXJlIiwgImNhbiIsICJzdGlsbCIsICJuZXN0IiwgIm9uIiwgInRoZSIsICJkb21haW4iLCAic2lkZSIsICJARmxhdHRlbiIsICJzcHJlYWRzIiwgImEiLCAibmVzdGVkIiwgInJlY29yZCIsICJhY3Jvc3MiLCAiZmxhdCIsICJ3aXJlIiwgImZpZWxkcyIsICJieSIsICJuYW1lIiwgImFuZCIsICJmYWlsdXJlcyIsICJsb2NhdGUiLCAidW5kZXIiLCAidGhlIiwgImRvbWFpbiIsICJwYXRoIiwgImFkZHJlc3Muc3RyZWV0Il0=" data-since="v0.4.10"></div>
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
 <div id="admonition-key-takeaways-title">
@@ -487,6 +532,7 @@ interface PaymentMapping extends MappingSpec&lt;Payment, PaymentDto&gt; {}
 <li><strong>Error paths are dotted domain names</strong>: <code>customers.1.email</code>, <code>attributes.en.email</code></li>
 <li><strong>Sealed dispatch is exhaustive both ways</strong>: a missing subtype pair is a compile error, never a runtime surprise</li>
 <li><strong>Dependencies count as siblings</strong>: a spec compiled into another module nests, dispatches and merges through the classpath index, and your own spec shadows a dependency's for the same pair</li>
+<li><strong>A flat wire can still nest on the domain side</strong>: <code>@Flatten</code> spreads a nested record across flat wire fields by name, and failures locate under the domain path (<code>address.street</code>)</li>
 </ul>
 </div>
 </div>
