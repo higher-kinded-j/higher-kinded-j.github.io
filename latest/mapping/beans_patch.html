@@ -313,7 +313,7 @@
 <h1 id="beans-and-sparse-patch"><a class="header" href="#beans-and-sparse-patch">Beans and Sparse PATCH</a></h1>
 <p><em>The same mapper for getter/setter wires, and the opt-in tier where <code>null</code> means "leave unchanged" instead of "broken".</em></p>
 <p>Not every wire type is a record. Generated clients, JAXB payloads and legacy DTOs are beans, and one very common bean, the REST PATCH request, changes what <code>null</code> <em>means</em>: not broken data but <em>not provided</em>. This page covers both: mapping bean-shaped wires with the full feature set, and the explicit <code>UpdateSpec</code> opt-in that gives a PATCH bean its sparse semantics.</p>
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJoZXJlIiwgIndpdGhvdXQiLCAiYSIsICJkZWNsYXJhdGlvbiJd" data-since="v0.4.10"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJoZXJlIiwgIndpdGhvdXQiLCAiYSIsICJkZWNsYXJhdGlvbiIsICJXaHkiLCAiYSIsICJiZWFuIiwgInByb2plY3Rpb24iLCAid2l0aCIsICJhIiwgInJlZmVyZW5jZSIsICJwcm9wZXJ0eSIsICJ0YWtlcyIsICJ0aGUiLCAidmFsaWRhdGVkIiwgInBhdGNoIiwgInJhdGhlciIsICJ0aGFuIiwgImFzTGVucyJd" data-since="v0.4.10"></div>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
 <div id="admonition-what-youll-learn-title">
@@ -325,6 +325,7 @@
 <ul>
 <li>Mapping bean-shaped wire types (setters, builders, JAXB lists) with the same features as records</li>
 <li>Why a bean mapping withholds <code>asIso()</code>, and how <code>Optional</code> bridges through <code>null</code> here without a declaration</li>
+<li>Why a bean projection with a reference property takes the validated <code>patch</code> rather than <code>asLens()</code></li>
 <li>What PATCH and <em>sparse</em> PATCH actually mean, and why <code>null</code> is ambiguous in a PATCH body</li>
 <li>Opting into sparse semantics with <code>UpdateSpec</code>: present fields fold in, absent fields leave the domain alone</li>
 <li>The rules that keep the null-as-absent contract honest, and how containers patch through the element vocabulary</li>
@@ -384,7 +385,7 @@ interface ContactMapping extends MappingSpec&lt;Customer, ContactBean&gt; {
     // A null bean property parses to a located FieldError, e.g. [email: must not be null].
 </code></pre>
 <p>The design decisions worth knowing:</p>
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJhdXRvbWF0aWNhbGx5IiwgImhlcmUiLCAiVGhpcyIsICJpcyIsICJ0aGUiLCAib25seSIsICJ3aXJlIiwgInNoYXBlIiwgIndoZXJlIiwgInRoZSIsICJicmlkZ2UiLCAibmVlZHMiLCAibm8iLCAiZGVjbGFyYXRpb24iLCAiYSIsICJyZWNvcmQiLCAid2lyZSIsICJvcHRzIiwgImluIiwgInBlciIsICJjb21wb25lbnQiLCAid2l0aCIsICJAT3B0aW9uYWxCcmlkZ2VgXShiYXNpY3MubWQjb3B0aW9uYWwtYnJpZGdlIiwgIndoaWNoIiwgImJ1eXMiLCAidGhlIiwgInNhbWUiLCAiY29ycmVzcG9uZGVuY2UiLCAiYW5kIiwgImRlY2xhcmluZyIsICJpdCIsICJvbiIsICJhIiwgImJlYW4iLCAic3BlYyIsICJpcyIsICJyZWR1bmRhbnQiLCAiYSIsICJub3RlIiwgIm5vdCIsICJhbiIsICJlcnJvciIsICJzbyIsICJvbmUiLCAibWl4LWluIiwgImNhbiIsICJzZXJ2ZSIsICJib3RoIiwgInNoYXBlcyIsICJpbiIsICJ0aGUiLCAib3RoZXIiLCAiZGlyZWN0aW9uIl0=" data-since="v0.4.10"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJhdXRvbWF0aWNhbGx5IiwgImhlcmUiLCAiVGhpcyIsICJpcyIsICJ0aGUiLCAib25seSIsICJ3aXJlIiwgInNoYXBlIiwgIndoZXJlIiwgInRoZSIsICJicmlkZ2UiLCAibmVlZHMiLCAibm8iLCAiZGVjbGFyYXRpb24iLCAiYSIsICJyZWNvcmQiLCAid2lyZSIsICJvcHRzIiwgImluIiwgInBlciIsICJjb21wb25lbnQiLCAid2l0aCIsICJAT3B0aW9uYWxCcmlkZ2VgXShiYXNpY3MubWQjb3B0aW9uYWwtYnJpZGdlIiwgIndoaWNoIiwgImJ1eXMiLCAidGhlIiwgInNhbWUiLCAiY29ycmVzcG9uZGVuY2UiLCAiYW5kIiwgImRlY2xhcmluZyIsICJpdCIsICJvbiIsICJhIiwgImJlYW4iLCAic3BlYyIsICJpcyIsICJyZWR1bmRhbnQiLCAiYSIsICJub3RlIiwgIm5vdCIsICJhbiIsICJlcnJvciIsICJzbyIsICJvbmUiLCAibWl4LWluIiwgImNhbiIsICJzZXJ2ZSIsICJib3RoIiwgInNoYXBlcyIsICJpbiIsICJ0aGUiLCAib3RoZXIiLCAiZGlyZWN0aW9uIl0=" data-since="v0.4.10"></div>
 <ul>
 <li><strong>Null is located, never thrown, like every wire.</strong> The null guard is universal (<a href="basics.html#null-doctrine">one rule</a>, both shapes), so a <code>null</code> property read is a located <code>FieldError</code> exactly as on a record wire. What is bean-<em>specific</em> is why nulls are expected at all: an unset property is a representable, ordinary state of a mutable bean, not just a hostile binding.</li>
 <li><strong>Honest tiers.</strong> Because an unset property is ordinary, a bean's guarded reference reads count as fallible and the mapping withholds <code>asIso()</code> automatically; an all-primitive bean (whose reads can never be null) still earns it. A record wire's guards exist for hostile bindings only, so a lossless record mapping keeps <code>asIso()</code>, with the parse-iso coherence law scoped to wires whose reference components are non-null. Nesting is unaffected: a bean mapping exposes <code>asValidatedPrism()</code> like any other, so record specs nest it and containers lift it.</li>
@@ -392,7 +393,50 @@ interface ContactMapping extends MappingSpec&lt;Customer, ContactBean&gt; {
 <li><strong>Optionality bridges through <code>null</code>, automatically here.</strong> On a full mapping, a domain <code>Optional&lt;T&gt;</code> maps to a nullable bean property <code>T</code> (bean conventions leave <code>Optional</code> off property types): empty bridges to absent (<code>build</code> skips the write, leaving the property unset; <code>parse</code> reads <code>Optional.ofNullable(...)</code>), and a present value still validates through its leaf. This is the <em>only</em> wire shape where the bridge needs no declaration: a record wire opts in per component with <a href="basics.html#optional-bridge"><code>@OptionalBridge</code></a>, which buys the same correspondence, and declaring it on a bean spec is redundant (a note, not an error, so one mix-in can serve both shapes). The <a href="#sparse-patch-write-back-updatespec">sparse tier</a> is the deliberate exception in the other direction: there <code>null</code> already means "leave unchanged", so a PATCH bean encodes "set to empty" with an <code>Optional</code>-typed property instead.</li>
 <li><strong>The domain stays a record.</strong> <code>parse</code> assembles the domain through its canonical constructor, so only the <em>wire</em> may be bean-shaped; a bean domain gets a diagnostic.</li>
 </ul>
-<p>Bean <em>projections</em> with reference properties and one-directional (parse-only or build-only) beans are not supported yet (<a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/702">#702</a>, <a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/703">#703</a>); an all-primitive bean projection maps as a lawful <code>asLens()</code> today.</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="mid" data-since="v0.4.10"></div>
+<h3 id="bean-projections"><a class="header" href="#bean-projections">Bean projections</a></h3>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A bean with <em>fewer</em> properties than the domain is a projection, as a smaller record wire is, but the same shape can land on a different tier. A record is constructed whole, so a record projection that copies by identity keeps its lawful <code>asLens()</code>: a <code>null</code> component there is a hostile binding, not a state the type invites. A bean is constructed empty and filled by setters, which makes an unset reference property an ordinary state, and a lens's <code>set</code> cannot fail, so it has no honest answer for one. A bean projection with any reference property therefore takes the <a href="tiers.html#leaf-carrying-projections-the-validated-patch">validated <code>patch</code></a>, even when every property copies by identity:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code class="language-java">// A bean carrying one of Employee's three components: a projection. A record wire of that shape
+// copies by identity and keeps asLens(); a bean's reference property can be unset, which a lens's
+// set could not refuse, so the Impl emits the validated patch instead.
+class TransferBean {
+  private String department;
+
+  public String getDepartment() {
+    return department;
+  }
+
+  public void setDepartment(String department) {
+    this.department = department;
+  }
+}
+
+@GenerateMapping
+interface TransferMapping extends MappingSpec&lt;Employee, TransferBean&gt; {}
+
+
+    Employee researcher = new Employee("Ada", "Research", 36);
+    TransferBean transfer = new TransferBean();
+    transfer.setDepartment("Platform");
+
+    // The bean's property can be unset, so the projection validates: patch, never a lens.
+    Validated&lt;NonEmptyList&lt;FieldError&gt;, Employee&gt; transferred =
+        TransferMappingImpl.INSTANCE.patch(researcher, transfer);
+    // Valid(Employee[name=Ada, department=Platform, age=36])
+
+    // Dense, as on a record wire: an unset property is a located error, never "keep the current
+    // value".
+    TransferMappingImpl.INSTANCE.patch(researcher, new TransferBean());
+    // Invalid(NonEmptyList[department: must not be null])
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>Everything else is the record-wire tier unchanged: every projected property is validated, every bad one is located and accumulated, and the unprojected components are read from the domain argument, so they survive by construction. Leaves, nested specs and container lifting all apply, and so does the automatic <code>Optional</code> bridge: a bridged property left unset reads as empty, so <code>patch</code> writes <code>Optional.empty()</code> rather than keeping the current value. The same <code>MappingLaws</code> patch overload law-checks it; the laws compare domain values only, so the bean needs no <code>equals</code>. An all-primitive bean projection, whose reads can never be null, keeps its lawful <code>asLens()</code>.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>This is not the REST PATCH contract, even when the bean is a PATCH request: an unset property never means "keep the current value". For that, extend <code>UpdateSpec</code> (<a href="#sparse-patch-write-back-updatespec">below</a>).</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.10"></div>
+<p><code>patch</code> only reads the bean, through its getters, but the Impl also carries <code>build</code>, which writes one, so a bean projection still needs one of the construction strategies above; a getter-only bean draws the same diagnostic as on a full mapping. One-directional beans (getter-only or setter-only) are not supported yet.</p>
 <hr />
 <h2 id="what-patch-means"><a class="header" href="#what-patch-means">What PATCH actually means</a></h2>
 <p>Before the sparse tier, the contract it implements, because the whole design follows from it.</p>
@@ -586,6 +630,7 @@ interface RosterPatchMapping extends PhoneVocabulary, UpdateSpec&lt;Roster, Rost
 </div>
 </div>
 <hr />
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJhbmQiLCAiYSIsICJwcm9qZWN0aW9uIiwgInRha2VzIiwgInBhdGNoIiwgInJhdGhlciIsICJ0aGFuIiwgImFzTGVucyJd" data-since="v0.4.10"></div>
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
 <div id="admonition-key-takeaways-title">
@@ -595,7 +640,7 @@ interface RosterPatchMapping extends PhoneVocabulary, UpdateSpec&lt;Roster, Rost
 </div>
 <div>
 <ul>
-<li><strong>Beans map with the full feature set</strong>: only the read/write mechanics differ, and the tiers stay honest (<code>asIso</code> is withheld where unset properties make reads fallible)</li>
+<li><strong>Beans map with the full feature set</strong>: only the read/write mechanics differ, and the tiers stay honest (<code>asIso</code> is withheld, and a projection takes <code>patch</code> rather than <code>asLens</code>, where unset properties make reads fallible)</li>
 <li><strong>Sparse semantics are an explicit opt-in</strong>: <code>UpdateSpec</code> gives a PATCH bean null-as-absent; nothing is inferred from the shape alone</li>
 <li><strong>Sparseness never weakens validation</strong>: present fields still parse through their leaves, and every bad one is a located, accumulated <code>FieldError</code></li>
 <li><strong>One vocabulary serves both tiers</strong>: the element leaf a full spec lifts is the leaf its PATCH sibling lifts</li>
