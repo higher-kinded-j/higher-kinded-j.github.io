@@ -18340,12 +18340,13 @@ External types like `LocalDate`, Jackson's `JsonNode`, JOOQ records, and Protobu
 | [`@GenerateMapping`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) | interface extending `UpdateSpec<Domain, Wire>` (bean wire) | `XMappingImpl` with only `updateFrom(Wire) : Edits.Accumulated<Domain>` | Sparse PATCH write-back: fold the present (non-null) request fields into an update, leave the absent ones |
 | [`@MapField(to = "...")`](../mapping/ch_intro.md) | abstract method on the spec, named after the domain component | a rename in both directions | Domain and wire components with different names |
 | [`@OptionalBridge`](../mapping/basics.md#optional-bridge) | abstract marker method on the spec, or that component's `default` leaf | a domain `Optional<T>` mapped to a nullable wire component `T` | A record wire that encodes absence as `null`, the way a JSON binder writes it |
+| [`@MapKey("component")`](../mapping/structure.md#converting-map-keys) | `default` leaf on the spec, freely named, returning `ValidatedPrism<WireKey, DomainKey>` | the named `Map` component's **keys** converted, alone or beside its value leaf | Two sides that key a map differently (`Map<String, ...>` on the wire, `Map<Locale, ...>` in the domain) |
 | [`@Flatten`](../mapping/structure.md#flattening-a-nested-component-onto-a-flat-wire) | abstract marker method on the spec, named after a nested domain record component | that record's components spread across the wire's flat components by name, both directions | A wire fixed flat (`street`, `city`, `postcode`) where the domain nests an `Address` |
 | [`@GenerateAssembly`](../monads/validated_assembly.md) | `record` | `XAssembly`, a staged builder over `Validated<NonEmptyList<FieldError>, R>` with one method per component | Building a record from independently validated parts, collecting every error, with no arity ceiling |
 | [`@GenerateMerge`](../mapping/merge_envelopes.md) | interface whose abstract method names target and sources | a forward-only assembly of one target record from several sources | Merging several records into one; no inverse is generated, because the multi-source case has none |
 | [`@GenerateErrorEnvelope`](../mapping/merge_envelopes.md) | `sealed interface` whose variants each carry one `ErrorEnvelope<C>` | per-variant factories, a fluent context builder, and a context wither | Giving a sealed error hierarchy a typed context without repeating it on every variant |
 
-Leaves, nesting, `List`/`Optional` lifting, sealed dispatch, the `asIso()`/`asLens()` tiers, and the sparse `UpdateSpec` tier are covered in [Record Mapping](../mapping/ch_intro.md).
+Leaves, nesting, `List`/`Set`/array/`Optional`/`Map` lifting, sealed dispatch, the `asIso()`/`asLens()` tiers, and the sparse `UpdateSpec` tier are covered in [Record Mapping](../mapping/ch_intro.md).
 
 ---
 
@@ -20526,11 +20527,22 @@ The stock vocabulary in [`StandardCodecs`](../mapping/codecs.md#standard-codecs)
 
 ---
 
-## The bulk forms: `parseAll` and `parseValues`
+## The bulk forms {#the-bulk-forms-parseall-and-parsevalues}
 
-One prism lifts over whole containers. `parseAll(List<? extends S>)` parses every element and accumulates **every** failure, each located by its index: a plain positional segment, so a bad second element under a field labelled `emails` renders as `emails.1: not an email address` (through a nested spec, `customers.1.email: ...`). `parseValues(Map<K, ? extends S>)` parses a map's values the same way, each failure located by its key (`attributes.en: ...`); keys pass through untouched.
+One prism lifts over whole containers, accumulating **every** failure and locating each by whatever identifies an element in that container:
 
-The [null doctrine](../mapping/basics.md#null-doctrine) reaches inside both: a `null` element or map value is a located, accumulating `must not be null` at its index or key, never an exception, while a `null` list, map, or map key stays the caller's error. The build direction (`buildAll`, `buildValues`) is total like `build` and rejects nulls outright.
+| Form | Parses | Each failure locates by |
+|---|---|---|
+| `parseAll(List<? extends S>)` | every element | its **index** - `emails.1: not an email address`, or `customers.1.email` through a nested spec |
+| `parseAll(Set<? extends S>)` | every element | the **element's own rendering** - `emails.nope`; a set has no index |
+| `parseAll(S[], IntFunction<A[]>)` | every element | its **index**, as a list. The array constructor supplies the result, since a generic array cannot be created otherwise |
+| `parseValues(Map<K, ? extends S>)` | the values; keys pass through | its **key** - `attributes.en: ...` |
+| `parseKeys(Map<? extends S, V>)` | the keys; values pass through | the **source** key, naming what the caller sent |
+| `parseEntries(Map, ValidatedPrism)` | both sides; the receiver is the **key** prism | the source key, so an entry wrong on both sides reports both reasons there |
+
+The [null doctrine](../mapping/basics.md#null-doctrine) reaches inside all of them: a `null` element or map value is a located, accumulating `must not be null`, never an exception, while a `null` container or map key stays the caller's error. A `null` set element is the unlocated `must not contain a null element`, a set holding at most one. Every build direction (`buildAll`, `buildValues`, `buildKeys`, `buildEntries`) is total like `build` and rejects nulls outright.
+
+Mapping is not injective, so a container can **collapse**: a prism mapping both `"1"` and `"01"` to one domain value leaves a smaller set, and the source spellings cannot be recovered. A set drops the duplicate **silently** - the domain values that remain are equal to the ones dropped, so the set still holds every distinct value it was given. Two map keys parsing to one domain key are a located `duplicates an earlier key` instead: there the dropped entry takes its own value with it, and that value need not be equal to anything. Either way the prism doing it already breaks the [section law](#laws), which is what stops a lawful mapping collapsing at all.
 
 (Bracketed index rendering, `emails[1]`, is deliberately deferred to the future sealed path-segment model; today's paths are flat dotted segments, and the positional segment matches the map-key grammar.)
 
@@ -20542,7 +20554,7 @@ The [null doctrine](../mapping/basics.md#null-doctrine) reaches inside both: a `
 * **Only build-preserving compositions exist**: `ValidatedPrism`, `Iso`, and `Prism`-with-a-reason; `Lens` deliberately not
 * **Both round-trip laws are published** in `hkj-test`; the section law forbids lossy build-normalisation
 * **`canonical(message, parse, render)` guards the section law per value**: the render defines the canonical form and every spelling it cannot reproduce is rejected; that the parse accepts the renderings, injectively, stays your obligation (check with `ValidatedPrismLaws`)
-* **One prism lifts over containers**: `parseAll`/`parseValues` accumulate every element failure, located by index or key
+* **One prism lifts over containers**: The bulk forms accumulate every element failure, located by index or key
 * **`parsePath` lands on the railway** (`ValidationPath`) directly
 ~~~
 
@@ -45259,7 +45271,7 @@ Two pages are enough to ship. [Record Mapping Basics](basics.md) declares a mapp
 ~~~admonish info title="In This Chapter"
 - **Record Mapping Basics** – Declare a mapping as one empty interface and get both directions: a `build` that cannot fail and a `parse` that reports every bad field at once. Then add conversions, renames, computed fields, and the one field whose `null` means *absent*.
 - **Standard Codecs and Shared Vocabulary** – The stock conversions (UUIDs, dates, enums, money) as one factory call each, and the mix-in pattern that shares your conversions across every spec in an API.
-- **Nesting, Containers, and Sealed Hierarchies** – Specs nest automatically and failures compose into dotted paths; `List`/`Optional`/`Map` map their elements; sealed pairs dispatch exhaustively in both directions.
+- **Nesting, Containers, and Sealed Hierarchies** – Specs nest automatically and failures compose into dotted paths; `List`, `Set`, arrays, `Optional` and `Map` map their elements (and, with `@MapKey`, a map's keys); sealed pairs dispatch exhaustively in both directions.
 - **The Emission Tiers** – Which spec shapes earn `asIso()`, `asLens()`, the validated `patch`, or `asValidatedPrism()`, and the one-call law check that proves each in your own tests.
 - **Beans and Sparse PATCH** – Getter/setter and builder wires with the full feature set, and the `UpdateSpec` opt-in that gives a PATCH bean null-as-absent semantics without weakening validation of what was sent.
 - **Generic Specs** – Mapping `Page<T>` and friends: concrete instantiations, threaded type parameters, and element-mapped specs whose codecs arrive at construction time.
@@ -45600,7 +45612,9 @@ Nothing above requires this section; come back when a corner case finds you.
 
 The null guard covers every reference-typed `parse` read that is not [bridged](#optional-bridge), on record and bean wires alike, and reaches inside containers, identity-copied ones included:
 
-- A `null` element or map value locates by its index or key (`emails.1: must not be null`), whether the container lifts through a leaf ([`parseAll`/`parseValues`](../optics/validated_prism.md#the-bulk-forms-parseall-and-parsevalues)) or copies by identity. The index is a plain positional segment, matching the map-key grammar.
+- A `null` element or map value locates the way its container locates anything ([lifting grammar](structure.md#nesting-containers-and-recursion)) - by index in a `List` or array (`emails.1: must not be null`), by key in a `Map` - whether the container lifts through a leaf ([the bulk forms](../optics/validated_prism.md#the-bulk-forms-parseall-and-parsevalues)) or copies by identity. The index is a plain positional segment, matching the map-key grammar.
+- A `null` element of a `Set` has no rendering to locate by, and a set holds at most one, so it reports unlocated under the component: `emails: must not contain a null element` - distinct from `must not be null`, which says the set itself is absent.
+- An array of primitives (`int[]`) carries no element scan: a primitive element cannot be null. The component is still a reference, so a `null` *array* is guarded like any other read.
 - An identity container still copies by reference; the scan only locates nulls, it never rebuilds.
 - A `null` container *component* is guarded like any reference read (`emails: must not be null`).
 - A [bridged](#optional-bridge) container excuses only the absent case: `null` reads as empty, and a *present* list or map is scanned for null elements exactly as an unbridged one is.
@@ -45836,7 +45850,7 @@ interface SupplierMapping extends ContactVocabulary, MappingSpec<Supplier, Suppl
     SupplierMappingImpl.INSTANCE.parse(new SupplierDto("Acme Ltd", "sales@acme.example", "01"));
 ```
 
-An inherited member counts exactly as if it were declared on the spec: renames, leaves, derived fields, `@OptionalBridge` markers *and* [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) markers, collected across the whole hierarchy (a mix-in may extend further mix-ins, and a diamond counts once). Precedence is **Java's own**: a member re-declared on the spec (or on a nearer mix-in) hides the one it overrides. An inherited leaf, bridge or `@Flatten` marker that names no component of the extending spec's domain stays inert, so one vocabulary can serve specs whose domains differ; the same declaration made locally is an error.
+An inherited member counts exactly as if it were declared on the spec: renames, leaves, derived fields, `@OptionalBridge` markers, [`@MapKey`](structure.md#converting-map-keys) key leaves *and* [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) markers, collected across the whole hierarchy (a mix-in may extend further mix-ins, and a diamond counts once). Precedence is **Java's own**: a member re-declared on the spec (or on a nearer mix-in) hides the one it overrides. An inherited leaf, bridge, key leaf or `@Flatten` marker that names no component of the extending spec's domain stays inert, so one vocabulary can serve specs whose domains differ; the same declaration made locally is an error.
 
 A mix-in **may be generic**: its members are read under the spec's instantiation, so `Emails<T>` extended as `Emails<EmailAddress>` contributes `ValidatedPrism<String, EmailAddress>`. See [Generic mix-ins](generics.md#generic-mix-ins).
 
@@ -45884,7 +45898,8 @@ Real DTOs are not flat. An order carries a customer, the customer carries an add
 ~~~admonish info title="What You'll Learn"
 - How specs nest automatically, in one compilation or across modules, composing failures into dotted paths
 - How a nested domain record spreads across a flat wire with `@Flatten`, and where its failures locate
-- How `List`, `Optional`, and `Map` components lift, and how failing elements are located by index or key
+- How `List`, `Set`, array, `Optional` and `Map` components lift, and what each locates a failure by
+- How `@MapKey` converts a map's keys, and when a collapse is silent or a failure
 - Why recursion terminates by construction
 - Dispatching a mapping over two sealed interfaces, exhaustively in both directions
 ~~~
@@ -45910,10 +45925,58 @@ interface InvoiceMapping extends MappingSpec<Invoice, InvoiceDto> {}
     // Invalid(NonEmptyList[customer.email: not an email address])
 ```
 
-Containers lift the same way:
+Containers lift the same way, and each one locates a failure by whatever identifies an element *in that container*:
 
-- `List` and `Optional` components lift through the element's leaf or spec; each failing list element is located by its index, so a bad second element reports as `emails.1` (`customers.1.email` through a nested spec). Lifting needs the *same* container on both sides; a domain `Optional<T>` against a plain nullable wire component `T` is the [`@OptionalBridge`](basics.md#optional-bridge) shape instead.
-- `Map` components lift their **values**; keys pass through untouched, and each entry's failures are located by its key, so a bad value under key `en` reports as `attributes.en.email`.
+| Component | Lifts through the element's leaf or spec | A failure locates by |
+| --- | --- | --- |
+| `List<E>` | ✅ | its **index** - `emails.1`, or `customers.1.email` through a nested spec |
+| `E[]` | ✅ | its **index**, exactly as a list |
+| `Set<E>` | ✅ | the **element's own rendering** - `emails.nope`; a set has no index |
+| `Optional<E>` | ✅ | the component itself - there is only one element |
+| `Map<K, V>` | ✅ values, and keys with [`@MapKey`](#converting-map-keys) | the **source key** - `attributes.en.email` |
+
+``` java
+record Crew(
+    Set<EmailAddress> members, // a Set lifts like a List
+    EmailAddress[] reserves, // so does an array
+    Map<EmailAddress, String> notes) {} // and a Map's KEYS, with @MapKey
+
+record CrewDto(Set<String> members, String[] reserves, Map<String, String> notes) {}
+
+@GenerateMapping
+interface CrewMapping extends MappingSpec<Crew, CrewDto> {
+  default ValidatedPrism<String, EmailAddress> members() {
+    return EmailCodecs.EMAIL;
+  }
+
+  default ValidatedPrism<String, EmailAddress> reserves() {
+    return EmailCodecs.EMAIL;
+  }
+
+  // A value leaf is named after its component; a key leaf is named BY its annotation,
+  // because the two cannot share the one name Java allows.
+  @MapKey("notes")
+  default ValidatedPrism<String, EmailAddress> noteKey() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+
+    Validated<NonEmptyList<FieldError>, Crew> crew =
+        CrewMappingImpl.INSTANCE.parse(
+            new CrewDto(
+                Set.of("nope"),
+                new String[] {"ada@example.org", "also-nope"},
+                Map.of("bad-key", "a note")));
+    // Invalid(NonEmptyList[
+    //   members.nope: not an email address,   <- a Set locates by the element itself
+    //   reserves.1: not an email address,     <- an array locates by index
+    //   notes.bad-key: not an email address]) <- a key locates by the key it was sent as
+```
+
+Lifting needs the *same* container on both sides. A `List` against a `Set`, or an array against a `List`, is not a pair: it reports as a plain type mismatch rather than silently changing what the collection promises. A domain `Optional<T>` against a plain nullable wire component `T` is the [`@OptionalBridge`](basics.md#optional-bridge) shape instead. An array of primitives (`int[]`) is copied whole - a `ValidatedPrism` cannot focus a primitive, and a primitive element cannot be null. An array element type must also be able to name its own constructor, since lifting builds a new array: a type variable or a parameterised element (`T[]`, `List<Tag>[]`) is refused, because the generated `T[]::new` is generic array creation.
+
+Locating a set element by its own rendering is the only honest answer available: a set has no index, and its iteration order is not part of its contract, so numbering the elements would name a *different* one on the next run. The value is what identifies the element, so that is what the path says.
 
 A failure deep in the structure surfaces with its full address because each delegating spec prefixes its own component name as the error travels out:
 
@@ -45932,8 +45995,22 @@ flowchart TD
 
 Because nesting is *delegation* (each spec's `Impl` exposes [`asValidatedPrism()`](tiers.md), so a whole mapping plugs in wherever a leaf does), recursion terminates by construction: a self-referential `Tree(String value, List<Tree> children)` maps with an empty spec and round-trips any finite tree.
 
-~~~admonish note title="Map keys are located by `toString()`"
-The rendered path uses each key's `toString()`, so a key containing a dot looks the same as deeper nesting, and two distinct keys whose renderings collide share a location. The structured `FieldError` path list stays exact regardless, holding the whole key as one segment, and every error is still reported.
+~~~admonish note title="Keys and set elements are located by `toString()`"
+The rendered path uses each key's - or set element's - `toString()`, so one containing a dot looks the same as deeper nesting, and two distinct ones whose renderings collide share a location. The structured `FieldError` path list stays exact regardless, holding the whole rendering as one segment, and every error is still reported.
+~~~
+
+### Converting Map keys {#converting-map-keys}
+
+A `Map` component's value leaf is named after the component, like every other leaf. Its keys need a second leaf, and Java forbids two zero-parameter methods sharing that name - so a key leaf carries `@MapKey`, and the annotation names the component it belongs to. Either side may convert alone: a key leaf without a value leaf converts the keys and copies the values.
+
+Without a key leaf, keys can only pass through, so their types must match exactly; a mismatch is a compile error that offers the annotation as the fix.
+
+A failing key locates by the **source** key, so the path names what the caller sent rather than what it parsed to. An entry that is wrong on both sides therefore reports both reasons at that one place.
+
+~~~admonish warning title="Cardinality can collapse"
+A collapse needs a **non-injective** leaf - two wire values parsing to one domain value - and such a leaf already breaks the `ValidatedPrism` section law (`parse(s) == Valid(a)` implies `build(a) == s`). [`ValidatedPrismLaws`](../tooling/test_assertions.md#optic-laws) catches it, and [`ValidatedPrism.canonical`](../optics/validated_prism.md) rules it out by construction. So neither case below arises from a lawful leaf, and neither can reach the lossless [`asIso()`](tiers.md) tier, which a leaf already excludes.
+
+Where one does happen, the two containers answer differently because what is lost differs. A `Set` drops the duplicate **silently**: the element that remains is equal to the one dropped, so the set still holds every distinct value it was given - though the two *source* spellings that collapsed (`"1"` and `"01"`, say) can no longer be told apart, which is precisely what the section law forbids. Two `Map` keys parsing to one domain key discard a whole entry, and the discarded value need not equal the surviving one, so that is a **located failure** (`attributes.ab: duplicates an earlier key`).
 ~~~
 
 ---
@@ -46066,7 +46143,7 @@ A domain subtype without a spec, or a wire subtype nothing produces, is a compil
 
 ~~~admonish info title="Key Takeaways"
 * **Nesting is delegation**: any spec's Impl is a leaf (`asValidatedPrism()`), so specs nest automatically and recursion terminates by construction
-* **Containers lift**: `List`/`Optional` by element, `Map` by value; failures are located by index or key
+* **Containers lift**: `List`, `Set` and arrays by element, `Optional` by its element, `Map` by value and (with `@MapKey`) by key; each locates by whatever identifies an element in it
 * **Error paths are dotted domain names**: `customers.1.email`, `attributes.en.email`
 * **Sealed dispatch is exhaustive both ways**: a missing subtype pair is a compile error, never a runtime surprise
 * **Dependencies count as siblings**: a spec compiled into another module nests, dispatches and merges through the classpath index, and your own spec shadows a dependency's for the same pair
@@ -46164,7 +46241,7 @@ interface EmployeeCardMapping extends MappingSpec<Employee, EmployeeCardDto> {}
 
 ## Law-checked, in the repo and in your tests
 
-"Lawfully offer" is verified, not promised: every emission tier above (lossless iso, projection lens, fallible leaf, nested spec, `List`/`Optional`/`Map` lifting, sealed dispatch, derived fields) is compiled and law-checked in the Higher-Kinded-J build itself, against the published [`hkj-test` law harness](../tooling/test_assertions.md#optic-laws).
+"Lawfully offer" is verified, not promised: every emission tier above (lossless iso, projection lens, fallible leaf, nested spec, container lifting, sealed dispatch, derived fields) is compiled and law-checked in the Higher-Kinded-J build itself, against the published [`hkj-test` law harness](../tooling/test_assertions.md#optic-laws).
 
 ~~~admonish tip title="Why this matters"
 Every mapping tool promises correctness; this one states laws and runs them. The tier table is not documentation of intent: each row names properties that hold as passing tests (round trip, projection identity, idempotence, coherence between surfaces). They run in this repository on every build, and the one call below runs them in yours. When a record refactor changes what the pair can lawfully support, the generated surface changes with it and the law test tells you at build time, not in production. We know of no other Java mapping generator that law-checks its own output; it is the difference between a mapper you trust and a mapper you audit.
@@ -46241,7 +46318,7 @@ interface SubscriberDetailsMapping extends MappingSpec<Subscriber, SubscriberDet
 `patch` applies **every** projected component, never "leave unchanged": a `null` reference read becomes a located `FieldError` (`must not be null`), and a [bridged](basics.md#optional-bridge) `Optional` component, automatic on a bean wire, reads `null` as empty and writes that. The REST-PATCH contract (null means absent, keep the current value) is the [sparse `UpdateSpec` tier](beans_patch.md#sparse-patch-write-back-updatespec) on a bean wire; this tier is its dense complement, on a record or a bean wire, for writing a validated sub-view onto a bigger record.
 ~~~
 
-Everything the full tier resolves is available on the projected components: explicit leaves (beating identity, so a `ValidatedPrism<X, X>` can normalise), nested specs (failures compose into dotted paths), and `List`/`Optional`/`Map` lifting. Nulls locate through the nesting too: a nested wire value delegates to the nested spec's `parse`, whose reference legs carry the same guard, so `patch(customer, new CustomerPatchDto(new AddressDto(null)))` reports `address.zip: must not be null` instead of throwing. Only derived fields stay rejected. At the Spring boundary the result is already [the 422 leg](../spring/spring_boot_integration.md#the-422-leg)'s shape: return it as-is. Like every tier, this one is law-checked:
+Everything the full tier resolves is available on the projected components: explicit leaves (beating identity, so a `ValidatedPrism<X, X>` can normalise), nested specs (failures compose into dotted paths), and container lifting. Nulls locate through the nesting too: a nested wire value delegates to the nested spec's `parse`, whose reference legs carry the same guard, so `patch(customer, new CustomerPatchDto(new AddressDto(null)))` reports `address.zip: must not be null` instead of throwing. Only derived fields stay rejected. At the Spring boundary the result is already [the 422 leg](../spring/spring_boot_integration.md#the-422-leg)'s shape: return it as-is. Like every tier, this one is law-checked:
 
 ``` java
     MappingLaws.assertMappingLaws(
@@ -46490,10 +46567,10 @@ The rules that keep the contract honest:
 - **A domain `Optional<T>` component bridged from a non-Optional property is rejected**, and so is [`@OptionalBridge`](basics.md#optional-bridge) on a sparse spec, for the same reason. Under null-as-absent, `null` already means "leave unchanged", so "set to empty" has no encoding through a plain property (and a null-clears rule would be JSON Merge Patch's opposite contract). The bridge's `null`-means-absent and the sparse tier's `null`-means-unchanged are two readings of one byte, and a spec extending `UpdateSpec` has already chosen. An `Optional`-typed wire property, though, *can* express it, patching by identity or through an element leaf: a present empty Optional sets empty; an absent (`null`) one leaves unchanged. Two binder caveats come with that power: Jackson binds an explicit JSON `null` on an `Optional`-typed property to `Optional.empty()`, so on this one property shape a sent `null` means *clear*, not *leave unchanged*; and the bean field must default to `null`, not the idiomatic `Optional.empty()`, or every request that omits the field clears the domain value.
 - **A record wire is rejected.** A record component is always present, so absence is inexpressible; sparse PATCH is a bean-only shape.
 - **A sealed hierarchy is rejected**, on either side: dispatch has no sparse meaning (an absent property cannot choose a subtype to patch).
-- **A present container parses through the element vocabulary.** A `List`, `Optional` or `Map`-valued property (a pair declared as exactly those container types) routes through the element leaf named after the component: the same leaf the dense tiers lift, so one [mix-in vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) serves a full spec and its PATCH sibling. Replacement stays wholesale; each failing element is located by index or key (`phones.1`). A whole-container leaf (`ValidatedPrism<List<S>, List<A>>`) is the more specific declaration and wins over the element interpretation. A nested *spec* still does not lift through a sparse container; give the component an element leaf delegating to the nested Impl's `asValidatedPrism()` if its elements need a whole mapping.
+- **A present container parses through the element vocabulary.** A `List`, `Set`, array, `Optional` or `Map`-valued property (a pair declared as exactly those container types) routes through the element leaf named after the component: the same leaf the dense tiers lift, so one [mix-in vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) serves a full spec and its PATCH sibling. Replacement stays wholesale; each failing element is located the way its container locates anything - by index (`phones.1`), by key, or, in a `Set`, by the element's own rendering. A whole-container leaf (`ValidatedPrism<List<S>, List<A>>`) is the more specific declaration and wins over the element interpretation. A nested *spec* still does not lift through a sparse container; give the component an element leaf delegating to the nested Impl's `asValidatedPrism()` if its elements need a whole mapping.
 - **Coverage is one-sided.** Every wire property maps to a domain component, but a domain component with *no* wire property is simply never changed: a PATCH DTO deliberately covers a subset.
 - **A same-typed nested record, `Optional`, `List` or `Map` replaces wholesale** through identity, the fallback when no more specific leaf applies. The details:
-  - A same-typed `List` or `Map` carries the dense tiers' null scan: a null element or value is a located, accumulating invalid (`tags.1: must not be null`), never written into the domain; a valid container still passes by reference, unrebuilt.
+  - A same-typed `List`, `Set`, array or `Map` carries the dense tiers' null scan: a null element or value is a located, accumulating invalid (`tags.1: must not be null`; a set's, unlocated as `tags: must not contain a null element`), never written into the domain; a valid container still passes by reference, unrebuilt.
   - The scan needs a properly parameterised container; a raw or wildcard-argument one is written as sent.
   - A same-typed `Optional` needs no scan (it cannot hold a null element), so its identity write is unconditional: a present empty sets empty, absent leaves unchanged.
   - A nested record whose wire differs is patched wholesale through its own full mapping spec. Deep merge is out of scope.
@@ -47062,7 +47139,10 @@ Every rejection follows the processor's what/why/fix standard: the message state
 | Named modules neither write nor read the index, and two spec-carrying jars cannot be automatic modules together | [Across modules](structure.md#across-modules) |
 | A mix-in may be generic, but must not be reached raw | [Shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) |
 | A flattened component stays on the full record-record tier: not on a bean wire, a generic spec, a projection or a sparse `UpdateSpec`; its record fits one `fields()` ladder, and spreading is one level deep (a record inside the group nests through its own spec) | [Flattening a nested component](structure.md#flattening-a-nested-component-onto-a-flat-wire) |
-| `Map` components lift values only; keys are identity, so differing key types, raw `Map`s and wildcards are rejected | [Nesting and containers](structure.md) |
+| `Map` keys are identity unless a `@MapKey` leaf converts them; raw `Map`s and wildcards are rejected either way | [Converting Map keys](structure.md#converting-map-keys) |
+| Lifting needs the same container on both sides: a `List` against a `Set`, or an array against a `List`, is a plain type mismatch | [Nesting and containers](structure.md#nesting-containers-and-recursion) |
+| An **array** component is mutable and has identity `equals`: an identity leg shares the array with the other side (a `List` can at least be immutable), and `MappingLaws` cannot law-check a record carrying one - assert the round trip elementwise | [Testing with hkj-test](../tooling/test_assertions.md#optic-laws) |
+| A **lifted** array's element type must name its own constructor, so a type variable or parameterised element (`T[]`, `List<Tag>[]`) is refused | [Nesting and containers](structure.md#nesting-containers-and-recursion) |
 | A fallible projection emits the validated `patch`, never a fake `asLens()`; projections cannot carry derived fields | [The Emission Tiers](tiers.md#leaf-carrying-projections-the-validated-patch), [Derived wire fields](basics.md#derived-wire-fields) |
 | Generic mappings come in exactly three forms and stay record-to-record | [Generic Specs](generics.md) |
 | Sparse PATCH is bean-only, wrapper-typed, and never deep-merges | [Beans and Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec) |
@@ -85799,7 +85879,7 @@ Each skill provides condensed reference material optimised for Claude to use whe
 
 **hkj-optics** provides an annotation reference table, step-by-step Focus DSL walkthrough, FocusPath/AffinePath/TraversalPath hierarchy, optic-path labelling (`segments()` / `pathString()`), collection navigation methods (`.each()`, `.at()`, `.some()`, `.nullable()`), the `Edits` multi-edit builder with `Update<S>`, `ValidatedPrism` for parse-don't-validate boundaries, and external type import with `@ImportOptics` and `@OpticsSpec`. Supporting files cover the full optic composition matrix, a cookbook of recipes, container type support (23 types across JDK, Eclipse Collections, Guava, Vavr, Apache Commons), and indexed optics.
 
-**hkj-mapping** covers the compile-time data-assembly generators: `@GenerateMapping` for bidirectional record <-> DTO mapping (spec interfaces, `@MapField` renames, `ValidatedPrism` leaves, derived wire fields, `@OptionalBridge` for a nullable wire component, elementwise lifting through `List`/`Optional`/`Map`, nested and recursive records), `@GenerateMerge` for building one target from N sources, `@GenerateAssembly` for staged validated construction, and `@GenerateErrorEnvelope` for sealed error hierarchies with a typed context record. The unifying rule it teaches: `build` is total, `parse` is fallible and accumulates every `FieldError`. A supporting file walks through a complete DTO boundary, including law-checking the round-trip with `MappingLaws`.
+**hkj-mapping** covers the compile-time data-assembly generators: `@GenerateMapping` for bidirectional record <-> DTO mapping (spec interfaces, `@MapField` renames, `ValidatedPrism` leaves, derived wire fields, `@OptionalBridge` for a nullable wire component, elementwise lifting through `List`, `Set`, reference arrays, `Optional` and `Map`, nested and recursive records), `@GenerateMerge` for building one target from N sources, `@GenerateAssembly` for staged validated construction, and `@GenerateErrorEnvelope` for sealed error hierarchies with a typed context record. The unifying rule it teaches: `build` is total, `parse` is fallible and accumulates every `FieldError`. A supporting file walks through a complete DTO boundary, including law-checking the round-trip with `MappingLaws`.
 
 **hkj-effects** provides the `@EffectAlgebra` pattern (sealed interface + CPS records), what the annotation processor generates, `@ComposeEffects` wiring, interpreter implementation guide, `EffectBoundary` and `TestBoundary` usage, and program analysis. Supporting files walk through the payment processing example, interpreter patterns (production, test, audit), and Free monad basics.
 
@@ -92378,7 +92458,7 @@ OrderError error = OrderErrors.outOfStock(products)
 
 ## @GenerateMapping
 
-**Definition:** An annotation processor for the record-to-DTO boundary. Annotate an interface extending `MappingSpec<Domain, Wire>` and the processor generates, reflection-free at compile time, a total `build` (domain to wire) plus an accumulating `parse` (wire to domain) returning `Validated<NonEmptyList<FieldError>, Domain>`, so a bad DTO reports every bad field at once. Components match by name and type; `@MapField` declares renames, `@Flatten` spreads a nested record across a flat wire, and `List`/`Optional`/`Map` containers lift automatically. The annotation sits on *your* spec interface, so third-party records map without being annotatable.
+**Definition:** An annotation processor for the record-to-DTO boundary. Annotate an interface extending `MappingSpec<Domain, Wire>` and the processor generates, reflection-free at compile time, a total `build` (domain to wire) plus an accumulating `parse` (wire to domain) returning `Validated<NonEmptyList<FieldError>, Domain>`, so a bad DTO reports every bad field at once. Components match by name and type; `@MapField` declares renames, `@Flatten` spreads a nested record across a flat wire, and `List`, `Set`, array, `Optional` and `Map` containers lift automatically - a map's keys too, with `@MapKey`. The annotation sits on *your* spec interface, so third-party records map without being annotatable.
 
 **Example:**
 <!-- verify -->
@@ -92498,7 +92578,7 @@ MappingLaws.assertMappingLaws(
 
 ## MappingSpec
 
-**Definition:** The marker interface a mapping spec extends to name its pair: `interface UserMapping extends MappingSpec<Domain, Wire> {}`. The interface deliberately declares nothing callable (the generated `UserMappingImpl` carries the surface); the spec's members are the *declaration vocabulary*: `default` `ValidatedPrism` methods are leaves, `@MapField` abstracts are renames, `default` `Getter` methods are derived wire fields, `@OptionalBridge` marks a component whose `null` means absent, `@Flatten` marks a nested record component spread across the wire's flat components. Its sparse sibling is [UpdateSpec](#updatespec), which swaps the whole generated surface for a single `updateFrom`.
+**Definition:** The marker interface a mapping spec extends to name its pair: `interface UserMapping extends MappingSpec<Domain, Wire> {}`. The interface deliberately declares nothing callable (the generated `UserMappingImpl` carries the surface); the spec's members are the *declaration vocabulary*: `default` `ValidatedPrism` methods are leaves, `@MapField` abstracts are renames, `default` `Getter` methods are derived wire fields, `@OptionalBridge` marks a component whose `null` means absent, `@MapKey` names the `Map` component whose keys a leaf converts, `@Flatten` marks a nested record component spread across the wire's flat components. Its sparse sibling is [UpdateSpec](#updatespec), which swaps the whole generated surface for a single `updateFrom`.
 
 **Example:**
 <!-- verify -->
@@ -93049,6 +93129,16 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **`@GenerateMapping` lifts `Set`, array and `Map`-key components** ([#675](https://github.com/higher-kinded-j/higher-kinded-j/issues/675)): element lifting covered `List`, `Optional` and a `Map`'s values. A `Set<EmailAddress>` component could only be copied whole or mapped through a hand-written whole-container leaf, an array could not lift at all, and a `Map` whose two sides keyed differently was a hard error. All three now lift through the leaf or nested spec named after the component, in both directions and on every tier - dense, projection, bean wire and sparse `UpdateSpec` - and a same-typed `Set` or reference array carries the identity null scan the other containers already did.
+
+  Each container locates a failure by whatever identifies an element in it. An array has indices, so it reads like a list (`reserves.1: not an email address`). A set has none, and its iteration order is not part of its contract, so numbering would name a different element on the next run: a set element locates by its own rendering (`members.nope`), extending the caveat the map-key grammar already carried. A `null` set element has no rendering at all and a set holds at most one, so it reports unlocated as `members: must not contain a null element`, kept distinct from `must not be null`, which says the set itself is absent. A primitive array (`int[]`) is copied whole: a `ValidatedPrism` cannot focus a primitive, and a primitive element cannot be null.
+
+  A `Map`'s keys convert through `@MapKey`, alone or beside the value leaf. The annotation names the domain component rather than the method, because the component's value leaf already owns that name and Java forbids two zero-parameter methods sharing one. A failing key locates by the *source* key, so the path names what the caller sent rather than what it parsed to, and an entry wrong on both sides reports both reasons there. Without a key leaf the key types must still match, and the refusal now offers a pasteable `@MapKey` declaration instead of telling you to restructure. `ValidatedPrism` gained the matching bulk forms: `parseAll`/`buildAll` over a `Set` and over arrays, plus `parseKeys`/`parseEntries` and their total twins.
+
+  Mapping is not injective, so a container can collapse. A set drops the duplicate silently: the element that remains is equal to the one dropped, so the set still holds every distinct value it was given, although the two source spellings that collapsed can no longer be told apart. Two map keys parsing to one domain key are a located `duplicates an earlier key` instead, since the dropped entry takes its own value with it. Either way the element prism doing it already breaks the `ValidatedPrism` section law, so no lawful mapping collapses. Neither reaches the lossless `asIso()` tier, which a leaf already excludes. Lifting still needs the same container on both sides: a `List` against a `Set`, or an array against a `List`, stays a plain type mismatch rather than silently changing what the collection promises. See [Nesting and containers](mapping/structure.md#nesting-containers-and-recursion) and [Converting Map keys](mapping/structure.md#converting-map-keys).
+
+  _Two source-compatibility notes,_ both from `parseAll` and `buildAll` becoming overloaded on the container. A call passing a bare `null` literal now needs the type it stands for (`parseAll((List<String>) null)`). And the method reference `prism::parseAll` is now *inexact*, so it no longer drives inference on its own: where nothing else fixes the container type it needs a target type or a lambda (`xs -> prism.parseAll(xs)`). A reference whose type is already pinned - by an assignment target, or by another argument, as in `map(prism::parseAll)` - is unaffected, as is every call passing an actual container. `ValidatedPrism` is sealed, so no implementation outside the library can be affected by the new overloads.
 
 - **Bean-shaped projections take the validated `patch`** ([#702](https://github.com/higher-kinded-j/higher-kinded-j/issues/702)): a bean wire with fewer properties than the domain now maps when any of its properties is reference-typed, where it used to be refused with a pointer to the record-wire tier. The Impl emits the same dense `patch(domain, wire) : Validated<NonEmptyList<FieldError>, Domain>` a record projection gets: every projected property is validated, an unset property is a located `must not be null` (on a bean an ordinary state, not only bad input), every bad field accumulates, and unprojected components are read from the domain argument. Leaves, nested specs, container lifting and the automatic `Optional` bridge all apply (an unset bridged property reads as empty), and the existing `MappingLaws` patch overload law-checks it. The Impl still carries `build`, so the bean needs setters or a builder. An all-primitive bean projection keeps its lawful `asLens()`, and a record wire adopted in place of the bean keeps working unchanged. See [Bean projections](mapping/beans_patch.md#bean-projections).
 
