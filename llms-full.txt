@@ -250,7 +250,7 @@ Write the records, add the annotations, and the processor writes `StreetLenses`,
 
 ### [Mapping at the Boundary](mapping/ch_intro.md)
 
-One spec interface and one annotation replace the hand-written mapper. `@GenerateMapping` derives both directions at compile time for record, bean-shaped and generic wires of any width: a total `build` out, an accumulating `parse` back that locates every bad field, and both PATCH styles as write-backs. A [stock codec vocabulary](mapping/codecs.md#standard-codecs) covers the standard conversions, so a typical boundary needs no hand-written leaves, and every tier is law-checked and pinned by golden files.
+One spec interface and one annotation replace the hand-written mapper. `@GenerateMapping` derives both directions at compile time for record, bean-shaped and generic wires of any width (the one direction a bean supports, where it can only be read or only be written): a total `build` out, an accumulating `parse` back that locates every bad field, and both PATCH styles as write-backs. A [stock codec vocabulary](mapping/codecs.md#standard-codecs) covers the standard conversions, so a typical boundary needs no hand-written leaves, and every tier is law-checked and pinned by golden files.
 
 ~~~admonish example title="Quick example" collapsible=true
 <!-- verify -->
@@ -20387,6 +20387,7 @@ public class AppPrisms {
 - How composition splits: `andThen` short-circuits into structure while sibling fields accumulate every reason
 - Which compositions preserve the total build (`ValidatedPrism`, `Iso`, and `Prism`-with-a-reason) and why `Lens` cannot
 - Bridging the optic lattice with `fromIso`, `fromPrism`, `toPrism`, and `toAffine`
+- The two halves, `ValidatedParse` and `ValidatedBuild`, for a boundary crossed one way only
 - The two round-trip laws, and why the second forbids a lossy, normalising `build`
 ~~~
 
@@ -20487,6 +20488,20 @@ Only compositions that preserve the **total build** yield a `ValidatedPrism`:
 
 ---
 
+## One direction at a time {#one-direction-at-a-time}
+
+Each direction is also a type of its own. A `ValidatedPrism<S, A>` is both a **`ValidatedParse<S, A>`**, carrying `parse`, `parsePath` and the parse bulk forms, and a **`ValidatedBuild<S, A>`**, carrying `build` and the build bulk forms. Code that needs only one direction asks for that half, so every prism still fits, and so does a boundary that can only be crossed one way:
+
+| Type | Carries | Made with |
+|---|---|---|
+| `ValidatedPrism<S, A>` | both directions, composition, the lattice bridges | `ValidatedPrism.of(parse, build)`, `canonical`, `fromIso`, `fromPrism` |
+| `ValidatedParse<S, A>` | `parse`, `parsePath`, `parseAll`, `parseValues`, `parseKeys`, `parseEntries` | `ValidatedParse.of(parse)` |
+| `ValidatedBuild<S, A>` | `build`, `buildAll`, `buildValues`, `buildKeys`, `buildEntries` | `ValidatedBuild.of(build)` |
+
+A half has no round trip, so neither law below applies to it, and `andThen`, `toPrism` and `toAffine`, which need both directions, stay on the prism. All three types are sealed, so a test double is a value built with `of`, never a mock. `parseEntries` takes a `ValidatedParse` for the values and `buildEntries` a `ValidatedBuild`, so either side of a map may be one-directional. A [one-directional bean mapping](../mapping/beans_patch.md#one-directional-beans) exposes its surface as the half it has.
+
+---
+
 ## Laws
 
 A lawful validated boundary satisfies both round trips, verified with [`ValidatedPrismLaws`](../tooling/test_assertions.md) from `hkj-test`:
@@ -20538,7 +20553,7 @@ One prism lifts over whole containers, accumulating **every** failure and locati
 | `parseAll(S[], IntFunction<A[]>)` | every element | its **index**, as a list. The array constructor supplies the result, since a generic array cannot be created otherwise |
 | `parseValues(Map<K, ? extends S>)` | the values; keys pass through | its **key** - `attributes.en: ...` |
 | `parseKeys(Map<? extends S, V>)` | the keys; values pass through | the **source** key, naming what the caller sent |
-| `parseEntries(Map, ValidatedPrism)` | both sides; the receiver is the **key** prism | the source key, so an entry wrong on both sides reports both reasons there |
+| `parseEntries(Map, ValidatedParse)` | both sides; the receiver parses the **keys** | the source key, so an entry wrong on both sides reports both reasons there |
 
 The [null doctrine](../mapping/basics.md#null-doctrine) reaches inside all of them: a `null` element or map value is a located, accumulating `must not be null`, never an exception, while a `null` container or map key stays the caller's error. A `null` set element is the unlocated `must not contain a null element`, a set holding at most one. Every build direction (`buildAll`, `buildValues`, `buildKeys`, `buildEntries`) is total like `build` and rejects nulls outright.
 
@@ -20556,6 +20571,7 @@ Mapping is not injective, so a container can **collapse**: a prism mapping both 
 * **`canonical(message, parse, render)` guards the section law per value**: the render defines the canonical form and every spelling it cannot reproduce is rejected; that the parse accepts the renderings, injectively, stays your obligation (check with `ValidatedPrismLaws`)
 * **One prism lifts over containers**: The bulk forms accumulate every element failure, located by index or key
 * **`parsePath` lands on the railway** (`ValidationPath`) directly
+* **Each direction is a type of its own**: `ValidatedParse` and `ValidatedBuild` serve a boundary crossed one way, and every prism is both
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -45130,7 +45146,7 @@ It works, until it doesn't, and it fails three ways at once:
 
 ## What you get instead
 
-This chapter replaces that mapper with one interface you own and one annotation. The processor derives both directions at compile time, and the fallible direction reports **every** bad field at once, each located by a dotted path. Here is the destination, before any theory: a request with five defects, answered by one response.
+This chapter replaces that mapper with one interface you own and one annotation. The processor derives both directions at compile time wherever the wire supports them, and the fallible one reports **every** bad field at once, each located by a dotted path. Here is the destination, before any theory: a request with five defects, answered by one response.
 
 ```json
 {
@@ -45272,7 +45288,7 @@ Two pages are enough to ship. [Record Mapping Basics](basics.md) declares a mapp
 - **Record Mapping Basics** – Declare a mapping as one empty interface and get both directions: a `build` that cannot fail and a `parse` that reports every bad field at once. Then add conversions, renames, computed fields, and the one field whose `null` means *absent*.
 - **Standard Codecs and Shared Vocabulary** – The stock conversions (UUIDs, dates, enums, money) as one factory call each, and the mix-in pattern that shares your conversions across every spec in an API.
 - **Nesting, Containers, and Sealed Hierarchies** – Specs nest automatically and failures compose into dotted paths; `List`, `Set`, arrays, `Optional` and `Map` map their elements (and, with `@MapKey`, a map's keys); sealed pairs dispatch exhaustively in both directions.
-- **The Emission Tiers** – Which spec shapes earn `asIso()`, `asLens()`, the validated `patch`, or `asValidatedPrism()`, and the one-call law check that proves each in your own tests.
+- **The Emission Tiers** – Which spec shapes earn `asIso()`, `asLens()`, the validated `patch`, `asValidatedPrism()` or one of its halves, and the one-call law check that proves each in your own tests.
 - **Beans and Sparse PATCH** – Getter/setter and builder wires with the full feature set, and the `UpdateSpec` opt-in that gives a PATCH bean null-as-absent semantics without weakening validation of what was sent.
 - **Generic Specs** – Mapping `Page<T>` and friends: concrete instantiations, threaded type parameters, and element-mapped specs whose codecs arrive at construction time.
 - **Merge and Error Envelopes** – `@GenerateMerge` assembles one target from several sources; `@GenerateErrorEnvelope` retires the copy-pasted `code`/`message`/`timestamp` and types the error context.
@@ -46006,7 +46022,7 @@ flowchart TD
     class R error
 ```
 
-Because nesting is *delegation* (each spec's `Impl` exposes [`asValidatedPrism()`](tiers.md), so a whole mapping plugs in wherever a leaf does), recursion terminates by construction: a self-referential `Tree(String value, List<Tree> children)` maps with an empty spec and round-trips any finite tree.
+Because nesting is *delegation* (a full mapping's `Impl` exposes [`asValidatedPrism()`](tiers.md), and a [one-directional bean mapping](beans_patch.md#one-directional-beans) the half it has, so a whole mapping plugs in wherever a leaf does), recursion terminates by construction: a self-referential `Tree(String value, List<Tree> children)` maps with an empty spec and round-trips any finite tree.
 
 ~~~admonish note title="Keys and set elements are located by `toString()`"
 The rendered path uses each key's - or set element's - `toString()`, so one containing a dot looks the same as deeper nesting, and two distinct ones whose renderings collide share a location. The structured `FieldError` path list stays exact regardless, holding the whole rendering as one segment, and every error is still reported.
@@ -46157,7 +46173,7 @@ A domain subtype without a spec, or a wire subtype nothing produces, is a compil
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **Nesting is delegation**: any spec's Impl is a leaf (`asValidatedPrism()`), so specs nest automatically and recursion terminates by construction
+* **Nesting is delegation**: any spec's Impl is a leaf (`asValidatedPrism()`, or the one half a one-directional bean mapping has), so specs nest automatically and recursion terminates by construction
 * **Containers lift**: `List`, `Set` and arrays by element, `Optional` by its element, `Map` by value and (with `@MapKey`) by key; each locates by whatever identifies an element in it
 * **Error paths are dotted domain names**: `customers.1.email`, `attributes.en.email`
 * **Sealed dispatch is exhaustive both ways**: a missing subtype pair is a compile error, never a runtime surprise
@@ -46183,10 +46199,10 @@ A domain subtype without a spec, or a wire subtype nothing produces, is a compil
 
 _The generated surface only ever offers what the field correspondences can lawfully support; nothing is fabricated._
 
-Most mapping tools generate the same surface for every pair and let the unlawful corners fail at runtime. `@GenerateMapping` does the opposite: it reads the field correspondences and emits only the operations they can honour. A lossless pair earns an `Iso`; a lossy projection (a wire carrying fewer components than the domain) earns a `Lens` write-back but no parse; a validating projection earns a fallible `patch`. The types tell the truth, and the truth is law-checked.
+Most mapping tools generate the same surface for every pair and let the unlawful corners fail at runtime. `@GenerateMapping` does the opposite: it reads the field correspondences and emits only the operations they can honour. A lossless pair earns an `Iso`; a lossy projection (a wire carrying fewer components than the domain) earns a `Lens` write-back but no parse; a validating projection earns a fallible `patch`; a bean that can only be read earns `parse` alone, and one that can only be written earns `build` alone. The types tell the truth, and the truth is law-checked.
 
 ~~~admonish info title="What You'll Learn"
-- Reading the tier table: which spec shapes emit `asIso()`, `asLens()`, `patch`, `asValidatedPrism()`, or `updateFrom`
+- Reading the tier table: which spec shapes emit `asIso()`, `asLens()`, `patch`, `asValidatedPrism()`, `asValidatedParse()`, `asValidatedBuild()`, or `updateFrom`
 - Why a lossless mapping's `parse` is still guarded, and when `reverseGet` is safe
 - The validated `patch` tier for projections that validate or normalise
 - Law-checking your own specs with one `MappingLaws` call per tier
@@ -46202,7 +46218,10 @@ The field correspondences select what the Impl can lawfully offer. As a decision
 flowchart TD
     S["Your spec interface"] --> U{"extends UpdateSpec<br/>(instead of MappingSpec)?"}
     U -->|yes| UT(["updateFrom() only:<br/>a sparse PATCH fold"])
-    U -->|no| W{"wire has fewer components?<br/>(derived fields don't count)"}
+    U -->|no| B{"a bean wire that is only<br/>read, or only written?"}
+    B -->|"getters, nothing writes it"| PO(["parse + asValidatedParse():<br/>no build"])
+    B -->|"writers, no getters"| BO(["build + asValidatedBuild():<br/>no parse"])
+    B -->|"no: a record, or a bean<br/>read and written"| W{"wire has fewer components?<br/>(derived fields don't count)"}
     W -->|yes| F{"any fallible correspondence<br/>on a projected component?<br/>(leaf, nested spec, a container lifting one,<br/>bridge, or a bean's reference property)"}
     F -->|no| LT(["build + asLens():<br/>lawful write-back, no parse"])
     F -->|yes| PT(["build + validated patch():<br/>a write-back that can fail"])
@@ -46216,8 +46235,8 @@ flowchart TD
     classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
     classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
     class S wire
-    class UT,LT,PT,IT,VT,VP tier
-    class U,W,F,D decision
+    class UT,PO,BO,LT,PT,IT,VT,VP tier
+    class U,B,W,F,D decision
 ```
 
 (The bean-read leg of that last decision: on a bean wire an unset reference property is an ordinary state, so its guarded reads count as fallible and a lossless-*looking* bean mapping still lands on the accumulating branch, withholding `asIso()`; see [Beans and Sparse PATCH](beans_patch.md#bean-shaped-wire-targets). The same reads decide a bean projection: any reference property makes it land on `patch`, while an all-primitive bean projection, whose reads can never be null, takes the `asLens()` branch. And a projection that also declares a [derived field](basics.md#derived-wire-fields) is rejected outright, which is why derived fields do not count towards the wire tally. An [`@OptionalBridge`](basics.md#optional-bridge) component counts as fallible on both branches, on either wire shape: absence is a real correspondence, not a copy, so a mapping carrying one withholds `asIso()` and a projection carrying one takes `patch`.)
@@ -46230,7 +46249,9 @@ And as the reference table:
 | Any fallible leaf, nested spec, derived field or bridged `Optional` | `build`, accumulating `parse`, no `asIso` |
 | Wire with *fewer* components, all identity (lossy projection; on a bean, all primitive) | `build` + **`asLens()`** whose `set` writes the projected components back, **no `parse`** (the dropped components cannot be reconstructed) |
 | Wire with fewer components **and** any fallible correspondence (on a bean, any reference property) | `build` + a validated **`patch(domain, wire)`** write-back, no `asLens` and no `parse`, [below](#leaf-carrying-projections-the-validated-patch) |
-| Every parse-capable mapping | **`asValidatedPrism()`**: the mapping as a leaf, so it nests and lifts |
+| Every full mapping (it builds and parses) | **`asValidatedPrism()`**: the mapping as a leaf, so it nests and lifts |
+| A bean wire with getters and nothing that writes it (parse-only) | `parse` + **`asValidatedParse()`**, no `build`: [One-directional beans](beans_patch.md#one-directional-beans) |
+| A bean wire that is written and declares no getter (build-only) | `build` + **`asValidatedBuild()`**, no `parse`: [One-directional beans](beans_patch.md#one-directional-beans) |
 | A spec extending **`UpdateSpec`** (opt-in, bean wire; not alongside `MappingSpec`) | only **`updateFrom(Wire)`**: a sparse PATCH fold, [Beans and Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec) |
 
 ``` java
@@ -46256,7 +46277,7 @@ interface EmployeeCardMapping extends MappingSpec<Employee, EmployeeCardDto> {}
 
 ## Law-checked, in the repo and in your tests
 
-"Lawfully offer" is verified, not promised: every emission tier above (lossless iso, projection lens, fallible leaf, nested spec, container lifting, sealed dispatch, derived fields) is compiled and law-checked in the Higher-Kinded-J build itself, against the published [`hkj-test` law harness](../tooling/test_assertions.md#optic-laws).
+"Lawfully offer" is verified, not promised: every emission tier above (lossless iso, projection lens, fallible leaf, nested spec, container lifting, sealed dispatch, derived fields, one-directional beans) is compiled and law-checked in the Higher-Kinded-J build itself, against the published [`hkj-test` law harness](../tooling/test_assertions.md#optic-laws).
 
 ~~~admonish tip title="Why this matters"
 Every mapping tool promises correctness; this one states laws and runs them. The tier table is not documentation of intent: each row names properties that hold as passing tests (round trip, projection identity, idempotence, coherence between surfaces). They run in this repository on every build, and the one call below runs them in yours. When a record refactor changes what the pair can lawfully support, the generated surface changes with it and the law test tells you at build time, not in production. We know of no other Java mapping generator that law-checks its own output; it is the difference between a mapper you trust and a mapper you audit.
@@ -46279,6 +46300,8 @@ The overloads follow the tiers:
 - **Projection:** pass `asLens()` with a domain value and two wire values.
 - **Validated patch (a validating projection, record or bean):** pass the `patch` and `build` method references, a domain value, and a parsing and a non-parsing wire value ([below](#leaf-carrying-projections-the-validated-patch)).
 - **Fallible tier:** pass `asValidatedPrism()` with a parsing and a non-parsing wire value.
+- **Parse-only bean:** pass `asValidatedParse()` with a parsing and a non-parsing wire value: the first parses, and the second fails with every error located.
+- **Build-only bean:** pass `asValidatedBuild()` with a domain value: `build` renders it without failing.
 - **Derived-field (total-parse) mapping:** `build` recomputes what `parse` ignores, so only the non-derived components round-trip. The domain-sample overload `assertMappingLaws(prism, domainValue)` asserts exactly that and nothing stronger.
 - **Sparse-update (`UpdateSpec`) mapping:** pass the `updateFrom` method reference, a domain value, and an all-absent, a valid and an invalid wire to check the identity, idempotence and validation laws ([Beans and Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec)).
 
@@ -46349,7 +46372,7 @@ The patch laws are projection identity (`patch(d, build(d)) == Valid(d)`), idemp
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **The tiers tell the truth**: `asIso`, `asLens`, `patch`, `asValidatedPrism`, or `updateFrom` exist only where the correspondences lawfully support them
+* **The tiers tell the truth**: `asIso`, `asLens`, `patch`, `asValidatedPrism` and its one-directional halves, or `updateFrom` exist only where the correspondences and the wire lawfully support them
 * **A lossless parse is still guarded**: hostile bindings become located invalids; `reverseGet` is for in-memory round trips only
 * **A validating projection gets `patch`, not a fake lens**: every projected component validated, every bad field located, unprojected components untouched by construction
 * **Every tier is law-checked**: one `MappingLaws` overload per tier, the same harness the library's own build runs
@@ -46378,6 +46401,7 @@ Not every wire type is a record. Generated clients, JAXB payloads and legacy DTO
 - Mapping bean-shaped wire types (setters, builders, JAXB lists) with the same features as records
 - Why a bean mapping withholds `asIso()`, and how `Optional` bridges through `null` here without a declaration
 - Why a bean projection with a reference property takes the validated `patch` rather than `asLens()`
+- Mapping a bean that can only be read, or only be written: `parse` alone or `build` alone, and where each nests
 - What PATCH and *sparse* PATCH actually mean, and why `null` is ambiguous in a PATCH body
 - Opting into sparse semantics with `UpdateSpec`: present fields fold in, absent fields leave the domain alone
 - The rules that keep the null-as-absent contract honest, and how containers patch through the element vocabulary
@@ -46437,8 +46461,8 @@ interface ContactMapping extends MappingSpec<Customer, ContactBean> {
 The design decisions worth knowing:
 
 - **Null is located, never thrown, like every wire.** The null guard is universal ([one rule](basics.md#null-doctrine), both shapes), so a `null` property read is a located `FieldError` exactly as on a record wire. What is bean-*specific* is why nulls are expected at all: an unset property is a representable, ordinary state of a mutable bean, not just a hostile binding.
-- **Honest tiers.** Because an unset property is ordinary, a bean's guarded reference reads count as fallible and the mapping withholds `asIso()` automatically; an all-primitive bean (whose reads can never be null) still earns it. A record wire's guards exist for hostile bindings only, so a lossless record mapping keeps `asIso()`, with the parse-iso coherence law scoped to wires whose reference components are non-null. Nesting is unaffected: a bean mapping exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it.
-- **Construction strategy** is detected from the bean's shape, tried in order: a public no-args constructor with `setX` setters (and, for a getter-only `List`, the JAXB convention `getItems().addAll(...)`); then a static `builder()`/`newBuilder()` whose setters fill it and whose `build()` yields the wire. A bean that fits neither gets a what/why/fix diagnostic.
+- **Honest tiers.** Because an unset property is ordinary, a bean's guarded reference reads count as fallible and the mapping withholds `asIso()` automatically; an all-primitive bean (whose reads can never be null) still earns it. A record wire's guards exist for hostile bindings only, so a lossless record mapping keeps `asIso()`, with the parse-iso coherence law scoped to wires whose reference components are non-null. Nesting is unaffected: a bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a [one-directional](#one-directional-beans) one exposes the half it has, nesting wherever only that direction is used.
+- **Construction strategy** is detected from the bean's shape, tried in order: a public no-args constructor with `setX` setters (and, for a getter-only `List`, the JAXB convention `getItems().addAll(...)`); then a static `builder()`/`newBuilder()` whose setters fill it and whose `build()` yields the wire. A bean with getters that fits neither is only ever read, so it maps [parse-only](#one-directional-beans); a bean with nothing to read or write gets a what/why/fix diagnostic.
 - **A getter-only `List` must name its element type**, because `addAll` is what fills it: over a raw `List` that call is unchecked, and over a wildcard one the receiver and the argument capture separately, so neither writes into an Impl that compiles. The diagnostic names the remedy its cause calls for — declare the type arguments, or replace the wildcard with the element type it stands for — and both causes are also answered by a setter, which takes the property as declared. This is a `build` rule only: the [sparse tier](#sparse-patch-write-back-updatespec) reads such a property and never writes it, so the same bean maps there untouched.
 - **Optionality bridges through `null`, automatically here.** On a full mapping, a domain `Optional<T>` maps to a nullable bean property `T` (bean conventions leave `Optional` off property types): empty bridges to absent (`build` skips the write, leaving the property unset; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf. This is the *only* wire shape where the bridge needs no declaration: a record wire opts in per component with [`@OptionalBridge`](basics.md#optional-bridge), which buys the same correspondence, and declaring it on a bean spec is redundant (a note, not an error, so one mix-in can serve both shapes). One property shape refuses the bridge: a getter-only `List` filled by the JAXB convention above has no unset state to carry absence, because its getter creates the list on first call, so an empty `Optional` would read back as a present empty list; the diagnostic asks for a `List<T>` domain component, where the empty list *is* nothing, or for a property the build can genuinely leave unset — which takes both a setter *and* a getter that answers `null` until one is called, since a lazily creating getter loses absence on the read even when a setter exists. The [sparse tier](#sparse-patch-write-back-updatespec) is the deliberate exception in the other direction: there `null` already means "leave unchanged", so a PATCH bean encodes "set to empty" with an `Optional`-typed property instead.
 - **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the *wire* may be bean-shaped; a bean domain gets a diagnostic.
@@ -46486,7 +46510,106 @@ Everything else is the record-wire tier unchanged: every projected property is v
 
 This is not the REST PATCH contract, even when the bean is a PATCH request: an unset property never means "keep the current value". For that, extend `UpdateSpec` ([below](#sparse-patch-write-back-updatespec)).
 
-`patch` only reads the bean, through its getters, but the Impl also carries `build`, which writes one, so a bean projection still needs one of the construction strategies above; a getter-only bean draws the same diagnostic as on a full mapping. One-directional beans (getter-only or setter-only) are not supported yet.
+`patch` only reads the bean, through its getters, but the Impl also carries `build`, which writes one, so a bean projection still needs one of the construction strategies above. A getter-only bean narrower than the domain is not a projection at all: nothing writes it, so it maps [parse-only](#one-directional-beans), and every domain component then needs a getter.
+
+### One-directional beans {#one-directional-beans}
+
+Some beans are only ever crossed one way. A generated client's response type, an immutable view built through its constructor, or a third-party result offers getters and nothing that writes it; an outbound request, or a write model behind a builder, is filled and never read back. Neither can support both directions, so the Impl carries the one it can and nothing for the other: the missing direction is absent, never a method that throws.
+
+| The bean offers | It maps | The Impl carries |
+|---|---|---|
+| properties it can both read and write | both ways, as above | `build`, `parse`, `asValidatedPrism()` and the rest of its tier |
+| getters, and no setters or builder that fill it | parse-only | `parse` and `asValidatedParse()` |
+| setters or a builder, and no getters | build-only | `build` and `asValidatedBuild()` |
+
+``` java
+// A vendor's read model: built once by its own client, then only ever read. It has getters and
+// nothing that writes it, so the mapping is parse-only.
+class CustomerView {
+  private final String name;
+  private final String email;
+
+  CustomerView(String name, String email) {
+    this.name = name;
+    this.email = email;
+  }
+
+  public String getName() {
+    return name;
+  }
+
+  public String getEmail() {
+    return email;
+  }
+}
+
+@GenerateMapping
+interface CustomerViewMapping extends MappingSpec<Customer, CustomerView> {
+  default ValidatedPrism<String, EmailAddress> email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+// An outbound request: filled and sent, never read back. It has setters and no getters, so the
+// mapping is build-only.
+class CustomerRequest {
+  private String name;
+  private String email;
+
+  public void setName(String name) {
+    this.name = name;
+  }
+
+  public void setEmail(String email) {
+    this.email = email;
+  }
+
+  String describe() {
+    return name + " <" + email + ">";
+  }
+}
+
+@GenerateMapping
+interface CustomerRequestMapping extends MappingSpec<Customer, CustomerRequest> {
+  default ValidatedPrism<String, EmailAddress> email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+
+    // Parse-only: the Impl has parse and asValidatedParse(), and no build.
+    Validated<NonEmptyList<FieldError>, Customer> read =
+        CustomerViewMappingImpl.INSTANCE.parse(new CustomerView("Ada", "ada@corp.example"));
+    // Valid(Customer[name=Ada, email=EmailAddress[value=ada@corp.example]])
+
+    // Build-only: the Impl has build and asValidatedBuild(), and no parse.
+    CustomerRequest request =
+        CustomerRequestMappingImpl.INSTANCE.build(
+            new Customer("Ada", new EmailAddress("ada@corp.example")));
+    // new CustomerRequest(); setName("Ada"); setEmail("ada@corp.example")
+```
+
+The bean's shape decides, and a note says which way it was read and why, so an unintended reading does not go unnoticed: a bean meant to be built whose no-args constructor the generated Impl cannot reach reads parse-only, and the note says the constructor is out of reach. The two-way reading wins whenever any property allows it, so a bean is one-directional only when nothing at all crosses the other way. A getter-only `List` counts as written, through the JAXB `getX().addAll(...)` convention above, only on a bean that also has a setter or whose every getter is such a list: a `List` getter among read-only getters belongs to a read model, which maps parse-only. A bean that reads some names and writes others, which is what a misspelt accessor looks like, fits neither and is refused with both lists of names.
+
+The rules follow from which direction is missing:
+
+- **Coverage belongs to the direction.** A parse produces the domain, so every domain component needs a getter, and a getter no component names is ignored. A build produces the bean, so every writer needs a source, a domain component or a [derived field](basics.md#derived-wire-fields), and a domain component the bean does not carry is not written. Neither is a projection, since nothing is written back.
+- **Derived fields are build-side.** A build-only mapping takes them as a full one does. Declared on a parse-only spec, one has nothing to fill and is refused; one inherited from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) stays inert, so one vocabulary serves both directions.
+- **A build-only builder counts its one-argument methods as writers.** A method taking the bean or the builder itself (`from(Bean)`, `mergeFrom(Builder)`) is left out, but a singular adder beside its collection setter (a `@Singular` builder) needs a source like any other writer; getters on the built type make such a bean two-way, where only the properties it reads count.
+- **The rest of the vocabulary is unchanged.** Renames, leaves, container lifting and the automatic `Optional` bridge work in whichever direction exists: a leaf parses on a parse-only bean and builds on a build-only one.
+- **Nesting follows the direction.** A one-directional mapping nests wherever only its direction is used, lifted through containers like any other: a parse-only spec inside a parse-only mapping, a [sparse `UpdateSpec`](#sparse-patch-write-back-updatespec) or a [`@GenerateMerge`](merge_envelopes.md) source, and a build-only spec inside a build-only mapping. A full mapping nests in all of them. Where the missing direction is needed, the failed lookup names the one-directional spec and what it lacks; sealed dispatch needs both directions of every subtype pair.
+- **Law-check the surface it has.** `MappingLaws` takes `asValidatedParse()` with a parsing and a non-parsing wire, or `asValidatedBuild()` with a domain value ([The Emission Tiers](tiers.md#law-checked-in-the-repo-and-in-your-tests)):
+
+``` java
+    MappingLaws.assertMappingLaws(
+        CustomerViewMappingImpl.INSTANCE.asValidatedParse(),
+        new CustomerView("Ada", "ada@example.org"), // parses
+        new CustomerView("Bob", "not-an-email")); // located failure
+
+    MappingLaws.assertMappingLaws(
+        CustomerRequestMappingImpl.INSTANCE.asValidatedBuild(),
+        new Customer("Ada", new EmailAddress("ada@example.org"))); // renders without failing
+```
 
 ---
 
@@ -46584,6 +46707,7 @@ The rules that keep the contract honest:
 - **A domain `Optional<T>` component bridged from a non-Optional property is rejected**, and so is an [`@OptionalBridge`](basics.md#optional-bridge) the sparse spec declares itself, for the same reason. Under null-as-absent, `null` already means "leave unchanged", so "set to empty" has no encoding through a plain property (and a null-clears rule would be JSON Merge Patch's opposite contract). The bridge's `null`-means-absent and the sparse tier's `null`-means-unchanged are two readings of one byte, and a spec extending `UpdateSpec` has already chosen. An `Optional`-typed wire property, though, *can* express it, patching by identity or through an element leaf: a present empty Optional sets empty; an absent (`null`) one leaves unchanged. Two binder caveats come with that power: Jackson binds an explicit JSON `null` on an `Optional`-typed property to `Optional.empty()`, so on this one property shape a sent `null` means *clear*, not *leave unchanged*; and the bean field must default to `null`, not the idiomatic `Optional.empty()`, or every request that omits the field clears the domain value.
 - **A getter-only `List` property is rejected.** The JAXB convention creates the list on first call, so the property never reads `null` and cannot say *not provided*: a request that omits it would arrive as a present empty list and clear the domain value, with nothing failing to say so. Give it a setter, so an omitted field leaves it `null`. The [dense tier](#bean-shaped-wire-targets) keeps the same property, because it writes every component and absence has nothing to mean there.
 - **A record wire is rejected.** A record component is always present, so absence is inexpressible; sparse PATCH is a bean-only shape.
+- **A bean read one way only is rejected.** A read-only bean cannot say *not provided*: its getters may answer from its constructor or create a value on first call, and either reads as present. A write-only bean has nothing to read. The PATCH bean must be both read and written ([One-directional beans](#one-directional-beans)).
 - **A sealed hierarchy is rejected**, on either side: dispatch has no sparse meaning (an absent property cannot choose a subtype to patch).
 - **A present container parses through the element vocabulary.** A `List`, `Set`, array, `Optional` or `Map`-valued property (a pair declared as exactly those container types) routes through the element leaf named after the component: the same leaf the dense tiers lift, so one [mix-in vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) serves a full spec and its PATCH sibling. Replacement stays wholesale; each failing element is located the way its container locates anything - by index (`phones.1`), by key, or, in a `Set`, by the element's own rendering. A whole-container leaf (`ValidatedPrism<List<S>, List<A>>`) is the more specific declaration and wins over the element interpretation. A nested *spec* still does not lift through a sparse container; give the component an element leaf delegating to the nested Impl's `asValidatedPrism()` if its elements need a whole mapping.
 - **An inherited derived field or `@OptionalBridge` marker stays inert.** Arriving from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces), neither is ever consulted here, so one vocabulary serves a full spec and its PATCH sibling; declaring either on the `UpdateSpec` itself is still an error, reported where it was written. An inherited rename is inert too whenever either end is missing, whether this PATCH bean omits the property its `to` names or this domain omits the component it renames, so a bean covering a subset needs no vocabulary of its own. An inherited [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) marker is judged against this bean rather than waved through. It is inert whenever the bean carries none of the group's inner properties that nothing else fills, which covers both a bean declaring the group's own component (patched whole by identity) and one omitting the group entirely; it is refused, naming the mix-in, when the bean carries one, since a spread has no sparse edit shape yet. A `@Flatten` marker the `UpdateSpec` declares itself is refused either way, like the derived field and the bridge.
@@ -46696,6 +46820,7 @@ The hkj-spring example app serves `PATCH /api/users/{id}` through exactly this t
 
 ~~~admonish info title="Key Takeaways"
 * **Beans map with the full feature set**: only the read/write mechanics differ, and the tiers stay honest (`asIso` is withheld, and a projection takes `patch` rather than `asLens`, where unset properties make reads fallible)
+* **A bean crossed one way maps that way**: a read model gets `parse` alone and a write model `build` alone, each nesting where its one direction is used
 * **Sparse semantics are an explicit opt-in**: `UpdateSpec` gives a PATCH bean null-as-absent; nothing is inferred from the shape alone
 * **Sparseness never weakens validation**: present fields still parse through their leaves, and every bad one is a located, accumulated `FieldError`
 * **One vocabulary serves both tiers**: the element leaf a full spec lifts is the leaf its PATCH sibling lifts
@@ -47064,8 +47189,10 @@ A concrete or threaded Impl is a stateless pure function reached through statics
 
 | Tier surface | Injectable shape | From |
 |---|---|---|
-| parse-capable mapping | `ValidatedPrism<UserDto, User>` | `UserMappingImpl.INSTANCE.asValidatedPrism()` |
-| build only | `Function<User, UserDto>` | `UserMappingImpl.INSTANCE::build` |
+| full mapping (it builds and parses) | `ValidatedPrism<UserDto, User>` | `UserMappingImpl.INSTANCE.asValidatedPrism()` |
+| just `build`, from any tier that has one | `Function<User, UserDto>` | `UserMappingImpl.INSTANCE::build` |
+| parse-only bean mapping | `ValidatedParse<CustomerView, Customer>` | `CustomerViewMappingImpl.INSTANCE.asValidatedParse()` |
+| build-only bean mapping | `ValidatedBuild<CustomerRequest, Customer>` | `CustomerRequestMappingImpl.INSTANCE.asValidatedBuild()` |
 | validated `patch` | `BiFunction<User, UserCardDto, Validated<NonEmptyList<FieldError>, User>>` | `UserCardMappingImpl.INSTANCE::patch` |
 | sparse `updateFrom` | `Function<UserPatchDto, Edits.Accumulated<User>>` | `UserPatchMappingImpl.INSTANCE::updateFrom` |
 
@@ -47089,7 +47216,7 @@ public class MappingConfiguration {
 
 Spring resolves the full generic type, so codecs for different pairs coexist without ceremony; only two codecs for the *same* pair need a `@Qualifier`. An element-mapped Impl (`of(...)`) carries its prisms as state: construct it once, in the `@Bean` method.
 
-**Fakes are values, not mocks.** `ValidatedPrism` is sealed, so it cannot be hand-implemented, and a mocking framework cannot mock it either (sealed types are unmockable). That is the design, not a limitation: a test double is two lines of `ValidatedPrism.of(...)`, here as the example app's real `@WebMvcTest` substitution:
+**Fakes are values, not mocks.** `ValidatedPrism` is sealed, so it cannot be hand-implemented, and a mocking framework cannot mock it either (sealed types are unmockable). That is the design, not a limitation: a test double is two lines of `ValidatedPrism.of(...)` (or `ValidatedParse.of(...)` and `ValidatedBuild.of(...)` for a one-directional surface, sealed alike), here as the example app's real `@WebMvcTest` substitution:
 
 ```java
   /** A stub codec: every parse fails with one located error; build renders a fixed DTO. */
@@ -47165,6 +47292,7 @@ Every rejection follows the processor's what/why/fix standard: the message state
 | A fallible projection emits the validated `patch`, never a fake `asLens()`; projections cannot carry derived fields | [The Emission Tiers](tiers.md#leaf-carrying-projections-the-validated-patch), [Derived wire fields](basics.md#derived-wire-fields) |
 | Generic mappings come in exactly three forms and stay record-to-record | [Generic Specs](generics.md) |
 | Sparse PATCH is bean-only, wrapper-typed, and never deep-merges; a spec names one tier, extending `MappingSpec` or `UpdateSpec` but not both | [Beans and Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec) |
+| A one-directional bean maps only its one direction: it nests only where that direction is used, sealed dispatch needs both, and a sparse `UpdateSpec` needs a bean both read and written | [One-directional beans](beans_patch.md#one-directional-beans) |
 | A leaf, rename or bridge marker must not declare type parameters of its own; the element types go on the spec | [Generic Specs](generics.md#element-mapped-specs) |
 | A rename's, leaf's or marker's type must be visible from the spec's package, where the Impl is generated | [Shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) |
 | `@OptionalBridge` binds an `Optional` domain component to a nullable, non-primitive wire component; it is redundant on a bean wire, and refused on a sealed or sparse spec that declares it, an inherited one staying inert | [Optional fields](basics.md#optional-bridge) |
@@ -47176,7 +47304,7 @@ Every rejection follows the processor's what/why/fix standard: the message state
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **Register the surface, not the spec**: `asValidatedPrism()`, `::build`, `::patch`, or `::updateFrom`, per tier
+* **Register the surface, not the spec**: `asValidatedPrism()`, `asValidatedParse()`, `asValidatedBuild()`, `::build`, `::patch`, or `::updateFrom`, per tier
 * **Fakes are two-line values**: `ValidatedPrism.of(...)` replaces the mocking framework, by design
 * **No component ceiling**: chunked `fields()` ladders carry flat 20-or-30-field wires; only the JVM's 254-slot record limit remains
 * **Rejections are what/why/fix**: every limit states what is wrong, why the mapper needs it, and the code to write
@@ -86319,6 +86447,8 @@ void statusPrismIsLawful() {
 - **Total-parse** (a mapping with derived wire fields, whose parse cannot fail): pass a domain sample; only the non-derived components round-trip, and the overload asserts exactly that.
 - **Validated patch** (a projection that validates, on a record or a bean wire): pass the `patch` and `build` method references, a domain sample, and a parsing and a non-parsing wire; checks projection identity, idempotence and located validation.
 - **Sparse update** (an `UpdateSpec`): pass the `updateFrom` method reference, a domain sample, and an all-absent, a valid and an invalid wire; checks identity, idempotence and located validation.
+- **Parse-only** (a bean that is only read): pass `asValidatedParse()` with a parsing and a non-parsing wire; checks that the first parses and the second fails with every error located.
+- **Build-only** (a bean that is only written): pass `asValidatedBuild()` with a domain sample; checks that `build` renders it without failing.
 
 ``` java
 import org.higherkindedj.optics.laws.MappingLaws;
@@ -92817,6 +92947,8 @@ String rendered = email.build(addr);   // always succeeds
 
 **Composition:** nested composition short-circuits whilst sibling fields accumulate, so a whole record parses in one pass with every bad field reported. `ValidatedPrism.canonical(message, parse, render)` wraps a throwing parser with the section law guarded per value: the render defines the canonical form and every spelling it cannot reproduce is a located rejection (an injective render stays your obligation); `ValidatedPrism.fromIso(iso)` is a parse that never fails; `ValidatedPrism.fromPrism(prism, reason)` lifts a plain prism by supplying the reason its empty case cannot express. Both round-trip laws ship as `ValidatedPrismLaws` in `hkj-test`.
 
+**Halves:** each direction is also a type of its own, `ValidatedParse` (`parse` and its bulk forms) and `ValidatedBuild` (`build` and its bulk forms). Every prism is both, so it serves wherever either is asked for, and a boundary crossed one way only, such as a one-directional bean mapping, exposes just the half it has.
+
 **Related:** [ValidatedPrism](../optics/validated_prism.md), [Prism](#prism), [FieldError](#fielderror), [Validated](data-effects.md#validated)
 
 <!-- Source: glossary/concurrency.md -->
@@ -93154,6 +93286,14 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **`@GenerateMapping` maps a bean that can only be read, or only be written** ([#703](https://github.com/higher-kinded-j/higher-kinded-j/issues/703)): a bean-shaped wire had to support both directions, so two common shapes could not map at all: a getter-only read model (a generated client's response type, an immutable view built through its constructor, a third-party result) and a write model filled through setters or a builder with no getters (an outbound request). Each now maps the one way it can. A bean with getters and nothing that writes it generates `parse` and `asValidatedParse()` and no `build`; one that can be written but declares no getter generates `build` and `asValidatedBuild()` and no `parse`. The missing direction is absent from the Impl rather than a method that throws, and a note names the direction the bean was read in, so a bean meant to be built whose constructor the generated Impl cannot reach does not lose its `build` unremarked. A bean that reads some names and writes others, the shape a misspelt accessor leaves, is still refused, and the diagnostic now lists both.
+
+  Coverage follows the direction: a parse needs a getter for every domain component and ignores the rest, and a build needs a source for every writer, a derived field included. Renames, leaves, container lifting and the automatic `Optional` bridge work in whichever direction exists. A one-directional mapping nests wherever only its direction is used, lifted through containers like any other: a parse-only spec inside a parse-only mapping, a sparse `UpdateSpec` or a `@GenerateMerge` source, and a build-only spec inside a build-only mapping. A sparse `UpdateSpec` still needs a PATCH bean that is both read and written, since only such a bean can leave a property unset. `MappingLaws` gained an overload for each new surface. See [One-directional beans](mapping/beans_patch.md#one-directional-beans).
+
+  To carry this, `ValidatedPrism`'s two directions became types of their own. `ValidatedParse` holds `parse`, `parsePath` and the parse bulk forms, `ValidatedBuild` holds `build` and the build bulk forms, and `ValidatedPrism` extends both, so every prism serves wherever either half is asked for and code compiled against 0.4.10 keeps working. `parseEntries` and `buildEntries` take a half for the values. See [One direction at a time](optics/validated_prism.md#one-direction-at-a-time).
+
+  _Two changes in what compiles._ A bean with getters and no usable way to be written, including one whose setters sit behind a constructor the generated Impl cannot call, used to be refused as not a usable bean; it now maps parse-only, with a note naming the reason. And a bean with no setters whose getters mix a getter-only `List` with other properties used to map both ways over the `List` alone, filled through its getter, with its other getters dropped; that shape is a read model, so it now maps parse-only over all of its getters. Reflection that looks the moved `ValidatedPrism` methods up with `getDeclaredMethod` now finds them on the half that declares them.
 
 - **A shared vocabulary carrying `@Flatten` serves a PATCH sibling too** ([#836](https://github.com/higher-kinded-j/higher-kinded-j/issues/836)): a [mix-in](mapping/codecs.md#shared-vocabulary-mix-in-interfaces) carrying a [`@Flatten`](mapping/structure.md#flattening-a-nested-component-onto-a-flat-wire) marker could not be extended by a full `MappingSpec` and its sparse `UpdateSpec` alike. The marker was refused wherever it was declared, so the refusal landed on the shared interface, and both fixes it prescribed broke the full spec that needed the member.
 
