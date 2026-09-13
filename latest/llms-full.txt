@@ -45544,7 +45544,7 @@ interface MemberMapping extends MappingSpec<Member, MemberDto> {
 ```
   build : empty ──▶ null                parse : null ──▶ Optional.empty()
           present ──▶ the value                 value ──▶ Optional.of(value)
-                                                          (through the leaf, if there is one)
+                                                          (through its leaf or spec, if any)
 ```
 
 ``` java
@@ -45559,14 +45559,16 @@ interface MemberMapping extends MappingSpec<Member, MemberDto> {
     // Invalid(NonEmptyList[altEmail: not an email address])
 ```
 
-The annotation has **two placements**, and which one a component takes is decided by one question: does the present value need converting?
+The annotation has **two placements**, and which one a component takes is decided by one question: does the present value need a leaf?
 
 | The present element | Where the annotation goes | What it declares |
 | --- | --- | --- |
-| Copies as-is | An abstract marker method named after the domain component | `@OptionalBridge Optional<String> nickname();` (the return type restates the component) |
-| Converts | That component's own `default` leaf | `@OptionalBridge default ValidatedPrism<String, EmailAddress> altEmail()`, declared over the **element** types |
+| Copies as-is, or is mapped by its own spec | An abstract marker method named after the domain component | `@OptionalBridge Optional<String> nickname();` (the return type restates the component) |
+| Converts through a leaf | That component's own `default` leaf | `@OptionalBridge default ValidatedPrism<String, EmailAddress> altEmail()`, declared over the **element** types |
 
 The two can never be combined, and not by choice: a marker and a same-named leaf are one method with two incompatible return types, which javac rejects before the processor sees it.
+
+An element pair that already has a `@GenerateMapping` spec needs no leaf: the marker is enough, and a present value [nests through that spec](structure.md#optional-nested-objects) exactly as an unbridged component of that pair would.
 
 ~~~admonish warning title="Opt-in, never inferred"
 The processor will not guess this. Without the annotation, `nickname = null` is a located `must not be null`, exactly as [the doctrine above](#null-doctrine) says, and that is the right default: on most record wires a `null` really is a defect. The bridge is the one place a spec overrides it, one component at a time, in writing.
@@ -45938,6 +45940,7 @@ Real DTOs are not flat. An order carries a customer, the customer carries an add
 - How specs nest automatically, in one compilation or across modules, composing failures into dotted paths
 - How a nested domain record spreads across a flat wire with `@Flatten`, and where its failures locate
 - How `List`, `Set`, array, `Optional` and `Map` components lift, and what each locates a failure by
+- How an optional nested object, `null` on the wire, nests through its own spec
 - How `@MapKey` converts a map's keys, and when a collapse is silent or a failure
 - Why recursion terminates by construction
 - Dispatching a mapping over two sealed interfaces, exhaustively in both directions
@@ -46013,7 +46016,7 @@ interface CrewMapping extends MappingSpec<Crew, CrewDto> {
     //   notes.bad-key: not an email address]) <- a key locates by the key it was sent as
 ```
 
-Lifting needs the *same* container on both sides. A `List` against a `Set`, or an array against a `List`, is not a pair: it reports as a plain type mismatch rather than silently changing what the collection promises. A domain `Optional<T>` against a plain nullable wire component `T` is the [`@OptionalBridge`](basics.md#optional-bridge) shape instead. An array of primitives (`int[]`) is copied whole - a `ValidatedPrism` cannot focus a primitive, and a primitive element cannot be null. An array element type must also be able to name its own constructor, since lifting builds a new array: a type variable or a parameterised element (`T[]`, `List<Tag>[]`) is refused, because the generated `T[]::new` is generic array creation.
+Lifting needs the *same* container on both sides. A `List` against a `Set`, or an array against a `List`, is not a pair: it reports as a plain type mismatch rather than silently changing what the collection promises. A domain `Optional<T>` against a plain nullable wire component `T` is the [`@OptionalBridge`](basics.md#optional-bridge) shape instead, and it [nests through the element's spec](#optional-nested-objects) all the same. An array of primitives (`int[]`) is copied whole - a `ValidatedPrism` cannot focus a primitive, and a primitive element cannot be null. An array element type must also be able to name its own constructor, since lifting builds a new array: a type variable or a parameterised element (`T[]`, `List<Tag>[]`) is refused, because the generated `T[]::new` is generic array creation.
 
 Locating a set element by its own rendering is the only honest answer available: a set has no index, and its iteration order is not part of its contract, so numbering the elements would name a *different* one on the next run. The value is what identifies the element, so that is what the path says.
 
@@ -46037,6 +46040,35 @@ Because nesting is *delegation* (a full mapping's `Impl` exposes [`asValidatedPr
 ~~~admonish note title="Keys and set elements are located by `toString()`"
 The rendered path uses each key's - or set element's - `toString()`, so one containing a dot looks the same as deeper nesting, and two distinct ones whose renderings collide share a location. The structured `FieldError` path list stays exact regardless, holding the whole rendering as one segment, and every error is still reported.
 ~~~
+
+### Optional nested objects {#optional-nested-objects}
+
+When a JSON client leaves an object out, or sends `null` for it, the binder leaves a plain nullable `CustomerDto` where the domain holds an `Optional<Customer>`. That pair is the [`@OptionalBridge`](basics.md#optional-bridge) shape, and it nests like every other: when a spec maps the element pair, the marker is all the component needs.
+
+``` java
+record Referral(String code, Optional<Customer> referrer) {}
+
+// A client with no referrer leaves the object out, which the JSON binder reads as null.
+record ReferralDto(String code, CustomerDto referrer) {}
+
+@GenerateMapping
+interface ReferralMapping extends MappingSpec<Referral, ReferralDto> {
+  // CustomerMapping maps the element pair, so the marker is all this component needs.
+  @OptionalBridge
+  Optional<Customer> referrer();
+}
+
+
+    ReferralMappingImpl.INSTANCE.parse(new ReferralDto("R-7", null));
+    // Valid(Referral[code=R-7, referrer=Optional.empty])
+
+    ReferralMappingImpl.INSTANCE.parse(new ReferralDto("R-7", new CustomerDto("Bob", "nope")));
+    // Invalid(NonEmptyList[referrer.email: not an email address])
+```
+
+`build` writes the nested build of a present value and `null` for an empty one. `parse` reads `null` as empty and hands a present value to the nested spec, so its failures locate under the component, exactly as through a `List`. The usual order holds: a bridged [element leaf](basics.md#optional-bridge) on the component wins over the spec, and two specs for the pair are ambiguous until such a leaf delegates to the one you mean. A bean wire bridges automatically, so there the same pair nests with no marker at all.
+
+The bridge nests one level. A bridged container of mapped elements, an `Optional<List<Customer>>` against a nullable `List<CustomerDto>`, is not supported yet; a `List<Customer>` component, where an empty list already says there are none, lifts through the spec as usual.
 
 ### Converting Map keys {#converting-map-keys}
 
@@ -46474,7 +46506,7 @@ The design decisions worth knowing:
 - **Honest tiers.** Because an unset property is ordinary, a bean's guarded reference reads count as fallible and the mapping withholds `asIso()` automatically; an all-primitive bean (whose reads can never be null) still earns it. A record wire's guards exist for hostile bindings only, so a lossless record mapping keeps `asIso()`, with the parse-iso coherence law scoped to wires whose reference components are non-null. Nesting is unaffected: a bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a [one-directional](#one-directional-beans) one exposes the half it has, nesting wherever only that direction is used.
 - **Construction strategy** is detected from the bean's shape, tried in order: a public no-args constructor with `setX` setters (and, for a getter-only `List`, the JAXB convention `getItems().addAll(...)`); then a static `builder()`/`newBuilder()` whose setters fill it and whose `build()` yields the wire. A bean with getters that fits neither is only ever read, so it maps [parse-only](#one-directional-beans); a bean with nothing to read or write gets a what/why/fix diagnostic.
 - **A getter-only `List` must name its element type**, because `addAll` is what fills it: over a raw `List` that call is unchecked, and over a wildcard one the receiver and the argument capture separately, so neither writes into an Impl that compiles. The diagnostic names the remedy its cause calls for — declare the type arguments, or replace the wildcard with the element type it stands for — and both causes are also answered by a setter, which takes the property as declared. This is a `build` rule only: the [sparse tier](#sparse-patch-write-back-updatespec) reads such a property and never writes it, so the same bean maps there untouched.
-- **Optionality bridges through `null`, automatically here.** On a full mapping, a domain `Optional<T>` maps to a nullable bean property `T` (bean conventions leave `Optional` off property types): empty bridges to absent (`build` skips the write, leaving the property unset; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf. This is the *only* wire shape where the bridge needs no declaration: a record wire opts in per component with [`@OptionalBridge`](basics.md#optional-bridge), which buys the same correspondence, and declaring it on a bean spec is redundant (a note, not an error, so one mix-in can serve both shapes). One property shape refuses the bridge: a getter-only `List` filled by the JAXB convention above has no unset state to carry absence, because its getter creates the list on first call, so an empty `Optional` would read back as a present empty list; the diagnostic asks for a `List<T>` domain component, where the empty list *is* nothing, or for a property the build can genuinely leave unset — which takes both a setter *and* a getter that answers `null` until one is called, since a lazily creating getter loses absence on the read even when a setter exists. The [sparse tier](#sparse-patch-write-back-updatespec) is the deliberate exception in the other direction: there `null` already means "leave unchanged", so a PATCH bean encodes "set to empty" with an `Optional`-typed property instead.
+- **Optionality bridges through `null`, automatically here.** On a full mapping, a domain `Optional<T>` maps to a nullable bean property `T` (bean conventions leave `Optional` off property types): empty bridges to absent (`build` skips the write, leaving the property unset; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf, or [nests through its own spec](structure.md#optional-nested-objects). This is the *only* wire shape where the bridge needs no declaration: a record wire opts in per component with [`@OptionalBridge`](basics.md#optional-bridge), which buys the same correspondence, and declaring it on a bean spec is redundant (a note, not an error, so one mix-in can serve both shapes). One property shape refuses the bridge: a getter-only `List` filled by the JAXB convention above has no unset state to carry absence, because its getter creates the list on first call, so an empty `Optional` would read back as a present empty list; the diagnostic asks for a `List<T>` domain component, where the empty list *is* nothing, or for a property the build can genuinely leave unset, which takes both a setter *and* a getter that answers `null` until one is called, since a lazily creating getter loses absence on the read even when a setter exists. The [sparse tier](#sparse-patch-write-back-updatespec) is the deliberate exception in the other direction: there `null` already means "leave unchanged", so a PATCH bean encodes "set to empty" with an `Optional`-typed property instead.
 - **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the *wire* may be bean-shaped; a bean domain gets a diagnostic.
 
 ### Bean projections
@@ -93298,6 +93330,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **An optional nested object maps through its own spec** ([#825](https://github.com/higher-kinded-j/higher-kinded-j/issues/825)): a domain `Optional<Address>` bridged to a nullable `AddressDto` was refused even with an `AddressMapping` in the build, and the fix the refusal asked for was a hand-written leaf delegating to the Impl the processor had already generated. A `List<Address>` against a `List<AddressDto>`, or an `Optional<Address>` against an `Optional<AddressDto>`, always nested through that spec; only `Optional<Address>` against a plain `AddressDto` did not.
+
+  The bridge now nests too, so the bare `@OptionalBridge` marker is all a record wire needs, and a bean wire, which bridges automatically, needs nothing. `build` writes the nested build of a present value and `null` for an empty one; `parse` reads `null` as empty and hands a present value to the nested `parse`, so its failures locate under the component (`address.city`), exactly as through a `List`. An element leaf still wins over the spec, two specs for the pair are still ambiguous, and a pair no usable spec covers is still refused. That refusal now offers a spec for a record pair, and names one that maps the pair but cannot be nested, such as a projection. The refusal for a record component left unmarked offers the bare marker whenever exactly one spec maps the element pair, and every fix that offers a leaf in a spec's place spells out the whole declaration, with `@OptionalBridge` on it where the component carries the marker. See [Optional nested objects](mapping/structure.md#optional-nested-objects).
 
 - **A dependency's `@GenerateFocus` record is navigable** ([#847](https://github.com/higher-kinded-j/higher-kinded-j/issues/847)): navigator generation asks a field's type whether it carries `@GenerateFocus`, and the annotation was discarded after compilation, so a record annotated in another module could not answer. The field fell back to a plain `FocusPath` and nothing was reported, which meant `CompanyFocus.headquarters().street()` compiled when `Address` was a sibling source file and did not compile when the same record arrived as a jar.
 
