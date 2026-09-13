@@ -88470,6 +88470,8 @@ There are three ways to override how a status maps to an error type. They apply 
 EitherPath<DomainError, UserDto> getUser(@PathVariable String id);
 ```
 
+An `@OnStatus` on a method your client inherits from a base interface applies as well, whether the base is compiled alongside the client or comes from a dependency jar. A problem with an inherited override is reported on your client interface, naming the method and the interface it came from.
+
 #### 2. Global: `hkj.client.status-error-mappings`
 
 **The problem:** the same status maps to the same error type across every client, and repeating `@OnStatus` everywhere is noise.
@@ -88542,7 +88544,7 @@ A generic `@HkjHttpClient` interface is supported **codegen-only**: the native i
 - **Client interfaces outside the component scan.** If your `@HkjHttpClient` interfaces are not under your `@SpringBootApplication`'s scanned packages, the generated configuration is not picked up and Spring never creates the proxy. Add an explicit `@ImportHttpServices(basePackages = "...")`.
 - **Expecting a transport failure to become a `Left`.** Connection-refused and timeout are not domain errors; they propagate. Use the `VTaskPath` variant and `runSafe()` to capture them as the failure arm of `Try<Either<E, T>>`.
 - **Short-circuiting an SSE stream.** Drain it (`toList()`) or bound it (`take(n).toList()`); a `headOption()`/`find(...)` returns before the stream completes and may leave the HTTP response open.
-- **Inheriting methods from a precompiled base.** A super-interface in a dependency jar must be compiled with `-parameters`, or its `@PathVariable`/`@RequestParam` arguments bind to `arg0`-style names. Interfaces compiled in your own build are fine.
+- **Inheriting methods from a precompiled base.** A super-interface in a dependency jar must be compiled with `-parameters`, or its `@PathVariable`/`@RequestParam` arguments bind to `arg0`-style names. A jar built against 0.4.10 or earlier also carries none of its `@OnStatus` overrides, which were discarded when it was compiled, so its methods ignore them until it is rebuilt. Interfaces compiled in your own build are fine. Wherever the base is compiled, a module declaring `@OnStatus` should expose `hkj-spring-boot-client` to the modules that use it (Gradle's `api` configuration): its class files name the annotation, and a module compiling against them without it warns under `-Xlint:all`, which fails a `-Werror` build.
 - **An `@OnStatus` error type that is not assignable to the method's declared error type.** This is a compile error, by design.
 ~~~
 
@@ -93330,6 +93332,12 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **A client keeps the `@OnStatus` overrides it inherits from a jar** ([#849](https://github.com/higher-kinded-j/higher-kinded-j/issues/849)): an `@HkjHttpClient` interface extending a base interface from another module now generates the same per-status decoding as one whose base is compiled alongside it. `@OnStatus` and its repeated-annotation container were discarded after compilation, so a method read from a class file carried no overrides and the generated client ignored them: a 404 decoded without the subtype its override named, and nothing was reported. Both annotations are now retained in the class file, and an inherited override is checked just as a local one is.
+
+  A problem with an inherited method, whether in an override or in its return type, is reported on the client interface and names the method and the interface it came from. That holds whether the base comes from a jar, where a method read from a class file has no file or line of its own to point at, or is compiled alongside the client. An override in a jar naming a type that is missing from the client's classpath is reported as missing from the classpath rather than as not assignable. See [Declarative HTTP clients](spring/declarative_http_clients.md#1-per-method-onstatus).
+
+  _Notes for existing builds._ A base interface compiled against an earlier release has already lost its overrides, so rebuild it to pick them up. An inherited override is now checked where it was silently ignored, so one naming a type that is not assignable to the method's declared error type, or one missing from the client's classpath, fails a build that compiled before, and the duplicate-status and `MaybePath` warnings reach an inherited override too, which fails a build compiled with `-Werror`. The two annotations occupy a few bytes in the class files of the interfaces that declare them; they are not visible to reflection (`CLASS`, not `RUNTIME`). A module compiling against those class files without `hkj-spring-boot-client` warns under `-Xlint:all`, which fails a `-Werror` build, so a module declaring `@OnStatus` on an interface other modules use should expose the client to them (Gradle's `api` configuration).
 
 - **An optional nested object maps through its own spec** ([#825](https://github.com/higher-kinded-j/higher-kinded-j/issues/825)): a domain `Optional<Address>` bridged to a nullable `AddressDto` was refused even with an `AddressMapping` in the build, and the fix the refusal asked for was a hand-written leaf delegating to the Impl the processor had already generated. A `List<Address>` against a `List<AddressDto>`, or an `Optional<Address>` against an `Optional<AddressDto>`, always nested through that spec; only `Optional<Address>` against a plain `AddressDto` did not.
 
