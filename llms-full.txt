@@ -45568,7 +45568,7 @@ The annotation has **two placements**, and which one a component takes is decide
 
 The two can never be combined, and not by choice: a marker and a same-named leaf are one method with two incompatible return types, which javac rejects before the processor sees it.
 
-An element pair that already has a `@GenerateMapping` spec needs no leaf: the marker is enough, and a present value [nests through that spec](structure.md#optional-nested-objects) exactly as an unbridged component of that pair would.
+An element pair that already has a `@GenerateMapping` spec needs no leaf: the marker is enough, and a present value [nests through that spec](structure.md#optional-nested-objects) exactly as an unbridged component of that pair would. A bridged `List`, `Set`, array or `Map` lifts its elements the same way, through their spec or through a leaf over the element types.
 
 ~~~admonish warning title="Opt-in, never inferred"
 The processor will not guess this. Without the annotation, `nickname = null` is a located `must not be null`, exactly as [the doctrine above](#null-doctrine) says, and that is the right default: on most record wires a `null` really is a defect. The bridge is the one place a spec overrides it, one component at a time, in writing.
@@ -45940,7 +45940,7 @@ Real DTOs are not flat. An order carries a customer, the customer carries an add
 - How specs nest automatically, in one compilation or across modules, composing failures into dotted paths
 - How a nested domain record spreads across a flat wire with `@Flatten`, and where its failures locate
 - How `List`, `Set`, array, `Optional` and `Map` components lift, and what each locates a failure by
-- How an optional nested object, `null` on the wire, nests through its own spec
+- How an optional nested object or list, `null` on the wire, maps through its own spec
 - How `@MapKey` converts a map's keys, and when a collapse is silent or a failure
 - Why recursion terminates by construction
 - Dispatching a mapping over two sealed interfaces, exhaustively in both directions
@@ -46068,7 +46068,34 @@ interface ReferralMapping extends MappingSpec<Referral, ReferralDto> {
 
 `build` writes the nested build of a present value and `null` for an empty one. `parse` reads `null` as empty and hands a present value to the nested spec, so its failures locate under the component, exactly as through a `List`. The usual order holds: a bridged [element leaf](basics.md#optional-bridge) on the component wins over the spec, and two specs for the pair are ambiguous until such a leaf delegates to the one you mean. A bean wire bridges automatically, so there the same pair nests with no marker at all.
 
-The bridge nests one level. A bridged container of mapped elements, an `Optional<List<Customer>>` against a nullable `List<CustomerDto>`, is not supported yet; a `List<Customer>` component, where an empty list already says there are none, lifts through the spec as usual.
+A bridged container lifts the same way. An optional JSON array arrives as a nullable `List<CustomerDto>`, and where an absent list and an empty one mean different things, the domain holds an `Optional<List<Customer>>`. The marker is again all it needs:
+
+``` java
+// An absent guest list is not an empty one, so the domain keeps the difference.
+record Guestlist(String event, Optional<List<Customer>> guests) {}
+
+// A client that sends no list leaves the array out, which the JSON binder reads as null.
+record GuestlistDto(String event, List<CustomerDto> guests) {}
+
+@GenerateMapping
+interface GuestlistMapping extends MappingSpec<Guestlist, GuestlistDto> {
+  // CustomerMapping maps the elements, so the marker is all the list needs.
+  @OptionalBridge
+  Optional<List<Customer>> guests();
+}
+
+
+    GuestlistMappingImpl.INSTANCE.parse(new GuestlistDto("Launch", null));
+    // Valid(Guestlist[event=Launch, guests=Optional.empty])
+
+    GuestlistMappingImpl.INSTANCE.parse(
+        new GuestlistDto(
+            "Launch",
+            List.of(new CustomerDto("Ada", "ada@example.org"), new CustomerDto("Bob", "nope"))));
+    // Invalid(NonEmptyList[guests.1.email: not an email address])
+```
+
+A present list lifts element by element, exactly as a `List<Customer>` component does, so a failure locates at its index, a `null` element is still a located `must not be null`, and an empty list parses to a present, empty `Optional`. `Set`, arrays and `Map` values lift alike, an element leaf over the element types wins over the spec, and a [`@MapKey`](#converting-map-keys) leaf converts the keys of a bridged `Map`. A bridged container whose elements nothing converts is refused naming the element pair, so the fix it offers is an element leaf or a spec rather than a leaf over the whole container. Where an empty list already says there are none, a plain `List<Customer>` component is simpler, and needs no marker.
 
 ### Converting Map keys {#converting-map-keys}
 
@@ -93338,6 +93365,12 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **An optional list maps through its elements' spec** ([#860](https://github.com/higher-kinded-j/higher-kinded-j/issues/860)): a domain `Optional<List<Contact>>` against a nullable `List<ContactDto>`, the shape an optional JSON array takes, was refused even with a `ContactMapping` in the build, and so was the same bridge over an element leaf. A `List<Contact>` against a `List<ContactDto>` always lifted through the spec, and an `Optional<Contact>` against a nullable `ContactDto` nests through it; only the bridged container lifted nothing, so it needed a hand-written leaf over the whole list.
+
+  A bridged value now maps exactly as the same pair would without the `Optional`, so the bare `@OptionalBridge` marker is all a record wire needs, and a bean wire needs nothing. `build` writes `null` for an empty `Optional` and lifts a present list through the spec; `parse` reads `null` as empty and lifts a present list element by element, so a failure locates at its index (`contacts.1.email`) and a `null` element is still a located `must not be null`. `Set`, arrays and `Map` values lift the same way, through an element leaf or a spec, and a `@MapKey` leaf converts the keys of a bridged `Map`. A container whose elements nothing converts is refused naming the element pair, and the fix offered is an element leaf or a spec; a leaf over the whole container still works as an override. The refusal for a record component left unmarked offers the bare marker when a spec maps the elements. A container without the bridge is offered the same fix: a `List<Contact>` whose elements nothing converts is offered a leaf over the elements rather than over the whole list, as a sparse `UpdateSpec` already was, and a `Map` whose keys convert through a `@MapKey` leaf is offered a leaf over its values on either tier. See [Optional nested objects](mapping/structure.md#optional-nested-objects).
+
+  _Notes for existing builds._ An element leaf on a bridged container whose element types already matched, such as `@OptionalBridge default ValidatedPrism<String, String> tags()` on an `Optional<List<String>>`, was passed over and the list copied as it was; it now validates each element and, as on a `List<String>` component, parse and build return a new unmodifiable list rather than the one passed in, so code that changed the parsed or built list in place should copy it first.
 
 - **A mapping can name a type another annotation processor generates** ([#861](https://github.com/higher-kinded-j/higher-kinded-j/issues/861)): a `@GenerateMapping` or `@GenerateMerge` spec naming a type that another processor writes in the same compilation was mapped before that type existed. javac hands a processor a placeholder for such a type, and the placeholder passed the mapper's checks. A valid spec over a generated wire was refused as "not a usable bean-shaped wire", and a spec whose records held generated components was given an `Impl` that copied one generated type straight into another, which failed to compile once the types were written. Nothing pointed at the real cause.
 
