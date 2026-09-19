@@ -808,6 +808,7 @@ String msg = eitherPath.run().fold(
 | `.zipWith3Accum(b, c, fn)` | Combine three, accumulating errors | ValidationPath, EitherOrBothPath |
 | `.andAlso(other)` | Accumulate errors, keep left value | ValidationPath, EitherOrBothPath |
 | `fields().field(label, v)...apply(Ctor::new)` | Open-arity record assembly, located errors | Validated, Path (ValidationPath), EitherOrBoth |
+| `fields().field(label, v)...construct(Ctor::new, "not a valid X")` | The same, for a constructor that may refuse the fields: its exception becomes a `FieldError` | Validated, Path (ValidationPath), EitherOrBoth |
 
 ### Error Handling
 
@@ -3211,7 +3212,7 @@ ValidationPath<List<String>, User> shortCircuit =
 
 ## Open-Arity Assembly: `fields()` and `accumulate()`
 
-`zipWithAccum` is binary. For assembling a value from N independent validations, `Path.fields()` and `Path.accumulate()` open the staged assembly builder: open arity up to 16, located errors, declaration order, and still a `ValidationPath` at the end.
+`zipWithAccum` is binary. For assembling a value from N independent validations, `Path.fields()` and `Path.accumulate()` open the staged assembly builder: open arity up to 16, located errors, declaration order, and still a `ValidationPath` at the end. Where the value's own constructor may refuse the fields, `Path.fields()` ends in [`construct`](../monads/validated_assembly.md#construct) rather than `apply`.
 
 <!-- verify -->
 ```java
@@ -64102,7 +64103,7 @@ The combination primitive behind it is `zipWithAccum(other, semigroup, combiner)
 - [Validated](validated_monad.md): pure error accumulation with no partial value
 - [NonEmptyList](nonemptylist_monad.md): the non-empty warning channel a `Both` pairs with
 - [Semigroups and Monoids](../functional/semigroup_and_monoid.md): how the left channel accumulates
-- [Accumulating Assembly](validated_assembly.md): the open-arity `accumulate()` / `fields()` builder
+- [Accumulating Assembly](validated_assembly.md): the open-arity `accumulate()` / `fields()` builder, whose [`construct`](validated_assembly.md#construct) terminal turns a constructor's refusal into a `Left` that keeps the warnings collected so far
 ~~~
 
 ---
@@ -70433,6 +70434,7 @@ _Building a record from N validated fields: every error reported at once._
 - The guarantee that errors emerge in field-declaration order
 - The same assembly shape on all three carriers: `Validated` (strict), `ValidationPath` (railway), and `EitherOrBoth` (tolerant, value keeps flowing)
 - When to reach for the builder versus `zipWithAccum` or the `mapN` family
+- Guarding a constructor that may refuse the fields, with `construct`
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -70483,6 +70485,37 @@ Three guarantees, all by construction:
 - **Errors emerge in field-declaration order.** The order of `field(...)` calls is the order of the errors, which makes downstream output (an HTTP 422 body, a CLI report) deterministic.
 
 A leaf validator creates unlabelled errors with `FieldError.of("message")`; the assembly attaches the location. `FieldError` is a small record (`path` segments plus a `message`) with a `pathString()` such as `"address.zip"`.
+
+### When the Record Refuses: `construct` {#construct}
+
+A record often guards itself: a compact constructor that throws when its fields disagree. `apply` runs whatever function you hand it, so that exception escapes the assembly, taking with it whatever an enclosing assembly had collected around it, and, on the tolerant carrier, the warnings this one had. `construct` completes the assembly the same way but guards the call: once every field is valid, a `RuntimeException` the function throws becomes an unlabelled `FieldError` carrying the exception's message, or the fallback you pass when the message is missing or blank:
+
+```java
+// The record guards itself: a window must close after it opens.
+record Window(LocalDate opens, LocalDate closes) {
+  Window {
+    if (!closes.isAfter(opens)) {
+      throw new IllegalArgumentException("closes must be after opens");
+    }
+  }
+}
+
+    Validated<NonEmptyList<FieldError>, Window> window =
+        Validated.fields()
+            .field("opens", parseDate("2026-03-09"))
+            .field("closes", parseDate("2026-03-07"))
+            .construct(Window::new, "not a valid Window"); // apply(Window::new) would throw
+
+    // Invalid(NonEmptyList[closes must be after opens]) - unlabelled: the whole window is refused
+```
+
+The rules are the generated mappings' own ([a record's own invariants](../mapping/basics.md#constructor-invariants)):
+
+- **The function runs last.** It needs every field, so it runs only once all of them are valid, and a record reports either its fields' errors or its refusal, never both.
+- **The refusal is unlabelled**, so the `field(label, ...)` that nests the assembly locates it: `window: closes must be after opens`.
+- **Any `RuntimeException` counts**, so a bug in the function reaches the caller as its message, with its stack trace dropped. Keep the function to checks on its arguments, with messages written for whoever reads the errors.
+- **Only the function is guarded.** A `null` it returns still throws, as it does from `apply`; only what the function itself throws is a refusal.
+- **Every labelled builder has it**: `Validated.fields()`, `Path.fields()`, and `EitherOrBoth.fields()`. On the tolerant carrier a *failed* field still short-circuits the function, while a `Both` field's warning does not, so a refusal there comes back as a `Left` carrying those warnings and the refusal. The generic `accumulate()` builders have no `FieldError` to build, so they end in `apply` only.
 
 ### Nesting Composes
 
@@ -70569,7 +70602,7 @@ record User(Name name, Email email, Age age) {}
             .assemble(); // canonical constructor baked in
 ```
 
-A component whose type is itself annotated accepts its sub-companion's result directly, and the outer component name prefixes the inner paths (`address.zip`). The companion lives in the record's package, named `<Record>Assembly`; for a nested record the enclosing simple names are joined (`Outer.Inner` gives `OuterInnerAssembly`). Under the hood the companion merges through the same `Validated.ap` / `NonEmptyList.semigroup()` primitives as the builder, so the two agree on every input the record's constructor accepts. Where the constructor throws, they part: the builder's `apply` runs whatever function you hand it, so the exception propagates, while `assemble()` reports it as an unlabelled `FieldError` carrying the exception's message, the same [invariant guard](../mapping/basics.md#constructor-invariants) the generated mappings use. Generic records are not supported; use the hand-written `fields()` builder for records you cannot annotate.
+A component whose type is itself annotated accepts its sub-companion's result directly, and the outer component name prefixes the inner paths (`address.zip`). The companion lives in the record's package, named `<Record>Assembly`; for a nested record the enclosing simple names are joined (`Outer.Inner` gives `OuterInnerAssembly`). Under the hood the companion merges through the same `Validated.ap` / `NonEmptyList.semigroup()` primitives as the builder, so the two agree on every input the record's constructor accepts. Where the constructor throws, they part: the builder's `apply` runs whatever function you hand it, so the exception propagates, while `assemble()` reports it as an unlabelled `FieldError` carrying the exception's message, the same [invariant guard](../mapping/basics.md#constructor-invariants) the generated mappings use. End the builder with [`construct`](#construct) instead of `apply` and the two agree again. Generic records are not supported; use the hand-written `fields()` builder for records you cannot annotate.
 
 ---
 
@@ -70600,6 +70633,7 @@ A component whose type is itself annotated accepts its sub-companion's result di
 - No `Semigroup` argument, no `Kind`, no arity wall up to 16; wider records nest sub-records.
 - Errors always emerge in field-declaration order.
 - Nesting prepends the outer label: `"address.zip"`.
+- `construct(Record::new, "not a valid Record")` guards a constructor that may refuse the fields; `apply` does not.
 - The same shape exists on `Validated`, `ValidationPath` (via `Path`), and `EitherOrBoth` (tolerant).
 ~~~
 
@@ -93349,7 +93383,7 @@ Validated<NonEmptyList<FieldError>, PatchableUser> updated =
 
 ## Validated Assembly
 
-**Definition:** Open-arity assembly of a record from N independently validated fields, with every error collected and no `Semigroup` argument, no arity wall, and no `Kind` ceremony. `Validated.fields()` opens a labelled assembly over `NonEmptyList<FieldError>`; each `field(label, value)` adds one validated field, and `apply(...)` completes it with a constructor reference of exactly the accumulated arity. The same shape exists across three carriers: `Validated` (strict), `ValidationPath` (railway, via `Path.fields()`), and `EitherOrBoth` (tolerant).
+**Definition:** Open-arity assembly of a record from N independently validated fields, with every error collected and no `Semigroup` argument, no arity wall, and no `Kind` ceremony. `Validated.fields()` opens a labelled assembly over `NonEmptyList<FieldError>`; each `field(label, value)` adds one validated field, and `apply(...)` completes it with a constructor reference of exactly the accumulated arity, or `construct(...)` when that constructor may refuse the fields, reporting its exception as a `FieldError`. The same shape exists across three carriers: `Validated` (strict), `ValidationPath` (railway, via `Path.fields()`), and `EitherOrBoth` (tolerant).
 
 **Example:**
 <!-- verify -->
@@ -93725,6 +93759,7 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 
 _In development. Release notes will be added here as changes land on `main`._
 
+- **The `fields()` builders end in `construct` for a constructor that may refuse the fields** ([#897](https://github.com/higher-kinded-j/higher-kinded-j/issues/897)): `apply` runs whatever function it is handed, so a record whose compact constructor checks its fields against each other made it throw, taking with it whatever an enclosing assembly had accumulated around it, and, on `EitherOrBoth`, the warnings the assembly itself carried. `construct(Range::new, "not a valid Range")` completes the assembly the same way, but once every field is valid, a `RuntimeException` the function throws becomes an unlabelled `FieldError` carrying its message, or the fallback when the message is missing or blank, so an enclosing `field(label, ...)` locates it. It is the guard the generated mappings and a `@GenerateAssembly` companion already apply, now on the hand-written builder. Every labelled builder has it, `Validated.fields()`, `Path.fields()` and `EitherOrBoth.fields()`, where a refusal keeps the warnings collected so far; the generic `accumulate()` builders end in `apply` only. `apply` itself is unchanged, and only the function is guarded: a `null` it returns still throws, and a blank fallback message is rejected. See [When the record refuses](monads/validated_assembly.md#construct).
 - **An element-mapped spec's `of(...)` takes the spec's own leaves first** ([#876](https://github.com/higher-kinded-j/higher-kinded-j/issues/876)): the generated factory takes one `ValidatedPrism` per abstract leaf in declaration order, and a leaf inherited from a mix-in now comes after the leaves the spec declares itself, inherited ones following the order the `extends` clause names their mix-ins. The order had come from the compiler's own listing of members, which can put an inherited leaf first, so a call written in the documented order still compiled where the leaf types coincide and ran each prism against the other component. The generated `of(...)` now documents each parameter, naming the interface that declares an inherited leaf. The processor's other checks read a spec's members in the same order, so where a spec has several problems, one it declares itself is reported first. See [Element-mapped specs](mapping/generics.md#element-mapped-specs).
 
   _Notes for existing builds._ A spec whose abstract leaves are all declared in one interface, its own or a single mix-in's, keeps its `of(...)` signature. One whose leaves are spread across several interfaces can get a new parameter order. `of(...)` infers its type arguments from the prisms it is given, so a call written for the previous order stops compiling only where its result meets a declared type, such as a typed field or a `@Bean` method's return. Through `var`, or where the leaf types coincide, it still compiles and runs each prism against the wrong component, so check each `of(...)` call on such a spec against the parameter list its Impl documents. A module that nests such a spec from a dependency reads the leaf order from the spec, not from the dependency's generated Impl, so build both with the same version: where the leaf types coincide, a mismatch compiles.
@@ -93745,7 +93780,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
 - **A domain record's own invariant is reported as a located error, beside every other** ([#872](https://github.com/higher-kinded-j/higher-kinded-j/issues/872)): a record that enforces an invariant in its compact constructor, such as `if (lo > hi) throw new IllegalArgumentException("lo > hi")`, made the generated `parse` throw rather than return `Invalid`, and every error already accumulated around it went with the exception. At the Spring boundary one such value turned a 422 into a 500. Once every component has parsed, the constructor now runs inside a guard: a `RuntimeException` it throws becomes a `FieldError` at the record's own path carrying the exception's message, `ranges.1: lo > hi` for a nested record and unlabelled at the top level, and everything around it keeps accumulating. An exception without a message, or with a blank one, reads `not a valid Range`. The guard covers every surface that returns a `Validated`: `parse`, a projection's validated `patch`, a `@Flatten` group, the fallible `@GenerateMerge`, and `@GenerateAssembly`'s `assemble()`. `asIso().reverseGet` and a projection's `asLens().set` cannot return an error, so the exception propagates there. See [A record's own invariants](mapping/basics.md#constructor-invariants).
 
-  _Notes for existing builds._ Code that caught a constructor's exception around `parse`, `patch`, a fallible merge or `assemble()` now receives an `Invalid` instead. Any `RuntimeException` counts, so a bug in a constructor, a division by zero or a dereference of its own, now reaches the client as its message with the stack trace dropped, where it used to fail the request: keep constructors to checks on their arguments, with messages written for a client. The hand-written `Validated.fields()` ladder is unchanged, since its `apply` runs whatever function you hand it, so it and a `@GenerateAssembly` companion now differ on a record whose constructor throws. A `MappingLaws` rejection sample for a patch or parse-only mapping must fail on a component, since a value only the constructor refuses fails unlabelled at the top level.
+  _Notes for existing builds._ Code that caught a constructor's exception around `parse`, `patch`, a fallible merge or `assemble()` now receives an `Invalid` instead. Any `RuntimeException` counts, so a bug in a constructor, a division by zero or a dereference of its own, now reaches the client as its message with the stack trace dropped, where it used to fail the request: keep constructors to checks on their arguments, with messages written for a client. The hand-written `Validated.fields()` ladder's `apply` is unchanged, since it runs whatever function you hand it, so it and a `@GenerateAssembly` companion differ on a record whose constructor throws; ending the ladder in `construct` instead, described above, gives it the same guard. A `MappingLaws` rejection sample for a patch or parse-only mapping must fail on a component, since a value only the constructor refuses fails unlabelled at the top level.
 
 - **A bridged `Optional` is refused where the site it writes into is declared non-null** ([#881](https://github.com/higher-kinded-j/higher-kinded-j/issues/881)): the `Optional` bridge writes an empty value as `null`, into a record component a spec bridges with `@OptionalBridge` or through a bean's setter or builder setter. Nothing checked that the site could take a `null`, so one declared non-null compiled cleanly, even under `-Werror`, and then either threw from `build`, where the setter checked its argument, or kept a `null` its type ruled out. Such a site is now refused: one carrying a non-null annotation, such as JSpecify's `@NonNull`, Jakarta's `@Nonnull`, JetBrains' `@NotNull` or Lombok's `@NonNull`, or one declared inside a JSpecify `@NullMarked` package, class or module without a `@Nullable`. The diagnostic names the site and why it is non-null, and offers three fixes: mark it `@Nullable`, declare the domain component without the `Optional`, or declare a leaf over the whole `Optional` that encodes absence the way the wire does. For a class read from a class file, such as a dependency's, it asks for the `@Nullable` where the class is declared, for when that is yours to change. The refusals that offer `@OptionalBridge` as a fix, for a pair with no source and for a bridge whose element types differ, add the `@Nullable` the site needs, so following them no longer leads straight to this one. Any annotation named `Nullable` or `CheckForNull` counts, whichever library it comes from, and a site typed by a type variable follows the variable's bounds, so `<T extends @Nullable Object>` still bridges. See [Optional fields](mapping/basics.md#optional-bridge) and [Bean-shaped wire targets](mapping/beans_patch.md#bean-shaped-wire-targets).
 
