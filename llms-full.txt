@@ -45363,7 +45363,7 @@ flowchart TD
 That decision tree is the map of this chapter: [The Emission Tiers](tiers.md) names each of these surfaces and the laws it obeys.
 
 ~~~admonish note title="If you know MapStruct"
-This is not a MapStruct competitor on breadth, and does not try to be: MapStruct keeps its ground for mutable JPA entities, deep path flattening (`address.geo.lat` onto a wholly flat wire, where this generator spreads one level), and Bean-Validation-centric shops. What this generator does differently is **boundary correctness for record domains**: the inbound direction is a validating parser with located, accumulated errors (where MapStruct throws on the first bad conversion, or silently maps an invalid value), the outbound direction is provably total, and no operation is generated whose laws the pair cannot satisfy. Adopt it where the boundary is the product; keep MapStruct where its breadth pays.
+This is not a MapStruct competitor on breadth, and does not try to be: MapStruct keeps its ground for mutable JPA entities, deep path flattening (`address.geo.lat` onto a wholly flat wire, where this generator spreads one level), and Bean-Validation-centric shops. What this generator does differently is **boundary correctness for record domains**: the inbound direction is a validating parser with located, accumulated errors (where MapStruct throws on the first bad conversion, or silently maps an invalid value), the outbound direction is provably total, and no operation is generated whose laws the pair cannot satisfy. Adopt it where the boundary is the product; keep MapStruct where its breadth pays. One MapStruct habit does not carry over: declaring the mapper's instance on its own interface. Here that constant can read `null`, so [bind the generated Impl in the caller](basics.md#bind-in-the-caller) instead.
 ~~~
 
 ~~~admonish note title="If you know Bean Validation"
@@ -45455,11 +45455,12 @@ interface PersonMapping extends MappingSpec<Person, PersonDto> {}
 
 
     Person person = new Person("Ada", 36);
+    PersonMappingImpl personMapping = PersonMappingImpl.INSTANCE; // bind once, reuse
 
     // Same-named, same-typed components match automatically:
-    PersonDto dto = PersonMappingImpl.INSTANCE.build(person); // total
+    PersonDto dto = personMapping.build(person); // total
     Validated<NonEmptyList<FieldError>, Person> back =
-        PersonMappingImpl.INSTANCE.parse(dto); // accumulating, located
+        personMapping.parse(dto); // accumulating, located
 ```
 
 That is all of it: no mapper class, no configuration. The processor derives both directions from the two records at compile time, reflection-free, and re-derives them on every compile, so the mapping cannot drift away from the records it maps.
@@ -45473,6 +45474,8 @@ The two directions have different shapes, and that asymmetry runs through the wh
 ```
 
 The generated class is `<Spec>Impl` beside the spec; a concrete spec like this one is used through its `INSTANCE` constant ([generic specs](generics.md#one-rule-three-access-shapes) use `instance()` or `of(...)` instead). A spec nested in an outer class joins the enclosing simple names: `Shop.CustomerMapping` generates `ShopCustomerMappingImpl`.
+
+Code that calls a mapping more than once binds it once and reuses it, as `personMapping` does above. Reading `INSTANCE` costs nothing, so this is for readability: shorter calls, and one name to change. Type the binding as the Impl, since the spec interface declares no methods of its own. Where it lives depends on how widely it is used: a local for a few calls in one method, a `private static final` field in the class that owns the boundary, or, in Spring, an injected `ValidatedPrism` when callers should depend on the mapping rather than on the generated class ([Injecting and testing generated mappings](testing.md#injecting-and-testing-generated-mappings)). Bind it in the code that calls it, never as a constant on the spec itself; [the fine print](#bind-in-the-caller) says why.
 
 ---
 
@@ -45638,14 +45641,16 @@ interface MemberMapping extends MappingSpec<Member, MemberDto> {
 ```
 
 ``` java
+    var memberMapping = MemberMappingImpl.INSTANCE;
+
     // Absence travels as null in both directions; a present value still validates.
-    MemberMappingImpl.INSTANCE.build(new Member("Ada", Optional.empty(), Optional.empty()));
+    memberMapping.build(new Member("Ada", Optional.empty(), Optional.empty()));
     // MemberDto[name=Ada, nickname=null, altEmail=null]
 
-    MemberMappingImpl.INSTANCE.parse(new MemberDto("Ada", null, null));
+    memberMapping.parse(new MemberDto("Ada", null, null));
     // Valid(Member[name=Ada, nickname=Optional.empty, altEmail=Optional.empty])
 
-    MemberMappingImpl.INSTANCE.parse(new MemberDto("Ada", "countess", "not-an-email"));
+    memberMapping.parse(new MemberDto("Ada", "countess", "not-an-email"));
     // Invalid(NonEmptyList[altEmail: not an email address])
 ```
 
@@ -45759,10 +45764,14 @@ Four shapes are rejected, each with a what/why/fix diagnostic: a *locally declar
 
 A spec with any derived field never emits `asIso()`: the wire round trip recomputes the derived component, so it is an identity only for wire values that were already consistent. A mapping whose *only* extra is a derived field is *total-parse*: no **well-formed** wire value can fail it (the null guards above still apply, and a fallible leaf elsewhere in the spec still makes the whole parse fallible). Combining a derived field with a projection (a wire otherwise smaller than the domain) is rejected, because the projection's `asLens()` write-back could never honour a component that `build` recomputes. [The Emission Tiers](tiers.md) is the full story.
 
+### Bind in the caller, not on the spec {#bind-in-the-caller}
+
+MapStruct's idiom declares a mapper's instance on the mapper's own interface. The same move here, `CustomerMappingImpl MAPPER = CustomerMappingImpl.INSTANCE;` declared on `CustomerMapping` (the leaf spec above), compiles but can read `null`. The Impl implements the spec, and the JVM initialises an interface as part of initialising a class that implements it whenever the interface declares an instance method with a body: every leaf and derived field it declares is one, and so is a `private` helper. When a program uses `CustomerMappingImpl.INSTANCE` before it first reads `CustomerMapping.MAPPER`, the spec's constant is evaluated while the Impl's own `INSTANCE` is still unassigned, and it keeps that `null` for good: the first `MAPPER.parse(...)` throws a `NullPointerException`. Two threads making those first uses at the same moment can deadlock instead. A constant on a mix-in that declares a leaf fails the same way. Which class a program reaches first depends on its code paths, so the failure comes and goes. A local, a field in the calling class or an injected `ValidatedPrism` sits outside the cycle.
+
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **A mapping is an interface you own**: `@GenerateMapping` on a `MappingSpec<Domain, Wire>` generates `<Spec>Impl` with `build` and `parse`
+* **A mapping is an interface you own**: `@GenerateMapping` on a `MappingSpec<Domain, Wire>` generates `<Spec>Impl` with `build` and `parse`; bind it once in the calling code, never as a constant on the spec
 * **Two directions, two shapes**: `build` is total; `parse` reports every bad field at once, each located by a domain-named path
 * **Leaves convert, renames rename, getters derive**: `ValidatedPrism` leaves for type-differing fields, `@MapField` for names, `Getter` defaults for wire-only fields
 * **Null is located, never thrown**: one rule across both wire shapes and inside containers; only a null wire itself stays the caller's error
@@ -46151,10 +46160,12 @@ interface ReferralMapping extends MappingSpec<Referral, ReferralDto> {
 }
 
 
-    ReferralMappingImpl.INSTANCE.parse(new ReferralDto("R-7", null));
+    var referralMapping = ReferralMappingImpl.INSTANCE;
+
+    referralMapping.parse(new ReferralDto("R-7", null));
     // Valid(Referral[code=R-7, referrer=Optional.empty])
 
-    ReferralMappingImpl.INSTANCE.parse(new ReferralDto("R-7", new CustomerDto("Bob", "nope")));
+    referralMapping.parse(new ReferralDto("R-7", new CustomerDto("Bob", "nope")));
     // Invalid(NonEmptyList[referrer.email: not an email address])
 ```
 
@@ -46177,10 +46188,12 @@ interface GuestlistMapping extends MappingSpec<Guestlist, GuestlistDto> {
 }
 
 
-    GuestlistMappingImpl.INSTANCE.parse(new GuestlistDto("Launch", null));
+    var guestlistMapping = GuestlistMappingImpl.INSTANCE;
+
+    guestlistMapping.parse(new GuestlistDto("Launch", null));
     // Valid(Guestlist[event=Launch, guests=Optional.empty])
 
-    GuestlistMappingImpl.INSTANCE.parse(
+    guestlistMapping.parse(
         new GuestlistDto(
             "Launch",
             List.of(new CustomerDto("Ada", "ada@example.org"), new CustomerDto("Bob", "nope"))));
@@ -46225,11 +46238,12 @@ interface VendorMapping extends MappingSpec<Vendor, VendorDto> {
 }
 
 
+    var vendorMapping = VendorMappingImpl.INSTANCE;
+
     VendorDto flat =
-        VendorMappingImpl.INSTANCE.build(
-            new Vendor("Acme", new Address("1 High St", "Leeds", "LS1 4AP")));
+        vendorMapping.build(new Vendor("Acme", new Address("1 High St", "Leeds", "LS1 4AP")));
     // VendorDto[name=Acme, street=1 High St, city=Leeds, postcode=LS1 4AP]
-    VendorMappingImpl.INSTANCE.parse(new VendorDto("Acme", null, "Leeds", null));
+    vendorMapping.parse(new VendorDto("Acme", null, "Leeds", null));
     // Invalid(NonEmptyList[address.street: must not be null, address.postcode: must not be null])
 ```
 
@@ -46503,15 +46517,16 @@ interface SubscriberDetailsMapping extends MappingSpec<Subscriber, SubscriberDet
 
 ``` java
     Subscriber subscriber = new Subscriber("7", new EmailAddress("ada@corp.example"), 36);
+    var subscriberDetailsMapping = SubscriberDetailsMappingImpl.INSTANCE;
 
     // The projected components validate and write back; the unprojected id survives untouched.
     Validated<NonEmptyList<FieldError>, Subscriber> renewed =
-        SubscriberDetailsMappingImpl.INSTANCE.patch(
+        subscriberDetailsMapping.patch(
             subscriber, new SubscriberDetailsDto("grace@corp.example", 37));
     // Valid(Subscriber[id=7, email=EmailAddress[value=grace@corp.example], age=37])
 
     // Dense semantics: every projected field applies - a null is a located error, never absence.
-    SubscriberDetailsMappingImpl.INSTANCE.patch(subscriber, new SubscriberDetailsDto(null, 37));
+    subscriberDetailsMapping.patch(subscriber, new SubscriberDetailsDto(null, 37));
     // Invalid(NonEmptyList[email: must not be null])
 ```
 
@@ -46522,9 +46537,10 @@ interface SubscriberDetailsMapping extends MappingSpec<Subscriber, SubscriberDet
 Everything the full tier resolves is available on the projected components: explicit leaves (beating identity, so a `ValidatedPrism<X, X>` can normalise), nested specs (failures compose into dotted paths), and container lifting. Nulls locate through the nesting too: a nested wire value delegates to the nested spec's `parse`, whose reference legs carry the same guard, so `patch(customer, new CustomerPatchDto(new AddressDto(null)))` reports `address.zip: must not be null` instead of throwing. Only derived fields stay rejected. At the Spring boundary the result is already [the 422 leg](../spring/spring_boot_integration.md#the-422-leg)'s shape: return it as-is. Like every tier, this one is law-checked:
 
 ``` java
+    var subscriberDetailsMapping = SubscriberDetailsMappingImpl.INSTANCE;
     MappingLaws.assertMappingLaws(
-        SubscriberDetailsMappingImpl.INSTANCE::patch,
-        SubscriberDetailsMappingImpl.INSTANCE::build,
+        subscriberDetailsMapping::patch,
+        subscriberDetailsMapping::build,
         new Subscriber("7", new EmailAddress("ada@example.org"), 36), // the current value
         new SubscriberDetailsDto("grace@example.org", 41), // parses and changes the domain
         new SubscriberDetailsDto("not-an-email", 36)); // located failure
@@ -46614,10 +46630,10 @@ interface ContactMapping extends MappingSpec<Customer, ContactBean> {
 
 ``` java
     Customer ada = new Customer("Ada", new EmailAddress("ada@corp.example"));
-    ContactBean bean =
-        ContactMappingImpl.INSTANCE.build(ada); // new ContactBean(); setName; setEmail
-    Validated<NonEmptyList<FieldError>, Customer> fromBean =
-        ContactMappingImpl.INSTANCE.parse(bean);
+    var contactMapping = ContactMappingImpl.INSTANCE;
+
+    ContactBean bean = contactMapping.build(ada); // new ContactBean(); setName; setEmail
+    Validated<NonEmptyList<FieldError>, Customer> fromBean = contactMapping.parse(bean);
     // A null bean property parses to a located FieldError, e.g. [email: must not be null].
 ```
 
@@ -46659,15 +46675,16 @@ interface TransferMapping extends MappingSpec<Employee, TransferBean> {}
     Employee researcher = new Employee("Ada", "Research", 36);
     TransferBean transfer = new TransferBean();
     transfer.setDepartment("Platform");
+    var transferMapping = TransferMappingImpl.INSTANCE;
 
     // The bean's property can be unset, so the projection validates: patch, never a lens.
     Validated<NonEmptyList<FieldError>, Employee> transferred =
-        TransferMappingImpl.INSTANCE.patch(researcher, transfer);
+        transferMapping.patch(researcher, transfer);
     // Valid(Employee[name=Ada, department=Platform, age=36])
 
     // Dense, as on a record wire: an unset property is a located error, never "keep the current
     // value".
-    TransferMappingImpl.INSTANCE.patch(researcher, new TransferBean());
+    transferMapping.patch(researcher, new TransferBean());
     // Invalid(NonEmptyList[department: must not be null])
 ```
 
@@ -47201,7 +47218,7 @@ interface CodecPageMapping<T, TDto> extends MappingSpec<Page<T>, PageDto<TDto>> 
     // Invalid(NonEmptyList[items.1: not an email address])
 ```
 
-The Impl carries the prisms as state, so there is no singleton in either spelling: every `of(...)` call is a fresh, immutable instance.
+The Impl carries the prisms as state, so there is no singleton in either spelling: every `of(...)` call is a fresh, immutable instance. Build one where it is used and reuse it, rather than calling `of(...)` for every parse.
 
 Element-mapped mappings nest as **compositions**. A use site whose pair unifies against one resolves each element pair in turn:
 
@@ -82842,7 +82859,7 @@ The smart-constructor optic: a `Prism` whose match says *why not*, and all the r
 The boundary, generated: `@GenerateMapping` derives a total `build` and an accumulating, located `parse` from a spec interface (the specs live in `org.higherkindedj.example.tutorials.mapping`, main sources, where the processor runs).
 
 **What you'll learn**:
-- Calling the generated Impl: `build` is total, `parse` returns `Validated<NonEmptyList<FieldError>, Domain>`
+- Calling the generated Impl, bound once in the calling class: `build` is total, `parse` returns `Validated<NonEmptyList<FieldError>, Domain>`
 - Reading located errors: stock codec messages, a nested spec's `guest.email` path, declaration order
 - Law-checking a mapping with one `MappingLaws` call
 - The sparse PATCH sibling: `UpdateSpec`, null-as-absent, same leaf vocabulary
@@ -87218,13 +87235,13 @@ See the [Effect Path API](../effect/path_types.md) for `Path.accumulate()` and i
 
 A *leg* is one of the routes a value returned from a controller can travel to become an HTTP response: a segment of the [railway](../glossary/effect-paths.md#railway-oriented-programming) journey, as in a leg of a relay. A `Left(DomainError)` travels the **Either leg** to its mapped error status; a generic `Invalid` travels the standard **validation leg** to 400. This section describes a third: the leg an all-`FieldError` payload takes to a 422, chosen (like a railway switch) by the shape of the value itself.
 
-A [`@GenerateMapping`](../mapping/ch_intro.md) spec's `parse` returns `Validated<NonEmptyList<FieldError>, Domain>`: every bad field reported at once, each located by a structured path. (`FieldError` here is HKJ's `org.higherkindedj.hkt.validated.FieldError`, not Spring's `org.springframework.validation.FieldError`.) A controller returns it directly, with no service call and no error wrapping:
+A [`@GenerateMapping`](../mapping/ch_intro.md) spec's `parse` returns `Validated<NonEmptyList<FieldError>, Domain>`: every bad field reported at once, each located by a structured path. (`FieldError` here is HKJ's `org.higherkindedj.hkt.validated.FieldError`, not Spring's `org.springframework.validation.FieldError`.) A controller returns it directly, with no service call and no error wrapping. The mapping is injected once as `userCodec`, the `ValidatedPrism<UserDto, User>` surface of `UserMappingImpl` ([registered as a bean](../mapping/testing.md#injecting-and-testing-generated-mappings)), and reused on every request:
 
 <!-- verify -->
 ```java
 @PostMapping("/parse")
 public Validated<NonEmptyList<FieldError>, User> parseUser(@RequestBody UserDto dto) {
-    return UserMappingImpl.INSTANCE.parse(dto);
+    return userCodec.parse(dto);
 }
 ```
 
@@ -87263,7 +87280,7 @@ sequenceDiagram
     end
 ```
 
-To inject the mapping behind such an endpoint as a bean, or substitute a fake in a `@WebMvcTest` slice, see [Injecting and testing generated mappings](../mapping/testing.md#injecting-and-testing-generated-mappings); the example app's `MappingConfiguration`, `UserController` and `UserParseFakeCodecSliceTest` demonstrate the pattern end to end.
+To substitute a fake for `userCodec` in a `@WebMvcTest` slice, see [Injecting and testing generated mappings](../mapping/testing.md#injecting-and-testing-generated-mappings); the example app's `MappingConfiguration`, `UserController` and `UserParseFakeCodecSliceTest` demonstrate the pattern end to end. Returning `UserMappingImpl.INSTANCE.parse(dto)` instead works just as well: injection buys substitution in tests, not a different result.
 
 `path` is the dot-joined display key (`FieldError.pathString()`); `segments` is the exact structured location. Paths use **domain** component names: under a `@MapField(to = "fullName")` rename the client that sent `fullName` receives its error at `name`, so a client mapping errors onto its own payload keys must apply the rename in reverse. The distinction matters: a map key containing a dot is indistinguishable from nesting in the rendered `path` (`attributes."a.b".email` vs deeper nesting), so structured consumers should read `segments`, which stays exact. An unlabelled error renders `"path": ""` and `"segments": []`; treat it as object-level.
 
@@ -87283,7 +87300,7 @@ See the [Validated Monad documentation](../monads/validated_monad.md) for detail
 
 A PATCH body is the parse boundary's mirror image. The client sends only the fields it wants to change; every property it omits arrives `null` from the binder (as long as the bean gives it no default: no field initialiser, no constructor assignment, no getter that creates a value), meaning *not provided, leave unchanged* (`UpdateSpec` rejects primitive properties at compile time, precisely so that every property can carry that signal), and a present-but-invalid field must still fail with located errors. A spec extending [`UpdateSpec`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) opts into exactly that contract: the generated `updateFrom(wire)` folds the present fields (validated through their leaves) into an `Edits.Accumulated<Domain>`, leaving absent fields and unmapped domain components untouched.
 
-A PATCH endpoint has two failure kinds, though, not one: the resource may not exist, *and* a present field may be invalid. The example app folds both into one `Either<DomainError, User>` channel (this mirrors `UserController.patchUser` and `UserService.patch` in the example module):
+A PATCH endpoint has two failure kinds, though, not one: the resource may not exist, *and* a present field may be invalid. The example app folds both into one `Either<DomainError, User>` channel (this mirrors `UserController.patchUser` and `UserService.patch` in the example module, which calls `UserPatchMappingImpl.INSTANCE` directly rather than injecting it; either works):
 
 <!-- verify -->
 ```java
@@ -92852,9 +92869,10 @@ OrderError error = OrderErrors.outOfStock(products)
 @GenerateMapping
 public interface PersonMapping extends MappingSpec<Person, PersonDto> {}
 
-PersonDto dto = PersonMappingImpl.INSTANCE.build(person);          // total
+PersonMappingImpl personMapping = PersonMappingImpl.INSTANCE;     // bind once, reuse
+PersonDto dto = personMapping.build(person);                      // total
 Validated<NonEmptyList<FieldError>, Person> back =
-    PersonMappingImpl.INSTANCE.parse(dto);                        // accumulating, located
+    personMapping.parse(dto);                                     // accumulating, located
 ```
 
 **Truthful emission tiers:** the generated mapper offers only what the shape supports: `asIso` when lossless, `asLens` when total one way, and the accumulating `parse` otherwise. A spec extending [UpdateSpec](#updatespec) instead opts into the sparse PATCH tier (only `updateFrom`). Every tier is law-checked against the published `hkj-test` harness.
