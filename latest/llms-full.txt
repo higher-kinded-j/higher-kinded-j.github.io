@@ -22516,6 +22516,7 @@ Lens<Transaction, Pair<Integer, Integer>> limitsLens = Lens.paired(
 |----------|---------------------|
 | Independent fields | Use individual lenses, or fold several into one operation with [`Edits`](multi_edit.md) |
 | Fields with shared invariant | Use `Lens.paired` |
+| Sparse or validated edits to fields a constructor checks together | Use [`Edits.accumulate(focus, …)`](multi_edit.md#fields-a-constructor-checks-together), with a `Lens.paired` as the focus if you have one |
 | Computed/derived fields | Don't expose a lens for the computed field |
 | Cross-structure invariants | Use domain methods, not lenses |
 
@@ -39180,6 +39181,7 @@ _Apply N independent edits at different paths in one reusable operation, includi
 - Writing sparse updates where a `null` field means "leave it alone", with no `if` per field
 - Building a REST `PATCH` with `Edits.accumulate` that validates every field and reports all the bad ones at once, not just the first
 - The two-phase model: validate everything first, then apply the writes only if all of them passed
+- Editing fields a record's constructor checks together, so it sees only the values the edits end on
 - How the pure and validating edits are kept apart at compile time, and when overlapping paths need one atomic edit instead
 ~~~
 
@@ -39212,7 +39214,7 @@ The `org.higherkindedj.optics.edit` package folds all of that into two operation
 | `Edits.combine(...)` | every edit is always safe (no validation) | one reusable `Update<S>` |
 | `Edits.accumulate(...)` | some edits validate their input (a REST `PATCH`) | a patch you apply to get `Validated<NonEmptyList<FieldError>, S>` |
 
-Those are the whole API. The rest of this page is how each one behaves, and how the compiler keeps a validating edit from slipping into `combine` by accident.
+Those are the whole API, with one more form of `accumulate` for [fields a constructor checks together](#fields-a-constructor-checks-together). The rest of this page is how each one behaves, and how the compiler keeps a validating edit from slipping into `combine` by accident.
 
 ---
 
@@ -39294,7 +39296,7 @@ A path from a `@GenerateFocus` companion carries its record-component name as a 
 For the railway, `applyPath(order)` is the `ValidationPath` twin of `apply(order)`, and `toValidated()` exposes the folded `Update` itself for reuse.
 
 ~~~admonish tip title="Generate this when the shape is regular"
-When the request DTO's fields line up one-to-one with a domain record (the common REST PATCH case), you need not hand-write the fold at all: `@GenerateMapping` on an [`UpdateSpec<Domain, Wire>`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) generates exactly this `Edits.accumulate` over the present fields, as `updateFrom(wire) : Edits.Accumulated<Domain>` (the same `apply`/`applyPath`/`toValidated` surface). Reach for the hand-written `Edits` here when the edits are irregular (a `qtyDelta` that *modifies*, coupled fields, a computed target); reach for `UpdateSpec` when each present field maps to one slot.
+When the request DTO's fields line up one-to-one with a domain record (the common REST PATCH case), you need not hand-write the fold at all: `@GenerateMapping` on an [`UpdateSpec<Domain, Wire>`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) generates this `Edits.accumulate` over the present fields, in its [construct-once form](#fields-a-constructor-checks-together), as `updateFrom(wire) : Edits.Accumulated<Domain>` (the same `apply`/`applyPath`/`toValidated` surface). Reach for the hand-written `Edits` here when the edits are irregular (a `qtyDelta` that *modifies*, coupled fields, a computed target); reach for `UpdateSpec` when each present field maps to one slot.
 ~~~
 
 ---
@@ -39353,7 +39355,66 @@ flowchart TD
     class Bad bad
 ```
 
-Application order is observable only when paths overlap: disjoint paths commute; an edit at an overlapping path sees the previous edit's result (a `modify` reads the *current* value at application time). Genuinely coupled fields belong in one atomic edit (see [Coupled Fields](coupled_fields.md) and `Lens.paired`).
+Application order is observable only when paths overlap: disjoint paths commute; an edit at an overlapping path sees the previous edit's result (a `modify` reads the *current* value at application time). Genuinely coupled fields belong in one atomic edit (see [Coupled Fields](coupled_fields.md) and `Lens.paired`), or, when a record's constructor checks them against each other, [onto a focus](#fields-a-constructor-checks-together).
+
+---
+
+## Fields a constructor checks together {#fields-a-constructor-checks-together}
+
+Each write through a record's path builds a new record, so the constructor sees every value the fold passes through. A range whose constructor refuses `lo > hi` cannot move from `Range(1, 3)` to `Range(5, 10)` one end at a time: writing `lo` first builds `Range(5, 3)`, and the constructor throws before `hi` is written, although the final range is valid.
+
+`Edits.accumulate(focus, edits...)` takes a `Lens` to a value carrying the fields the edits set, with no check of its own. The edits write onto that value, and the lens sets it back once, so the constructor sees only the final values:
+
+``` java
+record Range(int lo, int hi) {
+  Range {
+    if (lo > hi) {
+      throw new IllegalArgumentException("lo > hi");
+    }
+  }
+}
+
+@GenerateFocus
+record Ends(int lo, int hi) {} // the fields the edits set, with no check of their own
+
+```
+
+``` java
+    Lens<Range, Ends> ends =
+        Lens.of(r -> new Ends(r.lo(), r.hi()), (r, e) -> new Range(e.lo(), e.hi()));
+
+    Validated<NonEmptyList<FieldError>, Range> moved =
+        Edits.accumulate(
+                ends,
+                setIfPresent(EndsFocus.lo(), move.lo()),
+                setIfPresent(EndsFocus.hi(), move.hi()))
+            .apply(new Range(1, 3));
+    // lo 5, hi 10: Valid(Range[lo=5, hi=10]), though lo 5 alone would make Range(5, 3)
+    // lo 5 alone:  Invalid(NEL[ "lo > hi" ])
+```
+
+```mermaid
+flowchart LR
+    subgraph each["accumulate(edits…): one record per edit"]
+        direction LR
+        A1(["Range(1, 3)"]) -->|"lo = 5"| A2(["Range(5, 3)<br/>the constructor throws"])
+    end
+    subgraph once["accumulate(ends, edits…): one Range in all"]
+        direction LR
+        B1(["Ends(1, 3)"]) -->|"lo = 5"| B2(["Ends(5, 3)"]) -->|"hi = 10"| B3(["Ends(5, 10)"]) -->|"set once"| B4(["Range(5, 10)"])
+    end
+
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef bad fill:#e78284,stroke:#d20f39,color:#232634
+    class A1,B1,B2,B3,B4 tier
+    class A2 bad
+```
+
+The edits validate exactly as they do in `accumulate`, and their errors are reported alone: the record is constructed only once every edit validated. A `RuntimeException` that setting the focus back throws is the constructor refusing the final values, and `apply` reports it as an unlabelled `FieldError` carrying the exception's message; an exception without a message, or with a blank one, reads `not a valid Range`. Only that call is guarded: an exception from an edit's own function, or from reading the focus, still propagates. When every edit is absent, the source comes back as it is and the focus is never set. `toValidated()` hands back an `Update` that writes onto the focus and sets it back once, and since an `Update` has no error channel, a refusal throws from it.
+
+The edits' errors are located relative to the focus. Where the focus is a nested component rather than the source's own fields, add the component's name to each edit with `.at("range")`, so their errors and the source agree on where they are.
+
+`@GenerateMapping` on an [`UpdateSpec`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) generates exactly this: its `updateFrom` writes onto the components a PATCH can set and constructs the domain record once.
 
 ---
 
@@ -39363,6 +39424,7 @@ Application order is observable only when paths overlap: disjoint paths commute;
 * **`Edits.accumulate`** validates every edit independently and reports all located failures at once, in edit order, with no arity ceiling
 * **Two phases**: validation is source-independent; writes run left-to-right only when everything validated
 * **Overlapping paths see earlier writes**; coupled fields should be one atomic edit (`Lens.paired`)
+* **`Edits.accumulate(focus, …)`** writes onto one focus and sets it back once, so a constructor checking fields against each other sees only the final values, and its refusal is an `Invalid`
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -45781,7 +45843,7 @@ The second stay fails at `stays.1`, and the missing guest is still reported besi
 - **Any `RuntimeException` counts, bugs included.** The null guard keeps a `null` out of the constructor, but a constructor that divides by zero or dereferences something of its own fails the same way: its message goes to the client and its stack trace is dropped. Keep the constructor to checks on its arguments, with messages written for a client.
 - **A rule about one field alone belongs in a [leaf](#validated-leaves)**: it locates at the field and accumulates with the record's other errors.
 
-The same guard covers every surface that builds the record whole from parsed parts: the [projection's `patch`](tiers.md#leaf-carrying-projections-the-validated-patch), a [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group, the fallible [`@GenerateMerge`](merge_envelopes.md), and [`@GenerateAssembly`](../monads/validated_assembly.md#generating-the-companion-generateassembly)'s `assemble()`. Two surfaces cannot return an error, so there the exception propagates: `asIso().reverseGet` and a projection's `asLens().set`, total optics meant for values already known to be lawful. The [sparse `UpdateSpec` tier](beans_patch.md#sparse-patch-write-back-updatespec) sets each present field on its own, so it does not support an invariant spanning the fields it sets yet: the constructor sees each intermediate value, and its exception propagates from `apply`. A nested record the PATCH replaces whole still parses through its own spec, guard included.
+The same guard covers every surface that builds the record whole from parsed parts: the [projection's `patch`](tiers.md#leaf-carrying-projections-the-validated-patch), a [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group, the fallible [`@GenerateMerge`](merge_envelopes.md), and [`@GenerateAssembly`](../monads/validated_assembly.md#generating-the-companion-generateassembly)'s `assemble()`. The [sparse `UpdateSpec` tier](beans_patch.md#sparse-patch-write-back-updatespec) constructs the record once, from the values the PATCH ends on, and its `apply` reports a refusal the same way, unlabelled; a nested record the PATCH replaces whole parses through its own spec, guard included. Three surfaces cannot return an error, so there the exception propagates: `asIso().reverseGet` and a projection's `asLens().set`, total optics meant for values already known to be lawful, and the `Update` a sparse update's `toValidated()` hands back.
 
 ---
 
@@ -46989,6 +47051,63 @@ The Impl exposes a *single* method, `updateFrom(Wire) : Edits.Accumulated<Domain
 
 The return type is exactly what a hand-written [`Edits.accumulate(...)`](../optics/multi_edit.md) PATCH builder produces, so the two compose and the same consumption story (`apply`, `applyPath`, `toValidated`) carries over.
 
+`updateFrom` constructs the domain record once. The present values are written onto a private record holding just the components the PATCH can set, and the domain's constructor runs a single time, over the values the PATCH ends on, reading every other component from the current value. A constructor that checks its fields against each other therefore never sees a PATCH half applied:
+
+``` java
+// A price band whose constructor checks its two fields against each other.
+record PriceBand(int floor, int ceiling) {
+  PriceBand {
+    if (floor > ceiling) {
+      throw new IllegalArgumentException("floor above ceiling");
+    }
+  }
+}
+
+class PriceBandPatch {
+  private Integer floor;
+  private Integer ceiling;
+
+  public Integer getFloor() {
+    return floor;
+  }
+
+  public void setFloor(Integer floor) {
+    this.floor = floor;
+  }
+
+  public Integer getCeiling() {
+    return ceiling;
+  }
+
+  public void setCeiling(Integer ceiling) {
+    this.ceiling = ceiling;
+  }
+}
+
+@GenerateMapping
+interface PriceBandPatchMapping extends UpdateSpec<PriceBand, PriceBandPatch> {}
+
+```
+
+``` java
+    PriceBand band = new PriceBand(10, 20);
+
+    PriceBandPatch raise = new PriceBandPatch();
+    raise.setFloor(30); // on its own, a floor of 30 is above the ceiling of 20...
+    raise.setCeiling(40); // ...but the PATCH ends on 30 to 40
+    Validated<NonEmptyList<FieldError>, PriceBand> raised =
+        PriceBandPatchMappingImpl.INSTANCE.updateFrom(raise).apply(band);
+    // Valid(PriceBand[floor=30, ceiling=40]): the constructor sees only the final values
+
+    PriceBandPatch floorOnly = new PriceBandPatch();
+    floorOnly.setFloor(30);
+    Validated<NonEmptyList<FieldError>, PriceBand> refused =
+        PriceBandPatchMappingImpl.INSTANCE.updateFrom(floorOnly).apply(band);
+    // Invalid(NonEmptyList[floor above ceiling]): the constructor's own message, at the root
+```
+
+A refusal is an unlabelled `FieldError` carrying the exception's message, as [the other tiers report a constructor's refusal](basics.md#constructor-invariants); an exception without a message, or with a blank one, reads `not a valid PriceBand`. A nested record the PATCH replaces whole parses through its own spec, guard included. Any `RuntimeException` counts, so a bug in the constructor reaches the client as its message too. The constructor runs only once every field sent has validated, so its refusal never joins their errors, and a PATCH that sends nothing hands back the current value itself without running it. `toValidated()` hands back the same construct-once `Update`, which has no error channel, so there a refusal throws. The generated update is [`Edits.accumulate(focus, ...)`](../optics/multi_edit.md#fields-a-constructor-checks-together), which a hand-written PATCH can use too.
+
 The rules that keep the contract honest:
 
 - **A spec extending both `MappingSpec` and `UpdateSpec` is rejected.** One spec generates one Impl on one tier, and the tiers emit disjoint members, so nothing an Impl could carry answers both clauses. Declare a spec per tier and let a [shared vocabulary mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) carry what the pair has in common. A spec in a *dependency* that carries the shape is not refused here (it was compiled elsewhere), but it is never offered for nesting either: a use site needing the pair is told which spec it is and that it has no parse.
@@ -47003,7 +47122,6 @@ The rules that keep the contract honest:
 - **A present container parses through the element vocabulary.** A `List`, `Set`, array, `Optional` or `Map`-valued property (a pair declared as exactly those container types) routes through the element leaf named after the component: the same leaf the dense tiers lift, so one [mix-in vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) serves a full spec and its PATCH sibling. Replacement stays wholesale; each failing element is located the way its container locates anything - by index (`phones.1`), by key, or, in a `Set`, by the element's own rendering. A whole-container leaf (`ValidatedPrism<List<S>, List<A>>`) is the more specific declaration and wins over the element interpretation. A nested *spec* still does not lift through a sparse container; give the component an element leaf delegating to the nested Impl's `asValidatedPrism()` if its elements need a whole mapping.
 - **An inherited derived field or `@OptionalBridge` marker stays inert.** Arriving from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces), neither is ever consulted here, so one vocabulary serves a full spec and its PATCH sibling; declaring either on the `UpdateSpec` itself is still an error, reported where it was written. An inherited rename is inert too whenever either end is missing, whether this PATCH bean omits the property its `to` names or this domain omits the component it renames, so a bean covering a subset needs no vocabulary of its own. An inherited [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) marker is judged against this bean rather than waved through. It is inert whenever the bean carries none of the group's inner properties that nothing else fills, which covers both a bean declaring the group's own component (patched whole by identity) and one omitting the group entirely; it is refused, naming the mix-in, when the bean carries one, since a spread has no sparse edit shape yet. A `@Flatten` marker the `UpdateSpec` declares itself is refused either way, like the derived field and the bridge.
 - **Coverage is one-sided.** Every wire property maps to a domain component, but a domain component with *no* wire property is simply never changed: a PATCH DTO deliberately covers a subset.
-- **An invariant spanning the fields a PATCH sets is not supported yet.** Each present field is set on its own, rebuilding the record through its constructor, so the constructor sees every intermediate value: a PATCH moving `lo` and `hi` together can trip a `lo <= hi` check halfway, even when the final value is valid, and the exception propagates from `apply`. A nested record the PATCH replaces whole still parses through its own spec, [constructor guard](basics.md#constructor-invariants) included.
 - **A same-typed nested record, `Optional`, `List` or `Map` replaces wholesale** through identity, the fallback when no more specific leaf applies. The details:
   - A same-typed `List`, `Set`, array or `Map` carries the dense tiers' null scan: a null element or value is a located, accumulating invalid (`tags.1: must not be null`; a set's, unlocated as `tags: must not contain a null element`), never written into the domain; a valid container still passes by reference, unrebuilt.
   - The scan needs a properly parameterised container; a raw or wildcard-argument one is written as sent.
@@ -47098,6 +47216,16 @@ Identity (an all-absent wire is the identity update), idempotence (applying the 
         new RosterPatchBean(), // all-absent, as bound from {} -> identity
         rosterPatch(null, List.of("+1", "+353")), // present valid -> wholesale replacement
         rosterPatch(null, List.of("+1", "nope"))); // bad element   -> located phones.1
+```
+
+The validation law asks for a located error, so its invalid wire must fail on a field: a constructor's refusal is unlabelled and cannot stand in for one. A domain with no leaf to fail, such as `PriceBand` above, checks the other two laws on their own and asserts its refusal directly:
+
+``` java
+    var priceBandMapping = PriceBandPatchMappingImpl.INSTANCE;
+    MappingLaws.assertSparseIdentity(priceBandMapping::updateFrom, band, new PriceBandPatch());
+    MappingLaws.assertSparseIdempotent(priceBandMapping::updateFrom, band, raise);
+    assertThatValidated(priceBandMapping.updateFrom(floorOnly).apply(band))
+        .hasFieldErrors("floor above ceiling"); // the constructor's refusal, unlabelled
 ```
 
 ~~~admonish tip title="Why this matters"
@@ -86750,7 +86878,7 @@ void statusPrismIsLawful() {
 - **Fallible:** pass `asValidatedPrism()` with a parsing and a non-parsing wire value; delegates to `ValidatedPrismLaws`.
 - **Total-parse** (a mapping with derived wire fields, whose parse cannot fail on a well-formed wire the domain accepts): pass a domain sample; only the non-derived components round-trip, and the overload asserts exactly that.
 - **Validated patch** (a projection that validates, on a record or a bean wire): pass the `patch` and `build` method references, a domain sample, and a parsing and a non-parsing wire; checks projection identity, idempotence and located validation.
-- **Sparse update** (an `UpdateSpec`): pass the `updateFrom` method reference, a domain sample, and an all-absent, a valid and an invalid wire; checks identity, idempotence and located validation. Make the all-absent wire a freshly constructed bean, as a binder makes of an empty body, and the domain sample unlike any default, so a default the bean gives itself, which would defeat absence, fails the identity law.
+- **Sparse update** (an `UpdateSpec`): pass the `updateFrom` method reference, a domain sample, and an all-absent, a valid and an invalid wire; checks identity, idempotence and located validation. Make the all-absent wire a freshly constructed bean, as a binder makes of an empty body, and the domain sample unlike any default, so a default the bean gives itself, which would defeat absence, fails the identity law. The invalid wire must fail on a field: a domain constructor's refusal is unlabelled, so a domain with no leaf checks `assertSparseIdentity` and `assertSparseIdempotent` on their own.
 - **Parse-only** (a bean that is only read): pass `asValidatedParse()` with a parsing and a non-parsing wire; checks that the first parses and the second fails with every error located.
 - **Build-only** (a bean that is only written): pass `asValidatedBuild()` with a domain sample; checks that `build` renders it without failing.
 
@@ -93594,9 +93722,15 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 
 _In development. Release notes will be added here as changes land on `main`._
 
+- **A sparse `UpdateSpec` constructs the domain record once** ([#893](https://github.com/higher-kinded-j/higher-kinded-j/issues/893)): `updateFrom` set each present field on its own, building the record through its canonical constructor once per field, so a constructor that checks its fields against each other saw every value in between. A PATCH moving both ends of a range, `lo` 5 and `hi` 10 onto `Range(1, 3)`, built `Range(5, 3)` on the way and threw, although the range it ends on is valid. The constructor now runs once, over the values the PATCH ends on, reading every component the PATCH cannot set from the current value, and a PATCH that sends nothing still hands back the current value without running it. A final value it refuses is an `Invalid`, an unlabelled `FieldError` carrying the exception's message; an exception without a message, or with a blank one, reads `not a valid Range`. The canonical constructor is also the one called now, where a same-arity overload taking a wrapper's supertype could be chosen before. A wide PATCH bean compiles much faster too: one with 64 properties took about 15 seconds to compile, and now takes under one.
+
+  The same step is open to a hand-written PATCH. `Edits.accumulate(focus, edits...)` validates the edits as `accumulate` does, writes them onto a `Lens` focus, and sets it back once, reporting a refused set as an `Invalid`. See [Sparse PATCH write-back](mapping/beans_patch.md#sparse-patch-write-back-updatespec) and [Fields a constructor checks together](optics/multi_edit.md#fields-a-constructor-checks-together).
+
+  _Notes for existing builds._ Where a domain constructor refuses the values a PATCH ends on, `apply` and `applyPath` return an `Invalid` rather than throwing. Any `RuntimeException` the constructor throws counts, so a bug in it now reaches the client as its message, and at the Spring boundary a 500 becomes a 400 or 422. `toValidated()` hands back an `Update` that constructs once: it no longer throws for a PATCH whose final value is valid, and still throws the constructor's exception for one whose final value is refused, since an `Update` has no error channel. `MappingLaws`' sparse validation law asks for a located error, so its invalid wire must fail on a field; a domain with no leaf checks `assertSparseIdentity` and `assertSparseIdempotent` on their own.
+
 - **Every annotation processor runs from the module path, and `Path.from()` handles a `VStream` there** ([#889](https://github.com/higher-kinded-j/higher-kinded-j/issues/889)): a build that loads hkj's processors with javac's `--processor-module-path` now runs all twenty. Before, the processors for `@GenerateFocus`, `@GenerateFolds`, `@GenerateGetters`, `@GenerateSetters`, `@GenerateIsos`, `@GenerateMapping`, `@GenerateMerge`, `@GenerateErrorEnvelope` and `@PathSource` generated nothing there, because the `module-info` of `hkj-processor` did not list them. javac reported no error; the first sign was a `cannot find symbol` in code calling a class that was never generated. That path also no longer needs `auto-service-annotations`, which only the processor's own build reads. In the same way, `hkj-core` on the module path now provides `VStreamPathProvider`, so `Path.from()` creates a `VStreamPath` there, where it returned an empty `Optional` before. Builds set up as the book shows, with Gradle's `annotationProcessor` configuration or Maven's `<annotationProcessorPaths>`, load the processors from the processor path; they already ran every processor and see no change. The book now shows how to register a `PathProvider` of your own so that the module path finds it too. See [PathProvider SPI Registration](monads/vstream_advanced.md#pathprovider-spi-registration).
 
-- **A domain record's own invariant is reported as a located error, beside every other** ([#872](https://github.com/higher-kinded-j/higher-kinded-j/issues/872)): a record that enforces an invariant in its compact constructor, such as `if (lo > hi) throw new IllegalArgumentException("lo > hi")`, made the generated `parse` throw rather than return `Invalid`, and every error already accumulated around it went with the exception. At the Spring boundary one such value turned a 422 into a 500. Once every component has parsed, the constructor now runs inside a guard: a `RuntimeException` it throws becomes a `FieldError` at the record's own path carrying the exception's message, `ranges.1: lo > hi` for a nested record and unlabelled at the top level, and everything around it keeps accumulating. An exception without a message, or with a blank one, reads `not a valid Range`. The guard covers every surface that returns a `Validated`: `parse`, a projection's validated `patch`, a `@Flatten` group, the fallible `@GenerateMerge`, and `@GenerateAssembly`'s `assemble()`. `asIso().reverseGet` and a projection's `asLens().set` cannot return an error, so the exception propagates there, as it does from a sparse `UpdateSpec`, which sets one field at a time and does not support an invariant spanning several fields yet. See [A record's own invariants](mapping/basics.md#constructor-invariants).
+- **A domain record's own invariant is reported as a located error, beside every other** ([#872](https://github.com/higher-kinded-j/higher-kinded-j/issues/872)): a record that enforces an invariant in its compact constructor, such as `if (lo > hi) throw new IllegalArgumentException("lo > hi")`, made the generated `parse` throw rather than return `Invalid`, and every error already accumulated around it went with the exception. At the Spring boundary one such value turned a 422 into a 500. Once every component has parsed, the constructor now runs inside a guard: a `RuntimeException` it throws becomes a `FieldError` at the record's own path carrying the exception's message, `ranges.1: lo > hi` for a nested record and unlabelled at the top level, and everything around it keeps accumulating. An exception without a message, or with a blank one, reads `not a valid Range`. The guard covers every surface that returns a `Validated`: `parse`, a projection's validated `patch`, a `@Flatten` group, the fallible `@GenerateMerge`, and `@GenerateAssembly`'s `assemble()`. `asIso().reverseGet` and a projection's `asLens().set` cannot return an error, so the exception propagates there. See [A record's own invariants](mapping/basics.md#constructor-invariants).
 
   _Notes for existing builds._ Code that caught a constructor's exception around `parse`, `patch`, a fallible merge or `assemble()` now receives an `Invalid` instead. Any `RuntimeException` counts, so a bug in a constructor, a division by zero or a dereference of its own, now reaches the client as its message with the stack trace dropped, where it used to fail the request: keep constructors to checks on their arguments, with messages written for a client. The hand-written `Validated.fields()` ladder is unchanged, since its `apply` runs whatever function you hand it, so it and a `@GenerateAssembly` companion now differ on a record whose constructor throws. A `MappingLaws` rejection sample for a patch or parse-only mapping must fail on a component, since a value only the constructor refuses fails unlabelled at the top level.
 
