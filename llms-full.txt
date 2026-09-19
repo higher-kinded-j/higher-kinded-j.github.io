@@ -35857,8 +35857,10 @@ OrderStatusPrisms.shipped()    // and so on, one per constant
 Immutable JDK types and many library types follow the wither pattern: `getX()` reads, `withX(value)` returns a modified copy.
 
 ~~~admonish warning title="The pairing rule, exactly"
-A lens is generated for `withXxx(T)` only when the type also has a public no-arg method named `xxx()`, `getXxx()` or `isXxx()` **returning exactly `T`**. That is stricter than it looks. `LocalDate` gets `year()`, `dayOfMonth()` and `dayOfYear()`, but *not* a month lens: `withMonth` takes an `int`, while `getMonth()` returns `Month`, so the pair does not typecheck and the field is skipped. When a wither you expected is missing from the generated class, this rule is almost always why: reach for a [spec interface](optics_spec_interfaces.md) and name the getter yourself.
+A lens is generated for `withXxx(T)` only when the type also has a public no-arg method named `xxx()`, `getXxx()` or `isXxx()` **returning exactly `T`**, and `withXxx` itself returns the type under its own type arguments, or a subtype of it. That is stricter than it looks. `LocalDate` gets `year()`, `dayOfMonth()` and `dayOfYear()`, but *not* a month lens: `withMonth` takes an `int`, while `getMonth()` returns `Month`, so the pair does not typecheck and the field is skipped. A wither on a `Tagged<T>` that returns a raw `Tagged`, or a `Tagged<String>`, is skipped the same way, since the lens hands its result back as a `Tagged<T>`; a retag, `<U> Tagged<U> withId(String)`, pairs, because the call infers `U` back to `T`. When a wither you expected is missing from the generated class, this rule is almost always why. Where the getter is the mismatch, reach for a [spec interface](optics_spec_interfaces.md) and name the getter yourself. Where the return is, a spec over the type the wither does return, `OpticsSpec<Tagged<String>>`, can use it; a raw return cannot be used by either route.
 ~~~
+
+An inner class of a generic class is imported under its enclosing class's type parameters, since that is how the type has to be written once the enclosing class takes arguments: `@ImportOptics({Outer.Line.class})` on a `class Outer<X>` gives `<X> Lens<Outer<X>.Line, String>`.
 
 ---
 
@@ -35906,7 +35908,7 @@ Some types resist it:
 
 **Builder patterns.** No withers, no all-args constructor. JOOQ POJOs, Lombok `@Builder`, Immutables, AutoValue, Protobuf messages all copy through a builder, and there is no naming convention the processor can assume.
 
-**Non-standard naming.** `config.derivedWith(newValue)` rather than `withX`, or a getter whose return type does not match the wither parameter (the `LocalDate.getMonth()` case above).
+**Non-standard naming.** `config.derivedWith(newValue)` rather than `withX`, a getter whose return type does not match the wither parameter (the `LocalDate.getMonth()` case above), or a wither that returns the type under other arguments.
 
 **Predicate-based type discrimination.** Jackson's `JsonNode` uses `isObject()` and `isArray()` rather than a sealed hierarchy, so there is nothing to enumerate.
 
@@ -35948,7 +35950,7 @@ package com.myapp.optics;
 ~~~admonish info title="Key Takeaways"
 * **`@ImportOptics` brings types you do not own into the same optic algebra as your own.** The generated optics compose with `andThen` exactly like the ones generated from your own records.
 * **Four shapes are auto-detected**: records and wither classes give lenses, sealed types and enums give prisms.
-* **The wither rule is strict about types.** `withX(T)` needs a getter returning exactly `T`, which is why `LocalDate` has no month lens.
+* **The wither rule is strict about types.** `withX(T)` needs a getter returning exactly `T`, which is why `LocalDate` has no month lens, and has to return the class under its own type arguments, a subtype of it, or a retag the call infers back to it.
 * **Collection fields get a traversal too**, named `<field>Traversal`.
 * **Builders and predicate-based types need a spec interface**, which is the subject of the next two pages.
 ~~~
@@ -36605,7 +36607,7 @@ interface MoneyOpticsSpec extends OpticsSpec<Money> {
 }
 ```
 
-Naming both halves explicitly is what makes this strategy work where auto-detection cannot: `@ImportOptics` requires the getter's return type to match the wither's parameter exactly, and here you simply say which pair to use.
+Naming both halves explicitly is what makes this strategy work where auto-detection cannot: `@ImportOptics` requires the getter's return type to match the wither's parameter exactly, and here you simply say which pair to use. The wither still has to hand back the source type, read under the arguments the spec gives it: on a `Draft<T>`, a `Draft<String> withId(String)` serves an `OpticsSpec<Draft<String>>`, and a wither that returns the type raw, or as a supertype, is refused at the spec method. See the entry in [Compiler Errors](compiler_errors.md#wither--returns--not-the-source-type-).
 
 ### `@ViaConstructor`: constructor-only value types
 
@@ -43711,6 +43713,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`is a default method`](#xopticsspecfoo-is-a-default-method) | A spec interface method has a body |
 | [`which is a type variable`](#xopticsspec-declares-opticsspecs-which-is-a-type-variable) | `OpticsSpec<S>` names a type parameter rather than a type |
 | [`which names the raw type 'Box'`](#xopticsspec-declares-opticsspecbox-which-names-the-raw-type-box) | The source type is missing its type arguments |
+| [`which hides the 'T' of its enclosing class`](#importoptics-type--names-the-type-parameter-t-of--which-hides-the-t-of-its-enclosing-class-) | An imported inner class reuses a type-parameter name of its enclosing class |
 | [`rather than as the List interface`](#throughfield--reaches-field-items-which-is-declared-as-arrayliststring-rather-than-as-the-list-interface) | `@ThroughField`'s lens focuses a concrete container, or another interface |
 | [`which the spec does not declare`](#throughfield--composes-through-a-lens-named-items-which-the-spec-does-not-declare) | `@ThroughField` has no lens for the field to compose with |
 | [`hands back as 'String'`](#throughfield--declares-focus-integer-over-field-items-of-type-liststring-whose-elements-the-standard-traversal-hands-back-as-string) | `@ThroughField`'s declared focus is not what the traversal returns |
@@ -43723,6 +43726,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`is not public and so cannot be named from`](#viacopyandset-copyconstructor-names--which-is-not-public-and-so-cannot-be-named-from-) | `copyConstructor` names a type the generated class cannot see |
 | [`and no constructor accepts`](#viacopyandset-copyconstructor-names--which--reaches-as--and-no-constructor-accepts) | No copy constructor takes the supertype you named |
 | [`is written with a wildcard type argument`](#viacopyandset--is-written-with-a-wildcard-type-argument) | A constructor rebuild cannot be written for a wildcard source type |
+| [`not the source type`](#wither--returns--not-the-source-type-) | The method `@Wither` names returns something other than the source type |
 | [`focuses '...', which is not a '...'`](#importoptics--focuses--which-is-not-a-) | A generated prism's focus is a value rather than a variant of the source |
 | [`cannot find symbol`, inside `XPrisms.java`](#cannot-find-symbol-inside-the-generated-xprismsjava-after-using-matchwhen) | A `@MatchWhen` predicate or getter name is misspelt |
 | [`requires a prism hint annotation`](#prism-method-x-requires-a-prism-hint-annotation-instanceof-or-matchwhen) | A spec `Prism` method has neither `@InstanceOf` nor `@MatchWhen` |
@@ -44144,6 +44148,46 @@ interface BoxOpticsSpec extends OpticsSpec<Box> {
 ```
 ~~~
 
+### "@ImportOptics: type '...' names the type parameter 'T' of '...', which hides the 'T' of its enclosing class '...'"
+
+An inner class imported by class literal declares a type parameter under a name its enclosing class already uses.
+
+**Fix.** Import it through a spec interface, which names the type under type parameters of its own, `interface InOpticsSpec<A, B> extends OpticsSpec<Outer<A>.In<B>>`, and give each field a `@Wither` lens. See [Generic Spec Interfaces](optics_spec_interfaces.md#generic-spec-interfaces).
+
+~~~admonish note title="Why" collapsible=true
+An inner class of a generic class is imported under its enclosing class's type parameters, because without them the type would be raw: `@ImportOptics({Outer.In.class})` names `Outer<X>.In<Y>` and declares both parameters on each generated method. Inside `In`, a parameter named like `Outer`'s hides it, which is harmless there, but one method cannot declare two type parameters with the same name. A static nested class has no enclosing instance type and takes only its own parameters, so it never draws this.
+
+A class read from a jar draws it too, but its compiled signatures cannot tell the two parameters apart and read both as the inner one. For such a class the spec names them as one: `OpticsSpec<Outer<A>.In<A>>`.
+~~~
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "which hides the 'T' of its enclosing class 'Outer'" -->
+```java
+class Outer<T> {
+
+    final class In<T> {
+
+        private final T item;
+
+        In(T item) {
+            this.item = item;
+        }
+
+        public T item() {
+            return item;
+        }
+
+        public In<T> withItem(T item) {
+            return new In<>(item);
+        }
+    }
+}
+
+@ImportOptics({Outer.In.class})
+class OuterImports {}
+```
+~~~
+
 ### "@ThroughField: '...' reaches field 'items', which is declared as `ArrayList<String>` rather than as the List interface"
 
 The spec's own lens for the field focuses something narrower than a container interface: a concrete container such as `ArrayList`, or another interface such as `Deque`. Auto-detection matches `List`, `Set`, `Collection`, `Map`, `Optional` and reference-type arrays, on the interface itself.
@@ -44450,6 +44494,46 @@ interface SlotOpticsSpec extends OpticsSpec<Slot<?>> {
 
     @ViaCopyAndSet(setter = "setLabel")
     Lens<Slot<?>, String> label();
+}
+```
+~~~
+
+### "@Wither: '...' returns '...', not the source type '...'"
+
+The method a spec's `@Wither` names hands back something other than the source type the spec declares: that type raw, the type under other arguments, or a supertype.
+
+**Fix.** Name a wither that returns the source type. Where the wither returns the type under fixed arguments, `Draft<String> withId(String)` on a `Draft<T>`, declare the spec over that instantiation, `OpticsSpec<Draft<String>>`, and it serves as it is. Otherwise rebuild the source type with `@ViaBuilder`, `@ViaConstructor` or `@ViaCopyAndSet`. See [Copy Strategies](copy_strategies.md#wither-types-with-withx-methods).
+
+~~~admonish note title="Why" collapsible=true
+The generated lens sets through the wither and hands its result back as the source type. A raw return gets there only by an unchecked conversion, in a generated file your own `@SuppressWarnings` does not reach, and any other type does not get there at all: `Base<String>`, inherited by a `Sub extends Base<String>`, is not a `Sub`. The wither is read on the source type as the spec names it, which is why the fixed-argument case above works, and a retag, `<U> Draft<U> withId(String)`, is accepted because the call infers `U` back to the spec's argument. A variable that only a wildcard argument stands for, as in a spec over `Draft<? extends Number>`, is not inferred, and such a wither is refused. Only the return is checked, over the one-parameter instance methods the generated class can call: a name none of them carries is reported by javac, at the call in the generated file. Imported by class literal instead, `@ImportOptics({Draft.class})`, such a wither is not paired at all, under the [pairing rule](importing_optics.md#wither-classes-to-lenses).
+~~~
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "not the source type 'Draft<T>'" -->
+```java
+final class Draft<T> {
+
+    private final String id;
+
+    Draft(String id) {
+        this.id = id;
+    }
+
+    public String id() {
+        return id;
+    }
+
+    @SuppressWarnings("rawtypes")
+    public Draft withId(String id) {
+        return new Draft<>(id);
+    }
+}
+
+@ImportOptics
+interface DraftOpticsSpec<T> extends OpticsSpec<Draft<T>> {
+
+    @Wither(value = "withId", getter = "id")
+    Lens<Draft<T>, String> id();
 }
 ```
 ~~~
@@ -93431,6 +93515,12 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **`@ImportOptics` imports an inner class of a generic class, and pairs a wither only when it hands back the class** ([#878](https://github.com/higher-kinded-j/higher-kinded-j/issues/878)): an inner class of a generic class, imported as `@ImportOptics({Outer.Line.class})`, now gets lenses named under its enclosing class's type parameters, `<X> Lens<Outer<X>.Line, String>`, as a generic spec interface already could. Written without them the type was raw: that failed a build run with `-Xlint:rawtypes` and `-Werror`, and did not compile at all once a field was typed by the enclosing class's parameter or the inner class declared parameters of its own. An inner class that declares a type parameter under a name an enclosing class already uses is refused, with a spec interface as the fix, since one method cannot declare both. See [Wither Classes to Lenses](optics/importing_optics.md#wither-classes-to-lenses).
+
+  A wither now pairs with its getter only when it hands back the class under its own type arguments, a subtype of it, or a retag such as `<U> Tagged<U> withId(String)`, which the call infers back to the class, just as the getter already had to return exactly what the wither takes. A spec interface's `@Wither` is held to the same return, read under the spec's own instantiation, so `Draft<String> withId(String)` serves an `OpticsSpec<Draft<String>>`; a method that hands back another type is refused at the spec method, naming what it returns. The refusal for a class with no wither that pairs now spells out what pairs. See the entry in [Compiler Errors](optics/compiler_errors.md#wither--returns--not-the-source-type-).
+
+  _Behaviour change:_ a wither returning a raw `Tagged` from a `Tagged<T>`, which compiled with an unchecked warning, no longer pairs on a class imported by class literal and is refused under a spec's `@Wither`. On a class imported by class literal, one returning `Tagged<String>` or `Tagged<?>`, which did not compile, is now skipped too. A class left with no wither that pairs, including one imported with `allowMutable = true`, is refused with the existing error.
 
 - **Mapping refusals offer fixes you can follow, and a whole-map leaf no longer silently bypasses a `@MapKey` leaf** ([#882](https://github.com/higher-kinded-j/higher-kinded-j/issues/882)): a `@GenerateMapping` or `@GenerateMerge` refusal ends with the code that fixes it, and a few of those lines did not compile, declared a method the spec already had, or pointed past the real cause. Each now offers a line that compiles and maps the component, or says that the shape is not supported yet.
   - A leaf over a whole `Map` beside a `@MapKey` leaf for the same component compiled cleanly, and the key leaf never ran, since the whole-map leaf is tried first. A key leaf the spec declares itself is now refused beside one, and the fix offers the value leaf in place of the whole-map one where that leaves the key leaf converting the keys, or else removing the key leaf. A key leaf inherited from a mix-in stays inert beside a whole-map leaf, as other shared vocabulary does.
