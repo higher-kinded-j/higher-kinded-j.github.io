@@ -22521,6 +22521,24 @@ public record Company(String name, Address address) {}
 @GenerateLenses
 public record Employee(String name, Company company) {}
 </code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="start" data-since="v0.4.10"></div>
+<h4 id="every-write-runs-the-canonical-constructor"><a class="header" href="#every-write-runs-the-canonical-constructor">Every Write Runs the Canonical Constructor</a></h4>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A generated lens's <code>set</code>, and the <code>with*</code> helper built on it, copies the record through its canonical constructor: every other component as it was, and the focused one replaced. A compact constructor that normalises or checks a component, a defensive copy or a range check, therefore runs on every write.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>Another constructor the record declares is never the one called, even one taking as many parameters:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code class="language-java">public record Money(long cents, String currency) {
+  public Money(Number major, String currency) {
+    this(Math.round(major.doubleValue() * 100), currency);
+  }
+}
+
+// 1234 cents, through Money(long, String); never the Number constructor
+Money updated = MoneyLenses.cents().set(1234L, money);
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.10"></div>
+<p>The setters and Focus paths that <code>@GenerateSetters</code> and <code>@GenerateFocus</code> generate write the same way, as do the lenses <code>@ImportOptics</code> generates for a record.</p>
 <h4 id="customising-the-generated-package"><a class="header" href="#customising-the-generated-package">Customising the Generated Package</a></h4>
 <p>By default, generated classes are placed in the same package as the annotated record. You can specify a different package using the <code>targetPackage</code> attribute to avoid name collisions or to organise generated code separately:</p>
 <pre><code class="language-java">// Generated class will be placed in org.example.generated.optics
@@ -41983,6 +42001,20 @@ Traversal&lt;MyType, Entry&gt; eachEntry();
 </div>
 <hr />
 <h2 id="the-other-three-strategies"><a class="header" href="#the-other-three-strategies">The Other Three Strategies</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="solo" data-since="v0.4.10"></div>
+<div id="admonition-overloaded-constructors-withers-and-setters" class="admonition admonish-warning" role="note" aria-labelledby="admonition-overloaded-constructors-withers-and-setters-title">
+<div class="admonition-title">
+<div id="admonition-overloaded-constructors-withers-and-setters-title">
+<p>Overloaded constructors, withers and setters</p>
+</div>
+<a class="admonition-anchor-link" href="optics/copy_strategies.html#admonition-overloaded-constructors-withers-and-setters"></a>
+</div>
+<div>
+<p>Every strategy writes the focus through something that can be overloaded: the constructor <code>parameterOrder</code> describes, the <code>@Wither</code> method, the builder's setter, the setter <code>@ViaCopyAndSet</code> calls. A lens focuses a primitive boxed, and Java offers an overloaded call the candidates needing no unboxing first, so a <code>Long</code> reaches a <code>withAmount(Number)</code> before a <code>withAmount(long)</code>.</p>
+<p>The focus is therefore unboxed to its getter's type wherever one of the candidates takes exactly that type. The call then binds where <code>new Money(source.amount(), source.currency())</code> would, every argument the type its own getter hands back. Where no candidate takes that type, as when the constructor takes the wrapper, unboxing could move the call somewhere the boxed focus never reached, so it is passed as it is.</p>
+<p>That leaves one shape to watch: a getter returning <code>Long</code> where the constructor or method takes <code>long</code>, beside one taking <code>Number</code>, reaches the <code>Number</code> one and sets whatever it computes. Have the getters return the types the constructor and methods take, and run <code>LensLaws</code> over the lens.</p>
+</div>
+</div>
 <h3 id="wither-types-with-withx-methods"><a class="header" href="#wither-types-with-withx-methods"><code>@Wither</code>: types with <code>withX()</code> methods</a></h3>
 <!-- verify -->
 <pre><code class="language-java">@ImportOptics
@@ -111582,6 +111614,11 @@ List&lt;VTask&lt;Result&gt;&gt; tasks = ids.stream()
 <h3 id="0411-snapshot-latest"><a class="header" href="#0411-snapshot-latest">0.4.11-SNAPSHOT (Latest)</a></h3>
 <p><em>In development. Release notes will be added here as changes land on <code>main</code>.</em></p>
 <div class="hkj-ct-mark" data-kind="new" data-run="start" data-since="v0.4.10"></div>
+<ul>
+<li><strong>Generated code calls a record's canonical constructor, even beside a same-arity overload</strong> (<a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/874">#874</a>): a record with a primitive component may declare another constructor taking as many parameters, such as <code>Money(Number major, String currency)</code> beside the canonical <code>Money(long cents, String currency)</code>. Generated code passed that component boxed, and Java resolves an overloaded call by trying the constructors that need no unboxing first, so a <code>Long</code> went to the <code>Number</code> constructor: <code>parse</code> read 1234 cents as 1234 pounds, <code>Money[cents=123400, currency=GBP]</code>, while <code>asIso().reverseGet</code> read the same wire as 1234 cents. Where a record declares such an overload, the generated call now unboxes the value, so the canonical constructor is the one it calls. That covers <code>parse</code>, a projection's validated <code>patch</code>, a <code>@Flatten</code> group, a mapping or merge wider than sixteen components, the fallible <code>@GenerateMerge</code>, <code>@GenerateAssembly</code>'s <code>assemble()</code>, and the lens, setter and Focus path that <code>@GenerateLenses</code>, <code>@GenerateSetters</code>, <code>@GenerateFocus</code> and <code>@ImportOptics</code> generate. The lenses <code>@ImportOptics</code> generates for a class rebuild it through the constructor or method the copy strategy names, <code>@ViaConstructor</code>, <code>@Wither</code>, <code>@ViaBuilder</code> or <code>@ViaCopyAndSet</code>, and an overload of that constructor, wither or setter took the boxed focus the same way. There is no canonical constructor to name for a class, so the focus is unboxed where one of the candidates takes exactly its getter's type, which leaves the call binding as the getters' own values would; where none does, it is passed as it is and the call binds where it always did, which for a getter handing back a wrapper may be an overload. A record without such an overload generates the same code as before. One with another primitive component beside it, such as <code>Qty(long cents, int count)</code> beside <code>Qty(Number major, int count)</code>, failed to compile instead (<code>reference to Qty is ambiguous</code>), and now compiles. See <a href="optics/lenses.html#every-write-runs-the-canonical-constructor">Every Write Runs the Canonical Constructor</a> and, for a class rebuilt through a copy strategy, <a href="optics/copy_strategies.html#the-other-three-strategies">Copy Strategies</a>.</li>
+</ul>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p><em>Notes for existing builds.</em> On a record with a primitive component and a same-arity overload, the generated lenses, <code>parse</code>, the validated <code>patch</code>, merges and <code>assemble()</code> now build the value the canonical constructor builds, and an <code>@ImportOptics</code> lens over a class sets the value its exact-typed constructor, wither or setter computes. A value built through the overload before, and any stored data or test expectation that recorded it, differs.</p>
 <ul>
 <li><strong>The <code>fields()</code> builders end in <code>construct</code> for a constructor that may refuse the fields</strong> (<a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/897">#897</a>): <code>apply</code> runs whatever function it is handed, so a record whose compact constructor checks its fields against each other made it throw, taking with it whatever an enclosing assembly had accumulated around it, and, on <code>EitherOrBoth</code>, the warnings the assembly itself carried. <code>construct(Range::new, "not a valid Range")</code> completes the assembly the same way, but once every field is valid, a <code>RuntimeException</code> the function throws becomes an unlabelled <code>FieldError</code> carrying its message, or the fallback when the message is missing or blank, so an enclosing <code>field(label, ...)</code> locates it. It is the guard the generated mappings and a <code>@GenerateAssembly</code> companion already apply, now on the hand-written builder. Every labelled builder has it, <code>Validated.fields()</code>, <code>Path.fields()</code> and <code>EitherOrBoth.fields()</code>, where a refusal keeps the warnings collected so far; the generic <code>accumulate()</code> builders end in <code>apply</code> only. <code>apply</code> itself is unchanged, and only the function is guarded: a <code>null</code> it returns still throws, and a blank fallback message is rejected. See <a href="monads/validated_assembly.html#construct">When the record refuses</a>.</li>
 <li><strong>An element-mapped spec's <code>of(...)</code> takes the spec's own leaves first</strong> (<a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/876">#876</a>): the generated factory takes one <code>ValidatedPrism</code> per abstract leaf in declaration order, and a leaf inherited from a mix-in now comes after the leaves the spec declares itself, inherited ones following the order the <code>extends</code> clause names their mix-ins. The order had come from the compiler's own listing of members, which can put an inherited leaf first, so a call written in the documented order still compiled where the leaf types coincide and ran each prism against the other component. The generated <code>of(...)</code> now documents each parameter, naming the interface that declares an inherited leaf. The processor's other checks read a spec's members in the same order, so where a spec has several problems, one it declares itself is reported first. See <a href="mapping/generics.html#element-mapped-specs">Element-mapped specs</a>.</li>
