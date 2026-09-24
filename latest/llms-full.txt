@@ -45916,7 +45916,8 @@ Those pages teach the model and put it behind an endpoint. Everything after them
 - A PATCH endpoint, or a getter/setter DTO: [Beans and Sparse PATCH](beans_patch.md)
 - A `Page<T>` at the boundary: [Generic Specs](generics.md)
 - Combining several sources, or typing your error context: [Merge and Error Envelopes](merge_envelopes.md)
-- Spring beans, test fakes, and the feature's limits: [Injecting, Testing, and Diagnostics](testing.md)
+- A rule, a limit, or a runtime surprise to look up: [Rules and Limits](rules.md)
+- Spring beans, test fakes, and how wide a record may be: [Injecting, Testing, and Diagnostics](testing.md)
 
 ~~~admonish info title="In This Chapter"
 - **Record Mapping Basics**: Declare a mapping as one empty interface and get both directions: a `build` that cannot fail and a `parse` that reports every bad field at once. Then add conversions, renames, computed fields, the one field whose `null` means *absent*, and a record's own invariants.
@@ -45946,10 +45947,11 @@ Practise the whole lane in the [Boundary Mapping Journey](../tutorials/optics/bo
 6. [Beans and Sparse PATCH](beans_patch.md): Bean wires and the UpdateSpec tier
 7. [Generic Specs](generics.md): Concrete, threaded, and element-mapped generics
 8. [Merge and Error Envelopes](merge_envelopes.md): Multi-source assembly and typed error context
-9. [Injecting, Testing, and Diagnostics](testing.md): Beans, fakes, and limits
+9. [Injecting, Testing, and Diagnostics](testing.md): Beans, fakes, and width
 10. [Capstone: One 422, Every Bad Field](capstone.md): The whole chapter on one boundary, proven
 11. [Mapper at a Glance](at_a_glance.md): Generated code, costs, and adoption decisions
 12. [Coming from MapStruct and Bean Validation](from_mapstruct.md): Your vocabulary, translated
+13. [Rules and Limits](rules.md): Every enforced rule and limit, in one place
 
 ---
 
@@ -46180,7 +46182,7 @@ build, parse, read the located errors, and law-check the result.
 
 _Declare one interface; get a `build` that cannot fail and a `parse` that reports every bad field at once._
 
-Most mappings are boring, and the mapper treats them that way: same-named, same-typed components match automatically, and one empty interface is the whole declaration. This page walks the happy path first (declare, build, parse, read the errors), then adds the declarations you will actually reach for: a conversion, a rename, a computed field, and an optional one. The precise rules live in [the fine print](#the-fine-print) at the end, where they belong.
+Most mappings are boring, and the mapper treats them that way: same-named, same-typed components match automatically, and one empty interface is the whole declaration. This page walks the happy path first (declare, build, parse, read the errors), then adds the declarations you will actually reach for: a conversion, a rename, a computed field, and an optional one. The precise rules live on a page of their own, [Rules and Limits](rules.md).
 
 ~~~admonish info title="What You'll Learn"
 - Declaring a mapping as a `MappingSpec<Domain, Wire>` interface and calling the generated Impl
@@ -46344,7 +46346,7 @@ The two directions are asymmetric: `build` computes the derived component, `pars
                           └── displayName dropped, never read
 ```
 
-The optic is a `Getter` because a derived field is single-valued: exactly one focus computed from the whole domain value. How the processor distinguishes leaf methods from derived-field methods, and how a derived field interacts with the [emission tiers](tiers.md), is [fine print](#the-fine-print).
+The optic is a `Getter` because a derived field is single-valued: exactly one focus computed from the whole domain value. How the processor distinguishes leaf methods from derived-field methods, and how a derived field interacts with the [emission tiers](tiers.md), are in [Rules and Limits](rules.md#spec-members).
 
 ---
 
@@ -46360,7 +46362,7 @@ Compare the alternatives you have debugged before: an NPE with a stack trace poi
 Returned as-is from a controller, this result becomes the single 422 response the introduction showed: [the 422 leg](../spring/spring_boot_integration.md#the-422-leg).
 ~~~
 
-The exact contract (what happens inside containers, and which nulls remain the caller's bug) is in [the fine print](#the-fine-print) below. The next section covers the one deliberate exception: a field whose `null` *means* something.
+The exact contract (what happens inside containers, and which nulls remain the caller's bug) is in [The null contract, precisely](rules.md#the-null-contract-precisely). The next section covers the one deliberate exception: a field whose `null` *means* something.
 
 ---
 
@@ -46429,9 +46431,7 @@ A [bean wire](beans_patch.md) needs no annotation: bean conventions leave `Optio
 ~~~
 
 ~~~admonish note title="Under `@NullMarked`"
-The bridged wire component is nullable by construction: `build` writes `null` into it for an absent value, so it must be declared to take one. A component declared non-null is refused: one carrying a non-null annotation such as `@NonNull`, `@Nonnull` or `@NotNull`, or one that carries no `@Nullable` inside a JSpecify `@NullMarked` package, class or module. Declare it `@Nullable String nickname`, so the wire record says what the mapping does with it. On an array the annotation goes before the brackets, `String @Nullable [] tags`, since `@Nullable String[]` makes the elements nullable and leaves the array non-null.
-
-Any annotation named `Nullable` or `CheckForNull` counts here, whichever library it comes from, and so does JSR-305's `@Nonnull(when = MAYBE)`: this rule refuses a build, so it reads more widely than the fixed list of names that decides which Focus paths are null-safe. A component typed by a type variable follows the variable's bounds: a plain `<T>` declared in a `@NullMarked` scope is non-null, as its bound `Object` is, and `<T extends @Nullable Object>` leaves the nullness to the type argument, so it bridges.
+The bridged wire component is nullable by construction: `build` writes `null` into it for an absent value, so it must be declared to take one. Declare it `@Nullable String nickname`; [A bridged component must take `null`](rules.md#bridged-component-nullable) says which declarations the processor refuses, and where the annotation goes on an array.
 ~~~
 
 ~~~admonish example title="The same pair without the annotation, refused"
@@ -46558,61 +46558,13 @@ The second stay fails at `stays.1`, and the missing guest is still reported besi
 - **Any `RuntimeException` counts, bugs included.** The null guard keeps a `null` out of the constructor, but a constructor that divides by zero or dereferences something of its own fails the same way: its message goes to the client and its stack trace is dropped. Keep the constructor to checks on its arguments, with messages written for a client.
 - **A rule about one field alone belongs in a [leaf](#validated-leaves)**: it locates at the field and accumulates with the record's other errors.
 
-The same guard covers every surface that builds the record whole from parsed parts: the [projection's `patch`](tiers.md#leaf-carrying-projections-the-validated-patch), a [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group, the fallible [`@GenerateMerge`](merge_envelopes.md), and [`@GenerateAssembly`](../monads/validated_assembly.md#generating-the-companion-generateassembly)'s `assemble()`. The [sparse `UpdateSpec` tier](beans_patch.md#sparse-patch-write-back-updatespec) constructs the record once, from the values the PATCH ends on, and its `apply` reports a refusal the same way, unlabelled; a nested record the PATCH replaces whole parses through its own spec, guard included. Three surfaces cannot return an error, so there the exception propagates: `asIso().reverseGet` and a projection's `asLens().set`, total optics meant for values already known to be lawful, and the `Update` a sparse update's `toValidated()` hands back.
+The same guard covers every surface that builds the record whole from parsed parts. Only `asIso().reverseGet`, a projection's `asLens().set` and a sparse update's `toValidated()` let the exception propagate instead: [which surfaces a refusal reaches](rules.md#constructor-refusal-surfaces).
 
 ---
 
-## The fine print {#the-fine-print}
+## A rule nothing checks for you {#the-fine-print}
 
-Nothing above requires this section; come back when a corner case finds you.
-
-### The null contract, precisely {#the-null-contract-precisely}
-
-The null guard covers every reference-typed `parse` read that is not [bridged](#optional-bridge), on record and bean wires alike, and reaches inside containers, identity-copied ones included, at every depth:
-
-- A `null` element or map value locates the way its container locates anything ([lifting grammar](structure.md#nesting-containers-and-recursion)): by index in a `List` or array (`emails.1: must not be null`), by key in a `Map`, whether the container lifts through a leaf ([the bulk forms](../optics/validated_prism.md#the-bulk-forms-parseall-and-parsevalues)) or copies by identity. The index is a plain positional segment, matching the map-key grammar.
-- A `null` element of a `Set` has no rendering to locate by, and a set holds at most one, so it reports unlocated under the component: `emails: must not contain a null element`, which is distinct from `must not be null`, the message that says the set itself is absent.
-- An array of primitives (`int[]`) carries no element scan: a primitive element cannot be null. The component is still a reference, so a `null` *array* is guarded like any other read.
-- An identity container is scanned at every level its type names, so a `null` deep inside carries its full path: `grid.0.1` in a `List<List<String>>`, `byKey.k.1` in a `Map<String, List<String>>`, `matrix.0.1` in a `String[][]`. An `Optional` cannot hold a `null`, but one holding a container is scanned through, and locates at the component itself, since it holds only the one value (`nicknames.1`).
-- How the container is declared does not matter. Any `Collection` counts, and any `Map`: a subtype (`ArrayList`, `LinkedHashMap`, `EnumMap`), a supertype (`Collection`), a raw type, one with a wildcard argument, or a type variable bounded by one. A collection that is a `Set` when it is parsed follows the set rule above; any other locates by position, in iteration order.
-- A failure inside a set's element locates under that element's rendering, as a set element that fails its leaf does: `tagged.[b, null].1` for a `Set<List<String>>`. The rendering is the element's `toString()`, so an element containing a dot reads as deeper nesting in `pathString()`, while `FieldError.path()` keeps it as one segment.
-- A container class that fixes its own element type, such as a tree node declared `class Node extends ArrayList<Node>`, can hold itself at any depth. It is scanned one level into itself: where the class recurs, its elements are checked for `null` but not scanned inside.
-- Only these containers are looked inside. An `Iterable` or `Stream` component, and the library's own `Maybe` and `NonEmptyList`, are guarded against `null` themselves, but nothing inside them is scanned yet.
-- The values a [`@MapKey`](structure.md#converting-map-keys) map copies are scanned the same way, located under their source key.
-- The scan only locates nulls. What `parse` hands the domain is a [copy](#same-typed-containers-cross-as-copies), made before the scan runs, so the scan reads exactly what the wire held.
-- A `null` container *component* is guarded like any reference read (`emails: must not be null`).
-- A [bridged](#optional-bridge) container excuses only the absent case: `null` reads as empty, and a *present* container is scanned exactly as an unbridged one is.
-
-What stays the caller's error (`NullPointerException`), by contract: a `null` *wire* itself, a `null` map *key* (a structurally broken map, not a wrong value), and calling the bulk forms directly with a `null` list or map. A key is never scanned inside, even when it is a container.
-
-Absence-as-a-meaning is deliberate everywhere it appears. A record component cannot express it by itself (it can only be wrong), so it takes either the [sparse `UpdateSpec` tier](beans_patch.md#sparse-patch-write-back-updatespec), where every `null` means *leave unchanged*, or an [`@OptionalBridge`](#optional-bridge) component, where one named field's `null` means *absent*. Neither is inferred; both are declarations.
-
-### Same-typed containers cross as copies
-
-A component whose type is the same on both sides, with no leaf of its own, crosses the boundary as a copy when it is a `List`, `Set`, `Collection`, `Map`, `Optional` or array, in both directions. Changing a wire's list after `parse` leaves the domain alone, and changing a built wire's list after `build` does not reach back into the domain. The same holds for `asIso()`, `asLens()`, the validated `patch`, a sparse [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec), a [bridged](#optional-bridge) component, the values a [`@MapKey`](structure.md#converting-map-keys) map carries, and a [`@GenerateMerge`](merge_envelopes.md#merging-several-sources-generatemerge) fill. A leaf over the whole container, or a derived field, hands over whatever your own code returns.
-
-- The copy is unmodifiable and keeps the source's order, with a `Set` copied as a set and any other `Collection` as a list: the shape an element-lifted leg's result already has. Code that adds to a built bean's list afterwards throws `UnsupportedOperationException`; set a new list instead, or copy it first (`new ArrayList<>(bean.getTags())`). A getter-only list filled through `getTags().addAll(...)` stays the bean's own.
-- It carries what it copies. A `null` element stays where it was (the [null scan](#the-null-contract-precisely) decides what `parse` makes of it, and `build` stays total), and a `null` container copies to `null`.
-- Every level inside is copied too: each list inside a `List<List<String>>`, each value of a `Map<String, List<String>>`, each row of a `String[][]`, and the container an `Optional` holds. Each call allocates one copy per container it hands over, at every level.
-- A copy compares the way a list, set or map does. A sorted source (`TreeSet`, `TreeMap`) keeps its order but not its comparator; declare the sorted type, which is handed over as it is, or sort again in the record's compact constructor. A source that compares by identity, such as an `IdentityHashMap` declared as `Map`, or a `Collection` holding an `ArrayDeque`, comes back comparing by its elements.
-- An array is copied with `clone()`, a primitive array included, and so is each row that is itself an array. A record compares an array component by reference, so a record with an array component and no `equals` of its own is not equal to its own round trip (see [Diagnostics and limits](testing.md#diagnostics-and-limits)).
-- A copy keeps the declared type, so only a level declared as exactly `List`, `Set`, `Collection`, `Map` or `Optional`, or as an array, is copied. Everything else is handed over as it is, and so is everything inside it: a subtype (`ArrayList`, `LinkedHashMap`, `TreeSet`), any other interface (`Deque`, `SortedSet`), a same-typed record or other class, a type variable, and an element declared through a wildcard (the rows of a `List<? extends List<String>>`). So are the collections inside an array, whose runtime type may not hold a copy (an `ArrayList[]` behind a `List<String>[]`), and any element of a set that holds a `Collection`, however deeply (a `Set<Optional<Collection<String>>>` as much as a `Set<Collection<String>>`), since copying one into a list could make two elements equal and the set would keep one. Declare the interface type, or copy in the record's compact constructor, where sharing would matter.
-- A raw container is copied one level deep; what it holds is handed over as it is.
-
-### How the two `default` families are told apart
-
-Leaves are named after *domain* components and return `ValidatedPrism`; derived fields are named after *wire-only* components and return `Getter`. The processor matches the two differently:
-
-- A zero-parameter `default` returning `Getter` is *always* claimed as a derived field, and validated as one. So give getter-shaped utility helpers a parameter or a different return type, or they will be mistaken for derived fields.
-- A `default` returning `ValidatedPrism` is matched by name against the domain's components (and against the members of any [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group), and a *locally declared* leaf **must** match: an unmatched local leaf is a compile error with a nearest-name hint (`leaf 'emial' names no component of Customer. Did you mean 'email()'?`), because a silently inert leaf would silently stop validating that field. Prism-returning helpers belong in `private` or `static` methods, which are never leaf-shaped.
-- *Inherited* [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) members that match nothing stay inert by design: a shared vocabulary may carry leaves for components only some extending specs have, and likewise derived fields and renames for wire components only some of their wires carry.
-- On a **sealed** mapping, locally declared leaves, derived fields and renames are rejected outright (a dispatch has no components); inherited vocabulary stays inert there too, bar a `@Flatten` marker, which is refused either way.
-
-Four shapes are rejected, each with a what/why/fix diagnostic: a *locally declared* `Getter` named after a *domain* component (ambiguous with a leaf); a *locally declared* `Getter` naming nothing on the wire; a `Getter` with the wrong type arguments; and a `@MapField` rename targeting a component a derived field already fills. The first two are the typo guard, so an inherited `Getter` in either position stays inert instead; the last two catch a member that does bind, and fire wherever it was declared.
-
-### Derived fields and the emission tiers
-
-A spec with any derived field never emits `asIso()`: the wire round trip recomputes the derived component, so it is an identity only for wire values that were already consistent. A mapping whose *only* extra is a derived field is *total-parse*: no **well-formed** wire value can fail it (the null guards above still apply, a domain constructor's [invariant](#constructor-invariants) can still refuse a value, and a fallible leaf elsewhere in the spec still makes the whole parse fallible). Combining a derived field with a projection (a wire otherwise smaller than the domain) is rejected, because the projection's `asLens()` write-back could never honour a component that `build` recomputes. [The Emission Tiers](tiers.md) is the full story.
+This one stays on the page it is about, because the processor cannot see it.
 
 ### Bind in the caller, not on the spec {#bind-in-the-caller}
 
@@ -46724,7 +46676,7 @@ Every parse failure is a located `FieldError` with a copy-worthy message, so the
             "total: not a number in plain notation (expected e.g. 123.45)");
 ```
 
-### Canonical forms only
+### Canonical forms only {#canonical-forms-only}
 
 Each codec accepts exactly the form it renders, honouring the [`ValidatedPrism` section law](../optics/validated_prism.md#laws). A case-folded UUID, a leading zero, scientific notation or a lowercase language tag is a located rejection, never a silent normalisation, so whatever `parse` accepts, `build` reproduces byte-for-byte (`build(parse(s).get()) == s` whenever `s` parses).
 
@@ -46874,32 +46826,13 @@ interface SupplierMapping extends ContactVocabulary, MappingSpec<Supplier, Suppl
     SupplierMappingImpl.INSTANCE.parse(new SupplierDto("Acme Ltd", "sales@acme.example", "01"));
 ```
 
-An inherited member counts exactly as if it were declared on the spec: renames, leaves, derived fields, `@OptionalBridge` markers, [`@MapKey`](structure.md#converting-map-keys) key leaves *and* [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) markers, collected across the whole hierarchy (a mix-in may extend further mix-ins, and a diamond counts once). Precedence is **Java's own**: a member re-declared on the spec (or on a nearer mix-in) hides the one it overrides. An inherited member that binds to nothing here stays inert, so one vocabulary can serve specs whose domains and wires differ; the same declaration made locally is an error, which is what catches a typo. Which side a member binds against decides what "nothing" means:
-
-| Member | Binds against | Inherited, when it binds to nothing |
-|---|---|---|
-| leaf, `@OptionalBridge` marker | the **domain**, by the method's name | inert |
-| `@MapKey` key leaf | the **domain**, by the name in the annotation | inert |
-| derived field | the **wire**, by the method's name | inert |
-| `@MapField` rename | **both**: its method names a domain component, its `to` a wire one | inert when either end is missing |
-| `@Flatten` marker | the **domain**, by the method's name | inert; the one member also judged against the **wire**, so a sealed pair or an [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) can refuse it even where it binds |
-
-So a projection or a PATCH bean that deliberately carries a subset extends the same vocabulary as the full spec, and simply maps fewer of its members; a sealed dispatch, which has no components at all, inherits the same vocabulary and binds none of it. Nothing is silently mismapped by an inert member, because every wire component still has to name a source: a wire that does carry a rename's target and has no other source for it is reported against that component. The cost is that a `to` typed wrongly *in the mix-in* is now caught only where some spec's wire happens to carry the intended name, which is the same trade the other inherited kinds already make.
+An inherited member counts exactly as if it were declared on the spec: renames, leaves, derived fields, `@OptionalBridge` markers, [`@MapKey`](structure.md#converting-map-keys) key leaves *and* [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) markers, collected across the whole hierarchy (a mix-in may extend further mix-ins, and a diamond counts once). Precedence is **Java's own**: a member re-declared on the spec (or on a nearer mix-in) hides the one it overrides. An inherited member that binds to nothing here stays inert, so one vocabulary can serve specs whose domains and wires differ; the same declaration made locally is an error, which is what catches a typo. [What an inherited member binds against](rules.md#what-an-inherited-member-binds-against) decides what "nothing" means for each kind of member.
 
 A mix-in **may be generic**: its members are read under the spec's instantiation, so `Emails<T>` extended as `Emails<EmailAddress>` contributes `ValidatedPrism<String, EmailAddress>`. See [Generic mix-ins](generics.md#generic-mix-ins).
 
-Two mix-in shapes are rejected, each naming the offender:
+The processor refuses a mix-in that is itself a mapping spec, and a generic one reached raw: see [mix-in shapes the processor refuses](rules.md#refused-mix-in-shapes).
 
-- a mix-in that **is itself a mapping spec** (directly or transitively extends `MappingSpec`/`UpdateSpec`): a mix-in shares vocabulary, a spec generates an Impl, and inheriting one spec from another would conflate the two;
-- a generic mix-in **reached raw**, either because the spec writes `extends Emails` or because an interface between them does: raw erases every member of the type below it, so the spec would inherit what it never declared.
-
-Diagnostics about an inherited member name its declaring interface, `abstract method 'bogus' (inherited from 'BrokenVocabulary') is neither a rename, a leaf, nor a bridge`, so the fix points at the right file. A member whose type only the mix-in's own package can see is refused the same way: the Impl is generated in the spec's package and writes the member's type out in full, so a package-private type a mix-in hands over from elsewhere has nowhere to be named.
-
-~~~admonish note title="The inheritance edge cases, precisely"
-Conflicting inherited `default` methods are already a javac error before the processor runs. The one case javac leaves open, unrelated mix-ins both declaring the same *abstract* rename (override-equivalent abstracts may coexist, JLS 9.4.1), folds into a single rename when the targets agree and is rejected with a diagnostic naming both interfaces when they conflict. Where the agreeing declarations differ covariantly (`String id()` beside `CharSequence id()`), the one generated stub returns the narrowest of them, which is the only one of the declared returns that satisfies the rest; a group with no narrowest (a raw return beside incomparable parameterised ones) is refused naming every declaration. Interface `static` helpers are not inherited (JLS 9.4.1), so factory methods on a mix-in stay inert.
-~~~
-
-Mix-ins compose with the rest of the feature: [threaded generic specs](generics.md) can extend mix-ins, generic ones included, at their own type parameters, and [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) mappings inherit vocabulary the same way, element leaves included, so the leaf a full spec lifts over a `List` serves its PATCH sibling unchanged. An inherited member the sparse tier cannot use is inert rather than refused: a derived field feeds a `build()` an `UpdateSpec` never emits, and an `@OptionalBridge` marker reads a `null` the sparse tier has already read as *absent*, so neither is ever consulted, and only a spec that declares one itself is told so. An inherited [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) marker is inert too whenever the PATCH bean carries none of the group's inner properties that nothing else fills, which covers a bean declaring the group's own component and one omitting the group entirely; a bean carrying one is asking for a spread, which has no sparse edit shape yet, and keeps a refusal naming both the marker and the mix-in it came from. [`@GenerateMerge`](merge_envelopes.md) specs still declare everything directly.
+Mix-ins compose with the rest of the feature: [threaded generic specs](generics.md) can extend mix-ins, generic ones included, at their own type parameters, and [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) mappings inherit vocabulary the same way, element leaves included, so the leaf a full spec lifts over a `List` serves its PATCH sibling unchanged. [Inherited members on a sparse spec](rules.md#inherited-members-on-a-sparse-spec) says which of them stay inert there. [`@GenerateMerge`](merge_envelopes.md) specs still declare everything directly.
 
 A vocabulary also crosses a **module boundary**. It is a plain interface rather than a spec, so the module publishing it needs no annotation processor, only the library its own members name, and a downstream spec extends it from the jar exactly as from a sibling source file: the annotations that give its members meaning are kept in the class file. One API module can therefore own the house vocabulary that every service module's specs extend. See [Across modules](structure.md#across-modules).
 
@@ -47011,7 +46944,7 @@ interface CrewMapping extends MappingSpec<Crew, CrewDto> {
     //   notes.bad-key: not an email address]) <- a key locates by the key it was sent as
 ```
 
-Lifting needs the *same* container on both sides. A `List` against a `Set`, or an array against a `List`, is not a pair: it reports as a plain type mismatch rather than silently changing what the collection promises. The container must also be named exactly, one level deep: an `ArrayList`, a `SortedSet` or a `Collection` does not lift, nor does a wildcard element such as `List<? extends Customer>`, and a leaf over the elements of a nested container (the `String` inside `Optional<List<String>>`) is not lifted twice. The refusal says so, and where the component would lift once both sides declare the same exact container, say `List<Customer>` against `List<CustomerDto>`, it offers that declaration. A domain `Optional<T>` against a plain nullable wire component `T` is the [`@OptionalBridge`](basics.md#optional-bridge) shape instead, and it [nests through the element's spec](#optional-nested-objects) all the same. An array of primitives (`int[]`) is copied whole, because a `ValidatedPrism` cannot focus a primitive, and a primitive element cannot be null. An array element type must also be able to name its own constructor, since lifting builds a new array: a type variable or a parameterised element (`T[]`, `List<Tag>[]`) is refused, because the generated `T[]::new` is generic array creation.
+Lifting needs the *same* container on both sides. [What lifts, and what does not](rules.md#what-lifts) has the exact rule, and the refusal offers the declaration that would lift. A domain `Optional<T>` against a plain nullable wire component `T` is the [`@OptionalBridge`](basics.md#optional-bridge) shape instead, and it [nests through the element's spec](#optional-nested-objects) all the same.
 
 Locating a set element by its own rendering is the only honest answer available: a set has no index, and its iteration order is not part of its contract, so numbering the elements would name a *different* one on the next run. The value is what identifies the element, so that is what the path says.
 
@@ -47031,6 +46964,10 @@ flowchart TD
 ```
 
 Because nesting is *delegation* (a full mapping's `Impl` exposes [`asValidatedPrism()`](tiers.md), and a [one-directional bean mapping](beans_patch.md#one-directional-beans) the half it has, so a whole mapping plugs in wherever a leaf does), recursion terminates by construction: a self-referential `Tree(String value, List<Tree> children)` maps with an empty spec and round-trips any finite tree.
+
+~~~admonish warning title="A same-typed container crosses as a copy"
+A same-typed component declared as a `List`, `Set`, `Collection`, `Map` or `Optional` crosses as an unmodifiable copy, not as the instance the wire or the domain holds. Code that adds to a built wire's list afterwards throws `UnsupportedOperationException`: set a new list, or copy it first. An array crosses as a clone and compares by reference, so a record with an array component and no `equals` of its own is not equal to its own round trip. [Same-typed containers cross as copies](rules.md#same-typed-containers-cross-as-copies) has the precise rule.
+~~~
 
 ~~~admonish note title="Keys and set elements are located by `toString()`"
 The rendered path uses the `toString()` of each key, or of each set element, so one containing a dot looks the same as deeper nesting, and two distinct ones whose renderings collide share a location. The structured `FieldError` path list stays exact regardless, holding the whole rendering as one segment, and every error is still reported.
@@ -47130,7 +47067,7 @@ A present list lifts element by element, exactly as a `List<Customer>` component
 
 A `Map` component's value leaf is named after the component, like every other leaf. Its keys need a second leaf, and Java forbids two zero-parameter methods sharing that name, so a key leaf carries `@MapKey`, and the annotation names the component it belongs to. Either side may convert alone: a key leaf without a value leaf converts the keys and copies the values.
 
-A leaf over the whole `Map` is tried before either, so it would leave a key leaf for the same component with nothing to convert. A key leaf the spec declares itself is refused beside one, wherever the whole-map leaf is declared, and the fix offers the value leaf in its place where that works, or removing the key leaf. A key leaf inherited from a mix-in stays inert beside a whole-map leaf, so one vocabulary can serve specs that map the component by its parts and specs that map it whole.
+A leaf over the whole `Map` wins over both, so a key leaf beside it has nothing to convert: [a key leaf beside a whole-map leaf](rules.md#key-leaf-beside-a-whole-map-leaf) says when that is refused.
 
 Without a key leaf, keys can only pass through, so their types must match exactly; a mismatch is a compile error that offers the annotation as the fix.
 
@@ -47182,9 +47119,7 @@ The group is spread by name, and the whole vocabulary applies inside it by name 
 
 An all-identity group keeps the mapping lossless: `asIso()` survives and reassembles the record on the way back. A mapping carrying a group is nested by other specs like any other, in the same compilation or from a dependency.
 
-Names must be unambiguous, since every wire component takes exactly one source: a group member may not share its name with a domain component or with another group's member (so two components of the same record type cannot both be spread), a derived field may not be named after one, and a wire component named after the flattened component itself must be fed by a rename from another component. Each collision is a compile error naming both sides.
-
-Spreading is one level deep: a record inside the group nests through its own spec against a nested wire component, and a marker naming a group member is refused. Flattening otherwise stays on the full record-record tier for now: a bean-shaped wire, a generic spec, a projection, a sparse `UpdateSpec` and a group wider than one `fields()` ladder are each refused with a diagnostic, not supported yet. On a sparse `UpdateSpec` a marker [inherited](codecs.md#shared-vocabulary-mix-in-interfaces) from a mix-in is inert unless the PATCH bean actually spreads the group, so one vocabulary still serves a full spec and its PATCH sibling.
+Flattening onto a bean-shaped wire, a generic spec, a projection or a sparse `UpdateSpec` is not supported yet. [Names in a flattened group](rules.md#names-in-a-flattened-group) and [where a flattened component can appear](rules.md#where-flattening-applies) have the precise rules.
 
 ---
 
@@ -47204,35 +47139,13 @@ interface InvoiceMapping extends MappingSpec<Invoice, InvoiceDto> {}
 
 There is nothing to configure. The one requirement falls on the dependency: `:orders-api` must be compiled with `hkj-processor` on its processor path, as any module that declares specs must be ([Multi-module builds](../tooling/manual_setup.md#multi-module-builds) has the build-side detail). Every kind of spec comes along. A [threaded or element-mapped](generics.md) spec resolves by the same unification, a [sealed pair](#sealed-hierarchies) dispatches to subtype specs in the dependency, and a [`@GenerateMerge`](merge_envelopes.md) fill delegates the same way.
 
-A [shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) travels too, and is the one thing here that needs no processor on the publishing module: a mix-in is a plain interface rather than a spec, so a module may export one for downstream specs to extend with nothing on its processor path at all (it still compiles against the library its own members name, `hkj-core` for a `ValidatedPrism` leaf, `hkj-api` for a `Getter`). Its renames, bridges and key leaves mean the same thing downstream as at home, because `@MapField`, `@OptionalBridge`, `@MapKey` and `@Flatten` are retained in the class file rather than discarded after compilation. None of the index caveats below apply to a vocabulary itself: it is found by ordinary inheritance, not through the index at all. A dependency's spec that extends one is another matter, since it can be used here only with the vocabulary on this module's compile classpath too (the last rule below).
+A [shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) travels too, and is the one thing here that needs no processor on the publishing module: a mix-in is a plain interface rather than a spec, so a module may export one for downstream specs to extend with nothing on its processor path at all (it still compiles against the library its own members name, `hkj-core` for a `ValidatedPrism` leaf, `hkj-api` for a `Getter`). Its renames, bridges and key leaves mean the same thing downstream as at home, because `@MapField`, `@OptionalBridge`, `@MapKey` and `@Flatten` are retained in the class file rather than discarded after compilation.
 
 ~~~admonish tip title="Why this matters"
 The delegation is an ordinary static reference in generated code, resolved at compile time from the dependency's class files: no runtime registry, no reflection, no service file to keep in step. Rename or remove a spec upstream and the downstream build fails at the use site, with the pair named, rather than a request failing later.
 ~~~
 
-### How a dependency's specs are found
-
-Nothing in a jar says which of its interfaces are mapping specs, and the compiler can list a package but not search a classpath. So the processor keeps an **index**: beside every generated `Impl` of a `MappingSpec` it writes one empty class into the package `org.higherkindedj.mapping.index`, carrying `@MappingIndexEntry` with the spec's name. A downstream compilation lists that package, reads each spec it names from its class file (which carries everything registration needs, type arguments included), and registers it exactly as if it were declared alongside. The entries are not for hand use.
-
-```mermaid
-flowchart LR
-    A[":orders-api<br/>CustomerMapping<br/>CustomerMappingImpl<br/>index entry"] -->|"jar on the classpath"| B[":billing<br/>InvoiceMapping nests<br/>(Customer, CustomerDto)"]
-    B -->|"lists the index package,<br/>reads CustomerMapping"| C["InvoiceMappingImpl delegates to<br/>CustomerMappingImpl.INSTANCE.asValidatedPrism()"]
-
-    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
-    classDef domain fill:#a6d189,stroke:#40a02b,color:#232634
-    class A,B wire
-    class C domain
-```
-
-Four rules keep the resolution predictable:
-
-- **Your own spec wins.** A spec in the compilation shadows a classpath spec for the same pair, so adding a dependency never changes a resolution that already worked. The shadowed spec is named in a compiler note; if it is the one you meant, a leaf named after the component delegates to it explicitly.
-- **Two dependencies for one pair are ambiguous.** The error is the same `matches more than one mapping spec` as for two specs in one compilation, each candidate listed by its qualified name with `(classpath)`. For a nested component the remedy is a leaf naming the one you mean; a sealed subtype pair has no leaf, so declare the spec yourself and it shadows both.
-- **A stale entry is passed over.** An entry naming a spec that is no longer on the classpath, or naming anything but an interface, describes nothing. One whose spec is present but whose `Impl` is missing (a partial build output, or a jar that dropped it) is never chosen, and a use site that needed the pair is told which dependency to rebuild.
-- **A spec is used whole or not at all.** A dependency's spec is read from its class file against this module's compile classpath, so every interface it extends has to be there too. If a mix-in, or anything a mix-in extends, is missing, the spec cannot be read in full (an element-mapped one would show fewer leaves than its `of(...)` takes) and its `Impl` cannot be called from here at all. Such a spec is never chosen, and a use site that needed the pair names the missing type; [Multi-module builds](../tooling/manual_setup.md#multi-module-builds) says how to put it on the compile classpath.
-
-The index is classpath-only. A module with a `module-info` writes no entry and reads none, not supported yet, because the index is one package and the module system allows a package in one module only; the same rule keeps two spec-carrying jars from serving as automatic modules side by side. Across a boundary of that kind, delegate with a leaf calling the other `Impl`'s `asValidatedPrism()`, and give a library bound for a module path the processor option `-Ahkj.mapping.index=false`, which writes no entries and reads none.
+The processor finds a dependency's specs through a classpath index, and your own spec always wins over a dependency's for the same pair, so adding a dependency never changes a mapping that already worked. [How a dependency's specs are found](rules.md#how-a-dependencys-specs-are-found) has the index and the other three rules. Resolving a dependency's specs on the module path is not supported yet: keep spec-carrying jars on the classpath, or delegate with a leaf calling the other `Impl`'s `asValidatedPrism()`.
 
 ---
 
@@ -47341,7 +47254,7 @@ flowchart TD
     class U,B,W,F,D decision
 ```
 
-(The bean-read leg of that last decision: on a bean wire an unset reference property is an ordinary state, so its guarded reads count as fallible and a lossless-*looking* bean mapping still lands on the accumulating branch, withholding `asIso()`; see [Beans and Sparse PATCH](beans_patch.md#bean-shaped-wire-targets). The same reads decide a bean projection: any reference property makes it land on `patch`, while an all-primitive bean projection, whose reads can never be null, takes the `asLens()` branch. And a projection that also declares a [derived field](basics.md#derived-wire-fields) is rejected outright, which is why derived fields do not count towards the wire tally. An [`@OptionalBridge`](basics.md#optional-bridge) component counts as fallible on both branches, on either wire shape: absence is a real correspondence, not a copy, so a mapping carrying one withholds `asIso()` and a projection carrying one takes `patch`.)
+How a bean wire, a derived field and an `@OptionalBridge` component fall through this flow is in [Rules and Limits](rules.md#where-a-bean-or-bridged-component-lands).
 
 And as the reference table:
 
@@ -47589,11 +47502,12 @@ The design decisions worth knowing:
 - **Null is located, never thrown, like every wire.** The null guard is universal ([one rule](basics.md#null-doctrine), both shapes), so a `null` property read is a located `FieldError` exactly as on a record wire. What is bean-*specific* is why nulls are expected at all: an unset property is a representable, ordinary state of a mutable bean, not just a hostile binding.
 - **Honest tiers.** Because an unset property is ordinary, a bean's guarded reference reads count as fallible and the mapping withholds `asIso()` automatically; an all-primitive bean (whose reads can never be null) still earns it. A record wire's guards exist for hostile bindings only, so a lossless record mapping keeps `asIso()`, with the parse-iso coherence law scoped to wires whose reference components are non-null and whose values the domain accepts. Nesting is unaffected: a bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a [one-directional](#one-directional-beans) one exposes the half it has, nesting wherever only that direction is used.
 - **Construction strategy** is detected from the bean's shape, tried in order: a public no-args constructor with `setX` setters (and, for a getter-only `List`, the JAXB convention `getItems().addAll(...)`); then a static `builder()`/`newBuilder()` whose setters fill it and whose `build()` yields the wire. A bean with getters that fits neither is only ever read, so it maps [parse-only](#one-directional-beans); a bean with nothing to read or write gets a what/why/fix diagnostic.
-- **A property is a getter and a writer that share a name.** Getters are `getX()`, and `isX()` returning `boolean` or `Boolean` (the shape JAXB declares for an optional boolean); where a bean declares both for one name, `getX()` reads it. A getter nothing writes, or a writer nothing reads, is left out of the mapping, which suits a computed getter such as `getSummary()` or a builder's singular adder. When an unpaired accessor is named after a domain component the bean carries under no name, the one the component maps under (its own, or the one a `@MapField` rename gives it), leaving it out would drop that component without a word, so it is refused. The diagnostic names the accessor that would pair it. When a nearby accessor of the other kind has the same type, it is offered as the likely misspelling, so `setEmail(String)` beside `getEmial()` is told to rename the getter to `getEmail()`; otherwise it offers the [`@Unmapped` marker](#accessors-meant-to-stay-out) below, for an accessor that is meant to stay out.
-- **A getter-only `List` must name its element type**, because `addAll` is what fills it: over a raw `List` that call is unchecked, and over a wildcard one the receiver and the argument capture separately, so neither writes into an Impl that compiles. The diagnostic names the remedy its cause calls for (declare the type arguments, or replace the wildcard with the element type it stands for), and both causes are also answered by a setter, which takes the property as declared. This is a `build` rule only: the [sparse tier](#sparse-patch-write-back-updatespec) reads such a property and never writes it, so the same bean maps there untouched.
-- **Optionality bridges through `null`, automatically here.** On a full mapping, a domain `Optional<T>` maps to a nullable bean property `T` (bean conventions leave `Optional` off property types): empty bridges to absent (`build` writes `null`, replacing whatever the bean or its builder started with; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf, or [nests through its own spec](structure.md#optional-nested-objects). This is the *only* wire shape where the bridge needs no declaration: a record wire opts in per component with [`@OptionalBridge`](basics.md#optional-bridge), which buys the same correspondence, and declaring it on a bean spec is redundant (a note, not an error, so one mix-in can serve both shapes). One property shape refuses the bridge: a getter-only `List` filled by the JAXB convention above has no unset state to carry absence, because its getter creates the list on first call, so an empty `Optional` would read back as a present empty list; the diagnostic asks for a `List<T>` domain component, where the empty list *is* nothing, or for a property that can hold the `null`, which takes both a setter to write it *and* a getter that returns what the setter stored, since a lazily creating getter loses absence on the read even when a setter exists. The [sparse tier](#sparse-patch-write-back-updatespec) is the deliberate exception in the other direction: there `null` already means "leave unchanged", so a PATCH bean encodes "set to empty" with an `Optional`-typed property instead.
+- **A property is a getter and a writer that share a name.** Getters are `getX()`, and `isX()` returning `boolean` or `Boolean` (the shape JAXB declares for an optional boolean); where a bean declares both for one name, `getX()` reads it. A getter nothing writes, or a writer nothing reads, is left out of the mapping, which suits a computed getter such as `getSummary()` or a builder's singular adder. When an unpaired accessor is named after a domain component the bean carries under no name, the one the component maps under (its own, or the one a `@MapField` rename gives it), leaving it out would drop that component without a word, so it is refused. The diagnostic names the fix: [when an unpaired accessor is refused](rules.md#unpaired-accessors) lists what it offers, and [Accessors meant to stay out](#accessors-meant-to-stay-out) covers the marker for one left out on purpose.
+- **Optionality bridges through `null`, automatically here.** On a full mapping, a domain `Optional<T>` maps to a nullable bean property `T` (bean conventions leave `Optional` off property types): empty bridges to absent (`build` writes `null`, replacing whatever the bean or its builder started with; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf, or [nests through its own spec](structure.md#optional-nested-objects). This is the *only* wire shape where the bridge needs no declaration: a record wire opts in per component with [`@OptionalBridge`](basics.md#optional-bridge), which buys the same correspondence, and declaring it on a bean spec is redundant (a note, not an error, so one mix-in can serve both shapes). One property shape refuses the bridge, [a getter-only `List`](rules.md#getter-only-list-refuses-the-bridge), which has no unset state to carry absence. The [sparse tier](#sparse-patch-write-back-updatespec) is the deliberate exception in the other direction: there `null` already means "leave unchanged", so a PATCH bean encodes "set to empty" with an `Optional`-typed property instead.
 - **A bridged property's writer must take `null`.** `build` never skips a write, so a bean's own defaults (a field initialiser, a builder's default) cannot survive it and read back as present. The price is that an empty `Optional` reaches the setter or builder setter as `null`. A setter that copies defensively needs a guard (`v == null ? null : List.copyOf(v)`). A parameter declared non-null, by a non-null annotation or by a `@NullMarked` scope with no `@Nullable` on it, is refused, as a bridged record component is: mark it `@Nullable` (on a Lombok bean, on the field, which Lombok copies to the setter). A generated builder that refuses `null` (protobuf, Immutables) cannot be changed, so declare the component without the `Optional`, or give it a leaf over the whole `Optional` that encodes absence the builder's way (`ValidatedPrism<String, Optional<String>>` mapping empty to `""`), which wins over the bridge. A default the bean applies to a `null` it is given, in the setter, a builder's `build()` or the getter, still reads back as present; `MappingLaws` catches it.
 - **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the *wire* may be bean-shaped; a bean domain gets a diagnostic.
+
+The precise rules for bean wires, from an unpaired accessor to what a getter-only `List` must declare, are in [Bean wires](rules.md#bean-wires).
 
 ### Bean projections {#bean-projections}
 
@@ -47687,7 +47601,7 @@ interface TenantPatchMapping extends UpdateSpec<Tenant, TenantPatchBean> {
     // Valid(Tenant[id=t-1, name=Ada Lovelace]) - the t-9 the bean reads is never applied
 ```
 
-The marker only withholds the refusal: the accessor was never a property, so the component it names stays unmapped, a wire narrower than the domain is still a projection, and nothing else about the generated Impl changes. It reaches both tiers and both refusals above, an accessor named after a domain component and a `setX` setter a PATCH bean cannot read. The return type is not read, so it may restate the accessor's own type, and the marker is stubbed out by the Impl like a rename.
+The marker only withholds the refusal: the accessor was never a property, so the component it names stays unmapped, a wire narrower than the domain is still a projection, and nothing else about the generated Impl changes. It reaches both tiers and both refusals it answers: [an accessor named after a domain component](rules.md#unpaired-accessors), and [a `setX` setter a PATCH bean cannot read](rules.md#every-patch-setter-has-a-getter). The return type is not read, so it may restate the accessor's own type, and the marker is stubbed out by the Impl like a rename.
 
 A marker the spec declares itself must name an accessor the bean leaves unpaired: one naming a property the mapping carries, or naming nothing at all, is refused as the misspelling it usually is. One inherited from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) binds where it can and is otherwise inert, like every other inherited vocabulary member, so one mix-in serves specs whose wires differ.
 
@@ -47768,13 +47682,11 @@ interface CustomerRequestMapping extends MappingSpec<Customer, CustomerRequest> 
     // new CustomerRequest(); setName("Ada"); setEmail("ada@corp.example")
 ```
 
-The bean's shape decides, and a note says which way it was read and why, so an unintended reading does not go unnoticed: a bean meant to be built whose no-args constructor the generated Impl cannot reach reads parse-only, and the note says the constructor is out of reach. The two-way reading wins whenever any property allows it, so a bean is one-directional only when nothing at all crosses the other way. A getter-only `List` counts as written, through the JAXB `getX().addAll(...)` convention above, only on a bean that also has a setter or whose every getter is such a list: a `List` getter among read-only getters belongs to a read model, which maps parse-only. A bean that reads some names and writes others fits neither and is refused with both lists of names. A bean whose names pair only in part maps both ways over those that do, and an unpaired accessor named after a domain component is [refused rather than dropped](#bean-shaped-wire-targets), since a misspelt accessor is what that shape usually is.
+The bean's shape decides, and a note says which way it was read and why, so an unintended reading does not go unnoticed: a bean meant to be built whose no-args constructor the generated Impl cannot reach reads parse-only, and the note says the constructor is out of reach. The two-way reading wins whenever any property allows it, so a bean is one-directional only when nothing at all crosses the other way. [How a bean's direction is read](rules.md#how-a-beans-direction-is-read) covers the mixed cases, such as a bean that reads some names and writes others.
 
 The rules follow from which direction is missing:
 
 - **Coverage belongs to the direction.** A parse produces the domain, so every domain component needs a getter, and a getter no component names is ignored. A build produces the bean, so every writer needs a source, a domain component or a [derived field](basics.md#derived-wire-fields), and a domain component the bean does not carry is not written. Neither is a projection, since nothing is written back.
-- **Derived fields are build-side.** A build-only mapping takes them as a full one does. Declared on a parse-only spec, one has nothing to fill and is refused; one inherited from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) stays inert, so one vocabulary serves both directions.
-- **A build-only builder counts its one-argument methods as writers.** A method taking the bean or the builder itself (`from(Bean)`, `mergeFrom(Builder)`) is left out, but a singular adder beside its collection setter (a `@Singular` builder) needs a source like any other writer; getters on the built type make such a bean two-way, where only the properties it reads count, and an unpaired builder method named after a domain component is [refused](#bean-shaped-wire-targets).
 - **The rest of the vocabulary is unchanged.** Renames, leaves, container lifting and the automatic `Optional` bridge work in whichever direction exists: a leaf parses on a parse-only bean and builds on a build-only one.
 - **Nesting follows the direction.** A one-directional mapping nests wherever only its direction is used, lifted through containers like any other: a parse-only spec inside a parse-only mapping, a [sparse `UpdateSpec`](#sparse-patch-write-back-updatespec) or a [`@GenerateMerge`](merge_envelopes.md) source, and a build-only spec inside a build-only mapping. A full mapping nests in all of them. Where the missing direction is needed, the failed lookup names the one-directional spec and what it lacks; sealed dispatch needs both directions of every subtype pair.
 - **Law-check the surface it has.** `MappingLaws` takes `asValidatedParse()` with a parsing and a non-parsing wire, or `asValidatedBuild()` with a domain value ([The Emission Tiers](tiers.md#law-checked-in-the-repo-and-in-your-tests)):
@@ -47939,23 +47851,23 @@ A refusal is an unlabelled `FieldError` carrying the exception's message, as [th
 
 The rules that keep the contract honest:
 
-- **A spec extending both `MappingSpec` and `UpdateSpec` is rejected.** One spec generates one Impl on one tier, and the tiers emit disjoint members, so nothing an Impl could carry answers both clauses. Declare a spec per tier and let a [shared vocabulary mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) carry what the pair has in common. A spec in a *dependency* that carries the shape is not refused here (it was compiled elsewhere), but it is never offered for nesting either: a use site needing the pair is told which spec it is and that it has no parse.
-- **A primitive wire property is rejected.** A primitive is always present (its default), so it can never carry the null-as-absent signal; use the wrapper type (`Integer`, `Boolean`). This is *forced*, not a style choice: an all-absent body must fold to the identity update, which a primitive would break.
-- **Every PATCH bean getter must answer `null` until its property is set, and this rule cannot be checked for you.** Here absence is read from the getters rather than declared on the spec: `updateFrom` counts a property as sent whenever its getter answers anything but `null`, so a bean nothing has been set on, which is what a binder makes of an empty body, must answer `null` from every mapped getter. Any default the bean gives itself breaks that: a field initialiser (`private List<String> tags = new ArrayList<>()`, `private String status = "ACTIVE"`), a value its constructor or builder assigns, or a getter that creates one on first call. Every request that omits the field then arrives carrying the default, and the edit writes it over the domain value with nothing failing. It is the primitive's problem again, with a reference type, but no signature shows a default, so the processor cannot refuse it. Leave PATCH bean fields uninitialised and unassigned by the constructor, and let each getter return what was set; for a generated DTO, configure the generator to leave containers `null` (openapi-generator's `containerDefaultToNull`, for one) and drop `default:` from the PATCH schema's properties, which a generator renders as an initialiser. The sparse laws below catch any of these defaults when the all-absent wire is a freshly constructed bean and the current value differs from the default.
-- **A domain `Optional<T>` component bridged from a non-Optional property is rejected**, and so is an [`@OptionalBridge`](basics.md#optional-bridge) the sparse spec declares itself, for the same reason. Under null-as-absent, `null` already means "leave unchanged", so "set to empty" has no encoding through a plain property (a plain property has only `null` and a value, one state short of JSON Merge Patch's three). The bridge's `null`-means-absent and the sparse tier's `null`-means-unchanged are two readings of one byte, and a spec extending `UpdateSpec` has already chosen. An `Optional`-typed wire property, though, *can* express it, patching by identity or through an element leaf: a present empty Optional sets empty; an absent (`null`) one leaves unchanged. Two binder caveats come with that power: Jackson binds an explicit JSON `null` on an `Optional`-typed property to `Optional.empty()`, so on this one property shape a sent `null` means *clear*, not *leave unchanged*; and, as for every PATCH field, the bean field must start out `null`, not the idiomatic `Optional.empty()`, or every request that omits the field clears the domain value.
-- **A getter-only `List` property is rejected.** The JAXB convention creates the list on first call, so the property never reads `null` and cannot say *not provided*: a request that omits it would arrive as a present empty list and clear the domain value, with nothing failing to say so. Give it a setter, and a getter that answers `null` until it is set: no initialiser on the field, and no list created on first call. The setter alone is not enough, and a setter-backed property is accepted whatever its field or getter does, since neither shows in a signature. The [dense tier](#bean-shaped-wire-targets) keeps the same property, because it writes every component and absence has nothing to mean there.
-- **A record wire is rejected.** A record component is always present, so absence is inexpressible; sparse PATCH is a bean-only shape.
+- [**A spec extending both `MappingSpec` and `UpdateSpec` is rejected.**](rules.md#one-tier-per-spec) Declare a spec per tier, and share a mix-in.
+- [**A primitive wire property is rejected.**](rules.md#no-primitive-patch-property) A primitive is never absent: use the wrapper type (`Integer`, `Boolean`).
+- [**A domain `Optional<T>` component bridged from a non-Optional property is rejected**](rules.md#no-optional-bridge-on-a-patch), and so is an `@OptionalBridge` the sparse spec declares itself: here `null` already means *leave unchanged*, so a plain property cannot also say *set to empty*. An `Optional`-typed wire property, though, *can* express *set to empty*, patching by identity or through an element leaf: a present empty Optional sets empty; an absent (`null`) one leaves unchanged. Two binder caveats come with that power: Jackson binds an explicit JSON `null` on an `Optional`-typed property to `Optional.empty()`, so on this one property shape a sent `null` means *clear*, not *leave unchanged*; and, as for every PATCH field, the bean field must start out `null`, not the idiomatic `Optional.empty()`, or every request that omits the field clears the domain value.
+- [**A getter-only `List` property is rejected.**](rules.md#no-getter-only-list-on-a-patch) Give it a setter, and a getter that answers `null` until it is set.
+- [**A record wire is rejected.**](rules.md#no-record-patch-wire) A record component is always present, so a PATCH wire is a bean.
 - **A `JsonNullable` property is not supported yet.** A generated client that wraps its PATCH fields that way needs an `Optional`-typed property instead, as above, or a plain nullable one where *clear* has no meaning.
-- **A bean read one way only is rejected.** A read-only bean cannot say *not provided*: its getters may answer from its constructor or create a value on first call, and either reads as present. A write-only bean has nothing to read. The PATCH bean must be both read and written ([One-directional beans](#one-directional-beans)). Its constructor does not matter here: `updateFrom` only reads the bean, so its setters count even beside a private no-args constructor, which a deserialiser can still call. A bean with a builder keeps the builder as its writer.
-- **A setter with no getter is rejected.** A setter is how the client's value arrives, and `updateFrom` folds in only what it can read, so a `setX` setter with no getter is a field the client can send and the update would ignore. It is refused whatever it is named, unless the spec marks it [`@Unmapped`](#accessors-meant-to-stay-out); a method that only starts with `set`, such as `setup(String)`, is not one. A getter with no setter is refused when it is named after a domain component, as on the [dense tier](#bean-shaped-wire-targets), and a computed getter such as `isEmpty()` is left out without complaint. A builder's one-argument method is not a setter until a getter pairs it, so an unpaired one, such as a singular adder, is refused only when it is named after a domain component. For a primitive accessor the diagnostic offers the wrapper type, since a PATCH property has to be able to be absent.
-- **A sealed hierarchy is rejected**, on either side: dispatch has no sparse meaning (an absent property cannot choose a subtype to patch).
+- [**A bean read one way only is rejected.**](rules.md#patch-bean-read-and-written) A PATCH bean is both read and written.
+- [**A setter with no getter is rejected.**](rules.md#every-patch-setter-has-a-getter) Pair it with a getter, or mark it `@Unmapped`.
+- [**A sealed hierarchy is rejected**](rules.md#no-sealed-patch), on either side.
 - **A present container parses through the element vocabulary.** A `List`, `Set`, array, `Optional` or `Map`-valued property (a pair declared as exactly those container types) routes through the element leaf named after the component: the same leaf the dense tiers lift, so one [mix-in vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) serves a full spec and its PATCH sibling. Replacement stays wholesale; each failing element is located the way its container locates anything: by index (`phones.1`), by key, or, in a `Set`, by the element's own rendering. A whole-container leaf (`ValidatedPrism<List<S>, List<A>>`) is the more specific declaration and wins over the element interpretation. A nested *spec* still does not lift through a sparse container; give the component an element leaf delegating to the nested Impl's `asValidatedPrism()` if its elements need a whole mapping.
-- **An inherited derived field or `@OptionalBridge` marker stays inert.** Arriving from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces), neither is ever consulted here, so one vocabulary serves a full spec and its PATCH sibling; declaring either on the `UpdateSpec` itself is still an error, reported where it was written. An inherited rename is inert too whenever either end is missing, whether this PATCH bean omits the property its `to` names or this domain omits the component it renames, so a bean covering a subset needs no vocabulary of its own. An inherited [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) marker is judged against this bean rather than waved through. It is inert whenever the bean carries none of the group's inner properties that nothing else fills, which covers both a bean declaring the group's own component (patched whole by identity) and one omitting the group entirely; it is refused, naming the mix-in, when the bean carries one, since a spread has no sparse edit shape yet. A `@Flatten` marker the `UpdateSpec` declares itself is refused either way, like the derived field and the bridge.
+- [**An inherited derived field or `@OptionalBridge` marker stays inert.**](rules.md#inherited-vocabulary-on-a-patch) One mix-in serves a full spec and its PATCH sibling.
 - **Coverage is one-sided.** Every wire property maps to a domain component, but a domain component with *no* wire property is simply never changed: a PATCH DTO deliberately covers a subset.
-- **A same-typed nested record, `Optional`, `List` or `Map` replaces wholesale** through identity, the fallback when no more specific leaf applies. The details:
-  - A same-typed container carries the dense tiers' [null scan](basics.md#the-null-contract-precisely), at every depth and however it is declared: a null inside is a located, accumulating invalid (`tags.1: must not be null`, `grid.0.1` in a nested list; a set's, unlocated as `tags: must not contain a null element`), never written into the domain; a valid container is written as a [copy](basics.md#same-typed-containers-cross-as-copies), so the patched domain does not share it with the wire.
-  - A same-typed `Optional` cannot hold a null, so one holding a plain value is written unconditionally: a present empty sets empty, absent leaves unchanged. One holding a container is scanned through, as above.
-  - A nested record whose wire differs is patched wholesale through its own full mapping spec. Deep merge is out of scope.
+- [**A same-typed nested record, `Optional`, `List` or `Map` replaces wholesale**](rules.md#patch-replaces-wholesale) when no more specific leaf applies. Deep merge is out of scope.
+
+~~~admonish warning title="Not checked for you: a PATCH getter answers `null` until set"
+**Every PATCH bean getter must answer `null` until its property is set, and this rule cannot be checked for you.** Here absence is read from the getters rather than declared on the spec: `updateFrom` counts a property as sent whenever its getter answers anything but `null`, so a bean nothing has been set on, which is what a binder makes of an empty body, must answer `null` from every mapped getter. Any default the bean gives itself breaks that: a field initialiser (`private List<String> tags = new ArrayList<>()`, `private String status = "ACTIVE"`), a value its constructor or builder assigns, or a getter that creates one on first call. Every request that omits the field then arrives carrying the default, and the edit writes it over the domain value with nothing failing. It is the primitive's problem again, with a reference type, but no signature shows a default, so the processor cannot refuse it. Leave PATCH bean fields uninitialised and unassigned by the constructor, and let each getter return what was set; for a generated DTO, configure the generator to leave containers `null` (openapi-generator's `containerDefaultToNull`, for one) and drop `default:` from the PATCH schema's properties, which a generator renders as an initialiser. The sparse laws below catch any of these defaults when the all-absent wire is a freshly constructed bean and the current value differs from the default.
+~~~
 
 One vocabulary, both tiers. The element leaf a full spec lifts elementwise is exactly the leaf its PATCH sibling lifts:
 
@@ -48201,16 +48113,7 @@ interface ContractorMapping extends TextRenames, MappingSpec<Contractor, Contrac
 
 `name()` says `T` where it is declared and `String` where the spec has it, and that is what the generated Impl carries. It holds however many interfaces separate the two, and a spec's own parameters survive as themselves, because the Impl declares them.
 
-The one shape this cannot answer for is a **raw** supertype anywhere on the route. Raw erases every member of the type below it, whatever that member declares, so `extends Renames` would contribute `Object name()` rather than the `String` it was written with. A raw ancestor that contributes nothing is left alone, since nothing of its is read; one that contributes a rename, a leaf or a derived field is refused at the declaration:
-
-```
-@GenerateMapping: mix-in 'Renames' is written raw. Its members are read under the spec's
-instantiation, and a raw supertype erases every one of them whatever they declare: a
-'ValidatedPrism<String, Email>' arrives bare, and a 'T' arrives as Object. Name the type
-arguments where 'Renames' is extended, as 'extends Renames<...>'.
-```
-
-Erasure travels downwards, so the raw clause is not always the interface whose members went missing: with `TextRenames extends Renames<String>` and a spec saying `extends TextRenames` raw, it is `TextRenames` that has to be given its argument. The message names the raw clause in both cases, because that is the line to edit.
+The one shape this cannot answer for is a **raw** supertype anywhere on the route. The processor refuses one that contributes a member, and [a generic mix-in reached raw](rules.md#a-generic-mix-in-reached-raw) says which clause to edit.
 
 ---
 
@@ -48235,7 +48138,7 @@ interface CodecPageMapping<T, TDto> extends MappingSpec<Page<T>, PageDto<TDto>> 
 
 The Impl carries the prisms as state, so there is no singleton in either spelling: every `of(...)` call is a fresh, immutable instance. Build one where it is used and reuse it, rather than calling `of(...)` for every parse.
 
-A leaf can also come from a [generic mix-in](#generic-mix-ins). Declaration order then puts the spec's own leaves first, in the order it declares them, then each mix-in's, in the order the `extends` clause names them. A mix-in is read the same way, its own leaves before those of the interfaces it extends, and an interface reached twice counts where it is first reached. The generated `of(...)` documents each parameter, naming the interface that declares an inherited leaf, so the order can be read off the Impl.
+Pass the prisms to `of(...)` in declaration order: two abstract leaves of the same type swap without a compile error. A leaf can also come from a [generic mix-in](#generic-mix-ins), and [leaf order in `of(...)`](rules.md#leaf-order-in-of) says where its parameter falls.
 
 Element-mapped mappings nest as **compositions**. A use site whose pair unifies against one resolves each element pair in turn:
 
@@ -48244,9 +48147,7 @@ Element-mapped mappings nest as **compositions**. A use site whose pair unifies 
 
 and emits `CodecPageMappingImpl.of(entries()).asValidatedPrism()` in place. Failures locate through the whole composed path (`entries.items.1: not an email address`); an unresolvable element pair is a compile error naming the pair and the ways to supply it. For a single-leaf spec that is a leaf on the using spec or another registered mapping. For a spec with several leaves it is another registered mapping, or a leaf over the whole pair that builds the composition itself with `of(...)`.
 
-~~~admonish note title="Boundaries"
-Generic mappings are **record-to-record only** (bean-shaped wires and `UpdateSpec` mappings stay concrete); raw uses (including raw *nested* arguments) and wildcards are diagnosed, while array arguments (`Page<String[]>`) are concrete, map fine, and unify structurally at nested use sites. An abstract leaf belongs to a generic spec: on a concrete or sealed one it is diagnosed, since nothing defers its parser. A leaf or rename declaring type parameters of its own (`<R> ValidatedPrism<R, R> items()`) is diagnosed as well: the Impl carries a leaf as a constructor-supplied field and a rename as a stub, and neither has anywhere to declare `<R>`. A leaf's element types go on the spec's own type parameters; a rename simply declares a concrete return type, since the stub only names it.
-~~~
+Generic mappings are **record-to-record only**: [the boundaries of a generic spec](rules.md#generic-boundaries) lists what else the processor diagnoses.
 
 ---
 
@@ -48287,7 +48188,7 @@ Two more generators complete the family. `@GenerateMerge` covers the assembly a 
 **The code on this page is [RecordMappingBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/RecordMappingBook.java) and [OrderErrorBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/OrderErrorBook.java)** - the page includes them directly, so they are compiled and run by the build.
 ~~~
 
-## Merging several sources: `@GenerateMerge`
+## Merging several sources: `@GenerateMerge` {#merging-several-sources-generatemerge}
 
 A merge is declared entirely by a spec method's signature: **several** sources in, one target out. No class literals are needed, and no inverse is generated (a merge is not invertible, so offering one would be a lie the tiers never tell):
 
@@ -48313,7 +48214,7 @@ interface DashboardAssembly {
             new Settings(true));
 ```
 
-Each target component fills from the one source with a same-named component: identity when the types match (a same-typed container fills with a [copy](basics.md#same-typed-containers-cross-as-copies)), through a `ValidatedPrism` leaf when they differ, or through a sibling `@GenerateMapping` spec (the `customer` below parses through `CustomerMappingImpl`, and failures locate as dotted paths):
+Each target component fills from the one source with a same-named component: identity when the types match (a same-typed container fills with a [copy](rules.md#same-typed-containers-cross-as-copies)), through a `ValidatedPrism` leaf when they differ, or through a sibling `@GenerateMapping` spec (the `customer` below parses through `CustomerMappingImpl`, and failures locate as dotted paths):
 
 ``` java
 record Wrapper(CustomerDto customer) {} // the wire side
@@ -48330,7 +48231,7 @@ interface ProfileCardAssembly {
 
 Ambiguity (two sources carrying the component) and unfilled components are compile errors, and the return type must tell the truth: fallible fills demand the `Validated` return; an identity-only merge must declare the plain target.
 
-The fallible path carries the [same null doctrine as `parse`](basics.md#null-doctrine): a null source-component read is a located, accumulated `FieldError`, never an exception, while a null source *argument* stays the caller's `NullPointerException`. It carries parse's [constructor guard](basics.md#constructor-invariants) too: an exception the target's constructor throws becomes an unlabelled `FieldError` with its message. A plain-return merge is total *by its declaration*: nulls flow through to the target constructor exactly as `build` copies them, and whatever that constructor throws propagates. (The return type follows the fills, so the guards cannot be bought by declaration alone: an identity-only merge that wants them should add a normalising `ValidatedPrism<X, X>` leaf, which makes the merge fallible and brings the `Validated` return with it.)
+The fallible path carries the [same null doctrine as `parse`](basics.md#null-doctrine) and its constructor guard; a plain-return merge carries neither. [Nulls and guards in a merge](rules.md#nulls-and-guards-in-a-merge) has the details, including how an identity-only merge buys the guards.
 
 ---
 
@@ -48378,11 +48279,7 @@ Add a one-line `default` so the wither reads as an instance method, and construc
                 ctx -> ctx.orderId(orderId).traceId(traceId)); // typed context, not map.put
 ```
 
-The context type is discovered **structurally** from the `ErrorEnvelope` component's type argument, never a class literal, and every variant must agree on it. Three rules apply, each a what/why/fix diagnostic:
-
-- the hierarchy, its variants, and the context record must be non-generic;
-- permitted variants must be records; a nested sealed sub-hierarchy is rejected with a flatten-it fix, not recursed into;
-- the context record's components must be nullable reference types. The all-absent context holds `null`, so primitives are rejected at compile time; and because a null-rejecting compact constructor cannot be detected by the processor, keep the context a plain nullable data carrier.
+The context type is discovered **structurally** from the `ErrorEnvelope` component's type argument, never a class literal, and every variant must agree on it. [Error envelope rules](rules.md#error-envelope-rules) lists the three shapes the processor refuses. One thing it cannot check: a compact constructor on the context record that rejects `null` breaks the all-absent context, so keep the context a plain nullable data carrier.
 
 ~~~admonish note title="Fine-grained or coarse variants?"
 The design choice is about the *hierarchy*, not the annotation.
@@ -48421,13 +48318,12 @@ Two verbs keep the two operations distinct: `ErrorEnvelope.withContext(D)` is th
 
 _Register the surface you consume, fake it with values, and read the processor's what/why/fix rejections._
 
-A generated Impl is a pure function, so most code should just call it. This page covers the seams around that: what to register when you *do* want a Spring bean or a test double, how fakes work without mocks, and the diagnostics and limits that bound the feature.
+A generated Impl is a pure function, so most code should just call it. This page covers the seams around that: what to register when you *do* want a Spring bean or a test double, how fakes work without mocks, the what/why/fix diagnostics, and how wide a mapped record may be.
 
 ~~~admonish info title="What You'll Learn"
 - Why the spec interface deliberately injects nothing, and which surface to register per tier
 - Test doubles as two-line `ValidatedPrism.of(...)` values, no mocking framework involved
 - The width story: no component ceiling, chunked `fields()` ladders past 16 fields
-- The remaining limits, each with a what/why/fix diagnostic
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -48528,32 +48424,7 @@ There is no component ceiling. `parse` (and the validated `patch`, and `@Generat
 
 The only width bound left is the JVM's constructor parameter-slot limit on the record itself (254 components in practice, fewer with `long`/`double`), which javac enforces at the record declaration. The hand-written `fields()` ladder keeps its 16-field arity; wider hand-written assemblies nest sub-records.
 
-Every rejection follows the processor's what/why/fix standard: the message states what is wrong, why the mapper needs it, and the code to write. The limits themselves are each explained where their feature lives; this table is the index:
-
-| Limit | Where it is explained |
-|---|---|
-| Nested, sealed and merge resolution sees a dependency's specs only when that module was compiled with `hkj-processor`; a shared vocabulary interface is not a spec, so a module may export one without the processor | [Across modules](structure.md#across-modules) |
-| Named modules neither write nor read the index, and two spec-carrying jars cannot be automatic modules together | [Across modules](structure.md#across-modules) |
-| A mix-in may be generic, but must not be reached raw | [Shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) |
-| A flattened component stays on the full record-record tier: not on a bean wire, a generic spec, a projection or a sparse `UpdateSpec` (refused where the spec declares the marker, an inherited one staying inert unless the PATCH bean spreads the group); its record fits one `fields()` ladder, and spreading is one level deep (a record inside the group nests through its own spec) | [Flattening a nested component](structure.md#flattening-a-nested-component-onto-a-flat-wire) |
-| `Map` keys are identity unless a `@MapKey` leaf converts them; a raw or wildcard `Map` cannot have its keys or values converted, and a key leaf the spec declares is refused beside a leaf over the whole `Map`, which would bypass it | [Converting Map keys](structure.md#converting-map-keys) |
-| Lifting needs the same container on both sides, named exactly and one level deep, over an element type named rather than a wildcard: a `List` against a `Set`, an array against a `List`, or an `ArrayList`, is a plain type mismatch | [Nesting and containers](structure.md#nesting-containers-and-recursion) |
-| A sealed pair's permitted subtypes must be records or sealed interfaces, or beans on the wire side; a generic subtype, an enum or any other class is not supported yet | [Sealed hierarchies](structure.md#sealed-hierarchies) |
-| An **array** component has identity `equals`, and a same-typed array crosses as a clone, so a record carrying one with no `equals` of its own is not equal to its own round trip and `MappingLaws` cannot law-check it: give the record an `equals` that uses `Arrays.equals`, or assert the round trip elementwise. A `Collection` component holding neither a `List` nor a `Set` (an `ArrayDeque`) crosses as a list, which is not equal to it either | [Testing with hkj-test](../tooling/test_assertions.md#optic-laws) |
-| A same-typed container is copied only where its declared type can be: a subtype (`ArrayList`, `TreeSet`), any other interface (`Deque`), a same-typed record, a type variable, an element declared through a wildcard, the collections inside an array, and any element of a set that holds a `Collection` are handed over as they are | [Same-typed containers cross as copies](basics.md#same-typed-containers-cross-as-copies) |
-| A **lifted** array's element type must name its own constructor, so a type variable or parameterised element (`T[]`, `List<Tag>[]`) is refused | [Nesting and containers](structure.md#nesting-containers-and-recursion) |
-| A fallible projection emits the validated `patch`, never a fake `asLens()`; projections cannot carry derived fields | [The Emission Tiers](tiers.md#leaf-carrying-projections-the-validated-patch), [Derived wire fields](basics.md#derived-wire-fields) |
-| Generic mappings come in exactly three forms and stay record-to-record | [Generic Specs](generics.md) |
-| Sparse PATCH is bean-only, wrapper-typed, and never deep-merges; a spec names one tier, extending `MappingSpec` or `UpdateSpec` but not both | [Beans and Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec) |
-| A one-directional bean maps only its one direction: it nests only where that direction is used, sealed dispatch needs both, and a sparse `UpdateSpec` needs a bean both read and written | [One-directional beans](beans_patch.md#one-directional-beans) |
-| A leaf, rename or bridge marker must not declare type parameters of its own; the element types go on the spec | [Generic Specs](generics.md#element-mapped-specs) |
-| A rename's, leaf's or marker's type must be visible from the spec's package, where the Impl is generated | [Shared vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) |
-| `@OptionalBridge` binds an `Optional` domain component to a nullable, non-primitive wire component; it is redundant on a bean wire, and refused on a sealed or sparse spec that declares it, an inherited one staying inert | [Optional fields](basics.md#optional-bridge) |
-| The bridge is refused onto a getter-only `List` property, which has no unset state to carry absence | [Bean-shaped wire targets](beans_patch.md#bean-shaped-wire-targets) |
-| A getter-only `List` must name its element type wherever a `build` is emitted; `addAll` cannot be written over a raw or wildcard receiver | [Bean-shaped wire targets](beans_patch.md#bean-shaped-wire-targets) |
-| A getter-only `List` is rejected on a sparse `UpdateSpec`: its getter never answers `null`, so it cannot carry absence | [Beans and Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec) |
-| A PATCH bean's getters must answer `null` until set, which is not checked: a default the bean gives itself (a field initialiser, a constructor assignment, a getter that creates its value) reads as sent. Law-check a sparse spec with a freshly constructed bean as the all-absent wire and a current value unlike any default, which catches it | [Beans and Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec) |
-| A bridged site must take the `null` that `build` writes for an empty `Optional`: a record component, setter or builder setter declared non-null, by a non-null annotation or inside a JSpecify `@NullMarked` scope without `@Nullable`, is refused; one that refuses `null` without declaring it is not checked, and throws from `build` | [Optional fields](basics.md#optional-bridge), [Bean-shaped wire targets](beans_patch.md#bean-shaped-wire-targets) |
+Every rejection follows the processor's what/why/fix standard: the message states what is wrong, why the mapper needs it, and the code to write. The limits themselves are indexed in [Find your limit](rules.md#find-your-limit), each linked to its rule.
 
 ---
 
@@ -49138,7 +49009,7 @@ mapping nests inside another.
 | The generated Impl is bound in the caller, never as a constant on the spec | Class initialisation can leave that constant `null`, intermittently | `XImpl.INSTANCE` at the call site, or an injected surface: [why](basics.md#bind-in-the-caller) |
 
 Everything the processor refuses says so at compile time, with what is wrong, why it matters and
-the code to write. The complete set is in [Diagnostics and limits](testing.md#diagnostics-and-limits).
+the code to write. The complete set is in [Rules and Limits](rules.md).
 
 ---
 
@@ -49202,7 +49073,7 @@ blocker. Each ❌ means keep what you have for that case.
 - Five steps to a working endpoint: [Quickstart](quickstart.md)
 - Coming from another mapper: [Coming from MapStruct and Bean Validation](from_mapstruct.md)
 - What each spec shape generates: [The Emission Tiers](tiers.md)
-- The complete set of limits: [Diagnostics and limits](testing.md#diagnostics-and-limits)
+- The complete set of limits: [Rules and Limits](rules.md)
 ~~~
 
 ---
@@ -49309,6 +49180,391 @@ that check belongs after the boundary, on the [effect railway](../effect/ch_intr
 ---
 
 **Previous:** [Mapper at a Glance](at_a_glance.md)
+**Next:** [Rules and Limits](rules.md)
+
+<!-- Source: mapping/rules.md -->
+
+# Mapping Rules and Limits
+
+_The precise contracts behind the mapping chapter, and every limit the processor enforces._
+
+Each rule the processor enforces is stated on this page once, bar a few short enough to stay on the page that teaches them, and Find your limit indexes both. A rule the processor cannot check stays on its teaching page as a warning, where your attention is the only safeguard: [Find your symptom](#find-your-symptom) indexes those.
+
+## Find your limit {#find-your-limit}
+
+Each question links to its rule. *By design* means the behaviour or the refusal is deliberate, and the rule says why. *Not supported yet* means a shape that would make sense, which the processor does not map.
+
+| Question | Answer | Status |
+|---|---|---|
+| **Spec members** | | |
+| [What if a leaf's name matches no component?](#how-the-two-default-families-are-told-apart) | A declared leaf is a compile error, naming the components; an inherited one stays inert. | by design |
+| [Can a getter-shaped helper live on a spec?](#how-the-two-default-families-are-told-apart) | Yes, if `private`, `static` or given a parameter; a `default` one is a derived field. | by design |
+| [Can a sealed spec declare its own leaves, renames or markers?](#how-the-two-default-families-are-told-apart) | No: a dispatch has no components to bind them to. | by design |
+| [Can a member's type be one the spec's package cannot see?](#how-the-two-default-families-are-told-apart) | No: the Impl is generated in that package and must name it. | by design |
+| [Can a projection carry a derived field?](#derived-fields-and-the-emission-tiers) | No: `build` recomputes what the write-back would set. | by design |
+| **Optional fields** | | |
+| [Can a bridged component be declared non-null, or primitive?](#bridged-component-nullable) | No: `build` writes `null` for empty, so declare it `@Nullable`. | by design |
+| [Can a sparse or sealed spec declare `@OptionalBridge`?](#bridged-component-nullable) | No; one inherited from a mix-in stays inert. | by design |
+| **Shared vocabulary** | | |
+| [Does a mix-in need the annotation processor?](structure.md#across-modules) | No: a mix-in is a plain interface, not a spec. | by design |
+| [Can a mix-in extend `MappingSpec`?](#refused-mix-in-shapes) | No: a mix-in shares vocabulary; a spec generates an Impl. | by design |
+| [Can a generic mix-in be extended raw?](#a-generic-mix-in-reached-raw) | Not if it contributes a member: raw erases what it declares. | by design |
+| [Can two mix-ins declare the same rename?](#inheriting-one-member-twice) | Yes, when the targets agree; conflicting targets are refused. | by design |
+| [Can an `@Unmapped` marker name an accessor that pairs?](beans_patch.md#accessors-meant-to-stay-out) | Not one the spec declares; an inherited one stays inert. | by design |
+| **Containers** | | |
+| [Is a same-typed container shared with the wire?](#same-typed-containers-cross-as-copies) | Not when declared exactly `List`, `Set`, `Collection`, `Map`, `Optional` or array. | by design |
+| [Does a `List` lift against a `Set`, or an `ArrayList`?](#what-lifts) | No: the same exact container on both sides, one level deep. | by design |
+| [Can a lifted array hold `T` or `List<Tag>`?](#what-lifts) | No: the generated array creation would be generic. | by design |
+| [Can a raw or wildcard `Map` have its keys or values converted?](#what-lifts) | No: name its type arguments. | by design |
+| [Can a `Map`'s keys be converted?](structure.md#converting-map-keys) | Yes, with a `@MapKey` leaf; otherwise the key types must match. | by design |
+| [Can a key leaf sit beside a whole-map leaf?](#key-leaf-beside-a-whole-map-leaf) | A declared one is refused; an inherited one stays inert. | by design |
+| [Is a `null` inside a `Stream`, `Iterable`, `Maybe` or `NonEmptyList` located?](#the-null-contract-precisely) | No: the component is guarded, its contents are not scanned. | not supported yet |
+| [Can a sealed pair's subtype be an enum, or generic?](structure.md#sealed-hierarchies) | No: records and sealed interfaces, or beans on the wire side. | not supported yet |
+| **Flattening** | | |
+| [Can two components of one record type both be spread?](#names-in-a-flattened-group) | No: every wire component takes exactly one source. | by design |
+| [Can a flattened group spread a record inside it?](#where-flattening-applies) | No: spreading is one level deep, and the inner record nests. | not supported yet |
+| [Can a flattened component sit on a bean, generic, projection or PATCH spec?](#where-flattening-applies) | No: record-to-record only; an inherited marker stays inert where unused. | not supported yet |
+| [Can a flattened record have more than 16 components?](#where-flattening-applies) | No: one `fields()` ladder assembles the group. | not supported yet |
+| **Across modules** | | |
+| [Does a spec compiled in another module nest?](structure.md#across-modules) | Yes, when that module ran `hkj-processor`. | by design |
+| [What if two dependencies map the same pair?](#how-a-dependencys-specs-are-found) | Ambiguous: your own spec, or a leaf, picks one. | by design |
+| [Can a spec-carrying module sit on the module path?](#how-a-dependencys-specs-are-found) | Not with the index: keep those jars on the classpath, or delegate with a leaf. | not supported yet |
+| **Emission tiers** | | |
+| [Why does a bean mapping lose `asIso()`?](#where-a-bean-or-bridged-component-lands) | A reference property can be unset; an all-primitive bean keeps it. | by design |
+| [Why does a validating projection get no `asLens()`?](tiers.md#leaf-carrying-projections-the-validated-patch) | A lens cannot fail, so it takes the validated `patch`. | by design |
+| [How wide can a record be?](testing.md#diagnostics-and-limits) | No ceiling but the JVM's: about 254 components. | by design |
+| **Bean wires** | | |
+| [Can the domain be a bean?](beans_patch.md#bean-shaped-wire-targets) | No: `parse` builds the domain through a record constructor. | by design |
+| [What happens to an accessor with no partner?](#unpaired-accessors) | Left out; refused when named after a component the bean carries under no name. | by design |
+| [Can a getter-only `List` be raw, or a wildcard?](#getter-only-list-element-type) | Not where `build` is emitted: `addAll` needs its element type. | not supported yet |
+| [Can a getter-only `List` carry an absent `Optional`?](#getter-only-list-refuses-the-bridge) | No: its getter creates the list, so absence reads as empty. | not supported yet |
+| [Where does a one-directional bean nest?](beans_patch.md#one-directional-beans) | Only where nothing needs its missing direction. | by design |
+| **Sparse PATCH** | | |
+| [Can one spec extend `MappingSpec` and `UpdateSpec`?](#one-tier-per-spec) | No: declare a spec per tier and share a mix-in. | by design |
+| [Can a PATCH property be primitive?](#no-primitive-patch-property) | No: a primitive is never absent, so use the wrapper. | by design |
+| [Can a PATCH wire be a record?](#no-record-patch-wire) | No: a record component is always present. | by design |
+| [Can a PATCH bean be read-only, or write-only?](#patch-bean-read-and-written) | No: a PATCH bean is both read and written. | by design |
+| [Can a PATCH bean have a setter with no getter?](#every-patch-setter-has-a-getter) | No, unless marked `@Unmapped`: the update would ignore it. | by design |
+| [Can a PATCH set a field to empty?](#no-optional-bridge-on-a-patch) | Through an `Optional`-typed property; a plain one bridged to `Optional` cannot. | by design |
+| [Can a PATCH bean have a getter-only `List`?](#no-getter-only-list-on-a-patch) | No: it never reads `null`, so it cannot be absent. | not supported yet |
+| [Can a PATCH bean carry a `JsonNullable` property?](beans_patch.md#sparse-patch-write-back-updatespec) | No: use an `Optional`-typed property. | not supported yet |
+| [Does a nested spec lift through a PATCH container?](beans_patch.md#sparse-patch-write-back-updatespec) | No: give the component an element leaf that delegates to it. | not supported yet |
+| [Can a PATCH spec dispatch over a sealed hierarchy?](#no-sealed-patch) | No: an absent property cannot choose a subtype. | by design |
+| [Does a PATCH merge a nested object field by field?](#patch-replaces-wholesale) | No: a nested record, list or map is replaced whole. | by design |
+| **Generic specs** | | |
+| [Can a generic spec map a bean, or a PATCH?](#generic-boundaries) | No: generic mappings are record-to-record. | not supported yet |
+| [Can a leaf, rename or marker declare its own type parameters?](#generic-boundaries) | No: the element types go on the spec's parameters. | by design |
+| **Merge and error envelopes** | | |
+| [Can an error envelope hierarchy be generic?](#error-envelope-rules) | No: the hierarchy, its variants and the context are non-generic. | by design |
+
+## Find your symptom {#find-your-symptom}
+
+Nothing refuses these at compile time. Each is a runtime surprise, linked to the teaching section that warns of it.
+
+| What you see | Why, and the fix |
+|---|---|
+| [`MAPPER.parse` throws a `NullPointerException`, sometimes](basics.md#bind-in-the-caller) | A constant on the spec can read `null`: bind the Impl in the caller. |
+| [A PATCH that omits a field overwrote the stored value](beans_patch.md#sparse-patch-write-back-updatespec) | A default the bean gives itself reads as sent: leave PATCH bean fields uninitialised. |
+| [An explicit JSON `null` cleared an `Optional` PATCH property](beans_patch.md#sparse-patch-write-back-updatespec) | Jackson binds it to `Optional.empty()`, which means *clear* there: omit the field to leave it unchanged. |
+| [`build` throws on an empty `Optional`](beans_patch.md#bean-shaped-wire-targets) | A setter, builder or record constructor rejects `null` without declaring it: drop the `Optional`, or encode absence in a leaf. |
+| [Adding to a built wire's list throws `UnsupportedOperationException`](structure.md#nesting-containers-and-recursion) | A same-typed container crosses as an unmodifiable copy: set a new list, or copy it first. |
+| [A record with an array is not equal to its own round trip](structure.md#nesting-containers-and-recursion) | The array crosses as a clone and compares by reference: give the record an `equals` that uses `Arrays.equals`. |
+| [Two swapped prisms passed to `of(...)` compiled](generics.md#element-mapped-specs) | Two abstract leaves of one type swap silently: pass them in declaration order. |
+| [A `Set` lost an element, or a `Map` entry was refused as a duplicate](structure.md#converting-map-keys) | A leaf maps two wire values to one: `ValidatedPrismLaws` catches it. |
+| [An error path reads as deeper nesting than it is](structure.md#nesting-containers-and-recursion) | A key or set element contains a dot: `FieldError.path()` keeps it as one segment. |
+| [`asIso().reverseGet` threw on a request body](tiers.md) | `reverseGet` is unguarded: a freshly bound wire goes through `parse`. |
+| [A constructor bug reached the client as a message](basics.md#constructor-invariants) | Any `RuntimeException` counts: keep the constructor to checks on its arguments. |
+| [A timestamp came back with fewer fractional digits](codecs.md#canonical-forms-only) | The formatter pattern fixes the precision, so `build` truncates finer values. |
+| [The first call into a generated error companion throws `ExceptionInInitializerError`](merge_envelopes.md#generating-error-envelopes-generateerrorenvelope) | Its all-absent context is built at class initialisation, and the context record's constructor rejects `null`: keep it a plain nullable carrier. |
+
+---
+
+## Nulls {#nulls}
+
+### The null contract, precisely {#the-null-contract-precisely}
+
+The null guard covers every reference-typed `parse` read that is not [bridged](basics.md#optional-bridge), on record and bean wires alike, and reaches inside containers, identity-copied ones included, at every depth:
+
+- A `null` element or map value locates the way its container locates anything ([lifting grammar](structure.md#nesting-containers-and-recursion)): by index in a `List` or array (`emails.1: must not be null`), by key in a `Map`, whether the container lifts through a leaf ([the bulk forms](../optics/validated_prism.md#the-bulk-forms-parseall-and-parsevalues)) or copies by identity. The index is a plain positional segment, matching the map-key grammar.
+- A `null` element of a `Set` has no rendering to locate by, and a set holds at most one, so it reports unlocated under the component: `emails: must not contain a null element`, which is distinct from `must not be null`, the message that says the set itself is absent.
+- An array of primitives (`int[]`) carries no element scan: a primitive element cannot be null. The component is still a reference, so a `null` *array* is guarded like any other read.
+- An identity container is scanned at every level its type names, so a `null` deep inside carries its full path: `grid.0.1` in a `List<List<String>>`, `byKey.k.1` in a `Map<String, List<String>>`, `matrix.0.1` in a `String[][]`. An `Optional` cannot hold a `null`, but one holding a container is scanned through, and locates at the component itself, since it holds only the one value (`nicknames.1`).
+- How the container is declared does not matter. Any `Collection` counts, and any `Map`: a subtype (`ArrayList`, `LinkedHashMap`, `EnumMap`), a supertype (`Collection`), a raw type, one with a wildcard argument, or a type variable bounded by one. A collection that is a `Set` when it is parsed follows the set rule above; any other locates by position, in iteration order.
+- A failure inside a set's element locates under that element's rendering, as a set element that fails its leaf does: `tagged.[b, null].1` for a `Set<List<String>>`. The rendering is the element's `toString()`, so an element containing a dot reads as deeper nesting in `pathString()`, while `FieldError.path()` keeps it as one segment.
+- A container class that fixes its own element type, such as a tree node declared `class Node extends ArrayList<Node>`, can hold itself at any depth. It is scanned one level into itself: where the class recurs, its elements are checked for `null` but not scanned inside.
+- Only these containers are looked inside. An `Iterable` or `Stream` component, and the library's own `Maybe` and `NonEmptyList`, are guarded against `null` themselves, but nothing inside them is scanned yet.
+- The values a [`@MapKey`](structure.md#converting-map-keys) map copies are scanned the same way, located under their source key.
+- The scan only locates nulls. What `parse` hands the domain is a [copy](#same-typed-containers-cross-as-copies), made before the scan runs, so the scan reads exactly what the wire held.
+- A `null` container *component* is guarded like any reference read (`emails: must not be null`).
+- A [bridged](basics.md#optional-bridge) container excuses only the absent case: `null` reads as empty, and a *present* container is scanned exactly as an unbridged one is.
+
+What stays the caller's error (`NullPointerException`), by contract: a `null` *wire* itself, a `null` map *key* (a structurally broken map, not a wrong value), and calling the bulk forms directly with a `null` list or map. A key is never scanned inside, even when it is a container.
+
+Absence-as-a-meaning is deliberate everywhere it appears. A record component cannot express it by itself (it can only be wrong), so it takes either the [sparse `UpdateSpec` tier](beans_patch.md#sparse-patch-write-back-updatespec), where every `null` means *leave unchanged*, or an [`@OptionalBridge`](basics.md#optional-bridge) component, where one named field's `null` means *absent*. Neither is inferred; both are declarations.
+
+---
+
+## Spec members {#spec-members}
+
+### How the two `default` families are told apart {#how-the-two-default-families-are-told-apart}
+
+Leaves are named after *domain* components and return `ValidatedPrism`; derived fields are named after *wire-only* components and return `Getter`. The processor matches the two differently:
+
+- A zero-parameter `default` returning `Getter` is *always* claimed as a derived field, and validated as one. So give getter-shaped utility helpers a parameter or a different return type, or they will be mistaken for derived fields.
+- A `default` returning `ValidatedPrism` is matched by name against the domain's components (and against the members of any [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group), and a *locally declared* leaf **must** match: an unmatched local leaf is a compile error with a nearest-name hint (`leaf 'emial' names no component of Customer. Did you mean 'email()'?`), because a silently inert leaf would silently stop validating that field. Prism-returning helpers belong in `private` or `static` methods, which are never leaf-shaped.
+- *Inherited* [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) members that match nothing stay inert by design: a shared vocabulary may carry leaves for components only some extending specs have, and likewise derived fields and renames for wire components only some of their wires carry.
+- On a **sealed** mapping, locally declared leaves, derived fields and renames are rejected outright (a dispatch has no components), and so are an `@OptionalBridge` marker, a `@MapKey` key leaf and an `@Unmapped` marker; inherited vocabulary stays inert there too, bar a `@Flatten` marker, which is refused either way.
+
+A rename's, leaf's or marker's type must be visible from the spec's package, where the Impl is generated: a package-private type a mix-in hands over from another package, or a private type nested in the spec's own enclosing class, is refused naming the type and the package.
+
+Four shapes are rejected, each with a what/why/fix diagnostic: a *locally declared* `Getter` named after a *domain* component (ambiguous with a leaf); a *locally declared* `Getter` naming nothing on the wire; a `Getter` with the wrong type arguments; and a `@MapField` rename targeting a component a derived field already fills. The first two are the typo guard, so an inherited `Getter` in either position stays inert instead; the last two catch a member that does bind, and fire wherever it was declared.
+
+### Derived fields and the emission tiers {#derived-fields-and-the-emission-tiers}
+
+A spec with any derived field never emits `asIso()`: the wire round trip recomputes the derived component, so it is an identity only for wire values that were already consistent. A mapping whose *only* extra is a derived field is *total-parse*: no **well-formed** wire value can fail it (the null guards above still apply, a domain constructor's [invariant](basics.md#constructor-invariants) can still refuse a value, and a fallible leaf elsewhere in the spec still makes the whole parse fallible). Combining a derived field with a projection (a wire otherwise smaller than the domain) is rejected, because the projection's `asLens()` write-back could never honour a component that `build` recomputes. [The Emission Tiers](tiers.md) is the full story.
+
+---
+
+## Optional fields and invariants {#optional-fields-and-invariants}
+
+### A bridged component must take `null` {#bridged-component-nullable}
+
+The bridged wire component is nullable by construction: `build` writes `null` into it for an absent value, so it must be declared to take one. A component declared non-null is refused: one carrying a non-null annotation such as `@NonNull`, `@Nonnull` or `@NotNull`, or one that carries no `@Nullable` inside a JSpecify `@NullMarked` package, class or module. Declare it `@Nullable String nickname`, so the wire record says what the mapping does with it. On an array the annotation goes before the brackets, `String @Nullable [] tags`, since `@Nullable String[]` makes the elements nullable and leaves the array non-null.
+
+The same holds for every site `build` writes an empty `Optional` into: a record component, setter or builder setter declared non-null, by a non-null annotation or inside a JSpecify `@NullMarked` scope without `@Nullable`, is refused; one that refuses `null` without declaring it is not checked, and throws from `build`. A primitive wire component can never hold the `null`, so `@OptionalBridge` onto one is refused too.
+
+Any annotation named `Nullable` or `CheckForNull` counts here, whichever library it comes from, and so does JSR-305's `@Nonnull(when = MAYBE)`: this rule refuses a build, so it reads more widely than the fixed list of names that decides which Focus paths are null-safe. A component typed by a type variable follows the variable's bounds: a plain `<T>` declared in a `@NullMarked` scope is non-null, as its bound `Object` is, and `<T extends @Nullable Object>` leaves the nullness to the type argument, so it bridges.
+
+### Which surfaces a constructor's refusal reaches {#constructor-refusal-surfaces}
+
+The [constructor guard](basics.md#constructor-invariants) covers every surface that builds the record whole from parsed parts: the [projection's `patch`](tiers.md#leaf-carrying-projections-the-validated-patch), a [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group, the fallible [`@GenerateMerge`](merge_envelopes.md), and [`@GenerateAssembly`](../monads/validated_assembly.md#generating-the-companion-generateassembly)'s `assemble()`. The [sparse `UpdateSpec` tier](beans_patch.md#sparse-patch-write-back-updatespec) constructs the record once, from the values the PATCH ends on, and its `apply` reports a refusal the same way, unlabelled; a nested record the PATCH replaces whole parses through its own spec, guard included. Three surfaces cannot return an error, so there the exception propagates: `asIso().reverseGet` and a projection's `asLens().set`, total optics meant for values already known to be lawful, and the `Update` a sparse update's `toValidated()` hands back.
+
+---
+
+## Shared vocabulary {#shared-vocabulary-precisely}
+
+### What an inherited member binds against {#what-an-inherited-member-binds-against}
+
+An inherited member that binds to nothing stays inert, so one vocabulary can serve specs whose domains and wires differ, while the same member declared on the spec is an error. Which side a member binds against decides what "nothing" means:
+
+| Member | Binds against | Inherited, when it binds to nothing |
+|---|---|---|
+| leaf, `@OptionalBridge` marker | the **domain**, by the method's name | inert |
+| `@MapKey` key leaf | the **domain**, by the name in the annotation | inert |
+| derived field | the **wire**, by the method's name | inert |
+| `@MapField` rename | **both**: its method names a domain component, its `to` a wire one | inert when either end is missing |
+| `@Flatten` marker | the **domain**, by the method's name | inert; the one member also judged against the **wire**, so a sealed pair or an [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) can refuse it even where it binds |
+
+So a projection or a PATCH bean that deliberately carries a subset extends the same vocabulary as the full spec, and simply maps fewer of its members; a sealed dispatch, which has no components at all, inherits the same vocabulary and binds none of it. Nothing is silently mismapped by an inert member, because every wire component still has to name a source: a wire that does carry a rename's target and has no other source for it is reported against that component. The cost is that a `to` typed wrongly *in the mix-in* is now caught only where some spec's wire happens to carry the intended name, which is the same trade the other inherited kinds already make.
+
+### Mix-in shapes the processor refuses {#refused-mix-in-shapes}
+
+Two mix-in shapes are rejected, each naming the offender:
+
+- a mix-in that **is itself a mapping spec** (directly or transitively extends `MappingSpec`/`UpdateSpec`): a mix-in shares vocabulary, a spec generates an Impl, and inheriting one spec from another would conflate the two;
+- a generic mix-in **reached raw**, which [A generic mix-in reached raw](#a-generic-mix-in-reached-raw) covers.
+
+Diagnostics about an inherited member name its declaring interface, `abstract method 'bogus' (inherited from 'BrokenVocabulary') is neither a rename, a leaf, nor a bridge`, so the fix points at the right file. A member whose type only the mix-in's own package can see is refused the same way: the Impl is generated in the spec's package and writes the member's type out in full, so a package-private type a mix-in hands over from elsewhere has nowhere to be named.
+
+### A generic mix-in reached raw {#a-generic-mix-in-reached-raw}
+
+A generic mix-in's members are read under the spec's instantiation, as [Generic mix-ins](generics.md#generic-mix-ins) shows with `Renames<T>`. The one shape this cannot answer for is a **raw** supertype anywhere on the route. Raw erases every member of the type below it, whatever that member declares, so `extends Renames` would contribute `Object name()` rather than the `String` it was written with. A raw ancestor that contributes nothing is left alone, since nothing of its is read; one that contributes a rename, a leaf or a derived field is refused at the declaration:
+
+```
+@GenerateMapping: mix-in 'Renames' is written raw. Its members are read under the spec's
+instantiation, and a raw supertype erases every one of them whatever they declare: a
+'ValidatedPrism<String, Email>' arrives bare, and a 'T' arrives as Object. Name the type
+arguments where 'Renames' is extended, as 'extends Renames<...>'.
+```
+
+Erasure travels downwards, so the raw clause is not always the interface whose members went missing: with `TextRenames extends Renames<String>` and a spec saying `extends TextRenames` raw, it is `TextRenames` that has to be given its argument. The message names the raw clause in both cases, because that is the line to edit.
+
+### Inheriting one member twice {#inheriting-one-member-twice}
+
+Conflicting inherited `default` methods are already a javac error before the processor runs. The one case javac leaves open, unrelated mix-ins both declaring the same *abstract* rename (override-equivalent abstracts may coexist, JLS 9.4.1), folds into a single rename when the targets agree and is rejected with a diagnostic naming both interfaces when they conflict. Where the agreeing declarations differ covariantly (`String id()` beside `CharSequence id()`), the one generated stub returns the narrowest of them, which is the only one of the declared returns that satisfies the rest; a group with no narrowest (a raw return beside incomparable parameterised ones) is refused naming every declaration. Interface `static` helpers are not inherited (JLS 9.4.1), so factory methods on a mix-in stay inert.
+
+### Inherited members on a sparse spec {#inherited-members-on-a-sparse-spec}
+
+An inherited member the sparse tier cannot use is inert rather than refused, so one vocabulary serves a full spec and its PATCH sibling: [Inherited vocabulary on a PATCH spec](#inherited-vocabulary-on-a-patch) has the rule.
+
+---
+
+## Containers {#containers}
+
+### Same-typed containers cross as copies {#same-typed-containers-cross-as-copies}
+
+A component whose type is the same on both sides, with no leaf of its own, crosses the boundary as a copy when it is a `List`, `Set`, `Collection`, `Map`, `Optional` or array, in both directions. Changing a wire's list after `parse` leaves the domain alone, and changing a built wire's list after `build` does not reach back into the domain. The same holds for `asIso()`, `asLens()`, the validated `patch`, a sparse [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec), a [bridged](basics.md#optional-bridge) component, the values a [`@MapKey`](structure.md#converting-map-keys) map carries, and a [`@GenerateMerge`](merge_envelopes.md#merging-several-sources-generatemerge) fill. A leaf over the whole container, or a derived field, hands over whatever your own code returns.
+
+- The copy is unmodifiable and keeps the source's order, with a `Set` copied as a set and any other `Collection` as a list: the shape an element-lifted leg's result already has. Code that adds to a built bean's list afterwards throws `UnsupportedOperationException`; set a new list instead, or copy it first (`new ArrayList<>(bean.getTags())`). A getter-only list filled through `getTags().addAll(...)` stays the bean's own.
+- It carries what it copies. A `null` element stays where it was (the [null scan](#the-null-contract-precisely) decides what `parse` makes of it, and `build` stays total), and a `null` container copies to `null`.
+- Every level inside is copied too: each list inside a `List<List<String>>`, each value of a `Map<String, List<String>>`, each row of a `String[][]`, and the container an `Optional` holds. Each call allocates one copy per container it hands over, at every level.
+- A copy compares the way a list, set or map does. A sorted source (`TreeSet`, `TreeMap`) keeps its order but not its comparator; declare the sorted type, which is handed over as it is, or sort again in the record's compact constructor. A source that compares by identity, such as an `IdentityHashMap` declared as `Map`, or a `Collection` holding an `ArrayDeque`, comes back comparing by its elements.
+- An array is copied with `clone()`, a primitive array included, and so is each row that is itself an array. A record compares an array component by reference, so a record with an array component and no `equals` of its own is not equal to its own round trip (see [Testing with hkj-test](../tooling/test_assertions.md#optic-laws)).
+- A copy keeps the declared type, so only a level declared as exactly `List`, `Set`, `Collection`, `Map` or `Optional`, or as an array, is copied. Everything else is handed over as it is, and so is everything inside it: a subtype (`ArrayList`, `LinkedHashMap`, `TreeSet`), any other interface (`Deque`, `SortedSet`), a same-typed record or other class, a type variable, and an element declared through a wildcard (the rows of a `List<? extends List<String>>`). So are the collections inside an array, whose runtime type may not hold a copy (an `ArrayList[]` behind a `List<String>[]`), and any element of a set that holds a `Collection`, however deeply (a `Set<Optional<Collection<String>>>` as much as a `Set<Collection<String>>`), since copying one into a list could make two elements equal and the set would keep one. Declare the interface type, or copy in the record's compact constructor, where sharing would matter.
+- A raw container is copied one level deep; what it holds is handed over as it is.
+
+### What lifts, and what does not {#what-lifts}
+
+Lifting needs the *same* container on both sides. A `List` against a `Set`, or an array against a `List`, is not a pair: it reports as a plain type mismatch rather than silently changing what the collection promises. The container must also be named exactly, one level deep: an `ArrayList`, a `SortedSet` or a `Collection` does not lift, nor does a wildcard element such as `List<? extends Customer>`, and a leaf over the elements of a nested container (the `String` inside `Optional<List<String>>`) is not lifted twice. The refusal says so, and where the component would lift once both sides declare the same exact container, say `List<Customer>` against `List<CustomerDto>`, it offers that declaration. An array of primitives (`int[]`) is copied whole, because a `ValidatedPrism` cannot focus a primitive, and a primitive element cannot be null. An array element type must also be able to name its own constructor, since lifting builds a new array: a type variable or a parameterised element (`T[]`, `List<Tag>[]`) is refused, because the generated `T[]::new` is generic array creation. `Map` keys are identity unless a `@MapKey` leaf converts them, and a raw or wildcard `Map` cannot have its keys or values converted.
+
+### A key leaf beside a whole-map leaf {#key-leaf-beside-a-whole-map-leaf}
+
+A leaf over the whole `Map` is tried before a key leaf or a value leaf, so it would leave a key leaf for the same component with nothing to convert. A key leaf the spec declares itself is refused beside one, wherever the whole-map leaf is declared, and the fix offers the value leaf in its place where that works, or removing the key leaf. A key leaf inherited from a mix-in stays inert beside a whole-map leaf, so one vocabulary can serve specs that map the component by its parts and specs that map it whole.
+
+---
+
+## Flattening {#flattening}
+
+### Names in a flattened group {#names-in-a-flattened-group}
+
+Names must be unambiguous, since every wire component takes exactly one source: a group member may not share its name with a domain component or with another group's member (so two components of the same record type cannot both be spread), a derived field may not be named after one, and a wire component named after the flattened component itself must be fed by a rename from another component. Each collision is a compile error naming both sides.
+
+### Where a flattened component can appear {#where-flattening-applies}
+
+Spreading is one level deep: a record inside the group nests through its own spec against a nested wire component, and a marker naming a group member is refused. Flattening otherwise stays on the full record-record tier: a bean-shaped wire, a generic spec, a projection, a sparse `UpdateSpec` and a group wider than one `fields()` ladder are each refused with a diagnostic, not supported yet. On a sparse `UpdateSpec`, an inherited marker follows [Inherited vocabulary on a PATCH spec](#inherited-vocabulary-on-a-patch).
+
+---
+
+## Across modules {#across-modules-precisely}
+
+### How a dependency's specs are found {#how-a-dependencys-specs-are-found}
+
+Nothing in a jar says which of its interfaces are mapping specs, and the compiler can list a package but not search a classpath. So the processor keeps an **index**: beside every generated `Impl` of a `MappingSpec` it writes one empty class into the package `org.higherkindedj.mapping.index`, carrying `@MappingIndexEntry` with the spec's name. A downstream compilation lists that package, reads each spec it names from its class file (which carries everything registration needs, type arguments included), and registers it exactly as if it were declared alongside. The entries are not for hand use.
+
+```mermaid
+flowchart LR
+    A[":orders-api<br/>CustomerMapping<br/>CustomerMappingImpl<br/>index entry"] -->|"jar on the classpath"| B[":billing<br/>InvoiceMapping nests<br/>(Customer, CustomerDto)"]
+    B -->|"lists the index package,<br/>reads CustomerMapping"| C["InvoiceMappingImpl delegates to<br/>CustomerMappingImpl.INSTANCE.asValidatedPrism()"]
+
+    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef domain fill:#a6d189,stroke:#40a02b,color:#232634
+    class A,B wire
+    class C domain
+```
+
+Four rules keep the resolution predictable:
+
+- **Your own spec wins.** A spec in the compilation shadows a classpath spec for the same pair, so adding a dependency never changes a resolution that already worked. The shadowed spec is named in a compiler note; if it is the one you meant, a leaf named after the component delegates to it explicitly.
+- **Two dependencies for one pair are ambiguous.** The error is the same `matches more than one mapping spec` as for two specs in one compilation, each candidate listed by its qualified name with `(classpath)`. For a nested component the remedy is a leaf naming the one you mean; a sealed subtype pair has no leaf, so declare the spec yourself and it shadows both.
+- **A stale entry is passed over.** An entry naming a spec that is no longer on the classpath, or naming anything but an interface, describes nothing. One whose spec is present but whose `Impl` is missing (a partial build output, or a jar that dropped it) is never chosen, and a use site that needed the pair is told which dependency to rebuild.
+- **A spec is used whole or not at all.** A dependency's spec is read from its class file against this module's compile classpath, so every interface it extends has to be there too. If a mix-in, or anything a mix-in extends, is missing, the spec cannot be read in full (an element-mapped one would show fewer leaves than its `of(...)` takes) and its `Impl` cannot be called from here at all. Such a spec is never chosen, and a use site that needed the pair names the missing type; [Multi-module builds](../tooling/manual_setup.md#multi-module-builds) says how to put it on the compile classpath.
+
+The index is classpath-only. A module with a `module-info` writes no entry and reads none, not supported yet, because the index is one package and the module system allows a package in one module only; the same rule keeps two spec-carrying jars from serving as automatic modules side by side. Across a boundary of that kind, delegate with a leaf calling the other `Impl`'s `asValidatedPrism()`, and give a library bound for a module path the processor option `-Ahkj.mapping.index=false`, which writes no entries and reads none.
+
+None of these index caveats apply to a vocabulary itself: it is found by ordinary inheritance, not through the index at all. A dependency's spec that extends one is another matter, since it can be used here only with the vocabulary on this module's compile classpath too (the last of the four rules).
+
+---
+
+## Emission tiers {#emission-tiers}
+
+### Where a bean or a bridged component lands {#where-a-bean-or-bridged-component-lands}
+
+The [tier decision flow](tiers.md) ends by asking whether any correspondence is fallible. The bean-read leg of that last decision: on a bean wire an unset reference property is an ordinary state, so its guarded reads count as fallible and a lossless-*looking* bean mapping still lands on the accumulating branch, withholding `asIso()`; see [Beans and Sparse PATCH](beans_patch.md#bean-shaped-wire-targets). The same reads decide a bean projection: any reference property makes it land on `patch`, while an all-primitive bean projection, whose reads can never be null, takes the `asLens()` branch. And a projection that also declares a [derived field](basics.md#derived-wire-fields) is rejected outright, which is why derived fields do not count when the flow compares the wire's components with the domain's. An [`@OptionalBridge`](basics.md#optional-bridge) component counts as fallible on both branches, on either wire shape: absence is a real correspondence, not a copy, so a mapping carrying one withholds `asIso()` and a projection carrying one takes `patch`.
+
+---
+
+## Bean wires {#bean-wires}
+
+### When an unpaired accessor is refused {#unpaired-accessors}
+
+When an unpaired accessor is named after a domain component the bean carries under no name, the one the component maps under (its own, or the one a `@MapField` rename gives it), leaving it out would drop that component without a word, so it is refused. The diagnostic names the accessor that would pair it. When a nearby accessor of the other kind has the same type, it is offered as the likely misspelling, so `setEmail(String)` beside `getEmial()` is told to rename the getter to `getEmail()`; otherwise it offers the [`@Unmapped` marker](beans_patch.md#accessors-meant-to-stay-out), for an accessor that is meant to stay out.
+
+### A getter-only `List` must name its element type {#getter-only-list-element-type}
+
+**A getter-only `List` must name its element type**, because `addAll` is what fills it: over a raw `List` that call is unchecked, and over a wildcard one the receiver and the argument capture separately, so neither writes into an Impl that compiles. The diagnostic names the remedy its cause calls for (declare the type arguments, or replace the wildcard with the element type it stands for), and both causes are also answered by a setter, which takes the property as declared. This is a `build` rule only: the [sparse tier](beans_patch.md#sparse-patch-write-back-updatespec) reads such a property and never writes it, so the same bean maps there untouched.
+
+### A getter-only `List` refuses the bridge {#getter-only-list-refuses-the-bridge}
+
+One property shape refuses the bridge: a getter-only `List` filled by the JAXB convention has no unset state to carry absence, because its getter creates the list on first call, so an empty `Optional` would read back as a present empty list; the diagnostic asks for a `List<T>` domain component, where the empty list *is* nothing, or for a property that can hold the `null`, which takes both a setter to write it *and* a getter that returns what the setter stored, since a lazily creating getter loses absence on the read even when a setter exists.
+
+### How a bean's direction is read {#how-a-beans-direction-is-read}
+
+The two-way reading wins whenever any property allows it, so a bean is one-directional only when nothing at all crosses the other way. A getter-only `List` counts as written, through the JAXB `getX().addAll(...)` convention, only on a bean that also has a setter or whose every getter is such a list: a `List` getter among read-only getters belongs to a read model, which maps parse-only. A bean that reads some names and writes others fits neither and is refused with both lists of names. A bean whose names pair only in part maps both ways over those that do, and an unpaired accessor named after a domain component is [refused rather than dropped](#unpaired-accessors), since a misspelt accessor is what that shape usually is.
+
+Two more rules follow from which direction is missing:
+
+- **Derived fields are build-side.** A build-only mapping takes them as a full one does. Declared on a parse-only spec, one has nothing to fill and is refused; one inherited from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) stays inert, so one vocabulary serves both directions.
+- **A build-only builder counts its one-argument methods as writers.** A method taking the bean or the builder itself (`from(Bean)`, `mergeFrom(Builder)`) is left out, but a singular adder beside its collection setter (a `@Singular` builder) needs a source like any other writer; getters on the built type make such a bean two-way, where only the properties it reads count, and an unpaired builder method named after a domain component is [refused](#unpaired-accessors).
+
+---
+
+## Sparse PATCH {#sparse-patch}
+
+### One tier per spec {#one-tier-per-spec}
+
+**A spec extending both `MappingSpec` and `UpdateSpec` is rejected.** One spec generates one Impl on one tier, and the tiers emit disjoint members, so nothing an Impl could carry answers both clauses. Declare a spec per tier and let a [shared vocabulary mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) carry what the pair has in common. A spec in a *dependency* that carries the shape is not refused here (it was compiled elsewhere), but it is never offered for nesting either: a use site needing the pair is told which spec it is and that it has no parse.
+
+### No primitive wire property {#no-primitive-patch-property}
+
+**A primitive wire property is rejected.** A primitive is always present (its default), so it can never carry the null-as-absent signal; use the wrapper type (`Integer`, `Boolean`). This is *forced*, not a style choice: an all-absent body must fold to the identity update, which a primitive would break.
+
+### No plain property bridged to a domain `Optional` {#no-optional-bridge-on-a-patch}
+
+**A domain `Optional<T>` component bridged from a non-Optional property is rejected**, and so is an [`@OptionalBridge`](basics.md#optional-bridge) the sparse spec declares itself, for the same reason. Under null-as-absent, `null` already means "leave unchanged", so "set to empty" has no encoding through a plain property (a plain property has only `null` and a value, one state short of JSON Merge Patch's three). The bridge's `null`-means-absent and the sparse tier's `null`-means-unchanged are two readings of one byte, and a spec extending `UpdateSpec` has already chosen. An `Optional`-typed property expresses *set to empty*: see [Sparse PATCH write-back](beans_patch.md#sparse-patch-write-back-updatespec).
+
+### No getter-only `List` property {#no-getter-only-list-on-a-patch}
+
+**A getter-only `List` property is rejected.** The JAXB convention creates the list on first call, so the property never reads `null` and cannot say *not provided*: a request that omits it would arrive as a present empty list and clear the domain value, with nothing failing to say so. Give it a setter, and a getter that answers `null` until it is set: no initialiser on the field, and no list created on first call. The setter alone is not enough, and a setter-backed property is accepted whatever its field or getter does, since neither shows in a signature. The [dense tier](beans_patch.md#bean-shaped-wire-targets) keeps the same property, because it writes every component and absence has nothing to mean there.
+
+### No record wire {#no-record-patch-wire}
+
+**A record wire is rejected.** A record component is always present, so absence is inexpressible; sparse PATCH is a bean-only shape.
+
+### A PATCH bean is both read and written {#patch-bean-read-and-written}
+
+**A bean read one way only is rejected.** A read-only bean cannot say *not provided*: its getters may answer from its constructor or create a value on first call, and either reads as present. A write-only bean has nothing to read. The PATCH bean must be both read and written ([One-directional beans](beans_patch.md#one-directional-beans)). Its constructor does not matter here: `updateFrom` only reads the bean, so its setters count even beside a private no-args constructor, which a deserialiser can still call. A bean with a builder keeps the builder as its writer.
+
+### Every setter has a getter {#every-patch-setter-has-a-getter}
+
+**A setter with no getter is rejected.** A setter is how the client's value arrives, and `updateFrom` folds in only what it can read, so a `setX` setter with no getter is a field the client can send and the update would ignore. It is refused whatever it is named, unless the spec marks it [`@Unmapped`](beans_patch.md#accessors-meant-to-stay-out); a method that only starts with `set`, such as `setup(String)`, is not one. A getter with no setter is refused when it is named after a domain component, as on the [dense tier](#unpaired-accessors), and a computed getter such as `isEmpty()` is left out without complaint. A builder's one-argument method is not a setter until a getter pairs it, so an unpaired one, such as a singular adder, is refused only when it is named after a domain component. For a primitive accessor the diagnostic offers the wrapper type, since a PATCH property has to be able to be absent.
+
+### No sealed hierarchy {#no-sealed-patch}
+
+**A sealed hierarchy is rejected**, on either side: dispatch has no sparse meaning (an absent property cannot choose a subtype to patch).
+
+### Inherited vocabulary on a PATCH spec {#inherited-vocabulary-on-a-patch}
+
+**An inherited derived field or `@OptionalBridge` marker stays inert.** Arriving from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces), neither is ever consulted here (a derived field feeds a `build()` an `UpdateSpec` never emits, and a bridge marker reads a `null` the sparse tier has already read as *absent*), so one vocabulary serves a full spec and its PATCH sibling; declaring either on the `UpdateSpec` itself is still an error, reported where it was written. An inherited rename is inert too whenever either end is missing, whether this PATCH bean omits the property its `to` names or this domain omits the component it renames, so a bean covering a subset needs no vocabulary of its own. An inherited [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire) marker is judged against this bean rather than waved through. It is inert whenever the bean carries none of the group's inner properties that nothing else fills, which covers both a bean declaring the group's own component (patched whole by identity) and one omitting the group entirely; it is refused, naming the mix-in, when the bean carries one, since a spread has no sparse edit shape yet. A `@Flatten` marker the `UpdateSpec` declares itself is refused either way, like the derived field and the bridge.
+
+### Same-typed components replace wholesale {#patch-replaces-wholesale}
+
+**A same-typed nested record, `Optional`, `List` or `Map` replaces wholesale** through identity, the fallback when no more specific leaf applies. The details:
+
+- A same-typed container carries the dense tiers' [null scan](#the-null-contract-precisely), at every depth and however it is declared: a null inside is a located, accumulating invalid (`tags.1: must not be null`, `grid.0.1` in a nested list; a set's, unlocated as `tags: must not contain a null element`), never written into the domain; a valid container is written as a [copy](#same-typed-containers-cross-as-copies), so the patched domain does not share it with the wire.
+- A same-typed `Optional` cannot hold a null, so one holding a plain value is written unconditionally: a present empty sets empty, absent leaves unchanged. One holding a container is scanned through, as above.
+- A nested record whose wire differs is patched wholesale through its own full mapping spec. Deep merge is out of scope.
+
+---
+
+## Generic specs {#generic-specs}
+
+### Leaf order in `of(...)` {#leaf-order-in-of}
+
+An element-mapped spec's `of(...)` takes one `ValidatedPrism` per abstract leaf, in declaration order, and a leaf can also come from a [generic mix-in](generics.md#generic-mix-ins). Declaration order then puts the spec's own leaves first, in the order it declares them, then each mix-in's, in the order the `extends` clause names them. A mix-in is read the same way, its own leaves before those of the interfaces it extends, and an interface reached twice counts where it is first reached. The generated `of(...)` documents each parameter, naming the interface that declares an inherited leaf, so the order can be read off the Impl.
+
+### The boundaries of a generic spec {#generic-boundaries}
+
+Generic mappings are **record-to-record only** (bean-shaped wires and `UpdateSpec` mappings stay concrete); raw uses (including raw *nested* arguments) and wildcards are diagnosed, while array arguments (`Page<String[]>`) are concrete, map fine, and unify structurally at nested use sites. An abstract leaf belongs to a generic spec: on a concrete or sealed one it is diagnosed, since nothing defers its parser. A leaf, rename or bridge marker declaring type parameters of its own (`<R> ValidatedPrism<R, R> items()`) is diagnosed as well: the Impl carries a leaf as a constructor-supplied field and a rename as a stub, and neither has anywhere to declare `<R>`. A leaf's element types go on the spec's own type parameters; a rename simply declares a concrete return type, since the stub only names it.
+
+---
+
+## Merge and error envelopes {#merge-and-error-envelopes}
+
+### Nulls and guards in a merge {#nulls-and-guards-in-a-merge}
+
+A fallible merge, one returning `Validated`, carries the [same null doctrine as `parse`](basics.md#null-doctrine): a null source-component read is a located, accumulated `FieldError`, never an exception, while a null source *argument* stays the caller's `NullPointerException`. It carries parse's [constructor guard](basics.md#constructor-invariants) too: an exception the target's constructor throws becomes an unlabelled `FieldError` with its message. A plain-return merge is total *by its declaration*: nulls flow through to the target constructor exactly as `build` copies them, and whatever that constructor throws propagates. (The return type follows the fills, so the guards cannot be bought by declaration alone: an identity-only merge that wants them should add a normalising `ValidatedPrism<X, X>` leaf, which makes the merge fallible and brings the `Validated` return with it.)
+
+### Error envelope rules {#error-envelope-rules}
+
+For [`@GenerateErrorEnvelope`](merge_envelopes.md#generating-error-envelopes-generateerrorenvelope), three rules apply, each a what/why/fix diagnostic:
+
+- the hierarchy, its variants, and the context record must be non-generic;
+- permitted variants must be records; a nested sealed sub-hierarchy is rejected with a flatten-it fix, not recursed into;
+- the context record's components must be nullable reference types. The all-absent context holds `null`, so primitives are rejected at compile time; and because a null-rejecting compact constructor cannot be detected by the processor, keep the context a plain nullable data carrier.
+
+---
+
+**Previous:** [Coming from MapStruct and Bean Validation](from_mapstruct.md)
 
 <!-- Source: transformers/ch_intro.md -->
 
@@ -94941,13 +95197,13 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 
 _In development. Release notes will be added here as changes land on `main`._
 
-- **A same-typed container is copied, so the wire and the domain no longer share one** ([#852](https://github.com/higher-kinded-j/higher-kinded-j/issues/852)): a component with the same `List`, `Set`, `Collection`, `Map` or array type on both sides, or the same `Optional` of one, used to cross the mapping as the very container that was read. A caller that changed a wire's list after `parse` changed the domain record with it, and a list changed through a built wire reached back into the domain. Such a component now crosses as a copy, at every level inside it: unmodifiable, in the source's order, with a set copied as a set and a `null` element carried as it is, the shape an element-lifted leg's result already has. That covers `parse`, `build`, `asIso()`, `asLens()`, the validated `patch`, a sparse `UpdateSpec`, a bridged component, a `@MapKey` map's values and `@GenerateMerge`. A container whose declared type has no copy of the same type is handed over as it is, as before: a subtype such as `ArrayList` or `TreeSet`, another interface such as `Deque`, a type variable, an element declared through a wildcard, the collections inside an array, and any element of a set that holds a `Collection`. Each call now allocates one copy per container it hands over. See [Same-typed containers cross as copies](mapping/basics.md#same-typed-containers-cross-as-copies).
+- **A same-typed container is copied, so the wire and the domain no longer share one** ([#852](https://github.com/higher-kinded-j/higher-kinded-j/issues/852)): a component with the same `List`, `Set`, `Collection`, `Map` or array type on both sides, or the same `Optional` of one, used to cross the mapping as the very container that was read. A caller that changed a wire's list after `parse` changed the domain record with it, and a list changed through a built wire reached back into the domain. Such a component now crosses as a copy, at every level inside it: unmodifiable, in the source's order, with a set copied as a set and a `null` element carried as it is, the shape an element-lifted leg's result already has. That covers `parse`, `build`, `asIso()`, `asLens()`, the validated `patch`, a sparse `UpdateSpec`, a bridged component, a `@MapKey` map's values and `@GenerateMerge`. A container whose declared type has no copy of the same type is handed over as it is, as before: a subtype such as `ArrayList` or `TreeSet`, another interface such as `Deque`, a type variable, an element declared through a wildcard, the collections inside an array, and any element of a set that holds a `Collection`. Each call now allocates one copy per container it hands over. See [Same-typed containers cross as copies](mapping/rules.md#same-typed-containers-cross-as-copies).
 
   _Behaviour change:_ a container that `build` writes to a wire, or `parse` writes into the domain, is now unmodifiable where it used to be the other side's own, so code that adds to a built bean's list afterwards throws `UnsupportedOperationException`: set a new list instead, or copy it first. A getter-only list filled through `getTags().addAll(...)` stays the bean's own. A sorted `Set` or `Map` declared through the interface keeps its order but not its comparator, so declare the sorted type or sort again in the record's compact constructor; a source that compares by identity, such as an `IdentityHashMap` declared as `Map`, comes back comparing by its elements. An array is now a clone, and a record compares an array component by reference, so a record with an array component and no `equals` of its own is no longer equal to its own round trip, and a `MappingLaws` check over one fails; give the record an `equals` that uses `Arrays.equals`, or compare its arrays elementwise. The same holds for a `Collection` component holding an `ArrayDeque`, which now crosses as a list.
 
 - **Mapping on a compiler that cannot say which file a type came from** ([#859](https://github.com/higher-kinded-j/higher-kinded-j/issues/859)): finding a dependency's specs, and waiting for a type another processor generates, both ask the compiler whether a type is compiled alongside the spec or read from a jar, through `Elements.getFileObjectOf`. javac answers. A compiler that leaves the JDK's default method in place cannot, and there the processors carry on with two limits. A spec waits for a generated type only where it names that type itself: one named inside a record, bean or mix-in the spec reads is mapped before it exists, and the build fails inside the generated `Impl`. A generated class whose package two modules declare is reported as a class that already exists. Builds with javac are unaffected.
 
-- **The null scan reaches every level of an identity-copied container, however it is declared** ([#875](https://github.com/higher-kinded-j/higher-kinded-j/issues/875)): a `null` inside a container copied by identity is a located error, and that now holds at any depth and for any container type. The scan used to look only inside a component declared as exactly `List`, `Set`, `Map` or an array, and only one level down, so a `null` inside `List<List<String>>` or `Map<String, List<String>>`, or inside an `ArrayList`, a `Collection` or a `LinkedHashMap`, reached the domain. It now locates at its full path (`grid.0.1`, `byKey.k.1`), on `parse`, the validated `patch`, a sparse `UpdateSpec`, a bridged component and a fallible `@GenerateMerge` alike. Any `Collection` or `Map` counts: a subtype, a supertype, a raw type, one with a wildcard argument, or a type variable bounded by one. An `Optional` holding a container is scanned through, and so are the values a `@MapKey` map copies. See [The null contract, precisely](mapping/basics.md#the-null-contract-precisely).
+- **The null scan reaches every level of an identity-copied container, however it is declared** ([#875](https://github.com/higher-kinded-j/higher-kinded-j/issues/875)): a `null` inside a container copied by identity is a located error, and that now holds at any depth and for any container type. The scan used to look only inside a component declared as exactly `List`, `Set`, `Map` or an array, and only one level down, so a `null` inside `List<List<String>>` or `Map<String, List<String>>`, or inside an `ArrayList`, a `Collection` or a `LinkedHashMap`, reached the domain. It now locates at its full path (`grid.0.1`, `byKey.k.1`), on `parse`, the validated `patch`, a sparse `UpdateSpec`, a bridged component and a fallible `@GenerateMerge` alike. Any `Collection` or `Map` counts: a subtype, a supertype, a raw type, one with a wildcard argument, or a type variable bounded by one. An `Optional` holding a container is scanned through, and so are the values a `@MapKey` map copies. See [The null contract, precisely](mapping/rules.md#the-null-contract-precisely).
 
   _Behaviour change:_ a `null` inside any of these containers used to parse as valid, and is now a located error. That includes three shapes that were deliberately left unscanned before: a raw `List`, `Set` or `Map`; one with a wildcard argument on a sparse `UpdateSpec`; and a same-typed `Optional` on a sparse `UpdateSpec`, which was written as sent. A `null` map key in a newly scanned map, such as a `HashMap` or `LinkedHashMap` component, now throws `NullPointerException`, as it already did for a `Map`; the null contract has always treated a `null` key as the caller's error.
 
@@ -94965,7 +95221,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   _Notes for existing builds._ On a record with a primitive component and a same-arity overload, the generated lenses, `parse`, the validated `patch`, merges and `assemble()` now build the value the canonical constructor builds, and an `@ImportOptics` lens over a class sets the value its exact-typed constructor, wither or setter computes. A value built through the overload before, and any stored data or test expectation that recorded it, differs.
 - **The `fields()` builders end in `construct` for a constructor that may refuse the fields** ([#897](https://github.com/higher-kinded-j/higher-kinded-j/issues/897)): `apply` runs whatever function it is handed, so a record whose compact constructor checks its fields against each other made it throw, taking with it whatever an enclosing assembly had accumulated around it, and, on `EitherOrBoth`, the warnings the assembly itself carried. `construct(Range::new, "not a valid Range")` completes the assembly the same way, but once every field is valid, a `RuntimeException` the function throws becomes an unlabelled `FieldError` carrying its message, or the fallback when the message is missing or blank, so an enclosing `field(label, ...)` locates it. It is the guard the generated mappings and a `@GenerateAssembly` companion already apply, now on the hand-written builder. Every labelled builder has it, `Validated.fields()`, `Path.fields()` and `EitherOrBoth.fields()`, where a refusal keeps the warnings collected so far; the generic `accumulate()` builders end in `apply` only. `apply` itself is unchanged, and only the function is guarded: a `null` it returns still throws, and a blank fallback message is rejected. See [When the record refuses](monads/validated_assembly.md#construct).
-- **An element-mapped spec's `of(...)` takes the spec's own leaves first** ([#876](https://github.com/higher-kinded-j/higher-kinded-j/issues/876)): the generated factory takes one `ValidatedPrism` per abstract leaf in declaration order, and a leaf inherited from a mix-in now comes after the leaves the spec declares itself, inherited ones following the order the `extends` clause names their mix-ins. The order had come from the compiler's own listing of members, which can put an inherited leaf first, so a call written in the documented order still compiled where the leaf types coincide and ran each prism against the other component. The generated `of(...)` now documents each parameter, naming the interface that declares an inherited leaf. The processor's other checks read a spec's members in the same order, so where a spec has several problems, one it declares itself is reported first. See [Element-mapped specs](mapping/generics.md#element-mapped-specs).
+- **An element-mapped spec's `of(...)` takes the spec's own leaves first** ([#876](https://github.com/higher-kinded-j/higher-kinded-j/issues/876)): the generated factory takes one `ValidatedPrism` per abstract leaf in declaration order, and a leaf inherited from a mix-in now comes after the leaves the spec declares itself, inherited ones following the order the `extends` clause names their mix-ins. The order had come from the compiler's own listing of members, which can put an inherited leaf first, so a call written in the documented order still compiled where the leaf types coincide and ran each prism against the other component. The generated `of(...)` now documents each parameter, naming the interface that declares an inherited leaf. The processor's other checks read a spec's members in the same order, so where a spec has several problems, one it declares itself is reported first. See [Leaf order in `of(...)`](mapping/rules.md#leaf-order-in-of).
 
   _Notes for existing builds._ A spec whose abstract leaves are all declared in one interface, its own or a single mix-in's, keeps its `of(...)` signature. One whose leaves are spread across several interfaces can get a new parameter order. `of(...)` infers its type arguments from the prisms it is given, so a call written for the previous order stops compiling only where its result meets a declared type, such as a typed field or a `@Bean` method's return. Through `var`, or where the leaf types coincide, it still compiles and runs each prism against the wrong component, so check each `of(...)` call on such a spec against the parameter list its Impl documents. A module that nests such a spec from a dependency reads the leaf order from the spec, not from the dependency's generated Impl, so build both with the same version: where the leaf types coincide, a mismatch compiles.
 
@@ -94975,7 +95231,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   _Notes for existing builds._ A type-use annotation that is itself deprecated is no longer copied into generated signatures. Where it is a nullness annotation inside a `@NullMarked` scope, the generated type now reads as non-null, so move to a current annotation, such as JSpecify's. A deprecation written only as a javadoc `@deprecated` tag, with no `@Deprecated` annotation, is not seen and is copied as before.
 
-- **A dependency's spec is not called when part of it is off the compile classpath** ([#895](https://github.com/higher-kinded-j/higher-kinded-j/pull/895)): a dependency's spec is read from its class file against the consuming module's compile classpath. When one of its mix-ins, or anything a mix-in extends, was missing there, typically because the dependency declared that module with `implementation` rather than `api`, the spec was read without that mix-in's members, and the processor generated a call that javac then refused inside the generated source with `cannot access`; an element-mapped spec was called with too few prisms. Such a spec is now never chosen, and the use site's error names the missing type. The hint that names a dependency's spec unable to serve a use site now names a generic spec too, whatever the reason. See [Across modules](mapping/structure.md#across-modules) and [Multi-module builds](tooling/manual_setup.md#multi-module-builds).
+- **A dependency's spec is not called when part of it is off the compile classpath** ([#895](https://github.com/higher-kinded-j/higher-kinded-j/pull/895)): a dependency's spec is read from its class file against the consuming module's compile classpath. When one of its mix-ins, or anything a mix-in extends, was missing there, typically because the dependency declared that module with `implementation` rather than `api`, the spec was read without that mix-in's members, and the processor generated a call that javac then refused inside the generated source with `cannot access`; an element-mapped spec was called with too few prisms. Such a spec is now never chosen, and the use site's error names the missing type. The hint that names a dependency's spec unable to serve a use site now names a generic spec too, whatever the reason. See [How a dependency's specs are found](mapping/rules.md#how-a-dependencys-specs-are-found) and [Multi-module builds](tooling/manual_setup.md#multi-module-builds).
 
 - **A `@ThroughField` traversal says when the lens it composes through is raw**: an `@ImportOptics` spec whose lens for the field is declared raw, `Lens items()`, was refused as though it had declared no lens for the field at all, which sent the author looking for a method that was already there. The refusal now says the lens is raw and asks for both its type arguments, since the traversal composes onto what the lens focuses. See the entry in [Compiler Errors](optics/compiler_errors.md#throughfield--composes-through-a-lens-named-items-which-the-spec-does-not-declare).
 
@@ -94991,7 +95247,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   _Notes for existing builds._ Code that caught a constructor's exception around `parse`, `patch`, a fallible merge or `assemble()` now receives an `Invalid` instead. Any `RuntimeException` counts, so a bug in a constructor, a division by zero or a dereference of its own, now reaches the client as its message with the stack trace dropped, where it used to fail the request: keep constructors to checks on their arguments, with messages written for a client. The hand-written `Validated.fields()` ladder's `apply` is unchanged, since it runs whatever function you hand it, so it and a `@GenerateAssembly` companion differ on a record whose constructor throws; ending the ladder in `construct` instead, described above, gives it the same guard. A `MappingLaws` rejection sample for a patch or parse-only mapping must fail on a component, since a value only the constructor refuses fails unlabelled at the top level.
 
-- **A bridged `Optional` is refused where the site it writes into is declared non-null** ([#881](https://github.com/higher-kinded-j/higher-kinded-j/issues/881)): the `Optional` bridge writes an empty value as `null`, into a record component a spec bridges with `@OptionalBridge` or through a bean's setter or builder setter. Nothing checked that the site could take a `null`, so one declared non-null compiled cleanly, even under `-Werror`, and then either threw from `build`, where the setter checked its argument, or kept a `null` its type ruled out. Such a site is now refused: one carrying a non-null annotation, such as JSpecify's `@NonNull`, Jakarta's `@Nonnull`, JetBrains' `@NotNull` or Lombok's `@NonNull`, or one declared inside a JSpecify `@NullMarked` package, class or module without a `@Nullable`. The diagnostic names the site and why it is non-null, and offers three fixes: mark it `@Nullable`, declare the domain component without the `Optional`, or declare a leaf over the whole `Optional` that encodes absence the way the wire does. For a class read from a class file, such as a dependency's, it asks for the `@Nullable` where the class is declared, for when that is yours to change. The refusals that offer `@OptionalBridge` as a fix, for a pair with no source and for a bridge whose element types differ, add the `@Nullable` the site needs, so following them no longer leads straight to this one. Any annotation named `Nullable` or `CheckForNull` counts, whichever library it comes from, and a site typed by a type variable follows the variable's bounds, so `<T extends @Nullable Object>` still bridges. See [Optional fields](mapping/basics.md#optional-bridge) and [Bean-shaped wire targets](mapping/beans_patch.md#bean-shaped-wire-targets).
+- **A bridged `Optional` is refused where the site it writes into is declared non-null** ([#881](https://github.com/higher-kinded-j/higher-kinded-j/issues/881)): the `Optional` bridge writes an empty value as `null`, into a record component a spec bridges with `@OptionalBridge` or through a bean's setter or builder setter. Nothing checked that the site could take a `null`, so one declared non-null compiled cleanly, even under `-Werror`, and then either threw from `build`, where the setter checked its argument, or kept a `null` its type ruled out. Such a site is now refused: one carrying a non-null annotation, such as JSpecify's `@NonNull`, Jakarta's `@Nonnull`, JetBrains' `@NotNull` or Lombok's `@NonNull`, or one declared inside a JSpecify `@NullMarked` package, class or module without a `@Nullable`. The diagnostic names the site and why it is non-null, and offers three fixes: mark it `@Nullable`, declare the domain component without the `Optional`, or declare a leaf over the whole `Optional` that encodes absence the way the wire does. For a class read from a class file, such as a dependency's, it asks for the `@Nullable` where the class is declared, for when that is yours to change. The refusals that offer `@OptionalBridge` as a fix, for a pair with no source and for a bridge whose element types differ, add the `@Nullable` the site needs, so following them no longer leads straight to this one. Any annotation named `Nullable` or `CheckForNull` counts, whichever library it comes from, and a site typed by a type variable follows the variable's bounds, so `<T extends @Nullable Object>` still bridges. See [A bridged component must take `null`](mapping/rules.md#bridged-component-nullable) and [Bean-shaped wire targets](mapping/beans_patch.md#bean-shaped-wire-targets).
 
   _Notes for existing builds._ A bridged record component, setter or builder setter that carries no `@Nullable` inside a `@NullMarked` package, class or module, or that carries a non-null annotation, compiled before and is now refused. That includes a Lombok bean whose field carries Lombok's `@NonNull`, and a class compiled from Kotlin, which marks a non-null property's setter `@NotNull`. Mark the site `@Nullable`, as the book describes; on a Lombok bean, mark the field, and Lombok copies it to the setter. Where the class comes from a dependency or a generator you cannot change, declare the domain component without the `Optional`, or give it a leaf over the whole `Optional` that encodes absence the way the class does.
 
@@ -95102,9 +95358,9 @@ _In development. Release notes will be added here as changes land on `main`._
 
 - **A shared vocabulary carrying `@Flatten` serves a PATCH sibling too** ([#836](https://github.com/higher-kinded-j/higher-kinded-j/issues/836)): a [mix-in](mapping/codecs.md#shared-vocabulary-mix-in-interfaces) carrying a [`@Flatten`](mapping/structure.md#flattening-a-nested-component-onto-a-flat-wire) marker could not be extended by a full `MappingSpec` and its sparse `UpdateSpec` alike. The marker was refused wherever it was declared, so the refusal landed on the shared interface, and both fixes it prescribed broke the full spec that needed the member.
 
-  The marker is now judged against the PATCH wire. An inherited marker is inert whenever the bean carries none of the group's inner properties that nothing else fills, which covers a bean declaring the group's own component (`Address getAddress()`, patched whole by identity) and one omitting the group entirely. A bean carrying one is asking for a spread, which has no sparse edit shape yet, and keeps a refusal naming both the marker and the mix-in it came from, now offering the replacement that resolves it. A marker the `UpdateSpec` declares itself is still refused, as a local derived field or `@OptionalBridge` is, and both fix lines now name the remedy that keeps a full sibling working. See [Sparse PATCH write-back](mapping/beans_patch.md#sparse-patch-write-back-updatespec).
+  The marker is now judged against the PATCH wire. An inherited marker is inert whenever the bean carries none of the group's inner properties that nothing else fills, which covers a bean declaring the group's own component (`Address getAddress()`, patched whole by identity) and one omitting the group entirely. A bean carrying one is asking for a spread, which has no sparse edit shape yet, and keeps a refusal naming both the marker and the mix-in it came from, now offering the replacement that resolves it. A marker the `UpdateSpec` declares itself is still refused, as a local derived field or `@OptionalBridge` is, and both fix lines now name the remedy that keeps a full sibling working. See [Inherited vocabulary on a PATCH spec](mapping/rules.md#inherited-vocabulary-on-a-patch).
 
-- **A mapping spec names one tier** ([#837](https://github.com/higher-kinded-j/higher-kinded-j/issues/837)): a spec extending both `MappingSpec` and `UpdateSpec` is now refused where it is declared, naming both supertypes. One spec generates one Impl on one tier, and the two emit disjoint members, so the sparse clause silently won: the Impl carried `updateFrom` alone while the spec was still offered to other specs as a nested mapping. A parent nesting the pair then generated a call to a `parse` that was never written, and the build failed with `cannot find symbol` inside a generated file, naming a class the author had not written for a mistake made in a third one. A pair of tiers is a pair of specs, with a [shared vocabulary mix-in](mapping/codecs.md#shared-vocabulary-mix-in-interfaces) carrying what they have in common. A spec in a dependency that carries the shape is no longer silently unusable either: a use site that needed the pair is told which spec it is and why it has no parse, the way a dependency whose Impl has gone missing already was. See [Sparse PATCH write-back](mapping/beans_patch.md#sparse-patch-write-back-updatespec).
+- **A mapping spec names one tier** ([#837](https://github.com/higher-kinded-j/higher-kinded-j/issues/837)): a spec extending both `MappingSpec` and `UpdateSpec` is now refused where it is declared, naming both supertypes. One spec generates one Impl on one tier, and the two emit disjoint members, so the sparse clause silently won: the Impl carried `updateFrom` alone while the spec was still offered to other specs as a nested mapping. A parent nesting the pair then generated a call to a `parse` that was never written, and the build failed with `cannot find symbol` inside a generated file, naming a class the author had not written for a mistake made in a third one. A pair of tiers is a pair of specs, with a [shared vocabulary mix-in](mapping/codecs.md#shared-vocabulary-mix-in-interfaces) carrying what they have in common. A spec in a dependency that carries the shape is no longer silently unusable either: a use site that needed the pair is told which spec it is and why it has no parse, the way a dependency whose Impl has gone missing already was. See [One tier per spec](mapping/rules.md#one-tier-per-spec).
 
   _Behaviour change, refusing a shape that compiled:_ as long as nothing nested the pair, such a spec compiled in 0.4.10, its `MappingSpec` clause silently ignored and only `updateFrom` emitted. It is now refused at the declaration. Split it into a `MappingSpec` and an `UpdateSpec`; the sparse half's generated surface is unchanged, so its `updateFrom` call sites are too.
 
@@ -95118,7 +95374,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   An inherited member that binds to nothing now stays inert, the rule leaves, bridges and `@MapKey` key leaves already followed, so the same interface serves a full mapping, its projections, its PATCH sibling and its sealed dispatch alike. Which side a member binds against decides what "binds to nothing" means: a leaf, bridge, key leaf or `@Flatten` marker is matched against the domain, a derived field against the wire, and a rename against both at once. A member the spec declares *itself* keeps its refusal, which is what catches a typo. A `@Flatten` marker is the one member judged against the wire as well, and is still refused outright on a sealed pair, where there are no components to spread.
 
-  Nothing is silently mismapped by an inert member, because every wire component must still name a source. The cost is narrower: a `to` misspelled in the mix-in itself is now caught only where some spec's wire carries the intended name. See [Shared vocabulary](mapping/codecs.md#shared-vocabulary-mix-in-interfaces).
+  Nothing is silently mismapped by an inert member, because every wire component must still name a source. The cost is narrower: a `to` misspelled in the mix-in itself is now caught only where some spec's wire carries the intended name. See [What an inherited member binds against](mapping/rules.md#what-an-inherited-member-binds-against).
 
 - **`@GenerateMapping` lifts `Set`, array and `Map`-key components** ([#675](https://github.com/higher-kinded-j/higher-kinded-j/issues/675)): element lifting covered `List`, `Optional` and a `Map`'s values. A `Set<EmailAddress>` component could only be copied whole or mapped through a hand-written whole-container leaf, an array could not lift at all, and a `Map` whose two sides keyed differently was a hard error. All three now lift through the leaf or nested spec named after the component, in both directions and on every tier - dense, projection, bean wire and sparse `UpdateSpec` - and a same-typed `Set` or reference array carries the identity null scan the other containers already did.
 
@@ -95142,7 +95398,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   _One behaviour change on bean wires:_ a spec declaring a leaf for a bridged component whose element type already matched the property had that leaf silently dropped, and the value was copied unvalidated. An explicit leaf now wins over the bridge's identity copy, the rule every other correspondence already followed, so such a leaf starts running; a normalising one will change what the mapping produces. Otherwise nothing that compiled changes: the record-wire pair was a compile error in 0.4.10, refused with an offer of a whole-`Optional` leaf, which maps the pair without giving it an absent state, and the refusal now names the bridge first and in full. On a bean wire, where the bridge is automatic, the annotation is redundant rather than wrong and draws a note, so one shared mix-in can carry the vocabulary for both wire shapes and for a PATCH sibling.
 
-- **`@GenerateMapping` holds spec members to what the Impl can carry** ([#762](https://github.com/higher-kinded-j/higher-kinded-j/issues/762)): the generated Impl writes a leaf as a constructor-supplied field and a rename as a stub, and three member shapes used to reach javac inside `<Spec>Impl.java` rather than being settled where they are declared. A leaf or rename declaring type parameters of its own (`<R> ValidatedPrism<R, R> items()`) is refused at the declaration, since neither a field nor a stub has anywhere to declare them. A member whose type the spec's package cannot see, whether a package-private type handed over by a mix-in from another package or a private type nested in the spec's own enclosing class, is refused naming the type and the package, the same check `@GenerateIsos` and `@GeneratePathBridge` already make. And same-named members with covariantly differing returns, renames and wildcard-differing leaves alike, fold into one member returning the narrowest declaration, the only one of the declared returns that satisfies the rest; a group with no narrowest (a raw return beside incomparable parameterised ones, which the language admits through unchecked conversion) is refused naming every declaration. See [Diagnostics and limits](mapping/testing.md#diagnostics-and-limits).
+- **`@GenerateMapping` holds spec members to what the Impl can carry** ([#762](https://github.com/higher-kinded-j/higher-kinded-j/issues/762)): the generated Impl writes a leaf as a constructor-supplied field and a rename as a stub, and three member shapes used to reach javac inside `<Spec>Impl.java` rather than being settled where they are declared. A leaf or rename declaring type parameters of its own (`<R> ValidatedPrism<R, R> items()`) is refused at the declaration, since neither a field nor a stub has anywhere to declare them. A member whose type the spec's package cannot see, whether a package-private type handed over by a mix-in from another package or a private type nested in the spec's own enclosing class, is refused naming the type and the package, the same check `@GenerateIsos` and `@GeneratePathBridge` already make. And same-named members with covariantly differing returns, renames and wildcard-differing leaves alike, fold into one member returning the narrowest declaration, the only one of the declared returns that satisfies the rest; a group with no narrowest (a raw return beside incomparable parameterised ones, which the language admits through unchecked conversion) is refused naming every declaration. See [Rules and Limits](mapping/rules.md#find-your-limit).
 
   _Behaviour change, moving three javac errors to the declaration:_ each refused shape failed the build before, as `cannot find symbol` or an override error inside the generated file, and a covariant group could emit whichever member the scan reached first. Nothing that generated a compiling Impl changes.
 
