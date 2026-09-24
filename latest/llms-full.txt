@@ -36050,6 +36050,7 @@ No null checks, no casts, no nested conditionals. And the write direction is the
     // every data.users[].email is masked; response itself is unchanged
 
     JsonNode aged = Traversals.modify(USER_AGES, age -> age + 1, response);
+    List<Double> ages = Traversals.getAll(USER_AGES, aged);
     // [33.0, 29.0, 46.0]
 ```
 
@@ -39468,7 +39469,7 @@ The edits validate exactly as they do in `accumulate`, and their errors are repo
 
 The edits' errors are located relative to the focus. Where the focus is a nested component rather than the source's own fields, add the component's name to each edit with `.at("range")`, so their errors and the source agree on where they are.
 
-`@GenerateMapping` on an [`UpdateSpec`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) generates exactly this: its `updateFrom` writes onto the components a PATCH can set and constructs the domain record once.
+`@GenerateMapping` on an [`UpdateSpec`](../mapping/beans_patch.md#fields-a-constructor-checks-together) generates exactly this: its `updateFrom` writes onto the components a PATCH can set and constructs the domain record once.
 
 ---
 
@@ -39489,7 +39490,7 @@ Practice the whole model in [Tutorial 24: Multi-Edit and Sparse Updates](https:/
 - [Semigroup and Monoid](../functional/semigroup_and_monoid.md): the `Update` monoid that powers `combine`
 - [Accumulating Assembly](../monads/validated_assembly.md): the same all-errors-at-once model for *constructing* values
 - [Coupled Fields](coupled_fields.md): atomic updates of interdependent fields
-- [Record Mapping, sparse PATCH (`UpdateSpec`)](../mapping/beans_patch.md#sparse-patch-write-back-updatespec): generate this `Edits.accumulate` fold when the DTO maps one-to-one
+- [Sparse PATCH (`UpdateSpec`)](../mapping/beans_patch.md#sparse-patch-write-back-updatespec): generate this `Edits.accumulate` fold when the DTO maps one-to-one
 ~~~
 
 ---
@@ -45840,7 +45841,8 @@ interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {
 }
 
 
-    CustomerMappingImpl.INSTANCE.parse(new CustomerDto("Bob", "not-an-email"));
+    Validated<NonEmptyList<FieldError>, Customer> parsed =
+        CustomerMappingImpl.INSTANCE.parse(new CustomerDto("Bob", "not-an-email"));
     // Invalid(NonEmptyList[email: not an email address])
 ```
 
@@ -46287,7 +46289,8 @@ interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {
 }
 
 
-    CustomerMappingImpl.INSTANCE.parse(new CustomerDto("Bob", "not-an-email"));
+    Validated<NonEmptyList<FieldError>, Customer> parsed =
+        CustomerMappingImpl.INSTANCE.parse(new CustomerDto("Bob", "not-an-email"));
     // Invalid(NonEmptyList[email: not an email address])
 ```
 
@@ -46339,7 +46342,7 @@ interface ProfileMapping extends MappingSpec<Profile, ProfileDto> {
 }
 
 
-    ProfileMappingImpl.INSTANCE.build(new Profile("Ada", "Lovelace"));
+    ProfileDto built = ProfileMappingImpl.INSTANCE.build(new Profile("Ada", "Lovelace"));
     // ProfileDto[first=Ada, last=Lovelace, displayName=Ada Lovelace]
 ```
 
@@ -46648,7 +46651,7 @@ A mix-in **may be generic**: its members are read under the spec's instantiation
 
 The processor refuses a mix-in that is itself a mapping spec, and a generic one reached raw: see [mix-in shapes the processor refuses](rules.md#refused-mix-in-shapes).
 
-Mix-ins compose with the rest of the feature: [threaded generic specs](generics.md) can extend mix-ins, generic ones included, at their own type parameters, and [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) mappings inherit vocabulary the same way, element leaves included, so the leaf a full spec lifts over a `List` serves its PATCH sibling unchanged. [Inherited members on a sparse spec](rules.md#inherited-members-on-a-sparse-spec) says which of them stay inert there. [`@GenerateMerge`](merge_envelopes.md) specs still declare everything directly.
+Mix-ins compose with the rest of the feature: [threaded generic specs](generics.md) can extend mix-ins, generic ones included, at their own type parameters, and [`UpdateSpec`](beans_patch.md#patch-containers) mappings inherit vocabulary the same way, element leaves included, so the leaf a full spec lifts over a `List` serves its PATCH sibling unchanged. [Inherited members on a sparse spec](rules.md#inherited-members-on-a-sparse-spec) says which of them stay inert there. [`@GenerateMerge`](merge_envelopes.md) specs still declare everything directly.
 
 A vocabulary also crosses a **module boundary**. It is a plain interface rather than a spec, so the module publishing it needs no annotation processor, only the library its own members name, and a downstream spec extends it from the jar exactly as from a sibling source file: the annotations that give its members meaning are kept in the class file. One API module can therefore own the house vocabulary that every service module's specs extend. See [Across modules](structure.md#across-modules).
 
@@ -46726,13 +46729,15 @@ interface MemberMapping extends MappingSpec<Member, MemberDto> {
     var memberMapping = MemberMappingImpl.INSTANCE;
 
     // Absence travels as null in both directions; a present value still validates.
-    memberMapping.build(new Member("Ada", Optional.empty(), Optional.empty()));
+    MemberDto wire = memberMapping.build(new Member("Ada", Optional.empty(), Optional.empty()));
     // MemberDto[name=Ada, nickname=null, altEmail=null]
 
-    memberMapping.parse(new MemberDto("Ada", null, null));
+    Validated<NonEmptyList<FieldError>, Member> absent =
+        memberMapping.parse(new MemberDto("Ada", null, null));
     // Valid(Member[name=Ada, nickname=Optional.empty, altEmail=Optional.empty])
 
-    memberMapping.parse(new MemberDto("Ada", "countess", "not-an-email"));
+    Validated<NonEmptyList<FieldError>, Member> badAltEmail =
+        memberMapping.parse(new MemberDto("Ada", "countess", "not-an-email"));
     // Invalid(NonEmptyList[altEmail: not an email address])
 ```
 
@@ -46865,11 +46870,13 @@ interface StayMapping extends MappingSpec<Stay, StayDto> {
 interface ReservationMapping extends MappingSpec<Reservation, ReservationDto> {}
 
 
-    ReservationMappingImpl.INSTANCE.parse(
-        new ReservationDto(
-            null,
-            List.of(
-                new StayDto("2026-03-01", "2026-03-04"), new StayDto("2026-03-09", "2026-03-07"))));
+    Validated<NonEmptyList<FieldError>, Reservation> reservation =
+        ReservationMappingImpl.INSTANCE.parse(
+            new ReservationDto(
+                null,
+                List.of(
+                    new StayDto("2026-03-01", "2026-03-04"),
+                    new StayDto("2026-03-09", "2026-03-07"))));
     // Invalid(NonEmptyList[guest: must not be null, stays.1: checkOut must be after checkIn])
 ```
 
@@ -46937,7 +46944,8 @@ record InvoiceDto(String id, CustomerDto customer) {}
 interface InvoiceMapping extends MappingSpec<Invoice, InvoiceDto> {}
 
 
-    InvoiceMappingImpl.INSTANCE.parse(new InvoiceDto("INV-2", new CustomerDto("Bob", "nope")));
+    Validated<NonEmptyList<FieldError>, Invoice> invoice =
+        InvoiceMappingImpl.INSTANCE.parse(new InvoiceDto("INV-2", new CustomerDto("Bob", "nope")));
     // Invalid(NonEmptyList[customer.email: not an email address])
 ```
 
@@ -47069,10 +47077,12 @@ interface ReferralMapping extends MappingSpec<Referral, ReferralDto> {
 
     var referralMapping = ReferralMappingImpl.INSTANCE;
 
-    referralMapping.parse(new ReferralDto("R-7", null));
+    Validated<NonEmptyList<FieldError>, Referral> noReferrer =
+        referralMapping.parse(new ReferralDto("R-7", null));
     // Valid(Referral[code=R-7, referrer=Optional.empty])
 
-    referralMapping.parse(new ReferralDto("R-7", new CustomerDto("Bob", "nope")));
+    Validated<NonEmptyList<FieldError>, Referral> badReferrer =
+        referralMapping.parse(new ReferralDto("R-7", new CustomerDto("Bob", "nope")));
     // Invalid(NonEmptyList[referrer.email: not an email address])
 ```
 
@@ -47097,13 +47107,16 @@ interface GuestlistMapping extends MappingSpec<Guestlist, GuestlistDto> {
 
     var guestlistMapping = GuestlistMappingImpl.INSTANCE;
 
-    guestlistMapping.parse(new GuestlistDto("Launch", null));
+    Validated<NonEmptyList<FieldError>, Guestlist> absentGuests =
+        guestlistMapping.parse(new GuestlistDto("Launch", null));
     // Valid(Guestlist[event=Launch, guests=Optional.empty])
 
-    guestlistMapping.parse(
-        new GuestlistDto(
-            "Launch",
-            List.of(new CustomerDto("Ada", "ada@example.org"), new CustomerDto("Bob", "nope"))));
+    Validated<NonEmptyList<FieldError>, Guestlist> badGuest =
+        guestlistMapping.parse(
+            new GuestlistDto(
+                "Launch",
+                List.of(
+                    new CustomerDto("Ada", "ada@example.org"), new CustomerDto("Bob", "nope"))));
     // Invalid(NonEmptyList[guests.1.email: not an email address])
 ```
 
@@ -47150,7 +47163,8 @@ interface VendorMapping extends MappingSpec<Vendor, VendorDto> {
     VendorDto flat =
         vendorMapping.build(new Vendor("Acme", new Address("1 High St", "Leeds", "LS1 4AP")));
     // VendorDto[name=Acme, street=1 High St, city=Leeds, postcode=LS1 4AP]
-    vendorMapping.parse(new VendorDto("Acme", null, "Leeds", null));
+    Validated<NonEmptyList<FieldError>, Vendor> missing =
+        vendorMapping.parse(new VendorDto("Acme", null, "Leeds", null));
     // Invalid(NonEmptyList[address.street: must not be null, address.postcode: must not be null])
 ```
 
@@ -48180,7 +48194,7 @@ The overloads follow the tiers:
 - **Parse-only bean:** pass `asValidatedParse()` with a parsing and a non-parsing wire value: the first parses, and the second fails with every error located.
 - **Build-only bean:** pass `asValidatedBuild()` with a domain value: `build` renders it without failing.
 - **Derived-field (total-parse) mapping:** `build` recomputes what `parse` ignores, so only the non-derived components round-trip. The domain-sample overload `assertMappingLaws(prism, domainValue)` asserts exactly that and nothing stronger.
-- **Sparse-update (`UpdateSpec`) mapping:** pass the `updateFrom` method reference, a domain value, and an all-absent, a valid and an invalid wire to check the identity, idempotence and validation laws ([Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec)).
+- **Sparse-update (`UpdateSpec`) mapping:** pass the `updateFrom` method reference, a domain value, and an all-absent, a valid and an invalid wire to check the identity, idempotence and validation laws ([Check a PATCH bean in your build](beans_patch.md#check-a-patch-in-your-build)).
 
 A spec with a derived field *and* a fallible leaf is better served by the fallible overload, given a parseable wire value whose derived components match what `build` would produce (this keeps the overload's rejection check on the non-parsing wire). Reserve the domain-sample overload for total-parse mappings, where no well-formed wire value can fail. For the patch and parse-only overloads, whose rejection law expects every error to be located, give an invalid wire that fails on a component: a value only the domain's own [constructor refuses](absence.md#constructor-invariants) fails at the record's path, which at the top level is unlabelled.
 
@@ -48226,7 +48240,8 @@ interface SubscriberDetailsMapping extends MappingSpec<Subscriber, SubscriberDet
     // Valid(Subscriber[id=7, email=EmailAddress[value=grace@corp.example], age=37])
 
     // Dense semantics: every projected field applies - a null is a located error, never absence.
-    subscriberDetailsMapping.patch(subscriber, new SubscriberDetailsDto(null, 37));
+    Validated<NonEmptyList<FieldError>, Subscriber> nullEmail =
+        subscriberDetailsMapping.patch(subscriber, new SubscriberDetailsDto(null, 37));
     // Invalid(NonEmptyList[email: must not be null])
 ```
 
@@ -48341,7 +48356,7 @@ The design decisions worth knowing:
 - **Honest tiers.** Because an unset property is ordinary, a bean's guarded reference reads count as fallible and the mapping withholds `asIso()` automatically; an all-primitive bean (whose reads can never be null) still earns it. A record wire's guards exist for hostile bindings only, so a lossless record mapping keeps `asIso()`, with the parse-iso coherence law scoped to wires whose reference components are non-null and whose values the domain accepts. Nesting is unaffected: a bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a [one-directional](#one-directional-beans) one exposes the half it has, nesting wherever only that direction is used.
 - **Construction strategy** is detected from the bean's shape, tried in order: a public no-args constructor with `setX` setters (and, for a getter-only `List`, the JAXB convention `getItems().addAll(...)`); then a static `builder()`/`newBuilder()` whose setters fill it and whose `build()` yields the wire. A bean with getters that fits neither is only ever read, so it maps [parse-only](#one-directional-beans); a bean with nothing to read or write gets a what/why/fix diagnostic.
 - **A property is a getter and a writer that share a name.** Getters are `getX()`, and `isX()` returning `boolean` or `Boolean` (the shape JAXB declares for an optional boolean); where a bean declares both for one name, `getX()` reads it. A getter nothing writes, or a writer nothing reads, is left out of the mapping, which suits a computed getter such as `getSummary()` or a builder's singular adder. When an unpaired accessor is named after a domain component the bean carries under no name, the one the component maps under (its own, or the one a `@MapField` rename gives it), leaving it out would drop that component without a word, so it is refused. The diagnostic names the fix: [when an unpaired accessor is refused](rules.md#unpaired-accessors) lists what it offers, and [Accessors meant to stay out](#accessors-meant-to-stay-out) covers the marker for one left out on purpose.
-- **Optionality bridges through `null`, automatically here.** On a full mapping, a domain `Optional<T>` maps to a nullable bean property `T` (bean conventions leave `Optional` off property types): empty bridges to absent (`build` writes `null`, replacing whatever the bean or its builder started with; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf, or [nests through its own spec](structure.md#optional-nested-objects). This is the *only* wire shape where the bridge needs no declaration: a record wire opts in per component with [`@OptionalBridge`](absence.md#optional-bridge), which buys the same correspondence, and declaring it on a bean spec is redundant (a note, not an error, so one mix-in can serve both shapes). One property shape refuses the bridge, [a getter-only `List`](rules.md#getter-only-list-refuses-the-bridge), which has no unset state to carry absence. The [sparse tier](beans_patch.md#sparse-patch-write-back-updatespec) is the deliberate exception in the other direction: there `null` already means "leave unchanged", so a PATCH bean encodes "set to empty" with an `Optional`-typed property instead.
+- **Optionality bridges through `null`, automatically here.** On a full mapping, a domain `Optional<T>` maps to a nullable bean property `T` (bean conventions leave `Optional` off property types): empty bridges to absent (`build` writes `null`, replacing whatever the bean or its builder started with; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf, or [nests through its own spec](structure.md#optional-nested-objects). This is the *only* wire shape where the bridge needs no declaration: a record wire opts in per component with [`@OptionalBridge`](absence.md#optional-bridge), which buys the same correspondence, and declaring it on a bean spec is redundant (a note, not an error, so one mix-in can serve both shapes). One property shape refuses the bridge, [a getter-only `List`](rules.md#getter-only-list-refuses-the-bridge), which has no unset state to carry absence. The [sparse tier](beans_patch.md#what-each-json-state-does) is the deliberate exception in the other direction: there `null` already means "leave unchanged", so a PATCH bean encodes "set to empty" with an `Optional`-typed property instead.
 - **A bridged property's writer must take `null`.** `build` never skips a write, so a bean's own defaults (a field initialiser, a builder's default) cannot survive it and read back as present. The price is that an empty `Optional` reaches the setter or builder setter as `null`. A setter that copies defensively needs a guard (`v == null ? null : List.copyOf(v)`). A parameter declared non-null, by a non-null annotation or by a `@NullMarked` scope with no `@Nullable` on it, is refused, as a bridged record component is: mark it `@Nullable` (on a Lombok bean, on the field, which Lombok copies to the setter). A generated builder that refuses `null` (protobuf, Immutables) cannot be changed, so declare the component without the `Optional`, or give it a leaf over the whole `Optional` that encodes absence the builder's way (`ValidatedPrism<String, Optional<String>>` mapping empty to `""`), which wins over the bridge. A default the bean applies to a `null` it is given, in the setter, a builder's `build()` or the getter, still reads back as present; `MappingLaws` catches it.
 - **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the *wire* may be bean-shaped; a bean domain gets a diagnostic.
 
@@ -48383,7 +48398,8 @@ interface TransferMapping extends MappingSpec<Employee, TransferBean> {}
 
     // Dense, as on a record wire: an unset property is a located error, never "keep the current
     // value".
-    transferMapping.patch(researcher, new TransferBean());
+    Validated<NonEmptyList<FieldError>, Employee> unset =
+        transferMapping.patch(researcher, new TransferBean());
     // Invalid(NonEmptyList[department: must not be null])
 ```
 
@@ -48564,12 +48580,13 @@ The rules follow from which direction is missing:
 
 _Map a PATCH request so an omitted field keeps its current value and a bad one still fails._
 
-A PATCH request carries only the fields the client wants to change, so a `null` in it means *not sent*, not *broken*. This page maps such a request onto your domain record with `UpdateSpec`: sent fields are validated and applied, and omitted ones keep their current value. The request class has getters and setters, so [Bean-Shaped Wires](beans.md) covers how it is read.
+A PATCH request carries only the fields the client wants to change, so a `null` in it means *not sent*, not *broken*. This page maps such a request onto your domain record, a Java `record`, with `UpdateSpec`: sent fields are validated and applied, and omitted ones keep their current value. The request must be a class with getters and setters, which [Bean-Shaped Wires](beans.md) covers. The mapper needs Java 25 and the hkj Gradle plugin, and the [Quickstart](quickstart.md) sets both up.
 
 ~~~admonish info title="What You'll Learn"
-- What PATCH and *sparse* PATCH actually mean, and why `null` is ambiguous in a PATCH body
-- Opting into sparse semantics with `UpdateSpec`: present fields fold in, absent fields leave the domain alone
-- The rules that keep the null-as-absent contract honest, and how containers patch through the element vocabulary
+- Tell what a `null` in a PATCH body means, and why no mapper can infer it
+- Map a PATCH request with `UpdateSpec`, and read what `updateFrom` hands back
+- Predict what `{}`, `null` and a value each do to a property, by its type
+- Keep defaults off a PATCH bean, and prove it in your build with the sparse laws
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -48578,17 +48595,17 @@ A PATCH request carries only the fields the client wants to change, so a `null` 
 
 ## What PATCH actually means {#what-patch-means}
 
-Before the sparse tier, the contract it implements, because the whole design follows from it.
+`PUT` replaces a resource; `PATCH` edits one. A **sparse** PATCH body such as `{"email": "new@example.com"}` means *change the email, touch nothing else*. That makes `null` ambiguous. When the bound request reports `getName() == null`, the client either left `name` out or sent `"name": null`, and the bound bean comes out the same either way.
 
-`PUT` replaces a resource; `PATCH` edits one. A **sparse** PATCH body carries only the fields the client wants to change: `{"email": "new@example.com"}` means *change the email, touch nothing else*. That contract makes `null` ambiguous. When the bound request object reports `getName() == null`, did the client omit `name` (leave it unchanged), or send `"name": null` deliberately? A typical JSON binder produces the same object either way.
-
-So the same wire value carries opposite meanings in the two tiers:
+So the same `null` means opposite things on a full request and on a PATCH:
 
 ```mermaid
 flowchart TD
+    accTitle: One null, two readings
+    accDescr: A full request parsed with parse turns a null name into a located FieldError. A PATCH read with updateFrom skips it and keeps the current name.
     N["the bound request has<br/>name = null"] --> DQ{"which contract<br/>does the DTO serve?"}
-    DQ -->|"full parse or patch:<br/>dense, every field expected"| DE["located FieldError:<br/>name: must not be null"]
-    DQ -->|"UpdateSpec updateFrom:<br/>sparse, null means absent"| SP["skipped: the domain's<br/>current name survives"]
+    DQ -->|"a full request, as parse reads it:<br/>every field expected"| DE["located FieldError:<br/>name: must not be null"]
+    DQ -->|"a PATCH, as updateFrom reads it:<br/>null means not sent"| SP["skipped: the domain's<br/>current name survives"]
 
     classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
     classDef error fill:#e78284,stroke:#d20f39,color:#232634
@@ -48600,13 +48617,13 @@ flowchart TD
     class DQ decision
 ```
 
-Which reading applies is a fact about the endpoint's contract, not about the data, and not something a mapper can infer from the types. That is why sparse semantics are an **explicit opt-in**. The diagram's dense `patch` is a [projection's validated write-back](tiers.md#leaf-carrying-projections-the-validated-patch), not a PATCH endpoint.
+Which reading applies is a fact about the endpoint's contract, not about the data, so no mapper can infer it from the types. That is why sparse semantics are an **explicit opt-in**. They are close to JSON Merge Patch (RFC 7396), with two differences: a `null` leaves a field alone unless the property is an `Optional`, and a nested object or list is replaced whole, never merged.
 
 ---
 
 ## Sparse PATCH write-back: `UpdateSpec` {#sparse-patch-write-back-updatespec}
 
-To opt in, the spec extends `UpdateSpec<Domain, Wire>` instead of `MappingSpec`:
+To opt in, declare an interface extending `UpdateSpec<Domain, Wire>`, where the wire is your request class, and annotate it `@GenerateMapping`. The annotation processor writes its implementation at compile time:
 
 ``` java
 // A PATCH request bean. Here null means "not provided, leave unchanged" - the opposite of a full
@@ -48645,7 +48662,7 @@ interface ContactPatchMapping extends UpdateSpec<Customer, ContactPatchBean> {
 
 ```
 
-The Impl exposes a *single* method, `updateFrom(Wire) : Edits.Accumulated<Domain>`. There is no `build`, `parse`, or [`as*` tier](tiers.md) (a sparse mapping is not a projection of information, and an all-absent wire is *valid*, not a total parse). `updateFrom` folds the present properties into an [`Update<Domain>`](../optics/multi_edit.md), leaving the absent ones alone:
+The processor writes `ContactPatchMappingImpl`, with one method, `updateFrom(wire)`: it turns the sent properties into one update and ignores the rest. The `email()` method is a [leaf](basics.md#validated-leaves): named after a component, it parses the sent `String` into an `EmailAddress`, or fails. There is no `build` or `parse`, since a PATCH that sends nothing is valid where a full parse would reject it.
 
 ``` java
     Customer current = new Customer("Ada", new EmailAddress("ada@corp.example"));
@@ -48657,15 +48674,196 @@ The Impl exposes a *single* method, `updateFrom(Wire) : Edits.Accumulated<Domain
     Validated<NonEmptyList<FieldError>, Customer> patched = update.apply(current);
     // Valid(Customer[name=Ada Lovelace, email=EmailAddress[value=ada@corp.example]])
     //   <- only the name changed
+
+    ContactPatchBean badEmail = new ContactPatchBean();
+    badEmail.setEmail("not-an-email"); // sent, so it is parsed, and it fails located
+    Validated<NonEmptyList<FieldError>, Customer> failed =
+        ContactPatchMappingImpl.INSTANCE.updateFrom(badEmail).apply(current);
+    // Invalid(NonEmptyList[email: not an email address])
 ```
 
-- **Present and valid** → the field is set, or parsed through its leaf, and folded in.
-- **Present and invalid** → a located `FieldError`, accumulating as usual: sparseness never weakens validation of what *was* sent. `Edits.Accumulated` also offers `applyPath(current)` to drop straight onto the [validation railway](../effect/path_validation.md), so a controller answers with every error at once instead of persisting a partial write.
-- **Absent (null)** → skipped; the domain's current value survives.
+Each property lands one of three ways:
 
-The return type is exactly what a hand-written [`Edits.accumulate(...)`](../optics/multi_edit.md) PATCH builder produces, so the two compose and the same consumption story (`apply`, `applyPath`, `toValidated`) carries over.
+- **Sent and valid**: the value is written, parsed through its leaf if it has one.
+- **Sent and invalid**: a located `FieldError`, accumulated with the rest. Sparseness never weakens validation of what *was* sent. The one error with no path is a refusal from the record's own [constructor](#fields-a-constructor-checks-together).
+- **Omitted**: skipped, so the domain's current value survives.
 
-`updateFrom` constructs the domain record once. The present values are written onto a private record holding just the components the PATCH can set, and the domain's constructor runs a single time, over the values the PATCH ends on, reading every other component from the current value. A constructor that checks its fields against each other therefore never sees a PATCH half applied:
+`updateFrom` returns an `Edits.Accumulated<Domain>`. Its `apply(current)` returns a `Validated`: the patched record, or every `FieldError`, with nothing half written. `applyPath(current)` returns the same result as a [`ValidationPath`](../effect/path_validation.md).
+
+~~~admonish tip title="At the Spring boundary"
+The hkj-spring example app serves `PATCH /api/users/{id}` through this tier. [Sparse PATCH at the Spring boundary](../spring/spring_boot_integration.md#sparse-patch) walks the controller, whose one error channel answers an unknown id with 404 and a bad field with 400, and its slice test. A boundary with the current value in hand can return `applyPath(current)` and take [the 422 leg](../spring/spring_boot_integration.md#the-422-leg) instead.
+~~~
+
+## What each JSON state does {#what-each-json-state-does}
+
+A binder turns each JSON state into what the getter answers, and `updateFrom` reads only the getter. So a property's type decides which states a client can tell apart:
+
+| The property | Field omitted, `{}` | `"field": null` | `"field": value` |
+|---|---|---|---|
+| A plain property, `String nickname` | keeps the current value | keeps it: the bound bean is the same as for `{}` | sets it, through its leaf if it has one |
+| An `Optional`, `Optional<String> nickname` | keeps the current value | clears it: Jackson binds `Optional.empty()` | sets it |
+| A container, `List<String> phones` | keeps the current value | keeps it | replaces it whole, each element through its leaf if it has one; `[]` empties it |
+| A nested record, `Address address` | keeps the current value | keeps it | replaces it whole: fields left out are not merged in |
+
+A primitive property can only ever read as sent, so the processor refuses it and offers the wrapper type.
+
+~~~admonish warning title="Not checked for you: a sent null clears an Optional property"
+The `Optional`-typed property is the only shape where an explicit `null` differs from leaving the field out, so it is how a client says *clear this*. Make the component `Optional` in the domain and in the bean, and leave the bean field `null` until set. A client that sends `"nickname": null` to mean *leave it* clears it instead: omit the field to keep the value.
+~~~
+
+### A PATCH getter must answer `null` until set {#patch-getters-answer-null}
+
+Sooner or later a ticket like this arrives: *marketing opt-ins keep disappearing, and nobody can say why*. Nobody has touched the preference code in a year. The trail ends at the mobile app's new "change phone number" screen, which sends the smallest PATCH it can: `{"phone": "+44 7700 900123"}`. The body is right. The bean it is bound into is not. The bean is generated from the OpenAPI schema, and the generator has turned the schema's `default: false` into a field initialiser, `private Boolean marketingOptIn = false;`. So every request that leaves the field out arrives carrying `false`, and the update writes that `false` over whatever the customer chose. The tests stay green, because their sample customer never opted in, and writing `false` over `false` changes nothing.
+
+Two promises make PATCH work. Absent must mean *leave it alone*, and the mapping must be able to *see* absence. `UpdateSpec` keeps the first promise for you. That bean broke the second, and no compiler can check it. The fix is in the schema: drop `default: false`, and the generator renders the field unset:
+
+``` java
+class PreferencesPatchBean {
+  private Boolean marketingOptIn; // no initialiser: an omitted field must read as null
+
+  public Boolean getMarketingOptIn() {
+    return marketingOptIn;
+  }
+
+  public void setMarketingOptIn(Boolean marketingOptIn) {
+    this.marketingOptIn = marketingOptIn;
+  }
+}
+
+```
+
+~~~admonish warning title="Not checked for you: leave PATCH bean fields unset"
+`updateFrom` counts a property as sent whenever its getter answers anything but `null`. A binder given `{}` calls no setter, so every mapped getter on that bean must answer `null`. Any default the bean gives itself breaks that: a field initialiser (`= new ArrayList<>()`, `= "ACTIVE"`, `= Optional.empty()`), Lombok's `@Builder.Default`, a value its constructor or builder assigns, or a getter that creates one on first call. Every request that omits the field then writes the default over the domain value, and nothing fails. No signature shows a default, so the processor cannot refuse one.
+
+- **Leave each field uninitialised.** Let each getter return what was set.
+- **Give a generated PATCH request its own schema.** Leave out `default:` values, which a generator renders as initialisers, and have it leave containers `null` (openapi-generator's `containerDefaultToNull`, for one).
+- **Let the sparse identity law catch a default.** [Check a PATCH bean in your build](#check-a-patch-in-your-build) shows how.
+~~~
+
+### Check a PATCH bean in your build {#check-a-patch-in-your-build}
+
+`MappingLaws` comes from [`hkj-test`](../tooling/test_assertions.md#optic-laws), a test-scope dependency. A law is a property your mapping must satisfy, checked at the samples you pass. One call checks a PATCH mapping, given the current value and three beans: one empty, one valid and one invalid (`patch(name, email)` is a small helper that fills a bean):
+
+``` java
+    MappingLaws.assertMappingLaws(
+        ContactPatchMappingImpl.INSTANCE::updateFrom,
+        new Customer("Ada", new EmailAddress("ada@example.org")), // the current value
+        new ContactPatchBean(), // all-absent, as bound from {} -> identity
+        patch("Grace", "grace@example.org"), // present valid -> changes the domain
+        patch(null, "not-an-email")); // present invalid -> located failure
+```
+
+- **Identity**: an all-absent wire is the identity update, so a client sending an empty PATCH cannot corrupt anything.
+- **Idempotence**: applying a patch twice equals applying it once, so a retried request lands as if sent once. It holds because the generated edits *set* and *parse*, never *modify*.
+- **Validation**: a sent invalid field fails, located, so what the client did send is checked as strictly as a full submission.
+
+Pass a freshly constructed bean as the all-absent wire, as the test does. That is what a binder makes of `{}`, so it keeps any default the bean sets. Calling each setter with `null` would wipe the default and hide it. The law sees a default only where it differs from the current value, so give the current value non-empty containers, and values no default matches. The marketing ticket's tests hid in exactly that gap.
+
+~~~admonish tip title="Why this matters"
+Hand-written PATCH handlers get these three properties by luck. One `MappingLaws` call checks them in your build.
+~~~
+
+~~~admonish tip title="You can ship now"
+You can now map a PATCH body so omitted fields keep their value and every bad sent field comes back located, checked by the sparse laws in your build. The rest of this page is for when you need it.
+~~~
+
+~~~admonish question title="Checkpoint: is this PATCH bean safe?" id="check-patch-defaults"
+The processor accepts this spec without a warning:
+
+``` java
+record Article(String title, List<String> tags) {}
+
+class ArticlePatchBean {
+  private String title;
+  private List<String> tags = new ArrayList<>();
+
+  public String getTitle() {
+    return title;
+  }
+
+  public void setTitle(String title) {
+    this.title = title;
+  }
+
+  public List<String> getTags() {
+    return tags;
+  }
+
+  public void setTags(List<String> tags) {
+    this.tags = tags;
+  }
+}
+
+@GenerateMapping
+interface ArticlePatchMapping extends UpdateSpec<Article, ArticlePatchBean> {}
+
+```
+
+An article is tagged `java` and `patch`. A client sends `{"title": "Sparse PATCH"}`. What are its tags afterwards? And would an identity-law test whose sample article has no tags catch it?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-patch-defaults-answer"
+**An empty list, and no.** The field initialiser makes `getTags()` answer an empty list on every request that omits `tags`. An empty list is not `null`, so `updateFrom` reads it as sent and writes it over the article's tags. A tagless sample hides it, since `[]` written over `[]` changes nothing, just as the marketing tests did. With the tagged article, the identity law fails:
+
+``` java
+    Article tagged = new Article("Draft", List.of("java", "patch"));
+    ArticlePatchBean rename = new ArticlePatchBean();
+    rename.setTitle("Sparse PATCH");
+
+    assertThatValidated(ArticlePatchMappingImpl.INSTANCE.updateFrom(rename).apply(tagged))
+        .hasValue(new Article("Sparse PATCH", List.of())); // the tags are gone
+
+    // On an article with no tags the identity law passes: [] written over [] changes nothing...
+    MappingLaws.assertSparseIdentity(
+        ArticlePatchMappingImpl.INSTANCE::updateFrom,
+        new Article("Draft", List.of()),
+        new ArticlePatchBean());
+
+    // ...and on one with tags it fails, with the message your build would report:
+    assertThatThrownBy(
+            () ->
+                MappingLaws.assertSparseIdentity(
+                    ArticlePatchMappingImpl.INSTANCE::updateFrom, tagged, new ArticlePatchBean()))
+        .hasMessageContaining(
+            "Sparse identity law: updateFrom(allAbsentWire).apply(Article[title=Draft, tags=[java,"
+                + " patch]]) == Valid(it); got Valid(Article[title=Draft, tags=[]])");
+```
+
+Your build reports it as:
+
+```
+Sparse identity law: updateFrom(allAbsentWire).apply(Article[title=Draft, tags=[java, patch]]) == Valid(it); got Valid(Article[title=Draft, tags=[]])
+```
+
+Where this lives: [A PATCH getter must answer `null` until set](#patch-getters-answer-null) and [Check a PATCH bean in your build](#check-a-patch-in-your-build).
+~~~
+
+~~~admonish question title="Checkpoint: clear a nickname" id="check-patch-json-states"
+An author's nickname is `Countess`, and the PATCH bean declares `Optional<String> nickname`. What does each body leave it as: `{}`, `{"nickname": null}`, and `{"nickname": "Lady Lovelace"}`? And what would `{"name": null}` do to the author's plain `String name`?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-patch-json-states-answer"
+**`Countess`, empty, `Lady Lovelace`, and nothing.** An omitted field reads `null`, so it keeps. Jackson binds an explicit `null` on an `Optional` property to `Optional.empty()`, which clears. A value sets. A plain property has no third state, so its `null` keeps the name, and a client cannot clear it. Bound by Jackson, as a Spring controller would:
+
+``` java
+    Author ada = new Author("Ada", Optional.of("Countess"));
+
+    assertThatValidated(applyJson(ada, "{}")).hasValue(ada); // omitted: kept
+    assertThatValidated(applyJson(ada, "{\"nickname\": null}"))
+        .hasValue(new Author("Ada", Optional.empty())); // an Optional's null: cleared
+    assertThatValidated(applyJson(ada, "{\"nickname\": \"Lady Lovelace\"}"))
+        .hasValue(new Author("Ada", Optional.of("Lady Lovelace"))); // a value: set
+    assertThatValidated(applyJson(ada, "{\"name\": null}")).hasValue(ada); // a plain null: kept
+```
+
+Where this lives: [What each JSON state does](#what-each-json-state-does).
+~~~
+
+---
+
+## Fields a constructor checks together {#fields-a-constructor-checks-together}
+
+`updateFrom` calls the record's constructor once, with the sent values and the current value of every other component. A constructor that checks its fields against each other therefore never sees a PATCH half applied:
 
 ``` java
 // A price band whose constructor checks its two fields against each other.
@@ -48720,29 +48918,23 @@ interface PriceBandPatchMapping extends UpdateSpec<PriceBand, PriceBandPatch> {}
     // Invalid(NonEmptyList[floor above ceiling]): the constructor's own message, at the root
 ```
 
-A refusal is an unlabelled `FieldError` carrying the exception's message, as [the other tiers report a constructor's refusal](absence.md#constructor-invariants); an exception without a message, or with a blank one, reads `not a valid PriceBand`. A nested record the PATCH replaces whole parses through its own spec, guard included. Any `RuntimeException` counts, so a bug in the constructor reaches the client as its message too. The constructor runs only once every field sent has validated, so its refusal never joins their errors, and a PATCH that sends nothing hands back the current value itself without running it. `toValidated()` hands back the same construct-once `Update`, which has no error channel, so there a refusal throws. The generated update is [`Edits.accumulate(focus, ...)`](../optics/multi_edit.md#fields-a-constructor-checks-together), which a hand-written PATCH can use too.
+The refusal comes back as a `FieldError` with no field path, carrying the constructor's message, which the client reads, as on the other tiers ([A record's own invariants](absence.md#constructor-invariants)). With no path it cannot satisfy the validation law, which expects a located error. So the test for a record with no leaf that can fail, like `PriceBand`, checks the other two laws and asserts the refusal itself:
 
-The rules that keep the contract honest:
+``` java
+    var priceBandMapping = PriceBandPatchMappingImpl.INSTANCE;
+    MappingLaws.assertSparseIdentity(priceBandMapping::updateFrom, band, new PriceBandPatch());
+    MappingLaws.assertSparseIdempotent(priceBandMapping::updateFrom, band, raise);
+    assertThatValidated(priceBandMapping.updateFrom(floorOnly).apply(band))
+        .hasFieldErrors("floor above ceiling"); // the constructor's refusal, unlabelled
+```
 
-- [**A spec extending both `MappingSpec` and `UpdateSpec` is rejected.**](rules.md#one-tier-per-spec) Declare a spec per tier, and share a mix-in.
-- [**A primitive wire property is rejected.**](rules.md#no-primitive-patch-property) A primitive is never absent: use the wrapper type (`Integer`, `Boolean`).
-- [**A domain `Optional<T>` component bridged from a non-Optional property is rejected**](rules.md#no-optional-bridge-on-a-patch), and so is an [`@OptionalBridge`](absence.md#optional-bridge) the sparse spec declares itself: here `null` already means *leave unchanged*, so a plain property cannot also say *set to empty*. An `Optional`-typed wire property, though, *can* express *set to empty*, patching by identity or through an element leaf: a present empty Optional sets empty; an absent (`null`) one leaves unchanged. Two binder caveats come with that power: Jackson binds an explicit JSON `null` on an `Optional`-typed property to `Optional.empty()`, so on this one property shape a sent `null` means *clear*, not *leave unchanged*; and, as for every PATCH field, the bean field must start out `null`, not the idiomatic `Optional.empty()`, or every request that omits the field clears the domain value.
-- [**A getter-only `List` property is rejected.**](rules.md#no-getter-only-list-on-a-patch) Give it a setter, and a getter that answers `null` until it is set.
-- [**A record wire is rejected.**](rules.md#no-record-patch-wire) A record component is always present, so a PATCH wire is a bean.
-- **A `JsonNullable` property is not supported yet.** A generated client that wraps its PATCH fields that way needs an `Optional`-typed property instead, as above, or a plain nullable one where *clear* has no meaning.
-- [**A bean read one way only is rejected.**](rules.md#patch-bean-read-and-written) A PATCH bean is both read and written.
-- [**A setter with no getter is rejected.**](rules.md#every-patch-setter-has-a-getter) Pair it with a getter, or mark it [`@Unmapped`](beans.md#accessors-meant-to-stay-out).
-- [**A sealed hierarchy is rejected**](rules.md#no-sealed-patch), on either side.
-- **A present container parses through the element vocabulary.** A `List`, `Set`, array, `Optional` or `Map`-valued property (a pair declared as exactly those container types) routes through the element leaf named after the component: the same leaf the dense tiers lift, so one [mix-in vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) serves a full spec and its PATCH sibling. Replacement stays wholesale; each failing element is located the way its container locates anything: by index (`phones.1`), by key, or, in a `Set`, by the element's own rendering. A whole-container leaf (`ValidatedPrism<List<S>, List<A>>`) is the more specific declaration and wins over the element interpretation. A nested *spec* still does not lift through a sparse container; give the component an element leaf delegating to the nested Impl's `asValidatedPrism()` if its elements need a whole mapping.
-- [**An inherited derived field or `@OptionalBridge` marker stays inert.**](rules.md#inherited-vocabulary-on-a-patch) One mix-in serves a full spec and its PATCH sibling.
-- **Coverage is one-sided.** Every wire property maps to a domain component, but a domain component with *no* wire property is simply never changed: a PATCH DTO deliberately covers a subset.
-- [**A same-typed nested record, `Optional`, `List` or `Map` replaces wholesale**](rules.md#patch-replaces-wholesale) when no more specific leaf applies. Deep merge is out of scope.
+[A sparse update constructs the record once](rules.md#sparse-construct-once) has the precise rules.
 
-~~~admonish warning title="Not checked for you: a PATCH getter answers `null` until set"
-**Every PATCH bean getter must answer `null` until its property is set, and this rule cannot be checked for you.** Here absence is read from the getters rather than declared on the spec: `updateFrom` counts a property as sent whenever its getter answers anything but `null`, so a bean nothing has been set on, which is what a binder makes of an empty body, must answer `null` from every mapped getter. Any default the bean gives itself breaks that: a field initialiser (`private List<String> tags = new ArrayList<>()`, `private String status = "ACTIVE"`), a value its constructor or builder assigns, or a getter that creates one on first call. Every request that omits the field then arrives carrying the default, and the edit writes it over the domain value with nothing failing. It is the primitive's problem again, with a reference type, but no signature shows a default, so the processor cannot refuse it. Leave PATCH bean fields uninitialised and unassigned by the constructor, and let each getter return what was set; for a generated DTO, configure the generator to leave containers `null` (openapi-generator's `containerDefaultToNull`, for one) and drop `default:` from the PATCH schema's properties, which a generator renders as an initialiser. The sparse laws below catch any of these defaults when the all-absent wire is a freshly constructed bean and the current value differs from the default.
-~~~
+---
 
-One vocabulary, both tiers. The element leaf a full spec lifts elementwise is exactly the leaf its PATCH sibling lifts:
+## Lists, sets and maps: replaced whole, parsed per element {#patch-containers}
+
+A sent list replaces the stored one whole. If the property has a leaf, each element is parsed through it, and a bad element is reported by its index, key or value. Put the leaf on a [shared interface](codecs.md#shared-vocabulary-mix-in-interfaces), and your full mapping and your PATCH mapping both use it:
 
 ``` java
 record PhoneNumber(String value) {}
@@ -48810,18 +49002,7 @@ interface RosterPatchMapping extends PhoneVocabulary, UpdateSpec<Roster, RosterP
     // Invalid(NonEmptyList[phones.1: not a phone number])
 ```
 
-The sparse tier is law-checked like every other, through the same `MappingLaws` harness:
-
-``` java
-    MappingLaws.assertMappingLaws(
-        ContactPatchMappingImpl.INSTANCE::updateFrom,
-        new Customer("Ada", new EmailAddress("ada@example.org")), // the current value
-        new ContactPatchBean(), // all-absent, as bound from {} -> identity
-        patch("Grace", "grace@example.org"), // present valid -> changes the domain
-        patch(null, "not-an-email")); // present invalid -> located failure
-```
-
-Identity (an all-absent wire is the identity update), idempotence (applying the same patch twice equals applying it once, which holds because the generated edits *set* and *parse*, never *modify*), and validation (a present invalid field fails). Make the all-absent wire a freshly constructed bean, as above, rather than one whose setters were handed `null`: the fresh bean is what a binder produces for an empty body, so it carries any field initialiser into the identity law, where a `null` setter call would overwrite the default and hide it. The law sees an initialiser only where the default differs from the current value, so give that value non-empty containers and values no field defaults to. The same laws hold over container elements:
+The same laws hold over container elements:
 
 ``` java
     MappingLaws.assertMappingLaws(
@@ -48832,30 +49013,37 @@ Identity (an all-absent wire is the identity update), idempotence (applying the 
         rosterPatch(null, List.of("+1", "nope"))); // bad element   -> located phones.1
 ```
 
-The validation law asks for a located error, so its invalid wire must fail on a field: a constructor's refusal is unlabelled and cannot stand in for one. A domain with no leaf to fail, such as `PriceBand` above, checks the other two laws on their own and asserts its refusal directly:
+[Containers patch through the element leaf](rules.md#patch-containers) covers a whole-container leaf and a nested spec.
 
-``` java
-    var priceBandMapping = PriceBandPatchMappingImpl.INSTANCE;
-    MappingLaws.assertSparseIdentity(priceBandMapping::updateFrom, band, new PriceBandPatch());
-    MappingLaws.assertSparseIdempotent(priceBandMapping::updateFrom, band, raise);
-    assertThatValidated(priceBandMapping.updateFrom(floorOnly).apply(band))
-        .hasFieldErrors("floor above ceiling"); // the constructor's refusal, unlabelled
-```
+---
 
-~~~admonish tip title="Why this matters"
-The three sparse laws are operational guarantees, not formalities. Identity means a client sending an empty PATCH cannot corrupt anything. Idempotence means a retried request (a timeout, a nervous user, an at-least-once queue) lands exactly as if sent once. Validation means sparseness is never an excuse: what the client did send is checked as strictly as a full submission. Hand-written PATCH handlers get these properties by luck; the one `MappingLaws` call above checks them in your build.
-~~~
+## The rules in brief {#patch-rules-in-brief}
 
-~~~admonish tip title="At the Spring boundary: the PATCH endpoint, end to end"
-The hkj-spring example app serves `PATCH /api/users/{id}` through exactly this tier; [Sparse PATCH at the Spring boundary](../spring/spring_boot_integration.md#sparse-patch) walks the controller, the not-found-plus-validation channel, and the slice test. An all-`FieldError` payload takes [the 422 leg](../spring/spring_boot_integration.md#the-422-leg) (`hkj.web.validation-field-error-status`, default 422).
-~~~
+The processor refuses a PATCH spec it cannot honour, and names the fix. The last three rows are behaviours rather than refusals. Each row links to its rule:
+
+| On a PATCH spec or bean | What happens | Instead |
+|---|---|---|
+| [It extends both `MappingSpec` and `UpdateSpec`](rules.md#one-tier-per-spec) | refused | a spec per tier, sharing a mix-in |
+| [A primitive property, `int age`](rules.md#no-primitive-patch-property) | refused | the wrapper type, `Integer age` |
+| [A plain property bridged to a domain `Optional`](rules.md#no-optional-bridge-on-a-patch), with no leaf of its own, or `@OptionalBridge` on the spec | refused | an `Optional`-typed property |
+| [A getter-only `List`](rules.md#no-getter-only-list-on-a-patch) | refused | a setter, and a getter that answers `null` until set |
+| [A record wire](rules.md#no-record-patch-wire) | refused | a bean |
+| [A bean with only getters, or only setters](rules.md#patch-bean-read-and-written) | refused | a bean both read and written |
+| [A setter with no getter](rules.md#every-patch-setter-has-a-getter) | refused | a getter, or [`@Unmapped`](beans.md#accessors-meant-to-stay-out) on the spec |
+| [A wire property that names no domain component](rules.md#patch-wire-property-names-a-component) | refused | a `@MapField` rename, or drop the property |
+| [A sealed hierarchy](rules.md#no-sealed-patch), on either side | refused | one `UpdateSpec` per concrete record pair |
+| [A `JsonNullable` property](rules.md#no-jsonnullable-patch-property) | not supported yet | an `Optional`-typed property |
+| [An inherited derived field or `@OptionalBridge` marker](rules.md#inherited-vocabulary-on-a-patch) | inert | nothing: one mix-in serves both tiers |
+| [A nested record, `Optional`, `List` or `Map` of the same type on both sides](rules.md#patch-replaces-wholesale) | replaced whole | a leaf where its parts need checking; deep merge is out of scope |
+| [A domain component with no wire property](rules.md#patch-wire-property-names-a-component) | never changed | nothing: a PATCH DTO covers a subset on purpose |
 
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **Sparse semantics are an explicit opt-in**: `UpdateSpec` gives a PATCH bean null-as-absent; nothing is inferred from the shape alone
-* **Sparseness never weakens validation**: present fields still parse through their leaves, and every bad one is a located, accumulated `FieldError`
-* **One vocabulary serves both tiers**: the element leaf a full spec lifts is the leaf its PATCH sibling lifts
+* **Sparse semantics are an explicit opt-in**: `UpdateSpec` gives a PATCH bean null-as-absent, and nothing is inferred from the shape alone
+* **Sparseness never weakens validation**: present fields still parse through their leaves, and every bad one is a located, accumulated `FieldError`, while a constructor's refusal comes back with no path
+* **A PATCH bean carries no defaults**: each getter answers `null` until set, and the sparse identity law, given a freshly constructed bean, catches one that does not
+* **Only an `Optional` property can be cleared**: an explicit `null` clears it, and on any other property a `null` keeps the value
 ~~~
 
 ~~~admonish tip title="See Also"
@@ -48902,10 +49090,11 @@ record PageDto<T>(List<T> items, int total) {}
 interface CustomerPageMapping extends MappingSpec<Page<Customer>, PageDto<CustomerDto>> {}
 
 
-    CustomerPageMappingImpl.INSTANCE.parse(
-        new PageDto<>(
-            List.of(new CustomerDto("Ada", "ada@corp.example"), new CustomerDto("Bob", "nope")),
-            2));
+    Validated<NonEmptyList<FieldError>, Page<Customer>> page =
+        CustomerPageMappingImpl.INSTANCE.parse(
+            new PageDto<>(
+                List.of(new CustomerDto("Ada", "ada@corp.example"), new CustomerDto("Bob", "nope")),
+                2));
     // Invalid(NonEmptyList[items.1.email: not an email address])
 ```
 
@@ -49521,7 +49710,7 @@ blocker. Each ❌ means keep what you have for that case.
 | Lombok `@Data`, `@Value` or `@Builder` wires | ✅ (order Lombok before the processor) |
 | Lombok `@Accessors(fluent = true)` wires | ⚠ the accessors are not `getX`/`isX`, so they do not pair |
 | PATCH endpoints where an omitted field means *leave unchanged* | ✅ `UpdateSpec` |
-| PATCH DTOs from openapi-generator with `default:` values in the schema | ⚠ the defaults read as sent: see [the PATCH rules](beans_patch.md#sparse-patch-write-back-updatespec) |
+| PATCH DTOs from openapi-generator with `default:` values in the schema | ⚠ the defaults read as sent: see [A PATCH getter must answer `null` until set](beans_patch.md#patch-getters-answer-null) |
 | PATCH bodies that must distinguish *clear* from *absent* | ⚠ an `Optional`-typed property; `JsonNullable` is not supported yet |
 | Nested objects patched field by field | ❌ replacement is wholesale |
 | Clients that need error paths in **wire** names | ⚠ paths are domain-named |
@@ -49708,8 +49897,8 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a PATCH bean have a setter with no getter?](#every-patch-setter-has-a-getter) | No, unless marked `@Unmapped`: the update would ignore it. | by design |
 | [Can a PATCH set a field to empty?](#no-optional-bridge-on-a-patch) | Through an `Optional`-typed property; a plain one bridged to `Optional` cannot. | by design |
 | [Can a PATCH bean have a getter-only `List`?](#no-getter-only-list-on-a-patch) | No: it never reads `null`, so it cannot be absent. | not supported yet |
-| [Can a PATCH bean carry a `JsonNullable` property?](beans_patch.md#sparse-patch-write-back-updatespec) | No: use an `Optional`-typed property. | not supported yet |
-| [Does a nested spec lift through a PATCH container?](beans_patch.md#sparse-patch-write-back-updatespec) | No: give the component an element leaf that delegates to it. | not supported yet |
+| [Can a PATCH bean carry a `JsonNullable` property?](#no-jsonnullable-patch-property) | No: use an `Optional`-typed property. | not supported yet |
+| [Does a nested spec lift through a PATCH container?](#patch-containers) | No: give the component an element leaf that delegates to it. | not supported yet |
 | [Can a PATCH spec dispatch over a sealed hierarchy?](#no-sealed-patch) | No: an absent property cannot choose a subtype. | by design |
 | [Does a PATCH merge a nested object field by field?](#patch-replaces-wholesale) | No: a nested record, list or map is replaced whole. | by design |
 | **Generic specs** | | |
@@ -49725,8 +49914,8 @@ Nothing refuses these at compile time. Each is a runtime surprise, linked to the
 | What you see | Why, and the fix |
 |---|---|
 | [`MAPPER.parse` throws a `NullPointerException`, sometimes](basics.md#bind-in-the-caller) | A constant on the spec can read `null`: bind the Impl in the caller. |
-| [A PATCH that omits a field overwrote the stored value](beans_patch.md#sparse-patch-write-back-updatespec) | A default the bean gives itself reads as sent: leave PATCH bean fields uninitialised. |
-| [An explicit JSON `null` cleared an `Optional` PATCH property](beans_patch.md#sparse-patch-write-back-updatespec) | Jackson binds it to `Optional.empty()`, which means *clear* there: omit the field to leave it unchanged. |
+| [A PATCH that omits a field overwrote the stored value](beans_patch.md#patch-getters-answer-null) | A default the bean gives itself reads as sent: leave PATCH bean fields uninitialised. |
+| [An explicit JSON `null` cleared an `Optional` PATCH property](beans_patch.md#what-each-json-state-does) | Jackson binds it to `Optional.empty()`, which means *clear* there: omit the field to leave it unchanged. |
 | [`build` throws on an empty `Optional`](beans.md#bean-shaped-wire-targets) | A setter, builder or record constructor rejects `null` without declaring it: drop the `Optional`, or encode absence in a leaf. |
 | [Adding to a built wire's list throws `UnsupportedOperationException`](structure.md#nesting-containers-and-recursion) | A same-typed container crosses as an unmodifiable copy: set a new list, or copy it first. |
 | [A record with an array is not equal to its own round trip](structure.md#nesting-containers-and-recursion) | The array crosses as a clone and compares by reference: give the record an `equals` that uses `Arrays.equals`. |
@@ -49798,7 +49987,7 @@ Any annotation named `Nullable` or `CheckForNull` counts here, whichever library
 
 ### Which surfaces a constructor's refusal reaches {#constructor-refusal-surfaces}
 
-The [constructor guard](absence.md#constructor-invariants) covers every surface that builds the record whole from parsed parts: the [projection's `patch`](tiers.md#leaf-carrying-projections-the-validated-patch), a [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group, the fallible [`@GenerateMerge`](merge_envelopes.md), and [`@GenerateAssembly`](../monads/validated_assembly.md#generating-the-companion-generateassembly)'s `assemble()`. The [sparse `UpdateSpec` tier](beans_patch.md#sparse-patch-write-back-updatespec) constructs the record once, from the values the PATCH ends on, and its `apply` reports a refusal the same way, unlabelled; a nested record the PATCH replaces whole parses through its own spec, guard included. Three surfaces cannot return an error, so there the exception propagates: `asIso().reverseGet` and a projection's `asLens().set`, total optics meant for values already known to be lawful, and the `Update` a sparse update's `toValidated()` hands back.
+The [constructor guard](absence.md#constructor-invariants) covers every surface that builds the record whole from parsed parts: the [projection's `patch`](tiers.md#leaf-carrying-projections-the-validated-patch), a [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group, the fallible [`@GenerateMerge`](merge_envelopes.md), and [`@GenerateAssembly`](../monads/validated_assembly.md#generating-the-companion-generateassembly)'s `assemble()`. The [sparse `UpdateSpec` tier](#sparse-construct-once) constructs the record once, from the values the PATCH ends on, and its `apply` reports a refusal the same way, unlabelled; a nested record the PATCH replaces whole parses through its own spec, guard included. Three surfaces cannot return an error, so there the exception propagates: `asIso().reverseGet` and a projection's `asLens().set`, total optics meant for values already known to be lawful, and the `Update` a sparse update's `toValidated()` hands back.
 
 ---
 
@@ -49954,7 +50143,7 @@ Two more rules follow from which direction is missing:
 
 ### No plain property bridged to a domain `Optional` {#no-optional-bridge-on-a-patch}
 
-**A domain `Optional<T>` component bridged from a non-Optional property is rejected**, and so is an [`@OptionalBridge`](absence.md#optional-bridge) the sparse spec declares itself, for the same reason. Under null-as-absent, `null` already means "leave unchanged", so "set to empty" has no encoding through a plain property (a plain property has only `null` and a value, one state short of JSON Merge Patch's three). The bridge's `null`-means-absent and the sparse tier's `null`-means-unchanged are two readings of one byte, and a spec extending `UpdateSpec` has already chosen. An `Optional`-typed property expresses *set to empty*: see [Sparse PATCH write-back](beans_patch.md#sparse-patch-write-back-updatespec).
+**A domain `Optional<T>` component bridged from a non-Optional property is rejected**, and so is an [`@OptionalBridge`](absence.md#optional-bridge) the sparse spec declares itself, for the same reason. Under null-as-absent, `null` already means "leave unchanged", so "set to empty" has no encoding through a plain property (a plain property has only `null` and a value, one state short of JSON Merge Patch's three). The bridge's `null`-means-absent and the sparse tier's `null`-means-unchanged are two readings of one byte, and a spec extending `UpdateSpec` has already chosen. An `Optional`-typed property expresses *set to empty*: see [What each JSON state does](beans_patch.md#what-each-json-state-does).
 
 ### No getter-only `List` property {#no-getter-only-list-on-a-patch}
 
@@ -49974,7 +50163,7 @@ Two more rules follow from which direction is missing:
 
 ### No sealed hierarchy {#no-sealed-patch}
 
-**A sealed hierarchy is rejected**, on either side: dispatch has no sparse meaning (an absent property cannot choose a subtype to patch).
+**A sealed hierarchy is rejected**, on either side: dispatch has no sparse meaning (an absent property cannot choose a subtype to patch). Declare one `UpdateSpec` per concrete record pair, and choose between them by the stored value's type.
 
 ### Inherited vocabulary on a PATCH spec {#inherited-vocabulary-on-a-patch}
 
@@ -49987,6 +50176,25 @@ Two more rules follow from which direction is missing:
 - A same-typed container carries the dense tiers' [null scan](#the-null-contract-precisely), at every depth and however it is declared: a null inside is a located, accumulating invalid (`tags.1: must not be null`, `grid.0.1` in a nested list; a set's, unlocated as `tags: must not contain a null element`), never written into the domain; a valid container is written as a [copy](#same-typed-containers-cross-as-copies), so the patched domain does not share it with the wire.
 - A same-typed `Optional` cannot hold a null, so one holding a plain value is written unconditionally: a present empty sets empty, absent leaves unchanged. One holding a container is scanned through, as above.
 - A nested record whose wire differs is patched wholesale through its own full mapping spec. Deep merge is out of scope.
+
+### Every wire property names a component {#patch-wire-property-names-a-component}
+
+**A wire property that names no domain component is rejected.** The client could send it and nothing would read it. Add a `@MapField` rename to the domain component it stands for, or remove the property. Coverage is one-sided: a domain component with no wire property is simply never changed, since a PATCH DTO covers a subset on purpose.
+
+### No `JsonNullable` property {#no-jsonnullable-patch-property}
+
+**A `JsonNullable` property is not supported yet.** Declare an `Optional`-typed property instead, which keeps the *clear* state, or a plain nullable one where *clear* has no meaning.
+
+### A sparse update constructs the record once {#sparse-construct-once}
+
+**The domain's constructor runs once, over the values the PATCH ends on.** `updateFrom` writes the present values onto a private record holding just the components the PATCH can set, and reads every other component from the current value. The constructor runs only once every sent field has validated, so its refusal never joins their errors. A PATCH that sends nothing hands back the current value itself, without running the constructor. How a refusal reports, and where it throws instead, is in [Which surfaces a constructor's refusal reaches](#constructor-refusal-surfaces). The generated update is [`Edits.accumulate(focus, ...)`](../optics/multi_edit.md#fields-a-constructor-checks-together), which a hand-written PATCH can use too.
+
+### Containers patch through the element leaf {#patch-containers}
+
+**A present container parses through the element leaf named after its component.** It lifts only when both sides declare the same container: `List`, `Set`, a reference-element array, `Optional` or `Map`. Replacement stays wholesale, and each failing element locates the way its container locates anything: by index (`phones.1`), by key, or, in a `Set`, by the element's own rendering.
+
+- **A whole-container leaf wins.** `ValidatedPrism<List<S>, List<A>>` is the more specific declaration, so it replaces the element interpretation.
+- **Lifting a nested spec through a sparse container is not supported yet.** When the elements need a whole mapping, give the component an element leaf that delegates to the nested Impl's `asValidatedPrism()`.
 
 ---
 
@@ -91517,7 +91725,7 @@ Staying on the Either leg is deliberate: [the 422 leg](#the-422-leg) is selected
 
 A PATCH boundary *without* a not-found case (the current value is already in hand) can instead return `patch.applyPath(current)`: the `ValidationPath` flavour of the same fold, whose all-`FieldError` invalid takes the 422 leg like any other, under `hkj.web.validation-field-error-status`.
 
-The example app demonstrates the whole shape end to end: `PATCH /api/users/{id}` (`UserController`, `UserPatchMapping`, `UserPatchRequest`), with `UserPatchWebMvcSliceTest` asserting all three outcomes. The sparse tier's rules (wrapper-typed properties, `Optional` bridging, container element leaves, wholesale replacement) are on the [Record Mapping page](../mapping/beans_patch.md#sparse-patch-write-back-updatespec).
+The example app demonstrates the whole shape end to end: `PATCH /api/users/{id}` (`UserController`, `UserPatchMapping`, `UserPatchRequest`), with `UserPatchWebMvcSliceTest` asserting all three outcomes. The sparse tier's rules (wrapper-typed properties, `Optional` bridging, container element leaves, wholesale replacement) are in [the rules in brief](../mapping/beans_patch.md#patch-rules-in-brief) on the Sparse PATCH page.
 
 ---
 
