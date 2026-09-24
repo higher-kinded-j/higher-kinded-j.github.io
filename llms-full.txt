@@ -20545,7 +20545,7 @@ A half has no round trip, so neither law below applies to it, and `andThen`, `to
 
 ---
 
-## Laws
+## Laws {#laws}
 
 A lawful validated boundary satisfies both round trips, verified with [`ValidatedPrismLaws`](../tooling/test_assertions.md) from `hkj-test`:
 
@@ -46097,7 +46097,7 @@ will offer the wrong import. And the spec interface is not the thing you call. I
 [it can read null](basics.md#bind-in-the-caller).
 ~~~
 
-## 4. Read the 422
+## 4. Read the 422 {#4-read-the-422}
 
 Post a body with two bad fields, an email that is not one and a blank first name:
 
@@ -46199,25 +46199,24 @@ build, parse, read the located errors, and law-check the result.
 
 _Declare one interface; get a `build` that cannot fail and a `parse` that reports every bad field at once._
 
-Most mappings are boring, and the mapper treats them that way: same-named, same-typed components match automatically, and one empty interface is the whole declaration. This page walks the happy path first (declare, build, parse, read the errors), then adds the declarations you will actually reach for: a conversion, a rename, and a computed field. The precise rules live on a page of their own, [Rules and Limits](rules.md).
+Most mappings are boring, and the mapper treats them that way: same-named, same-typed components match automatically, and one empty interface is the whole declaration. This page walks the happy path first: declare, build, parse, read the errors, convert a field, and meet a `null`. Renames and computed fields follow, for when you need them. The mapper needs Java 25 and the hkj Gradle plugin, and the [Quickstart](quickstart.md) sets both up. The precise rules live on a page of their own, [Rules and Limits](rules.md).
 
 ~~~admonish info title="What You'll Learn"
-- Declaring a mapping as a `MappingSpec<Domain, Wire>` interface and calling the generated Impl
-- Reading a `parse` failure: every bad field at once, each located by name
-- Converting a type-differing field with a `ValidatedPrism` leaf
-- Renaming components with `@MapField`, and computing wire-only fields with derived getters
-- Why a wire `null` becomes a located error, never an exception
+- Declare a mapping as a `MappingSpec<Domain, Wire>` interface, and keep its generated Impl in the calling code, never on the spec
+- Use a `parse` result: the value, or every bad field at once, each located by its path
+- Convert a field whose type differs with a `ValidatedPrism` leaf
+- Predict what `parse` does with a `null`
 ~~~
 
 ~~~admonish example title="See Example Code"
-**The code on this page is [BasicsBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/BasicsBook.java)** - the page includes it directly, so it is compiled and run by the build.
+**The code on this page is [BasicsBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/BasicsBook.java) and its [BasicsBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/mapping/BasicsBookTest.java)** - the page includes them directly, so they are compiled and run by the build.
 
-[GenerateMappingExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/GenerateMappingExample.java)
+For a larger worked example, see [GenerateMappingExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/GenerateMappingExample.java).
 ~~~
 
 ## Your first mapping {#your-first-mapping}
 
-The whole declaration is an empty interface naming the pair:
+The whole declaration is an empty interface naming the pair, domain first and wire second. The wire is the DTO: the shape that crosses the network.
 
 ``` java
 record Person(String name, int age) {}
@@ -46237,7 +46236,7 @@ interface PersonMapping extends MappingSpec<Person, PersonDto> {}
         personMapping.parse(dto); // accumulating, located
 ```
 
-That is all of it: no mapper class, no configuration. The processor derives both directions from the two records at compile time, reflection-free, and re-derives them on every compile, so the mapping cannot drift away from the records it maps.
+That is all of it: no mapper class, no configuration. The processor derives both directions from the two records at compile time, without reflection. It re-derives them on every compile, so the mapping cannot drift away from the records it maps. Add a wire component that nothing fills, and the build stops: [`has more components than`](compiler_errors.md#wire-has-more-components).
 
 The two directions have different shapes, and that asymmetry runs through the whole chapter:
 
@@ -46247,15 +46246,45 @@ The two directions have different shapes, and that asymmetry runs through the wh
                                Validated<NonEmptyList<FieldError>, Domain>
 ```
 
-The generated class is `<Spec>Impl` beside the spec; a concrete spec like this one is used through its `INSTANCE` constant ([generic specs](generics.md#one-rule-three-access-shapes) use `instance()` or `of(...)` instead). A spec nested in an outer class joins the enclosing simple names: `Shop.CustomerMapping` generates `ShopCustomerMappingImpl`.
+A `Validated` holds either the parsed value (`Valid`) or every error (`Invalid`), and a `NonEmptyList` is a list with at least one element.
 
-Code that calls a mapping more than once binds it once and reuses it, as `personMapping` does above. Reading `INSTANCE` costs nothing, so this is for readability: shorter calls, and one name to change. Type the binding as the Impl, since the spec interface declares no methods of its own. Where it lives depends on how widely it is used: a local for a few calls in one method, a `private static final` field in the class that owns the boundary, or, in Spring, an injected `ValidatedPrism` when callers should depend on the mapping rather than on the generated class ([Injecting and testing generated mappings](testing.md#injecting-and-testing-generated-mappings)). Bind it in the code that calls it, never as a constant on the spec itself; [the fine print](#bind-in-the-caller) says why.
+The processor generates `PersonMappingImpl` in the spec's package, and you reach it through its `INSTANCE` constant. A spec nested in an outer class joins the enclosing simple names: `Shop.CustomerMapping` generates `ShopCustomerMappingImpl`. A [generic spec](generics.md#one-rule-three-access-shapes) is reached through `instance()` or `of(...)` instead.
+
+### Bind in the caller, not on the spec {#bind-in-the-caller}
+
+Code that calls a mapping more than once keeps the Impl in a variable, as `personMapping` does, and reuses it. Reading `INSTANCE` costs nothing, so the variable is only for readability. Type it as the Impl, since `build` and `parse` live there, not on the spec. A local suits a few calls in one method, and a `private static final` field suits a class that maps in several methods. In Spring, register the mapping as a `ValidatedPrism` bean and inject that, as the example app does:
+
+``` java
+@Configuration
+public class MappingConfiguration {
+
+  /**
+   * The user wire codec: parse a {@link UserDto} into the domain, or render a {@link User} back.
+   *
+   * @return the generated mapping's {@link ValidatedPrism} surface
+   */
+  @Bean
+  public ValidatedPrism<UserDto, User> userCodec() {
+    return UserMappingImpl.INSTANCE.asValidatedPrism();
+  }
+}
+```
+
+[Injecting and testing generated mappings](testing.md#injecting-and-testing-generated-mappings) lists the surface to register for each kind of mapping.
+
+~~~admonish warning title="Not checked for you: never bind the Impl on the spec"
+MapStruct's idiom puts the mapper's instance on its own interface. Here that would be `CustomerMappingImpl MAPPER = CustomerMappingImpl.INSTANCE;`, declared on `CustomerMapping`, the spec with an email leaf in [Validated leaves](#validated-leaves). It compiles, and it can read `null`. If any code uses `CustomerMappingImpl.INSTANCE` before the first read of `CustomerMapping.MAPPER`, the constant stays `null` for good, and the next `MAPPER.parse(...)` throws a `NullPointerException`. Which class a program reaches first depends on its code paths, so the failure comes and goes. A spec with no leaf or derived field is safe, so the constant can work for months and break the day someone adds one. Keep the Impl in the calling code instead.
+~~~
+
+~~~admonish note title="Why the constant reads `null`" collapsible=true
+The Impl implements the spec. Initialising a class first initialises every interface it implements that declares an instance method with a body: every `default` leaf and derived field, and any `private` instance helper. Using `CustomerMappingImpl.INSTANCE` first starts the Impl's initialisation, which initialises `CustomerMapping` before `INSTANCE` is assigned. `MAPPER` is evaluated then, and keeps the `null` it read. Two threads making those first uses at the same moment can deadlock instead. A constant on a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) that declares a leaf fails the same way. The processor sees a field's type but not its initialiser, so it cannot tell this constant from a harmless one, and does not refuse it.
+~~~
 
 ---
 
 ## Validated leaves {#validated-leaves}
 
-Real boundaries convert: the wire sends a `String`, the domain wants an email that has already been checked. A **leaf** is the conversion at a single field: the point where the mapping stops copying and one wire value becomes one domain value. The leaf itself is a [`ValidatedPrism`](../optics/validated_prism.md), two functions: a parse that may reject, and a render that cannot:
+Real boundaries convert: the wire sends a `String`, and the domain wants an email that has already been checked. A **leaf** is the conversion at a single field, where the mapping stops copying and one wire value becomes one domain value. Think of it as a Jackson serialiser and deserialiser for one field, except that a bad value comes back as an error naming the field, not an exception. The leaf itself is a [`ValidatedPrism`](../optics/validated_prism.md), two functions: a parse that may reject, and a render back to the wire that cannot fail:
 
 ``` java
 record EmailAddress(String value) {}
@@ -46273,6 +46302,8 @@ final class EmailCodecs {
 }
 
 ```
+
+`validNel` and `invalidNel` build the two outcomes. The leaf's error carries only a message, and `parse` adds the field's path.
 
 Attach it to the spec as a zero-parameter `default` method named after the domain component:
 
@@ -46294,12 +46325,126 @@ interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {
     // Invalid(NonEmptyList[email: not an email address])
 ```
 
-Note what the failure looks like: a value, not an exception, and the error knows *which field* it belongs to. With several bad fields, `parse` reports all of them at once; the client fixes everything in one round trip.
+The two type-argument orders are opposite. `ValidatedPrism<Wire, Domain>` reads the way `parse` runs, from wire to domain. `MappingSpec<Domain, Wire>` puts your domain type first.
 
-You will rarely write leaves like this one by hand. The standard conversion families (identifiers, dates, enums, money) ship ready-made; [Standard Codecs](codecs.md) covers them, and it is the natural next page.
+The failure is a value, not an exception. It names the field by the domain component's name, whatever key the JSON used, as [Renames](#renames-mapfield) explains. With several bad fields, `parse` reports them all at once, so the client fixes everything in one round trip. Outside a controller, `fold` the result, with one function for the errors and one for the value. `Valid` and `Invalid` are records, so a `switch` works too:
 
-~~~admonish tip title="A leaf beats an identity match"
-An explicit leaf wins even when the two component types are identical, so a `ValidatedPrism<String, String>` can validate a field the types alone would copy verbatim. Validate, not normalise: a parse that trims or case-folds accepts a spelling its `build` cannot reproduce, which breaks the [section law](../optics/validated_prism.md#laws) (an accepted wire value must rebuild to exactly itself).
+``` java
+    // One function for every error, one for the value:
+    List<String> report =
+        parsed.fold(
+            errors -> errors.map(e -> e.pathString() + " -> " + e.message()).toJavaList(),
+            customer -> List.of());
+    // [email -> not an email address]
+```
+
+~~~admonish tip title="At the Spring boundary"
+Returned as-is from a controller, the result becomes the single 422 response the Quickstart showed: [the 422 leg](../spring/spring_boot_integration.md#the-422-leg).
+~~~
+
+~~~admonish warning title="Not checked for you: keep a converted wire field a `String`"
+Jackson binds the request before `parse` runs. Type a wire field that a leaf converts as a `String`. Typed as a `LocalDate` or an enum, a bad value fails inside Jackson, and the client gets Jackson's 400 instead of a located error. The Quickstart's [Read the 422](quickstart.md#4-read-the-422) step shows the difference.
+~~~
+
+Most leaves come ready-made: [Standard Codecs](codecs.md), the next page, covers identifiers, dates, enums and money. Coming from Bean Validation? [From Bean Validation](from_mapstruct.md#from-bean-validation) translates the common annotations.
+
+~~~admonish note title="A leaf can check a field that needs no conversion"
+An explicit leaf wins even when both types are identical, so a `ValidatedPrism<String, String>` can validate a field that would otherwise be copied. Check, but do not clean up: a parse that trims `" ada@example.com"` accepts a spelling `build` never writes back. That breaks the [section law](../optics/validated_prism.md#laws): an accepted wire value must rebuild to exactly itself. Reject the spaces instead.
+~~~
+
+---
+
+## Null has an address, not a stack trace {#null-doctrine}
+
+Jackson leaves a missing property `null`, so a boundary meets nulls constantly. The rule: **`parse` checks every value it reads from the wire, and a `null` becomes a `must not be null` error at that field's path, reported beside every other bad field, never thrown.**
+
+``` java
+    Validated<NonEmptyList<FieldError>, Customer> missing =
+        CustomerMappingImpl.INSTANCE.parse(new CustomerDto(null, "not-an-email"));
+    // Invalid(NonEmptyList[name: must not be null, email: not an email address])
+```
+
+The path reaches into nested records (`customer.name`) and lists (`emails.1`, the second email). A `null` never reaches a leaf, so a leaf needs no null check of its own.
+
+A primitive wire component such as `int age` never holds a `null`, so the rule does not reach it: what a missing or malformed one becomes is Jackson's decision.
+
+~~~admonish tip title="Why this matters"
+Compare the alternatives you have debugged before: an NPE with a stack trace pointing into generated code, or Jackson's `MismatchedInputException` naming a Java class. A located error names the field by its path, sits beside every other defect in the same response, and costs the client one round trip instead of one per `null`.
+~~~
+
+The exact contract, including what happens inside containers, is in [The null contract, precisely](rules.md#the-null-contract-precisely). A `null` DTO passed to `parse` still throws, since that one is the caller's bug. A field whose `null` *means* something can opt out of this rule, one field at a time, as [Absent Fields and Record Invariants](absence.md#optional-bridge) shows.
+
+~~~admonish tip title="You can ship now"
+You can now map a record DTO to a domain record and back, check each field as it arrives, and answer with every bad field at once. Every field is required: to let one be left out, see [Absent Fields](absence.md#optional-bridge). The rest of this page, [renames](#renames-mapfield) and [computed wire fields](#derived-wire-fields), is for when a pair needs them.
+~~~
+
+~~~admonish question title="Checkpoint: which `MAPPER` can read `null`?" id="check-basics-constant"
+Both of these specs carry the MapStruct-style constant. In each program, some code uses the Impl's `INSTANCE` before anything reads the spec's `MAPPER`. Afterwards, which `MAPPER` can read `null`?
+
+``` java
+// The MapStruct idiom, on two specs: never do this.
+record Ticket(String holder, int seat) {}
+
+record TicketDto(String holder, int seat) {}
+
+@GenerateMapping
+interface TicketMapping extends MappingSpec<Ticket, TicketDto> {
+  TicketMappingImpl MAPPER = TicketMappingImpl.INSTANCE;
+}
+
+record Pass(String holder, EmailAddress email) {}
+
+record PassDto(String holder, String email) {}
+
+@GenerateMapping
+interface PassMapping extends MappingSpec<Pass, PassDto> {
+  PassMappingImpl MAPPER = PassMappingImpl.INSTANCE;
+
+  default ValidatedPrism<String, EmailAddress> email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+```
+
+1. Neither: an interface constant is set before any code can use it
+2. `TicketMapping.MAPPER` only
+3. `PassMapping.MAPPER` only
+4. Both
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-basics-constant-answer"
+**3.** `PassMapping` declares a leaf, so using `PassMappingImpl.INSTANCE` first leaves its `MAPPER` `null` for good. `TicketMapping` has no leaf, so its constant is safe, for now:
+
+``` java
+    // Two programs, each loading this package afresh and using the Impl before MAPPER:
+    assertThat(mapperAfterFirstUsing("TicketMappingImpl", "TicketMapping")).isNotNull(); // no leaf
+    assertThat(mapperAfterFirstUsing("PassMappingImpl", "PassMapping")).isNull(); // a leaf
+```
+
+The day someone adds a leaf to `TicketMapping`, its constant breaks too. Delete both constants, and keep each Impl in the calling code.
+
+Where this lives: [Bind in the caller, not on the spec](#bind-in-the-caller).
+~~~
+
+~~~admonish question title="Checkpoint: does a `null` reach the leaf?" id="check-basics-null"
+`CustomerMapping` converts `email` through the [email leaf](#validated-leaves), which calls `raw.contains("@")`. What does `CustomerMappingImpl.INSTANCE.parse(new CustomerDto(null, null))` return?
+
+1. It throws a `NullPointerException` from the leaf's `raw.contains("@")`
+2. Invalid, with `name: must not be null` only
+3. Invalid, with `name: must not be null` and `email: must not be null`
+4. Invalid, with `name: must not be null` and `email: not an email address`
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-basics-null-answer"
+**3.** Each `null` becomes a located error, and neither stops the other. The null check runs before the leaf, so the leaf never sees the `null` email:
+
+``` java
+    assertThatValidated(CustomerMappingImpl.INSTANCE.parse(new CustomerDto(null, null)))
+        .hasFieldErrors("name: must not be null", "email: must not be null");
+```
+
+Where this lives: [Null has an address, not a stack trace](#null-doctrine).
 ~~~
 
 ---
@@ -46319,15 +46464,17 @@ interface PersonCardMapping extends MappingSpec<Person, PersonCardDto> {
 
 ```
 
-Each wire component takes exactly one domain source; colliding renames are compile errors, not surprises. A rename declares a concrete return type (the generated stub only names it, never calls it), and agreeing renames inherited from [mix-ins](codecs.md#shared-vocabulary-mix-in-interfaces) fold into one stub returning the narrowest declared type.
+Each wire component takes exactly one domain source, so the processor refuses two renames onto one name. Give the method the domain component's type, as `String name()` does. The Impl only names the method, and never calls it.
 
-Error paths use **domain** component names, renames included: a wire sending `fullName` gets its errors at `name`. Every path in the system is domain-named, so paths stay consistent and stable under wire refactors; a client mapping errors back onto its own payload keys applies the rename in reverse.
+~~~admonish note title="Error paths use domain names, not JSON keys"
+A client that sent `fullName` gets its errors at `name`. The same holds for a Jackson rename: under `@JsonProperty("first_name")` on a `firstName` component, or a snake_case naming strategy, the path stays `firstName`. Every path in the system is domain-named, so paths stay consistent, and stable when the wire is refactored. A client that maps errors back onto its own payload keys applies the renames in reverse.
+~~~
 
 ---
 
 ## Derived wire fields {#derived-wire-fields}
 
-A wire component with **no domain counterpart** can be computed from the whole domain value: a `displayName` the domain does not store because it is derivable. Declare a zero-parameter `default` method named after the *wire* component, returning `Getter<Domain, WireComponentType>`:
+A wire component with **no domain counterpart** can be computed from the whole domain value: a `displayName` the domain does not store, because it is derivable. Declare a zero-parameter `default` method named after the *wire* component, returning `Getter<Domain, WireComponentType>`. Read the `Getter` as a `Function<Domain, WireComponentType>`: `Getter.of` takes a plain lambda.
 
 ``` java
 record Profile(String first, String last) {}
@@ -46346,7 +46493,7 @@ interface ProfileMapping extends MappingSpec<Profile, ProfileDto> {
     // ProfileDto[first=Ada, last=Lovelace, displayName=Ada Lovelace]
 ```
 
-The two directions are asymmetric: `build` computes the derived component, `parse` throws it away (the data is derivable, so nothing is lost).
+The two directions are asymmetric: `build` computes the derived component, and `parse` throws it away, since the data is derivable and nothing is lost. A client that sends `displayName` has it ignored, not checked.
 
 ```
   build : fills the derived component from the whole domain value
@@ -46362,45 +46509,19 @@ The two directions are asymmetric: `build` computes the derived component, `pars
                           └── displayName dropped, never read
 ```
 
-The optic is a `Getter` because a derived field is single-valued: exactly one focus computed from the whole domain value. How the processor distinguishes leaf methods from derived-field methods, and how a derived field interacts with the [emission tiers](tiers.md), are in [Rules and Limits](rules.md#spec-members).
-
----
-
-## Null has an address, not a stack trace {#null-doctrine}
-
-A JSON binder leaves a missing property `null`, so a boundary meets nulls constantly. The rule is one sentence: **every value `parse` reads from the wire is null-guarded, and a `null` read becomes a located `FieldError` (`must not be null`), accumulating with every other bad field, never an exception.** It locates through nesting (`customer.name: must not be null`) and inside containers (`emails.1: must not be null`), and a `null` never reaches a leaf's conversion logic.
-
-~~~admonish tip title="Why this matters"
-Compare the alternatives you have debugged before: an NPE with a stack trace pointing into generated code, or Jackson's `MismatchedInputException` naming a Java class. A located error names *the client's own field*, sits beside every other defect in the same response, and costs the client one round trip instead of one per null. Here, a null always gets an address and never a stack trace.
-~~~
-
-~~~admonish tip title="At the Spring boundary"
-Returned as-is from a controller, this result becomes the single 422 response the introduction showed: [the 422 leg](../spring/spring_boot_integration.md#the-422-leg).
-~~~
-
-The exact contract (what happens inside containers, and which nulls remain the caller's bug) is in [The null contract, precisely](rules.md#the-null-contract-precisely). A field whose `null` *means* something can be opted out of this rule, one field at a time, as [Absent Fields and Record Invariants](absence.md#optional-bridge) shows.
-
----
-
-## A rule nothing checks for you {#the-fine-print}
-
-This one stays on the page it is about, because the processor cannot see it.
-
-### Bind in the caller, not on the spec {#bind-in-the-caller}
-
-MapStruct's idiom declares a mapper's instance on the mapper's own interface. The same move here, `CustomerMappingImpl MAPPER = CustomerMappingImpl.INSTANCE;` declared on `CustomerMapping` (the leaf spec above), compiles but can read `null`. The Impl implements the spec, and the JVM initialises an interface as part of initialising a class that implements it whenever the interface declares an instance method with a body: every leaf and derived field it declares is one, and so is a `private` helper. When a program uses `CustomerMappingImpl.INSTANCE` before it first reads `CustomerMapping.MAPPER`, the spec's constant is evaluated while the Impl's own `INSTANCE` is still unassigned, and it keeps that `null` for good: the first `MAPPER.parse(...)` throws a `NullPointerException`. Two threads making those first uses at the same moment can deadlock instead. A constant on a mix-in that declares a leaf fails the same way. Which class a program reaches first depends on its code paths, so the failure comes and goes. A local, a field in the calling class or an injected `ValidatedPrism` sits outside the cycle.
+[Spec members](rules.md#spec-members) says how the processor tells a leaf from a derived field, and [What Your Spec Generates](tiers.md) what a derived field changes in the generated methods.
 
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **A mapping is an interface you own**: `@GenerateMapping` on a `MappingSpec<Domain, Wire>` generates `<Spec>Impl` with `build` and `parse`; bind it once in the calling code, never as a constant on the spec
-* **Two directions, two shapes**: `build` is total; `parse` reports every bad field at once, each located by a domain-named path
-* **Leaves convert, renames rename, getters derive**: `ValidatedPrism` leaves for type-differing fields, `@MapField` for names, `Getter` defaults for wire-only fields
-* **Null is located, never thrown**: one rule across both wire shapes and inside containers; only a null wire itself stays the caller's error
+* **A mapping is an interface you own**: `@GenerateMapping` on a `MappingSpec<Domain, Wire>` generates `<Spec>Impl` with `build` and `parse`, which the calling code keeps, never a constant on the spec
+* **Two directions, two shapes**: `build` is total, and `parse` returns the value or every bad field at once, each located by a domain-named path
+* **Leaves convert, renames rename, getters derive**: `ValidatedPrism` leaves for fields whose types differ, `@MapField` for names, `Getter` defaults for wire-only fields
+* **Null is located, never thrown**: a `null` becomes `must not be null` at its path, inside containers too, and never reaches a leaf
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Validated Prisms](../optics/validated_prism.md): The leaf optic every fallible correspondence is built from
+- [Validated Prisms](../optics/validated_prism.md): The type behind every leaf, and how to write your own
 - [Standard Codecs and Shared Vocabulary](codecs.md): The stock leaf vocabulary and how to share it
 - [Absent Fields and Record Invariants](absence.md): A field whose `null` means *absent*, and a constructor's refusal reported as an error
 - [The 422 leg](../spring/spring_boot_integration.md#the-422-leg): The parse result as one HTTP response
@@ -46684,17 +46805,17 @@ _Let a field's `null` mean absent, and get a record constructor's refusal back a
 `parse` turns every `null` it reads from the wire into an error that names the field ([Null has an address, not a stack trace](basics.md#null-doctrine)). This page covers two things that rule leaves open. Declare a component whose `null` means *absent* with `@OptionalBridge`, and the domain receives an empty `Optional`. And when a record's own constructor refuses a value, `parse` returns the constructor's message at the record's path instead of throwing. For a PATCH endpoint, where an omitted field keeps its current value, see [Sparse PATCH](beans_patch.md).
 
 ~~~admonish info title="What You'll Learn"
-- Declare a field whose `null` means *absent*, with `@OptionalBridge`
-- Predict where a constructor's refusal is reported, and write its message for the client
+- Declare a field whose `null` means *absent* with `@OptionalBridge`, and predict what `parse` does with it
+- Predict where a constructor's refusal is reported, and what the client reads
 ~~~
 
 ~~~admonish example title="See Example Code"
-**The code on this page is [AbsenceBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/AbsenceBook.java)** - the page includes it directly, so it is compiled and run by the build.
+**The code on this page is [AbsenceBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/AbsenceBook.java) and its [AbsenceBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/mapping/AbsenceBookTest.java)** - the page includes them directly, so they are compiled and run by the build.
 ~~~
 
 ## Optional fields: `@OptionalBridge` {#optional-bridge}
 
-Sometimes a wire `null` is not a defect: it is how the client says *this field is absent*. A domain `Optional<String> nickname` against a wire `String nickname` is the shape, and it is the shape real record DTOs take, because a JSON binder writes absence as `null` and not as an `Optional`.
+Sometimes a wire `null` is not a defect: it is how the client says *this field is absent*. A domain `Optional<String> nickname` against a wire `String nickname` is the shape. The DTO keeps a plain `String`, since DTO fields rarely use `Optional`, so absence arrives as `null`. An omitted property and an explicit `"nickname": null` both arrive as `null`, so both read as absent.
 
 Say so per component with `@OptionalBridge`, and the pair maps in both directions:
 
@@ -46710,7 +46831,7 @@ interface MemberMapping extends MappingSpec<Member, MemberDto> {
   @OptionalBridge
   Optional<String> nickname();
 
-  // A conversion: the same annotation on the component's leaf, declared over the ELEMENT types.
+  // A conversion: the same annotation on the component's leaf, over the types inside the Optional.
   @OptionalBridge
   default ValidatedPrism<String, EmailAddress> altEmail() {
     return EmailCodecs.EMAIL;
@@ -46726,7 +46847,7 @@ interface MemberMapping extends MappingSpec<Member, MemberDto> {
 ```
 
 ``` java
-    var memberMapping = MemberMappingImpl.INSTANCE;
+    MemberMappingImpl memberMapping = MemberMappingImpl.INSTANCE;
 
     // Absence travels as null in both directions; a present value still validates.
     MemberDto wire = memberMapping.build(new Member("Ada", Optional.empty(), Optional.empty()));
@@ -46741,25 +46862,17 @@ interface MemberMapping extends MappingSpec<Member, MemberDto> {
     // Invalid(NonEmptyList[altEmail: not an email address])
 ```
 
-The annotation has **two placements**, and which one a component takes is decided by one question: does the present value need a leaf?
+Where the annotation goes depends on one question: does the value inside the `Optional` need a leaf?
 
-| The present element | Where the annotation goes | What it declares |
+| The value inside the `Optional` | Where the annotation goes | What it declares |
 | --- | --- | --- |
-| Copies as-is, or is mapped by its own spec | An abstract marker method named after the domain component | `@OptionalBridge Optional<String> nickname();` (the return type restates the component) |
-| Converts through a leaf | That component's own `default` leaf | `@OptionalBridge default ValidatedPrism<String, EmailAddress> altEmail()`, declared over the **element** types |
+| Copies as-is, or is a record with a spec of its own | An abstract marker method named after the domain component | `@OptionalBridge Optional<String> nickname();` (the return type restates the component) |
+| Converts through a leaf | That component's own `default` leaf | `@OptionalBridge default ValidatedPrism<String, EmailAddress> altEmail()`, over the types **inside** the `Optional` |
 
-The two can never be combined, and not by choice: a marker and a same-named leaf are one method with two incompatible return types, which javac rejects before the processor sees it.
-
-An element pair that already has a `@GenerateMapping` spec needs no leaf: the marker is enough, and a present value [nests through that spec](structure.md#optional-nested-objects) exactly as an unbridged component of that pair would. A bridged `List`, `Set`, array or `Map` lifts its elements the same way, through their spec or through a leaf over the element types.
-
-~~~admonish warning title="Opt-in, never inferred"
-The processor will not guess this. Without the annotation, `nickname = null` is a located `must not be null`, exactly as [the null rule](basics.md#null-doctrine) says, and that is the right default: on most record wires a `null` really is a defect. The bridge is the one place a spec overrides it, one component at a time, in writing.
-
-A [bean wire](beans.md) needs no annotation: bean conventions leave `Optional` off property types, so the bridge is automatic there. Declaring it on a bean spec is redundant, and the processor says so with a note rather than an error, because a [shared mix-in vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) may legitimately serve both wire shapes.
-~~~
+Use one placement or the other: Java cannot declare both, since they share a name. A record with a spec of its own needs no leaf, since a present value nests through that spec: [Optional nested objects](structure.md#optional-nested-objects).
 
 ~~~admonish note title="Under `@NullMarked`"
-The bridged wire component is nullable by construction: `build` writes `null` into it for an absent value, so it must be declared to take one. Declare it `@Nullable String nickname`; [A bridged component must take `null`](rules.md#bridged-component-nullable) says which declarations the processor refuses, and where the annotation goes on an array.
+`build` writes `null` into the bridged wire component for an absent value, so declare it to take one: `@Nullable String nickname`. [A bridged component must take `null`](rules.md#bridged-component-nullable) lists the declarations the processor refuses.
 ~~~
 
 ~~~admonish example title="The same pair without the annotation, refused"
@@ -46788,56 +46901,20 @@ null wire component and back. Add 'default ValidatedPrism<java.lang.String,
 java.util.Optional<java.lang.String>> nickname()' to the spec.
 ```
 
-The refusal names the bridge first, and offers the whole-`Optional` leaf second. The two are not alternatives for the same job: a leaf maps the pair, but leaves `null` a located error, so only the bridge gives the field an absent state. Declaring the annotation *on* such a leaf is refused rather than silently ignored.
+The refusal names the bridge first, and offers a whole-`Optional` leaf second. The processor refuses the annotation on such a leaf rather than ignoring it ([`is declared over the whole Optional`](compiler_errors.md#bridged-leaf-over-whole-optional)). On a leaf, the annotation takes the types inside the `Optional`, as `altEmail` shows.
 ~~~
 
-~~~admonish example title="The annotation on a bean wire, reported as redundant"
-<!-- verify:reports "@OptionalBridge on 'nickname' is redundant on a bean wire" -->
-```java
-import java.util.Optional;
-import org.higherkindedj.optics.annotations.GenerateMapping;
-import org.higherkindedj.optics.annotations.MappingSpec;
-import org.higherkindedj.optics.annotations.OptionalBridge;
-
-record Guest(String name, Optional<String> nickname) {}
-
-class GuestBean {
-  private String name;
-  private String nickname;
-
-  public String getName() { return name; }
-  public void setName(String name) { this.name = name; }
-  public String getNickname() { return nickname; }
-  public void setNickname(String nickname) { this.nickname = nickname; }
-}
-
-@GenerateMapping
-interface GuestMapping extends MappingSpec<Guest, GuestBean> {
-  @OptionalBridge
-  Optional<String> nickname();
-}
-```
-
-The processor says:
-
-```
-@GenerateMapping: @OptionalBridge on 'nickname' is redundant on a bean wire. A bean wire
-bridges a domain Optional to its nullable property automatically, because bean conventions
-leave Optional off property types; the annotation opts a RECORD wire into the same
-correspondence. Remove the annotation, or keep it if the vocabulary is shared with a
-record-wire spec.
-```
-
-A note, not an error: the mapping is generated exactly as it would be without the annotation.
+~~~admonish warning title="Not checked for you: only the bridge lets a field be left out"
+On a record wire the processor never infers absence, since on most record wires a `null` really is a defect. Of the two fixes the refusal offers, only `@OptionalBridge` gives the field an absent state. The whole-`Optional` leaf compiles too, but a `null` still becomes `must not be null`, so the client can never leave the field out. That leaf suits a wire that spells absence another way, such as an empty string.
 ~~~
 
-A bridged component is a non-identity correspondence, so the mapping does not gain `asIso()`, and a [projection](tiers.md) carrying one takes the validated `patch(Domain, Wire)` rather than `asLens()`, which is the same tier arithmetic a bean bridge has always had.
+A [bean wire](beans.md) bridges automatically, so it needs no annotation: [`@OptionalBridge` on a bean wire is redundant](rules.md#optional-bridge-on-a-bean-wire). A bridged component also changes which methods the spec generates, since absence is a real correspondence, not a copy: [Where a bean or a bridged component lands](rules.md#where-a-bean-or-bridged-component-lands).
 
 ---
 
 ## A record's own invariants {#constructor-invariants}
 
-A domain record often guards itself: a compact constructor that throws when its components disagree. `parse` keeps that guard and still returns a value. Once every component of the record has parsed, the generated code calls its canonical constructor, and a `RuntimeException` the constructor throws becomes a `FieldError` at the record's own path, carrying the exception's message:
+A domain record often guards itself, with a compact constructor that throws when its components disagree. `parse` keeps that guard, but reports a refusal as an error instead of throwing it. Once every component of the record has parsed, the generated code calls its canonical constructor. A `RuntimeException` the constructor throws becomes a `FieldError` at the record's own path, carrying the exception's message:
 
 ``` java
 // The domain guards itself: a stay must end after it starts. The wire carries no such rule.
@@ -46880,21 +46957,118 @@ interface ReservationMapping extends MappingSpec<Reservation, ReservationDto> {}
     // Invalid(NonEmptyList[guest: must not be null, stays.1: checkOut must be after checkIn])
 ```
 
-The second stay fails at `stays.1`, and the missing guest is still reported beside it. The rules:
+`ReservationMapping` uses `StayMapping` for each stay without being told: [Nesting](structure.md#nesting-containers-and-recursion) explains how. The second stay fails at `stays.1`, and the missing guest is still reported beside it. The rules:
 
-- **The record is the address.** A cross-field invariant belongs to no single component, so it locates where the record does: under the component that holds it (`stays.1`), or unlabelled at the top level.
-- **The constructor runs last.** It needs every component, so it runs only once all of them have parsed. A record therefore reports either its components' errors or its invariant, never both, while everything around it keeps accumulating as usual.
-- **The message is what the client reads**, so write it for them. An exception without a message, or with a blank one, reads `not a valid Stay`.
-- **Any `RuntimeException` counts, bugs included.** The null guard keeps a `null` out of the constructor, but a constructor that divides by zero or dereferences something of its own fails the same way: its message goes to the client and its stack trace is dropped. Keep the constructor to checks on its arguments, with messages written for a client.
-- **A rule about one field alone belongs in a [leaf](basics.md#validated-leaves)**: it locates at the field and accumulates with the record's other errors.
+- **The record is the address.** A cross-field invariant belongs to no single component, so it locates where the record does: under the component holding it (`stays.1`), or at the top level, where the 422 renders an empty `"path": ""`.
+- **The constructor runs last.** It runs only once every component has parsed. So a record reports its components' errors or its invariant, never both, and a client may meet the invariant on a second attempt.
+- **Write the message for the client.** The 422 sends it verbatim, unlike the exception messages Spring Boot hides by default, so keep internal detail out. An exception without a message, or with a blank one, reads `not a valid Stay`.
+- **Put a one-field rule in a [leaf](basics.md#validated-leaves).** It then locates at the field, and accumulates with the record's other errors.
 
-The same guard covers every surface that builds the record whole from parsed parts. Only `asIso().reverseGet`, a projection's `asLens().set` and a sparse update's `toValidated()` let the exception propagate instead: [which surfaces a refusal reaches](rules.md#constructor-refusal-surfaces).
+~~~admonish warning title="Not checked for you: a constructor's bug reaches the client"
+Any `RuntimeException` the constructor throws is reported this way, bugs included. The null check keeps a `null` out of the constructor, but a constructor that divides by zero fails the same way: the client reads the exception's message, and its stack trace is dropped. Keep the constructor to checks on its arguments.
+~~~
+
+Other generated methods that return errors report a refusal the same way, and the few that cannot return one let the exception through: [Which surfaces a constructor's refusal reaches](rules.md#constructor-refusal-surfaces).
+
+~~~admonish tip title="You can ship now"
+You can now accept requests that leave some fields out, and keep a record's own checks without turning a bad request into an exception.
+~~~
+
+~~~admonish question title="Checkpoint: where does `@OptionalBridge` go?" id="check-absence-bridge"
+A patron may leave out a birthday, and one they send must be an ISO date that `StandardCodecs.localDate()` parses:
+
+``` java
+record Patron(String name, Optional<LocalDate> birthday) {}
+
+record PatronDto(String name, @Nullable String birthday) {}
+
+```
+
+Which declaration on `PatronMapping` does that?
+
+1. `@OptionalBridge Optional<LocalDate> birthday();`
+2. `@OptionalBridge default ValidatedPrism<String, LocalDate> birthday()`, returning `StandardCodecs.localDate()`
+3. `@OptionalBridge default ValidatedPrism<String, Optional<LocalDate>> birthday()`, a leaf over the whole `Optional`
+4. The same whole-`Optional` leaf, without the annotation
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-absence-bridge-answer"
+**2.** The date inside the `Optional` needs a leaf, so the annotation goes on that leaf, over the types inside the `Optional`. The marker (1) is only for a value that copies or has a spec of its own, and nothing copies a `String` into a `LocalDate`. The processor refuses the annotation on a whole-`Optional` leaf (3). Without it (4), that leaf compiles but reads a `null` as `must not be null`, so the birthday could never be left out:
+
+``` java
+@GenerateMapping
+interface PatronMapping extends MappingSpec<Patron, PatronDto> {
+  @OptionalBridge
+  default ValidatedPrism<String, LocalDate> birthday() {
+    return StandardCodecs.localDate();
+  }
+}
+
+    PatronMappingImpl patronMapping = PatronMappingImpl.INSTANCE;
+
+    assertThatValidated(patronMapping.parse(new PatronDto("Ada", null)))
+        .hasValue(new Patron("Ada", Optional.empty())); // left out: absent
+    assertThatValidated(patronMapping.parse(new PatronDto("Ada", "07/03/2026")))
+        .hasFieldErrors("birthday: not an ISO-8601 date (expected e.g. 2026-07-28)");
+```
+
+Where this lives: [Optional fields: `@OptionalBridge`](#optional-bridge).
+~~~
+
+~~~admonish question title="Checkpoint: what does the client read?" id="check-absence-address"
+`BulkDiscount` spreads a basket's discount over its items, and its constructor divides by `items`:
+
+``` java
+// A basket's discount, spread over its items: at most 500p off each.
+record BulkDiscount(int totalPence, int items) {
+  BulkDiscount {
+    if (Math.ceilDiv(totalPence, items) > 500) { // rounds up, so 1001p over 2 items is 501p
+      throw new IllegalArgumentException("at most 500p off per item");
+    }
+  }
+}
+
+record BulkDiscountDto(int totalPence, int items) {}
+
+record Basket(String id, BulkDiscount discount) {}
+
+record BasketDto(String id, BulkDiscountDto discount) {}
+
+@GenerateMapping
+interface BulkDiscountMapping extends MappingSpec<BulkDiscount, BulkDiscountDto> {}
+
+@GenerateMapping
+interface BasketMapping extends MappingSpec<Basket, BasketDto> {}
+
+```
+
+A client sends a discount with `items` set to `0`. What does `BasketMappingImpl.INSTANCE.parse(new BasketDto("B-7", new BulkDiscountDto(1000, 0)))` report?
+
+1. Nothing: the `ArithmeticException` propagates out of `parse`
+2. `discount: not a valid BulkDiscount`
+3. `discount: / by zero`
+4. `discount.items: / by zero`
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-absence-address-answer"
+**3.** Any `RuntimeException` counts, bugs included, so the constructor's `ArithmeticException` becomes an error carrying its own message, `/ by zero`. The fallback `not a valid BulkDiscount` is only for an exception with no message. The record is the address, so the error sits at `discount`, the component holding the record, not at `items`:
+
+``` java
+    assertThatValidated(
+            BasketMappingImpl.INSTANCE.parse(new BasketDto("B-7", new BulkDiscountDto(1000, 0))))
+        .hasFieldErrors("discount: / by zero");
+```
+
+A client cannot act on `/ by zero`. Check `items` first, and throw with a message written for the client.
+
+Where this lives: [A record's own invariants](#constructor-invariants).
+~~~
 
 ---
 
 ~~~admonish info title="Key Takeaways"
 * **Absence is declared, never guessed**: `@OptionalBridge` opts one `Optional` component into reading `null` as absent, and on a record wire nothing else does
-* **A record's own invariant is located too**: an exception from its constructor becomes a `FieldError` at the record's path, beside every other error
+* **A record's own invariant is located too**: an exception from its constructor becomes a `FieldError` at the record's path, beside the errors from the rest of the value, once its own components have parsed
 ~~~
 
 ~~~admonish tip title="See Also"
@@ -49790,7 +49964,7 @@ The shapes are close enough that a first spec usually reads like the mapper it r
 
 ---
 
-## From Bean Validation
+## From Bean Validation {#from-bean-validation}
 
 `@Valid` already accumulates errors, and they already carry field names. The difference is what you
 hold afterwards: a set of violations about a DTO, against a domain value that has been built and
@@ -49855,6 +50029,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | **Optional fields** | | |
 | [Can a bridged component be declared non-null, or primitive?](#bridged-component-nullable) | No: `build` writes `null` for empty, so declare it `@Nullable`. | by design |
 | [Can a sparse or sealed spec declare `@OptionalBridge`?](#bridged-component-nullable) | No; one inherited from a mix-in stays inert. | by design |
+| [Can a bean spec declare `@OptionalBridge`?](#optional-bridge-on-a-bean-wire) | Yes, but it changes nothing: the processor answers with a note. | by design |
 | **Shared vocabulary** | | |
 | [Does a mix-in need the annotation processor?](structure.md#across-modules) | No: a mix-in is a plain interface, not a spec. | by design |
 | [Can a mix-in extend `MappingSpec`?](#refused-mix-in-shapes) | No: a mix-in shares vocabulary; a spec generates an Impl. | by design |
@@ -49880,7 +50055,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [What if two dependencies map the same pair?](#how-a-dependencys-specs-are-found) | Ambiguous: your own spec, or a leaf, picks one. | by design |
 | [Can a spec-carrying module sit on the module path?](#how-a-dependencys-specs-are-found) | Not with the index: keep those jars on the classpath, or delegate with a leaf. | not supported yet |
 | **Emission tiers** | | |
-| [Why does a bean mapping lose `asIso()`?](#where-a-bean-or-bridged-component-lands) | A reference property can be unset; an all-primitive bean keeps it. | by design |
+| [Why does a bean mapping, or an `@OptionalBridge` component, lose `asIso()`?](#where-a-bean-or-bridged-component-lands) | A reference property can be unset, and a bridged value can be absent. An all-primitive bean keeps it. | by design |
 | [Why does a validating projection get no `asLens()`?](tiers.md#leaf-carrying-projections-the-validated-patch) | A lens cannot fail, so it takes the validated `patch`. | by design |
 | [How wide can a record be?](testing.md#diagnostics-and-limits) | No ceiling but the JVM's: about 254 components. | by design |
 | **Bean wires** | | |
@@ -49914,6 +50089,8 @@ Nothing refuses these at compile time. Each is a runtime surprise, linked to the
 | What you see | Why, and the fix |
 |---|---|
 | [`MAPPER.parse` throws a `NullPointerException`, sometimes](basics.md#bind-in-the-caller) | A constant on the spec can read `null`: bind the Impl in the caller. |
+| [A bad date or enum got Jackson's 400, with no field path](basics.md#validated-leaves) | Jackson rejected a typed wire field before `parse` ran: keep a converted wire field a `String`. |
+| [A field the client left out reports `must not be null`](absence.md#optional-bridge) | Only `@OptionalBridge` lets a field be left out; a whole-`Optional` leaf still rejects `null`. |
 | [A PATCH that omits a field overwrote the stored value](beans_patch.md#patch-getters-answer-null) | A default the bean gives itself reads as sent: leave PATCH bean fields uninitialised. |
 | [An explicit JSON `null` cleared an `Optional` PATCH property](beans_patch.md#what-each-json-state-does) | Jackson binds it to `Optional.empty()`, which means *clear* there: omit the field to leave it unchanged. |
 | [`build` throws on an empty `Optional`](beans.md#bean-shaped-wire-targets) | A setter, builder or record constructor rejects `null` without declaring it: drop the `Optional`, or encode absence in a leaf. |
@@ -49985,9 +50162,59 @@ The same holds for every site `build` writes an empty `Optional` into: a record 
 
 Any annotation named `Nullable` or `CheckForNull` counts here, whichever library it comes from, and so does JSR-305's `@Nonnull(when = MAYBE)`: this rule refuses a build, so it reads more widely than the fixed list of names that decides which Focus paths are null-safe. A component typed by a type variable follows the variable's bounds: a plain `<T>` declared in a `@NullMarked` scope is non-null, as its bound `Object` is, and `<T extends @Nullable Object>` leaves the nullness to the type argument, so it bridges.
 
+### `@OptionalBridge` on a bean wire is redundant {#optional-bridge-on-a-bean-wire}
+
+**Declaring `@OptionalBridge` on a bean spec changes nothing, and the processor answers with a note, not an error.** A bean wire already bridges a domain `Optional` to its nullable property, so the mapping is generated exactly as it would be without the annotation. Remove it, or keep it on a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) that a record-wire spec shares. A marker inherited from such a mix-in draws nothing. One declared on the bean spec itself draws this note:
+
+<!-- verify:reports "@OptionalBridge on 'nickname' is redundant on a bean wire" -->
+```java
+import java.util.Optional;
+import org.higherkindedj.optics.annotations.GenerateMapping;
+import org.higherkindedj.optics.annotations.MappingSpec;
+import org.higherkindedj.optics.annotations.OptionalBridge;
+
+record Guest(String name, Optional<String> nickname) {}
+
+class GuestBean {
+  private String name;
+  private String nickname;
+
+  public String getName() { return name; }
+  public void setName(String name) { this.name = name; }
+  public String getNickname() { return nickname; }
+  public void setNickname(String nickname) { this.nickname = nickname; }
+}
+
+@GenerateMapping
+interface GuestMapping extends MappingSpec<Guest, GuestBean> {
+  @OptionalBridge
+  Optional<String> nickname();
+}
+```
+
+The processor says:
+
+```
+@GenerateMapping: @OptionalBridge on 'nickname' is redundant on a bean wire. A bean wire
+bridges a domain Optional to its nullable property automatically, because bean conventions
+leave Optional off property types; the annotation opts a RECORD wire into the same
+correspondence. Remove the annotation, or keep it if the vocabulary is shared with a
+record-wire spec.
+```
+
 ### Which surfaces a constructor's refusal reaches {#constructor-refusal-surfaces}
 
-The [constructor guard](absence.md#constructor-invariants) covers every surface that builds the record whole from parsed parts: the [projection's `patch`](tiers.md#leaf-carrying-projections-the-validated-patch), a [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group, the fallible [`@GenerateMerge`](merge_envelopes.md), and [`@GenerateAssembly`](../monads/validated_assembly.md#generating-the-companion-generateassembly)'s `assemble()`. The [sparse `UpdateSpec` tier](#sparse-construct-once) constructs the record once, from the values the PATCH ends on, and its `apply` reports a refusal the same way, unlabelled; a nested record the PATCH replaces whole parses through its own spec, guard included. Three surfaces cannot return an error, so there the exception propagates: `asIso().reverseGet` and a projection's `asLens().set`, total optics meant for values already known to be lawful, and the `Update` a sparse update's `toValidated()` hands back.
+**A constructor's refusal becomes an error wherever the surface can return one.** The [constructor guard](absence.md#constructor-invariants) covers every surface that builds the record whole from parsed parts:
+
+| Surface | A refusal becomes | Why |
+|---|---|---|
+| `parse`, a [projection's `patch`](tiers.md#leaf-carrying-projections-the-validated-patch), a [flattened](structure.md#flattening-a-nested-component-onto-a-flat-wire) group, the fallible [`@GenerateMerge`](merge_envelopes.md), [`@GenerateAssembly`](../monads/validated_assembly.md#generating-the-companion-generateassembly)'s `assemble()` | a `FieldError`, unlabelled at the top level, or under the component holding a nested or flattened record | each returns `Validated` |
+| `apply` and `applyPath` on the `Edits.Accumulated` a [sparse `updateFrom`](#sparse-construct-once) returns | an unlabelled `FieldError` | the record is constructed once, from the values the PATCH ends on |
+| `asIso().reverseGet`, a projection's `asLens().set` | the exception, propagated | these total optics are meant for values already known to be lawful |
+| a plain-return [`@GenerateMerge`](#nulls-and-guards-in-a-merge) | the exception, propagated | its return type has no error channel |
+| the `Update` a sparse update's `toValidated()` hands back | the exception, propagated | an `Update` has no error channel |
+
+A nested record the PATCH replaces whole parses through its own spec, guard included.
 
 ---
 
