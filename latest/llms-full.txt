@@ -48680,16 +48680,13 @@ The patch laws are projection identity (`patch(d, build(d)) == Valid(d)`), idemp
 
 # Bean-Shaped Wires
 
-_Map getter/setter and builder classes with the same features as records, including ones only read or written._
+_Map getter/setter and builder classes as you map records, including ones only read or written._
 
-Generated client models, JAXB payloads and many legacy DTOs are beans: classes with getters and setters, or a builder, rather than records. They map with the same leaves, renames and derived fields that [Record Mapping Basics](basics.md) teaches for records. This page covers what changes, including a bean that is only ever read or only ever written. A bean used as a PATCH request, where `null` means *not sent*, has a page of its own, [Sparse PATCH](beans_patch.md).
+Generated client models, JAXB payloads and many legacy DTOs are beans: classes with getters and setters, or a builder, rather than records. If your wire is a bean, almost nothing changes: [leaves](basics.md#validated-leaves), [renames](basics.md#renames-mapfield), container lifting, nesting and located errors work exactly as on a record. Three things differ, and all three come from one fact: a bean can exist with some properties never set. This page walks those three first. Mapping a generated client? Read [the checklist for generated clients](#generated-client-checklist) as well. A bean used as a PATCH request, where `null` means *not sent*, has a page of its own, [Sparse PATCH](beans_patch.md).
 
 ~~~admonish info title="What You'll Learn"
-- Mapping bean-shaped wire types (setters, builders, JAXB lists) with the same features as records
-- Why a bean mapping withholds `asIso()`, and how `Optional` bridges through `null` here without a declaration
-- Why a bean projection with a reference property takes the validated `patch` rather than `asLens()`
-- Keeping an accessor out of the mapping on purpose, with `@Unmapped`
-- Mapping a bean that can only be read, or only be written: `parse` alone or `build` alone, and where each nests
+- Map a getter/setter or builder bean like a record, and predict what an unset property does
+- Predict which methods a bean's Impl carries, from the bean's shape
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -48698,10 +48695,10 @@ Generated client models, JAXB payloads and many legacy DTOs are beans: classes w
 
 ## Bean-shaped wire targets {#bean-shaped-wire-targets}
 
-The wire side need not be a record. A **bean** (a mutable class with a no-args constructor and getters/setters, or an immutable one with a builder) maps the same way, with the same features (renames, leaves, derived fields, container lifting, nesting). Only *how* the wire is read and written changes: `build` fills through setters or a builder, and `parse` reads through getters.
+The spec is the same interface as for a record. Only how the wire is read and written changes. `build` fills the bean through its setters or a builder, never a constructor that takes arguments, and `parse` reads it through its getters:
 
 ``` java
-// A generated, mutable getter/setter DTO - not a record, so not annotatable. The spec still sits
+// A generated, mutable getter/setter DTO - generated, so not yours to annotate. The spec still sits
 // on your interface, never on the bean, so a third-party bean maps without being touched.
 class ContactBean {
   private String name;
@@ -48732,135 +48729,215 @@ interface ContactMapping extends MappingSpec<Customer, ContactBean> {
   }
 }
 
-```
 
-``` java
     Customer ada = new Customer("Ada", new EmailAddress("ada@corp.example"));
-    var contactMapping = ContactMappingImpl.INSTANCE;
+    ContactMappingImpl contactMapping = ContactMappingImpl.INSTANCE;
 
     ContactBean bean = contactMapping.build(ada); // new ContactBean(); setName; setEmail
     Validated<NonEmptyList<FieldError>, Customer> fromBean = contactMapping.parse(bean);
-    // A null bean property parses to a located FieldError, e.g. [email: must not be null].
+    // Valid(Customer[name=Ada, email=EmailAddress[value=ada@corp.example]])
+
+    ContactBean noEmail = new ContactBean(); // a bean can exist with a property never set
+    noEmail.setName("Bob");
+    Validated<NonEmptyList<FieldError>, Customer> fromUnset = contactMapping.parse(noEmail);
+    // Invalid(NonEmptyList[email: must not be null])
 ```
 
-The design decisions worth knowing:
+An unset property is an ordinary state of a bean, and `parse` reports it as any other `null`: a located `must not be null`, under the [null rule](basics.md#null-doctrine). The processor recognises these shapes:
 
-- **Null is located, never thrown, like every wire.** The null guard is universal ([one rule](basics.md#null-doctrine), both shapes), so a `null` property read is a located `FieldError` exactly as on a record wire. What is bean-*specific* is why nulls are expected at all: an unset property is a representable, ordinary state of a mutable bean, not just a hostile binding.
-- **Honest tiers.** Because an unset property is ordinary, a bean's guarded reference reads count as fallible and the mapping withholds `asIso()` automatically; an all-primitive bean (whose reads can never be null) still earns it. A record wire's guards exist for hostile bindings only, so a lossless record mapping keeps `asIso()`, with the parse-iso coherence law scoped to wires whose reference components are non-null and whose values the domain accepts. Nesting is unaffected: a bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a [one-directional](#one-directional-beans) one exposes the half it has, nesting wherever only that direction is used.
-- **Construction strategy** is detected from the bean's shape, tried in order: a public no-args constructor with `setX` setters (and, for a getter-only `List`, the JAXB convention `getItems().addAll(...)`); then a static `builder()`/`newBuilder()` whose setters fill it and whose `build()` yields the wire. A bean with getters that fits neither is only ever read, so it maps [parse-only](#one-directional-beans); a bean with nothing to read or write gets a what/why/fix diagnostic.
-- **A property is a getter and a writer that share a name.** Getters are `getX()`, and `isX()` returning `boolean` or `Boolean` (the shape JAXB declares for an optional boolean); where a bean declares both for one name, `getX()` reads it. A getter nothing writes, or a writer nothing reads, is left out of the mapping, which suits a computed getter such as `getSummary()` or a builder's singular adder. When an unpaired accessor is named after a domain component the bean carries under no name, the one the component maps under (its own, or the one a `@MapField` rename gives it), leaving it out would drop that component without a word, so it is refused. The diagnostic names the fix: [when an unpaired accessor is refused](rules.md#unpaired-accessors) lists what it offers, and [Accessors meant to stay out](#accessors-meant-to-stay-out) covers the marker for one left out on purpose.
-- **Optionality bridges through `null`, automatically here.** On a full mapping, a domain `Optional<T>` maps to a nullable bean property `T` (bean conventions leave `Optional` off property types): empty bridges to absent (`build` writes `null`, replacing whatever the bean or its builder started with; `parse` reads `Optional.ofNullable(...)`), and a present value still validates through its leaf, or [nests through its own spec](structure.md#optional-nested-objects). This is the *only* wire shape where the bridge needs no declaration: a record wire opts in per component with [`@OptionalBridge`](absence.md#optional-bridge), which buys the same correspondence, and declaring it on a bean spec is redundant (a note, not an error, so one mix-in can serve both shapes). One property shape refuses the bridge, [a getter-only `List`](rules.md#getter-only-list-refuses-the-bridge), which has no unset state to carry absence. The [sparse tier](beans_patch.md#what-each-json-state-does) is the deliberate exception in the other direction: there `null` already means "leave unchanged", so a PATCH bean encodes "set to empty" with an `Optional`-typed property instead.
-- **A bridged property's writer must take `null`.** `build` never skips a write, so a bean's own defaults (a field initialiser, a builder's default) cannot survive it and read back as present. The price is that an empty `Optional` reaches the setter or builder setter as `null`. A setter that copies defensively needs a guard (`v == null ? null : List.copyOf(v)`). A parameter declared non-null, by a non-null annotation or by a `@NullMarked` scope with no `@Nullable` on it, is refused, as a bridged record component is: mark it `@Nullable` (on a Lombok bean, on the field, which Lombok copies to the setter). A generated builder that refuses `null` (protobuf, Immutables) cannot be changed, so declare the component without the `Optional`, or give it a leaf over the whole `Optional` that encodes absence the builder's way (`ValidatedPrism<String, Optional<String>>` mapping empty to `""`), which wins over the bridge. A default the bean applies to a `null` it is given, in the setter, a builder's `build()` or the getter, still reads back as present; `MappingLaws` catches it.
-- **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the *wire* may be bean-shaped; a bean domain gets a diagnostic.
-
-The precise rules for bean wires, from an unpaired accessor to what a getter-only `List` must declare, are in [Bean wires](rules.md#bean-wires).
-
-### Bean projections {#bean-projections}
-
-A bean with *fewer* properties than the domain is a projection, as a smaller record wire is, but the same shape can land on a different tier. A record is constructed whole, so a record projection that copies by identity keeps its lawful `asLens()`: a `null` component there is a hostile binding, not a state the type invites. A bean is constructed empty and filled by setters, which makes an unset reference property an ordinary state, and a lens's `set` cannot fail, so it has no honest answer for one. A bean projection with any reference property therefore takes the [validated `patch`](tiers.md#leaf-carrying-projections-the-validated-patch), even when every property copies by identity:
-
-``` java
-// A bean carrying one of Employee's three components: a projection. A record wire of that shape
-// copies by identity and keeps asLens(); a bean's reference property can be unset, which a lens's
-// set could not refuse, so the Impl emits the validated patch instead.
-class TransferBean {
-  private String department;
-
-  public String getDepartment() {
-    return department;
-  }
-
-  public void setDepartment(String department) {
-    this.department = department;
-  }
-}
-
-@GenerateMapping
-interface TransferMapping extends MappingSpec<Employee, TransferBean> {}
-
-
-    Employee researcher = new Employee("Ada", "Research", 36);
-    TransferBean transfer = new TransferBean();
-    transfer.setDepartment("Platform");
-    var transferMapping = TransferMappingImpl.INSTANCE;
-
-    // The bean's property can be unset, so the projection validates: patch, never a lens.
-    Validated<NonEmptyList<FieldError>, Employee> transferred =
-        transferMapping.patch(researcher, transfer);
-    // Valid(Employee[name=Ada, department=Platform, age=36])
-
-    // Dense, as on a record wire: an unset property is a located error, never "keep the current
-    // value".
-    Validated<NonEmptyList<FieldError>, Employee> unset =
-        transferMapping.patch(researcher, new TransferBean());
-    // Invalid(NonEmptyList[department: must not be null])
-```
-
-Everything else is the record-wire tier unchanged: every projected property is validated, every bad one is located and accumulated, and the unprojected components are read from the domain argument, so they survive by construction. Leaves, nested specs and container lifting all apply, and so does the automatic `Optional` bridge: a bridged property left unset reads as empty, so `patch` writes `Optional.empty()` rather than keeping the current value. The same `MappingLaws` patch overload law-checks it; the laws compare domain values only, so the bean needs no `equals`. An all-primitive bean projection, whose reads can never be null, keeps its lawful `asLens()`.
-
-This is not the REST PATCH contract, even when the bean is a PATCH request: an unset property never means "keep the current value". For that, extend `UpdateSpec` ([Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec)).
-
-`patch` only reads the bean, through its getters, but the Impl also carries `build`, which writes one, so a bean projection still needs one of the construction strategies above. A getter-only bean narrower than the domain is not a projection at all: nothing writes it, so it maps [parse-only](#one-directional-beans), and every domain component then needs a getter.
-
-### Accessors meant to stay out {#accessors-meant-to-stay-out}
-
-Some beans leave an accessor unpaired on purpose. A response DTO reused as the PATCH body carries a server-assigned `getId()` the client must not change; a view computes `getStatus()` on the wire; a generated request has a setter the domain does not model. Pairing such an accessor is the wrong fix, and the bean is often not yours to edit, so the spec says the omission is deliberate with an abstract `@Unmapped` marker named after the *accessor's* property:
-
-``` java
-// A tenant record whose id the server assigns, and a PATCH body shared with the GET response: it
-// reads the id and has no setter for it, so the client cannot change it.
-record Tenant(String id, String name) {}
-
-class TenantPatchBean {
-  private String name;
-
-  public String getId() {
-    return "t-9"; // whatever the body carries, the update never applies it
-  }
-
-  public String getName() {
-    return name;
-  }
-
-  public void setName(String name) {
-    this.name = name;
-  }
-}
-
-@GenerateMapping
-interface TenantPatchMapping extends UpdateSpec<Tenant, TenantPatchBean> {
-  // getId() has no setter, so it is no property of the mapping, and 'id' names a component of
-  // Tenant: without the marker the mapping is refused, in case the accessor is a misspelt pair.
-  // The marker says the omission is deliberate. It withholds the refusal and nothing else: the
-  // update folds 'name' and never reads getId().
-  @Unmapped
-  String id();
-}
-
-```
-
-``` java
-    TenantPatchBean tenantPatch = new TenantPatchBean();
-    tenantPatch.setName("Ada Lovelace");
-
-    Validated<NonEmptyList<FieldError>, Tenant> tenantPatched =
-        TenantPatchMappingImpl.INSTANCE.updateFrom(tenantPatch).apply(new Tenant("t-1", "Ada"));
-    // Valid(Tenant[id=t-1, name=Ada Lovelace]) - the t-9 the bean reads is never applied
-```
-
-The marker only withholds the refusal: the accessor was never a property, so the component it names stays unmapped, a wire narrower than the domain is still a projection, and nothing else about the generated Impl changes. It reaches a full mapping and a [sparse `UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) alike, and both refusals it answers: [an accessor named after a domain component](rules.md#unpaired-accessors), and [a `setX` setter a PATCH bean cannot read](rules.md#every-patch-setter-has-a-getter). The return type is not read, so it may restate the accessor's own type, and the marker is stubbed out by the Impl like a rename.
-
-A marker the spec declares itself must name an accessor the bean leaves unpaired: one naming a property the mapping carries, or naming nothing at all, is refused as the misspelling it usually is. One inherited from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) binds where it can and is otherwise inert, like every other inherited vocabulary member, so one mix-in serves specs whose wires differ.
-
-### One-directional beans {#one-directional-beans}
-
-Some beans are only ever crossed one way. A generated client's response type, an immutable view built through its constructor, or a third-party result offers getters and nothing that writes it; an outbound request, or a write model behind a builder, is filled and never read back. Neither can support both directions, so the Impl carries the one it can and nothing for the other: the missing direction is absent, never a method that throws.
-
-| The bean offers | It maps | The Impl carries |
+| The bean offers | `build` writes it with | It maps |
 |---|---|---|
-| properties it can both read and write | both ways, as above | `build`, `parse`, `asValidatedPrism()` and the rest of its tier |
-| getters, and no setters or builder that fill it | parse-only, unless every getter is a getter-only `List` | `parse` and `asValidatedParse()` |
-| setters or a builder, and no getters | build-only | `build` and `asValidatedBuild()` |
+| a no-args constructor the Impl can call, and `setX` setters (Lombok `@Data` included) | `new`, then each setter | both ways |
+| a static `builder()` or `newBuilder()` whose `build()` returns it (a hand-written builder, or Lombok `@Value @Builder`) | the builder's setters, then `build()` | both ways, reading the built type's getters |
+| a getter-only `List` beside its setters, the JAXB way | `getItems().addAll(...)` for that list | both ways |
+| getters, and nothing that writes it, such as a view built through a constructor with arguments | nothing | [`parse` only](#one-directional-beans) |
+| setters or a builder, and no getters | the setters or the builder | [`build` only](#one-directional-beans) |
+
+As on a record, every property the bean both reads and writes needs a domain component or a [derived field](basics.md#derived-wire-fields). The processor refuses a property your domain lacks, with [`has more components than`](compiler_errors.md#wire-has-more-components). [How a bean is read and written](rules.md#how-a-bean-is-read-and-written) says how the processor pairs getters with writers.
+
+Because a property can be unset, three things differ from a record wire:
+
+1. **A reference property costs the pair `asIso()`.** A record pair whose components all copy unchanged also gets [`asIso()`](tiers.md), a two-way conversion that cannot fail. A bean's read of a reference property can meet an unset value, so a bean pair with one keeps `build`, `parse` and `asValidatedPrism()`, and not that. A bean whose properties are all primitive keeps `asIso()`.
+2. **An `Optional` bridges with no annotation.** A domain `Optional<T>` maps to a nullable property `T`, where a record wire needs [`@OptionalBridge`](absence.md#optional-bridge). `build` writes `null` for empty, and `parse` reads a `null` as empty: [The automatic `Optional` bridge on a bean](rules.md#bean-optional-bridge).
+3. **A bean with fewer properties than your domain has no `parse`.** With a reference property, the Impl offers a validated `patch` instead, which copies the bean onto a domain value you already hold: [Bean projections](#bean-projections).
+
+~~~admonish warning title="Not checked for you: what the bean does with the null an empty Optional writes"
+`build` writes `null` for an empty `Optional`, replacing any field initialiser. No compiler sees what the bean then does with it:
+
+- **A default applied to it reads back as present**, whether a setter, a builder's `build()` or a getter applies it. A setter that swaps in `"Untitled"` turns every empty value into `Optional[Untitled]`.
+- **A writer that rejects it throws from `build`**, as a setter that copies with `List.copyOf(v)` does, or a builder that calls `requireNonNull`. Guard the copy with `v == null ? null : List.copyOf(v)`, or declare the component without the `Optional`.
+
+A law check from a domain sample with an empty `Optional` fails on both, whatever the bean's `equals`: `MappingLaws.assertMappingLaws(mapping.asValidatedPrism(), sample)`. The check from two wire samples compares beans with `equals`, so a hand-written bean without one fails it on identity alone.
+~~~
+
+~~~admonish tip title="You can ship now"
+You can now map a getter/setter or builder bean like a record, and know what an unset property does to `parse`, to an `Optional` and to the methods the Impl offers. The rest of this page, [beans crossed one way](#one-directional-beans), [projections](#bean-projections), [accessors kept out on purpose](#accessors-meant-to-stay-out) and [the checklist for generated clients](#generated-client-checklist), is for when you need it.
+~~~
+
+~~~admonish question title="Checkpoint: which subtitle comes back?" id="check-beans-default"
+Two generated beans for `Listing` both start the subtitle as `""`, in different places:
+
+``` java
+// A product listing whose subtitle is optional, and two generated beans for it.
+record Listing(String title, Optional<String> subtitle) {}
+
+class DraftListingBean {
+  private String title;
+  private @Nullable String subtitle = ""; // starts as "" in the field
+
+  public String getTitle() {
+    return title;
+  }
+
+  public void setTitle(String title) {
+    this.title = title;
+  }
+
+  public @Nullable String getSubtitle() {
+    return subtitle;
+  }
+
+  public void setSubtitle(@Nullable String subtitle) {
+    this.subtitle = subtitle;
+  }
+}
+
+class ListingBean {
+  private String title;
+  private @Nullable String subtitle;
+
+  public String getTitle() {
+    return title;
+  }
+
+  public void setTitle(String title) {
+    this.title = title;
+  }
+
+  public String getSubtitle() {
+    return subtitle == null ? "" : subtitle; // answers "" in the getter
+  }
+
+  public void setSubtitle(@Nullable String subtitle) { // the bridge writes null for empty
+    this.subtitle = subtitle;
+  }
+}
+
+@GenerateMapping
+interface DraftListingMapping extends MappingSpec<Listing, DraftListingBean> {}
+
+@GenerateMapping
+interface ListingMapping extends MappingSpec<Listing, ListingBean> {} // subtitle bridges itself
+
+```
+
+Your code builds each bean from `new Listing("Lamp", Optional.empty())`, then parses it. What subtitle comes back from each?
+
+1. `Optional.empty` from both, since `build` wrote `null` into both
+2. `Optional[]`, that is `Optional.of("")`, from both, since both start with `""`
+3. `Optional.empty` from `DraftListingBean`, and `Optional[]` from `ListingBean`
+4. `Optional[]` from `DraftListingBean`, and `Optional.empty` from `ListingBean`
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-beans-default-answer"
+**3.** `build` writes `setSubtitle(null)` into both beans. That replaces `DraftListingBean`'s field initialiser, so its subtitle reads back empty. `parse` reads through the getter, and `ListingBean`'s getter answers `""` for that `null`, so its subtitle comes back as `Optional[]`. A law check from a domain sample with an empty `Optional` fails on the second:
+
+``` java
+    Listing lamp = new Listing("Lamp", Optional.empty());
+
+    // build writes setSubtitle(null) into both beans, replacing the field's "".
+    DraftListingBean draft = DraftListingMappingImpl.INSTANCE.build(lamp);
+    assertThatValidated(DraftListingMappingImpl.INSTANCE.parse(draft)).hasValue(lamp);
+
+    // parse reads through the getter, which answers "" for that null.
+    ListingBean listing = ListingMappingImpl.INSTANCE.build(lamp);
+    assertThatValidated(ListingMappingImpl.INSTANCE.parse(listing))
+        .hasValue(new Listing("Lamp", Optional.of("")));
+
+    // A law check from a domain sample with an empty Optional fails on it:
+    assertThatThrownBy(
+            () ->
+                MappingLaws.assertMappingLaws(ListingMappingImpl.INSTANCE.asValidatedPrism(), lamp))
+        .isInstanceOf(AssertionError.class);
+```
+
+Where this lives: [Bean-shaped wire targets](#bean-shaped-wire-targets).
+~~~
+
+~~~admonish question title="Checkpoint: which methods does the Impl carry?" id="check-beans-direction"
+A vendor SDK builds this `InvoiceView` through its public constructor:
+
+<!-- verify:reports "maps parse-only" -->
+```java
+import org.higherkindedj.optics.annotations.GenerateMapping;
+import org.higherkindedj.optics.annotations.MappingSpec;
+
+record Invoice(String number, String currency) {}
+
+final class InvoiceView {
+  private final String number;
+  private final String currency;
+
+  public InvoiceView(String number, String currency) {
+    this.number = number;
+    this.currency = currency;
+  }
+
+  public String getNumber() { return number; }
+
+  public String getCurrency() { return currency; }
+}
+
+@GenerateMapping
+interface InvoiceViewMapping extends MappingSpec<Invoice, InvoiceView> {}
+```
+
+What does `InvoiceViewMappingImpl` carry?
+
+1. `build` and `parse`: `build` can call the public constructor
+2. `parse` only
+3. `build` only
+4. Nothing: the processor refuses the spec
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-beans-direction-answer"
+**2.** `build` writes a bean through setters or a builder, never a constructor that takes arguments, and `InvoiceView` has neither. It has getters, so it maps parse-only, and the processor says so in a compiler note:
+
+```
+@GenerateMapping: 'InvoiceView' maps parse-only: the generated Impl carries parse and
+asValidatedParse(), and no build. 'InvoiceView' has getters but no setX setters and no builder that
+fills it, so nothing can write it. If 'InvoiceView' should be built too, give it a no-args
+constructor with setX setters matching its getters, or a builder.
+```
+
+Where this lives: [Bean-shaped wire targets](#bean-shaped-wire-targets).
+~~~
+
+---
+
+## One-directional beans {#one-directional-beans}
+
+Some beans offer only one direction. An immutable view built through its constructor, or a third-party result, has getters and nothing that writes it. An outbound request has setters or a builder, and no getters. What decides is the bean's shape, not how you use it: a generated client's model usually has getters and setters, so it maps both ways even when you only ever read it. The Impl carries the direction the bean allows, and nothing for the other: the missing direction is absent, never a method that throws.
+
+```mermaid
+flowchart TD
+    accTitle: Which way a bean maps
+    accDescr: A bean maps both ways when any getter shares its name with a writer. Otherwise a bean with only getters maps parse-only, one with only writers maps build-only, and one with both but no shared name, or with neither, is refused.
+    P{"does any getter share its name<br/>with a setter or builder setter?"} -->|yes| B["both ways:<br/>build, parse, asValidatedPrism()"]
+    P -->|no| G{"what does it offer?"}
+    G -->|getters only| PO["parse only:<br/>parse, asValidatedParse()"]
+    G -->|writers only| BO["build only:<br/>build, asValidatedBuild()"]
+    G -->|"both, or neither"| X["refused"]
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef error fill:#e78284,stroke:#d20f39,color:#232634
+    class P,G decision
+    class B,PO,BO tier
+    class X error
+```
+
+In words: one name that is both read and written makes a bean two-way. A bean maps one way only when it offers nothing at all in the other direction. A getter-only `List` counts as written, the JAXB way, on a bean that also has a setter, or whose every getter is such a list.
 
 ``` java
 // A vendor's read model: built once by its own client, then only ever read. It has getters and
@@ -48929,14 +49006,7 @@ interface CustomerRequestMapping extends MappingSpec<Customer, CustomerRequest> 
     // new CustomerRequest(); setName("Ada"); setEmail("ada@corp.example")
 ```
 
-The bean's shape decides, and a note says which way it was read and why, so an unintended reading does not go unnoticed: a bean meant to be built whose no-args constructor the generated Impl cannot reach reads parse-only, and the note says the constructor is out of reach. The two-way reading wins whenever any property allows it, so a bean is one-directional only when nothing at all crosses the other way. [How a bean's direction is read](rules.md#how-a-beans-direction-is-read) covers the mixed cases, such as a bean that reads some names and writes others. One of them maps both ways: a bean whose every getter is a getter-only `List`, which `build` fills the JAXB way, through `getX().addAll(...)`.
-
-The rules follow from which direction is missing:
-
-- **Coverage belongs to the direction.** A parse produces the domain, so every domain component needs a getter, and a getter no component names is ignored. A build produces the bean, so every writer needs a source, a domain component or a [derived field](basics.md#derived-wire-fields), and a domain component the bean does not carry is not written. Neither is a projection, since nothing is written back.
-- **The rest of the vocabulary is unchanged.** Renames, leaves, container lifting and the automatic `Optional` bridge work in whichever direction exists: a leaf parses on a parse-only bean and builds on a build-only one.
-- **Nesting follows the direction.** A one-directional mapping nests wherever only its direction is used, lifted through containers like any other: a parse-only spec inside a parse-only mapping, a [sparse `UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) or a [`@GenerateMerge`](merge_envelopes.md) source, and a build-only spec inside a build-only mapping. A full mapping nests in all of them. Where the missing direction is needed, the failed lookup names the one-directional spec and what it lacks; sealed dispatch needs both directions of every subtype pair.
-- **Law-check the surface it has.** `MappingLaws` takes `asValidatedParse()` with a parsing and a non-parsing wire, or `asValidatedBuild()` with a domain value ([What Your Spec Generates](tiers.md#law-checked-in-the-repo-and-in-your-tests)):
+A compiler note says which way a one-directional bean was read, and why. Renames, leaves, container lifting and the automatic `Optional` bridge work in whichever direction exists. [How a bean's direction is read](rules.md#how-a-beans-direction-is-read) covers coverage, nesting and the mixed cases. Law-check the surface the Impl has, `asValidatedParse()` with a parsing and a non-parsing wire, or `asValidatedBuild()` with a domain value:
 
 ``` java
     MappingLaws.assertMappingLaws(
@@ -48951,15 +49021,130 @@ The rules follow from which direction is missing:
 
 ---
 
+## Bean projections {#bean-projections}
+
+A bean with fewer properties than the domain has no `parse`, since it cannot produce a whole domain value. With a reference property, the Impl offers a validated `patch(current, bean)` instead, which copies the bean's properties onto a domain value you already hold, checking each one. A record projection that copies by identity gets a [lens](tiers.md) instead, since a record is constructed whole. A bean is constructed empty and filled by setters, so a property can be unset, and a lens has no way to refuse one. Here `Employee` is `record Employee(String name, String department, int age)`, from [What Your Spec Generates](tiers.md):
+
+``` java
+// A bean carrying one of Employee's three components: a projection. A record wire of that shape
+// copies by identity and keeps asLens(); a bean's reference property can be unset, which a lens's
+// set could not refuse, so the Impl emits the validated patch instead.
+class TransferBean {
+  private String department;
+
+  public String getDepartment() {
+    return department;
+  }
+
+  public void setDepartment(String department) {
+    this.department = department;
+  }
+}
+
+@GenerateMapping
+interface TransferMapping extends MappingSpec<Employee, TransferBean> {}
+
+
+    Employee researcher = new Employee("Ada", "Research", 36);
+    TransferBean transfer = new TransferBean();
+    transfer.setDepartment("Platform");
+    TransferMappingImpl transferMapping = TransferMappingImpl.INSTANCE;
+
+    // The bean's property can be unset, so the projection validates: patch, never a lens.
+    Validated<NonEmptyList<FieldError>, Employee> transferred =
+        transferMapping.patch(researcher, transfer);
+    // Valid(Employee[name=Ada, department=Platform, age=36])
+
+    // Dense, as on a record wire: an unset property is a located error, never "keep the current
+    // value".
+    Validated<NonEmptyList<FieldError>, Employee> unset =
+        transferMapping.patch(researcher, new TransferBean());
+    // Invalid(NonEmptyList[department: must not be null])
+```
+
+Every projected property is validated, and the unprojected components are read from the domain argument, so they survive. Leaves, nested specs, container lifting and the automatic bridge all apply: an unset bridged property reads as empty, so `patch` writes `Optional.empty()` rather than keeping the current value. The `MappingLaws` patch overload law-checks it, comparing domain values only, so the bean needs no `equals`. An all-primitive bean projection keeps its lens.
+
+This is not the REST PATCH contract, even when the bean is a PATCH request: an unset property never means *keep the current value*. For that, extend `UpdateSpec` ([Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec)). And `patch` only reads the bean, but the Impl also carries `build`, so a projection bean needs a way to be written. A getter-only bean is no projection: it maps parse-only, which needs a getter for every domain component, so a getter-only bean narrower than the domain is refused.
+
+---
+
+## Accessors meant to stay out {#accessors-meant-to-stay-out}
+
+Some beans leave an accessor unpaired on purpose: a getter with no setter, or a setter with no getter. You need to say so only when the processor refuses the accessor, which it does when the accessor is named after a domain component, as the likely misspelling. A response DTO reused as a PATCH body, from [Sparse PATCH](beans_patch.md), carries a server-assigned `getId()` the client must not change. Declare the omission deliberate with an abstract `@Unmapped` marker named after the *accessor's* property. It is MapStruct's `ignore = true`, except that it names the wire's accessor, and only withholds the refusal:
+
+``` java
+// A tenant record whose id the server assigns, and a PATCH body shared with the GET response: it
+// reads the id and has no setter for it, so the client cannot change it.
+record Tenant(String id, String name) {}
+
+class TenantPatchBean {
+  private String name;
+
+  public String getId() {
+    return "t-9"; // whatever the body carries, the update never applies it
+  }
+
+  public String getName() {
+    return name;
+  }
+
+  public void setName(String name) {
+    this.name = name;
+  }
+}
+
+@GenerateMapping
+interface TenantPatchMapping extends UpdateSpec<Tenant, TenantPatchBean> {
+  // getId() has no setter, so it is no property of the mapping, and 'id' names a component of
+  // Tenant: without the marker the mapping is refused, in case the accessor is a misspelt pair.
+  // The marker says the omission is deliberate. It withholds the refusal and nothing else: the
+  // update folds 'name' and never reads getId().
+  @Unmapped
+  String id();
+}
+
+
+    TenantPatchBean tenantPatch = new TenantPatchBean();
+    tenantPatch.setName("Ada Lovelace");
+
+    Validated<NonEmptyList<FieldError>, Tenant> tenantPatched =
+        TenantPatchMappingImpl.INSTANCE.updateFrom(tenantPatch).apply(new Tenant("t-1", "Ada"));
+    // Valid(Tenant[id=t-1, name=Ada Lovelace]) - the t-9 the bean reads is never applied
+```
+
+The marker withholds the refusal, and nothing else: the component stays out of the mapping. On a `MappingSpec` that leaves the bean narrower than the domain, so the Impl becomes a [projection](#bean-projections), with `build` and `patch` and no `parse`. [What `@Unmapped` withholds](rules.md#what-unmapped-withholds) has the precise rule.
+
+---
+
+## Generated clients: a checklist {#generated-client-checklist}
+
+Beans are often generated from a schema, and generators have habits. Check these where a generated bean meets the mapper:
+
+| The generated shape | What happens | Instead |
+|---|---|---|
+| an openapi-generator model, with getters, setters and a no-args constructor | it maps both ways, even as a response you only read, so the processor refuses a property your domain lacks | declare a [derived field](basics.md#derived-wire-fields) for it, which `build` fills and `parse` ignores |
+| a `readOnly` property, with a getter and no setter | reading it on a two-way bean is not supported yet: `@Unmapped` lets the bean map, but the component stays out, so there is no `parse` | leave that component out of the domain you parse into |
+| strictly typed properties: enums, `OffsetDateTime`, `UUID` | Jackson has already converted them before `parse` runs | map each to your own type with a leaf over the generated type |
+| openapi-generator's default `openApiNullable=true` | a `getX_JsonNullable()` and `setX_JsonNullable(...)` pair beside each nullable property counts as a property your domain lacks | generate with `openApiNullable=false`; a `JsonNullable` type needs a leaf, and on a PATCH bean is [not supported yet](rules.md#no-jsonnullable-patch-property) |
+| a PATCH request bean with `default:` values or container defaults | the generator renders them as initialisers, which read as sent | give the PATCH request its own schema: [A PATCH getter must answer `null` until set](beans_patch.md#patch-getters-answer-null) |
+| a Lombok class | the processor sees its accessors only once Lombok has run | list Lombok's `annotationProcessor` before `hkj-processor`; the HKJ Gradle plugin adds its own after your `dependencies` block ([Lombok](../tooling/manual_setup.md#lombok)) |
+| Lombok's `@Singular` on a collection | not supported yet. On a two-way builder, its setter takes a `Collection<? extends T>`, not the getter's `List<T>`. On a build-only builder, its singular adder is one more writer, with no domain component to fill it | drop `@Singular`, so the builder takes the `List` whole |
+| a protobuf-java message | not supported yet: `getUnknownFields()`, and a `getXBytes()` beside each string field, pair up as properties your domain lacks | convert it to a record by hand, and map the record |
+| a bean another annotation processor generates | the mapping waits for the type to exist, with nothing to configure | nothing: [Mapping over types other processors generate](../tooling/manual_setup.md#mapping-over-types-other-processors-generate) |
+
+---
+
 ~~~admonish info title="Key Takeaways"
-* **Beans map with the full feature set**: only the read/write mechanics differ, and the tiers stay honest (`asIso` is withheld, and a projection takes `patch` rather than `asLens`, where unset properties make reads fallible)
-* **A bean crossed one way maps that way**: a read model gets `parse` alone and a write model `build` alone, each nesting where its one direction is used
+* **A bean maps like a record**: leaves, renames, nesting and located errors are unchanged, and every property it reads and writes needs a source
+* **Three things follow from an unset property**: a reference property costs `asIso()`, an `Optional` bridges with no annotation, and a smaller bean has no `parse`
+* **What the bean does with a `null` is not checked for you**: a default reads back as present, and a writer that rejects it throws, so law-check from a domain sample with an empty `Optional`
+* **A bean's shape decides its direction**: a read model gets `parse` alone, a write model `build` alone, and a generated model with getters and setters maps both ways
 ~~~
 
 ~~~admonish tip title="See Also"
 - [Sparse PATCH](beans_patch.md): A bean as a PATCH request, where `null` means *leave unchanged*
-- [Bean wires](rules.md#bean-wires): The precise rules, from an unpaired accessor to a getter-only `List`
-- [What Your Spec Generates](tiers.md): Which methods each spec shape gets, and why a bean mapping withholds `asIso()`
+- [Bean wires](rules.md#bean-wires): The precise rules, from how a bean is written to a getter-only `List`
+- [What Your Spec Generates](tiers.md): Which methods each spec shape gets, and why a reference property withholds `asIso()`
 ~~~
 
 ---
@@ -50068,10 +50253,10 @@ are in [Compiler Messages](compiler_errors.md).
 | JAXB getter-only `List` | ✅ (through `addAll`) | ✅ | ✅ | ❌ (it can never read `null`) |
 | Sealed hierarchy against sealed hierarchy | ✅ | ✅ | ❌ | ❌ |
 | Generic record (`Page<T>`) | ✅ | ✅ | ✅ | ❌ (record-to-record only) |
-| `JsonNullable` property | ❌ | ❌ | ❌ | ❌, not supported yet |
+| `JsonNullable` property | through a leaf | through a leaf | through a leaf | ❌, not supported yet |
 
-A lossless pair also earns `asIso()`; a bean pair does not, because an unset property is an
-ordinary state. [What Your Spec Generates](tiers.md) explains which surface each spec gets, and why.
+A lossless pair also earns `asIso()`; a bean pair with a reference property does not, because an
+unset property is an ordinary state. [What Your Spec Generates](tiers.md) explains which surface each spec gets, and why.
 
 ---
 
@@ -50255,7 +50440,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a mix-in extend `MappingSpec`?](#refused-mix-in-shapes) | No: a mix-in shares vocabulary; a spec generates an Impl. | by design |
 | [Can a generic mix-in be extended raw?](#a-generic-mix-in-reached-raw) | Not if it contributes a member: raw erases what it declares. | by design |
 | [Can two mix-ins declare the same rename?](#inheriting-one-member-twice) | Yes, when the targets agree; conflicting targets are refused. | by design |
-| [Can an `@Unmapped` marker name an accessor that pairs?](beans.md#accessors-meant-to-stay-out) | Not one the spec declares; an inherited one stays inert. | by design |
+| [Can an `@Unmapped` marker name an accessor that pairs?](#what-unmapped-withholds) | Not one the spec declares; an inherited one stays inert. | by design |
 | **Containers** | | |
 | [Is a same-typed container shared with the wire?](#same-typed-containers-cross-as-copies) | Not when declared exactly `List`, `Set`, `Collection`, `Map`, `Optional` or array. | by design |
 | [Does a `List` lift against a `Set`, or an `ArrayList`?](#what-lifts) | No: the same exact container on both sides, one level deep. | by design |
@@ -50279,11 +50464,14 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Why does a validating projection get no `asLens()`?](tiers.md#leaf-carrying-projections-the-validated-patch) | A lens cannot fail, so it takes the validated `patch`. | by design |
 | [How wide can a record be?](testing.md#diagnostics-and-limits) | No ceiling but the JVM's: about 254 components. | by design |
 | **Bean wires** | | |
-| [Can the domain be a bean?](beans.md#bean-shaped-wire-targets) | No: `parse` builds the domain through a record constructor. | by design |
+| [Can the domain be a bean?](#how-a-bean-is-read-and-written) | No: `parse` builds the domain through a record constructor. | by design |
 | [What happens to an accessor with no partner?](#unpaired-accessors) | Left out; refused when named after a component the bean carries under no name. | by design |
 | [Can a getter-only `List` be raw, or a wildcard?](#getter-only-list-element-type) | Not where `build` is emitted: `addAll` needs its element type. | not supported yet |
 | [Can a getter-only `List` carry an absent `Optional`?](#getter-only-list-refuses-the-bridge) | No: its getter creates the list, so absence reads as empty. | not supported yet |
-| [Where does a one-directional bean nest?](beans.md#one-directional-beans) | Only where nothing needs its missing direction. | by design |
+| [Can a two-way bean map a property that has only a getter?](beans.md#generated-client-checklist) | No: `@Unmapped` accepts it, but the component then stays out. | not supported yet |
+| [Can a Lombok builder use `@Singular` on a collection?](beans.md#generated-client-checklist) | No: the processor refuses it on two-way and build-only builders alike. | not supported yet |
+| [Does a protobuf-java message map?](beans.md#generated-client-checklist) | No: its companion accessors pair as extra properties. | not supported yet |
+| [Where does a one-directional bean nest?](#how-a-beans-direction-is-read) | Only where nothing needs its missing direction. | by design |
 | **Sparse PATCH** | | |
 | [Can one spec extend `MappingSpec` and `UpdateSpec`?](#one-tier-per-spec) | No: declare a spec per tier and share a mix-in. | by design |
 | [Can a PATCH property be primitive?](#no-primitive-patch-property) | No: a primitive is never absent, so use the wrapper. | by design |
@@ -50571,6 +50759,30 @@ The [tier decision flow](tiers.md) ends by asking whether any correspondence is 
 
 ## Bean wires {#bean-wires}
 
+### How a bean is read and written {#how-a-bean-is-read-and-written}
+
+**The processor reads a bean through getters, and writes it by one of two strategies, tried in order.** First, a no-args constructor the Impl can call, public or package-private beside the spec, with `setX` setters, and for a getter-only `List` the JAXB convention `getItems().addAll(...)`. Then, a static `builder()` or `newBuilder()` whose setters fill it and whose `build()` yields the wire. A bean with getters that fits neither is only ever read, so it maps [parse-only](beans.md#one-directional-beans), and a bean with nothing to read or write gets a what/why/fix diagnostic.
+
+- **A property is a getter and a writer that share a name.** Getters are `getX()`, and `isX()` returning `boolean` or `Boolean`, the shape JAXB declares for an optional boolean. Where a bean declares both for one name, `getX()` reads it.
+- **An unpaired accessor is left out of the mapping.** That suits a computed getter such as `getSummary()`, or a builder's singular adder. The processor refuses one named after a domain component instead: [When an unpaired accessor is refused](#unpaired-accessors).
+- **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the wire may be bean-shaped, and a bean domain gets a diagnostic.
+- **Nesting is unaffected.** A bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a one-directional one nests [where its direction is used](#how-a-beans-direction-is-read).
+
+### The automatic `Optional` bridge on a bean {#bean-optional-bridge}
+
+**Whichever way a bean maps, a domain `Optional<T>` maps to a nullable bean property `T` with no declaration.** Bean conventions leave `Optional` off property types, so there is nothing else for it to map to. `build` writes `null` for an empty value, replacing whatever the bean or its builder started with, and `parse` reads `Optional.ofNullable(...)`. A present value still validates through its leaf, or [nests through its own spec](structure.md#optional-nested-objects). A record wire opts into the same correspondence per component with [`@OptionalBridge`](absence.md#optional-bridge), and declaring that on a bean spec draws [a note](#optional-bridge-on-a-bean-wire). A [getter-only `List`](#getter-only-list-refuses-the-bridge) refuses the bridge. The [sparse tier](beans_patch.md#what-each-json-state-does) is the exception the other way: there `null` already means *leave unchanged*, so a PATCH bean encodes *set to empty* with an `Optional`-typed property.
+
+- **The processor refuses a writer declared non-null**, by a non-null annotation or by a `@NullMarked` scope with no `@Nullable` on it, as it refuses a bridged record component. Mark it `@Nullable`, and on a Lombok bean mark the field, which Lombok copies to the setter.
+- **What the bean does with the `null` is not checked.** A default reads back as present, and a writer that rejects it throws from `build`, as [Bean-shaped wire targets](beans.md#bean-shaped-wire-targets) warns.
+- **A leaf over the whole `Optional` wins over the bridge.** It suits a generated builder that refuses `null`: encode absence the builder's way, a `ValidatedPrism<String, Optional<String>>` mapping empty to `""`, say.
+
+### What `@Unmapped` withholds {#what-unmapped-withholds}
+
+**The [`@Unmapped`](beans.md#accessors-meant-to-stay-out) marker withholds a refusal and nothing else.** The accessor it names was never a property, so the component stays unmapped, a wire narrower than the domain is still a projection, and nothing else about the generated Impl changes. It answers both refusals it is named for, [an accessor named after a domain component](#unpaired-accessors) and [a `setX` setter a PATCH bean cannot read](#every-patch-setter-has-a-getter), on a `MappingSpec` and a sparse `UpdateSpec` alike. On a `MappingSpec` the component then stays out, so a bean left narrower than the domain is a projection, with no `parse`. The return type is not read, so it may restate the accessor's own type, and the Impl stubs the marker out like a rename.
+
+- **A marker the spec declares must name an unpaired accessor.** The processor refuses one naming a property the mapping carries, or naming nothing at all, as the misspelling it usually is.
+- **An inherited marker binds where it can, and is otherwise inert**, like every other member inherited from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces), so one mix-in serves specs whose wires differ.
+
 ### When an unpaired accessor is refused {#unpaired-accessors}
 
 When an unpaired accessor is named after a domain component the bean carries under no name, the one the component maps under (its own, or the one a `@MapField` rename gives it), leaving it out would drop that component without a word, so it is refused. The diagnostic names the accessor that would pair it. When a nearby accessor of the other kind has the same type, it is offered as the likely misspelling, so `setEmail(String)` beside `getEmial()` is told to rename the getter to `getEmail()`; otherwise it offers the [`@Unmapped` marker](beans.md#accessors-meant-to-stay-out), for an accessor that is meant to stay out.
@@ -50587,10 +50799,19 @@ One property shape refuses the bridge: a getter-only `List` filled by the JAXB c
 
 The two-way reading wins whenever any property allows it, so a bean is one-directional only when nothing at all crosses the other way. A getter-only `List` counts as written, through the JAXB `getX().addAll(...)` convention, only on a bean that also has a setter or whose every getter is such a list: a `List` getter among read-only getters belongs to a read model, which maps parse-only. A bean that reads some names and writes others fits neither and is refused with both lists of names. A bean whose names pair only in part maps both ways over those that do, and an unpaired accessor named after a domain component is [refused rather than dropped](#unpaired-accessors), since a misspelt accessor is what that shape usually is.
 
-Two more rules follow from which direction is missing:
+A one-directional mapping follows these rules:
 
+- **A parse-only mapping needs a getter for every domain component**, since a parse produces the domain, and it ignores a getter no component names.
+- **A build-only mapping needs a source for every writer**, a domain component or a [derived field](basics.md#derived-wire-fields), and does not write a domain component the bean lacks.
+- **A one-directional mapping is never a projection**, since nothing is written back.
+- **The vocabulary works in whichever direction exists.** Renames, leaves, container lifting and the automatic `Optional` bridge apply to a parse-only or build-only bean as to a two-way one.
+- **Nesting follows the direction.** A one-directional mapping nests wherever only its direction is used, lifted through containers like any other. A parse-only spec nests in a parse-only mapping, a [sparse `UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) or a [`@GenerateMerge`](merge_envelopes.md) source, and a build-only spec in a build-only mapping.
+- **A two-way mapping nests in all of them.** Where the missing direction is needed, the failed lookup names the one-directional spec and what it lacks.
+- **Sealed dispatch needs both directions** of every subtype pair.
+- **A bean whose no-args constructor the Impl cannot reach maps parse-only.** The note says the constructor is out of reach.
 - **Derived fields are build-side.** A build-only mapping takes them as a full one does. Declared on a parse-only spec, one has nothing to fill and is refused; one inherited from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) stays inert, so one vocabulary serves both directions.
 - **A build-only builder counts its one-argument methods as writers.** A method taking the bean or the builder itself (`from(Bean)`, `mergeFrom(Builder)`) is left out, but a singular adder beside its collection setter (a `@Singular` builder) needs a source like any other writer; getters on the built type make such a bean two-way, where only the properties it reads count, and an unpaired builder method named after a domain component is [refused](#unpaired-accessors).
+- **A two-way builder's collection setter must take its getter's exact type.** Lombok's `@Singular` on a `@Value @Builder`, whose setter takes a `Collection<? extends T>`, is refused as read and written at different types, which is not supported yet.
 
 ---
 
@@ -52108,7 +52329,7 @@ the wire may be bean-shaped. Use a record or sealed interface for the domain, ma
 as the wire instead.
 ```
 
-The rule: [Bean-shaped wire targets](beans.md#bean-shaped-wire-targets).
+The rule: [How a bean is read and written](rules.md#how-a-bean-is-read-and-written).
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
 <!-- verify:rejects "does not support on the domain side" -->
@@ -89753,7 +89974,7 @@ A [shared vocabulary](../mapping/codecs.md#shared-vocabulary-mix-in-interfaces) 
 
 Navigators across modules use no index either. A [navigator](../optics/focus_navigation.md#which-fields-get-a-navigator) into a record declared in a dependency composes the `Focus` class that dependency generated, so **a module whose `@GenerateFocus` records are navigated from elsewhere needs the processor too**; without it, a consumer keeps the plain path for those fields and says so in a note. A consumer composes only what the dependency published, so the two need not share a processor version or generator plugins to compile. What a consumer does need is to see the types a field names: a field whose type comes from one of the dependency's own dependencies is left out of the consumer's navigator, with a note, unless that type is on the consumer's compile classpath. Either the consumer declares that module itself, or the dependency exposes it with `api` rather than `implementation`, which needs the `java-library` plugin applied alongside HKJ's, since HKJ's applies plain `java`. As with specs, a dependency newly given the processor may need a clean downstream build before its records become navigable: no downstream source references the new `Focus` classes, so Gradle has nothing to recompile.
 
-## Lombok
+## Lombok {#lombok}
 
 Lombok and the HKJ processors run in the same javac invocation, and the pairing is covered by a test in the HKJ build: a `@Data` class works as a bean-shaped `@GenerateMapping` wire, with the generated getters and setters visible to the bean analyser. **Order matters: list Lombok before `hkj-processor`** (within a javac round, processors run in listed order, and the bean analyser needs the accessors already materialised; the reverse order fails with a clear diagnostic). No binding artefact is needed beyond that:
 
@@ -89765,7 +89986,7 @@ dependencies {
 }
 ```
 
-## Mapping over types other processors generate
+## Mapping over types other processors generate {#mapping-over-types-other-processors-generate}
 
 A mapping may name a type another annotation processor writes in the same compilation: a wire class generated from a schema, say, or a value type another library generates. Such a type does not exist until the processing round after the one that writes it, so the mapping processors wait for it. A `@GenerateMapping` or `@GenerateMerge` spec whose domain or wire type, or anything read from them (a record component, a bean property, a builder, a mix-in method), names a type not written yet is generated once that type exists, and so is any spec that nests it. It maps exactly as it would were the type written by hand, and nothing needs configuring.
 
@@ -98573,7 +98794,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   Some beans leave an accessor unpaired on purpose, and often cannot be edited: a response DTO reused as a PATCH body whose `getId()` the client must not change, a view whose `getStatus()` is computed on the wire, a generated request with a setter the domain does not model. The new `@Unmapped` marker, an abstract method named after the accessor's property, says so. It withholds the refusal and changes nothing else: the component the accessor names stays unmapped, and a wire narrower than the domain is still a projection. A marker the spec declares itself must name an accessor the bean leaves unpaired, and one inherited from a mix-in binds where it can and is otherwise inert, so one vocabulary serves wires that differ.
 
-  A `Boolean isX()` getter now counts as a getter, as `boolean isX()` does, so the shape JAXB declares for an optional boolean pairs with its `setX(Boolean)` and maps both ways. Where a bean declares both `getX()` and `isX()` for one name, `getX()` reads it, whichever is declared first. See [Bean-shaped wire targets](mapping/beans.md#bean-shaped-wire-targets).
+  A `Boolean isX()` getter now counts as a getter, as `boolean isX()` does, so the shape JAXB declares for an optional boolean pairs with its `setX(Boolean)` and maps both ways. Where a bean declares both `getX()` and `isX()` for one name, `getX()` reads it, whichever is declared first. See [How a bean is read and written](mapping/rules.md#how-a-bean-is-read-and-written).
 
   _Notes for existing builds._ A bean that compiled with an unpaired accessor named after a domain component, or a PATCH bean with a setter and no matching getter, now fails to compile: pair the accessor, or remove it. A `Boolean isX()` accessor is now a property like any other, which changes a few beans that compiled before:
   - a property read only through `Boolean isX()` now maps, so `build` writes it and `updateFrom` applies it;
