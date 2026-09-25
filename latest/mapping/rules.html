@@ -388,6 +388,8 @@
 <tr><td><a href="#generic-boundaries">Can a generic sealed hierarchy be mapped?</a></td><td>No, not even at a concrete instantiation: model it as a record.</td><td>not supported yet</td></tr>
 <tr><td><a href="#element-mapped-nesting">What supplies an element-mapped spec's prisms where it nests?</a></td><td>A leaf on the using spec, or another registered mapping.</td><td>by design</td></tr>
 <tr><td><strong>Merge and error envelopes</strong></td><td></td><td></td></tr>
+<tr><td><a href="#how-a-merge-fills">Can a merge rename a component?</a></td><td>No: a target name must match exactly one source component.</td><td>not supported yet</td></tr>
+<tr><td><a href="#how-a-merge-fills">Can a merge fill a component through a spec's <code>build</code>?</a></td><td>No: a merge runs a spec's <code>parse</code> only.</td><td>not supported yet</td></tr>
 <tr><td><a href="#error-envelope-rules">Can an error envelope hierarchy be generic?</a></td><td>No: the hierarchy, its variants and the context are non-generic.</td><td>by design</td></tr>
 </tbody></table>
 </div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -412,7 +414,7 @@
 <tr><td><a href="tiers.html"><code>asIso().reverseGet</code> threw on a request body</a></td><td><code>reverseGet</code> is unguarded: a freshly bound wire goes through <code>parse</code>.</td></tr>
 <tr><td><a href="absence.html#constructor-invariants">A constructor bug reached the client as a message</a></td><td>Any <code>RuntimeException</code> counts: keep the constructor to checks on its arguments.</td></tr>
 <tr><td><a href="codecs.html#canonical-forms-only">A timestamp came back with fewer fractional digits</a></td><td>The formatter pattern fixes the precision, so <code>build</code> truncates finer values.</td></tr>
-<tr><td><a href="merge_envelopes.html#generating-error-envelopes-generateerrorenvelope">The first call into a generated error companion throws <code>ExceptionInInitializerError</code></a></td><td>Its all-absent context is built at class initialisation, and the context record's constructor rejects <code>null</code>: keep it a plain nullable carrier.</td></tr>
+<tr><td><a href="merge_envelopes.html#generating-error-envelopes-generateerrorenvelope">A generated error companion throws <code>ExceptionInInitializerError</code>, then <code>NoClassDefFoundError</code></a></td><td>Its all-absent context is built on first use, and the context record's constructor rejects <code>null</code>: let every component accept <code>null</code>.</td></tr>
 </tbody></table>
 </div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <hr />
@@ -847,19 +849,37 @@ record-wire spec.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <h2 id="merge-and-error-envelopes"><a class="header" href="#merge-and-error-envelopes">Merge and error envelopes</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<h3 id="how-a-merge-fills"><a class="header" href="#how-a-merge-fills">How a merge fills</a></h3>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p><strong>A merge is one abstract method on an <code>@GenerateMerge</code> interface: two or more record sources in, one record target out.</strong> The processor refuses fewer than two sources, a second abstract method, and a generic merge.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<ul>
+<li><strong>Each target component fills from the one source with a component of the same name.</strong> A merge matches by name only and has no rename, so the processor refuses a target component no source names (<a href="compiler_errors.html#merge-unfilled"><code>is not filled by any source</code></a>), and one two sources carry (<a href="compiler_errors.html#merge-component-ambiguous"><code>both carry it</code></a>). A source component the target lacks fills nothing.</li>
+<li><strong>A fill copies when the types match</strong>, a same-typed container as a <a href="#same-typed-containers-cross-as-copies">copy</a>.</li>
+<li><strong>A leaf converts a fill.</strong> It is a zero-parameter <code>default</code> method on the merge interface, named after the target component, returning <code>ValidatedPrism&lt;SourceComponent, TargetComponent&gt;</code>, source first. An explicit leaf wins even when the types match.</li>
+<li><strong>A <code>@GenerateMapping</code> spec fills a component as <code>parse</code>.</strong> The source component must be the spec's wire and the target component its domain, in this module or a dependency. A merge never runs a spec's <code>build</code>, so an outbound view cannot fill through one yet.</li>
+<li><strong>The return type follows the fills.</strong> A fill that can fail demands <code>Validated&lt;NonEmptyList&lt;FieldError&gt;, Target&gt;</code>, and a merge whose every fill is a copy must declare the plain target (<a href="compiler_errors.html#merge-validated-identity"><code>every fill is an identity copy</code></a>).</li>
+</ul>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <h3 id="nulls-and-guards-in-a-merge"><a class="header" href="#nulls-and-guards-in-a-merge">Nulls and guards in a merge</a></h3>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>A fallible merge, one returning <code>Validated</code>, carries the <a href="basics.html#null-doctrine">same null doctrine as <code>parse</code></a>: a null source-component read is a located, accumulated <code>FieldError</code>, never an exception, while a null source <em>argument</em> stays the caller's <code>NullPointerException</code>. It carries parse's <a href="absence.html#constructor-invariants">constructor guard</a> too: an exception the target's constructor throws becomes an unlabelled <code>FieldError</code> with its message. A plain-return merge is total <em>by its declaration</em>: nulls flow through to the target constructor exactly as <code>build</code> copies them, and whatever that constructor throws propagates. (The return type follows the fills, so the guards cannot be bought by declaration alone: an identity-only merge that wants them should add a normalising <code>ValidatedPrism&lt;X, X&gt;</code> leaf, which makes the merge fallible and brings the <code>Validated</code> return with it.)</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <h3 id="error-envelope-rules"><a class="header" href="#error-envelope-rules">Error envelope rules</a></h3>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<p>For <a href="merge_envelopes.html#generating-error-envelopes-generateerrorenvelope"><code>@GenerateErrorEnvelope</code></a>, three rules apply, each a what/why/fix diagnostic:</p>
+<p>For <a href="merge_envelopes.html#generating-error-envelopes-generateerrorenvelope"><code>@GenerateErrorEnvelope</code></a>, the processor refuses each of these shapes with a what/why/fix diagnostic:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<ul>
-<li>the hierarchy, its variants, and the context record must be non-generic;</li>
-<li>permitted variants must be records; a nested sealed sub-hierarchy is rejected with a flatten-it fix, not recursed into;</li>
-<li>the context record's components must be nullable reference types. The all-absent context holds <code>null</code>, so primitives are rejected at compile time; and because a null-rejecting compact constructor cannot be detected by the processor, keep the context a plain nullable data carrier.</li>
-</ul>
+<div class="table-wrapper"><table><thead><tr><th>Shape</th><th>Why</th></tr></thead><tbody>
+<tr><td>an annotated type that is not a sealed interface</td><td>the companion is generated from the closed set of permitted variants</td></tr>
+<tr><td>a generic hierarchy, variant or context record</td><td>the builder and the all-absent context are derived from concrete types</td></tr>
+<tr><td>a permitted variant that is not a record, or a nested sealed sub-hierarchy</td><td>each factory and <code>editContext</code> arm is derived from a record variant; flatten a sub-hierarchy into its leaf records</td></tr>
+<tr><td>a variant with no <code>ErrorEnvelope</code> component, or more than one</td><td>exactly one carries the envelope</td></tr>
+<tr><td>variants that disagree on the context type</td><td>one companion builds one context type</td></tr>
+<tr><td>a context type that is not a record</td><td>the <code>ContextBuilder</code> is derived from the record's components</td></tr>
+<tr><td>a primitive context component</td><td>the all-absent context holds <code>null</code> in every component</td></tr>
+</tbody></table>
+</div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A compact constructor that rejects <code>null</code> is the one shape the processor cannot see: it compiles, and fails the companion's first use. <a href="merge_envelopes.html#generating-error-envelopes-generateerrorenvelope">Generating error envelopes</a> warns of it.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.10"></div>

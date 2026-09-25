@@ -49897,19 +49897,17 @@ _The forward-only sibling that assembles one target from several sources, and th
 Two more generators complete the family. `@GenerateMerge` covers the assembly a boundary often needs just after parsing: one domain value built from several inputs. `@GenerateErrorEnvelope` covers the other end of the boundary: the typed domain error a fallible mapping produces, without the copy-pasted envelope fields and the untyped `Map<String, Object>` context.
 
 ~~~admonish info title="What You'll Learn"
-- Declaring a merge entirely by a spec method's signature, with truthful return types
-- How merge legs resolve: identity, leaves, or sibling mapping specs, with located failures
-- Replacing repeated `code`/`message`/`timestamp`/`context` components with one `ErrorEnvelope<C>`
-- The generated factories, the fluent `context()` builder, and `editContext` enrichment
+- Predict what a merge fills, and what a merge with a plain return does with a `null`
+- Keep an error envelope's context a record whose every component accepts `null`
 ~~~
 
 ~~~admonish example title="See Example Code"
-**The code on this page is [MergeBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/MergeBook.java) and [OrderErrorBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/OrderErrorBook.java)** - the page includes them directly, so they are compiled and run by the build.
+**The code on this page is [MergeBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/MergeBook.java), [OrderErrorBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/OrderErrorBook.java), [EnvelopeContextBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/mapping/EnvelopeContextBook.java) and [MergeBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/mapping/MergeBookTest.java)** - the page includes them directly, so they are compiled and run by the build.
 ~~~
 
 ## Merging several sources: `@GenerateMerge` {#merging-several-sources-generatemerge}
 
-A merge is declared entirely by a spec method's signature: **several** sources in, one target out. No class literals are needed, and no inverse is generated (a merge is not invertible, so offering one would be a lie the tiers never tell):
+A merge is declared entirely by a method's signature: two or more record sources in, one record target out. It is a MapStruct method with several source parameters, except that each target component fills from the one source that names it, and there is no rename. The processor generates no inverse, since a merge cannot be undone:
 
 ``` java
 record User(String name, String email) {}
@@ -49931,32 +49929,90 @@ interface DashboardAssembly {
             new User("Ada", "ada@corp.example"),
             new Account("GB29-XXXX", 4200),
             new Settings(true));
+    // Dashboard[name=Ada, iban=GB29-XXXX, darkMode=true]
 ```
 
-Each target component fills from the one source with a same-named component: identity when the types match (a same-typed container fills with a [copy](rules.md#same-typed-containers-cross-as-copies)), through a `ValidatedPrism` leaf when they differ, or through a sibling `@GenerateMapping` spec (the `customer` below parses through `CustomerMappingImpl`, and failures locate as dotted paths):
+```mermaid
+flowchart LR
+    accTitle: How a merge fills
+    accDescr: Dashboard's name fills from User's name, its iban from Account's iban, and its darkMode from Settings' darkMode. User's email and Account's balance are not read.
+    subgraph S["the sources"]
+        UN["User.name"]
+        UE["User.email (not read)"]
+        AI["Account.iban"]
+        AB["Account.balance (not read)"]
+        SD["Settings.darkMode"]
+    end
+    subgraph T["Dashboard"]
+        TN["name"]
+        TI["iban"]
+        TD["darkMode"]
+    end
+    UN --> TN
+    AI --> TI
+    SD --> TD
+
+    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef domain fill:#a6d189,stroke:#40a02b,color:#232634
+    class UN,UE,AI,AB,SD wire
+    class TN,TI,TD domain
+```
+
+In words: each of `Dashboard`'s components comes from the one source that names it, and a source component the target lacks is not read.
+
+A fill copies when the types match, and a same-typed container [crosses as a copy](rules.md#same-typed-containers-cross-as-copies). Otherwise it converts through a leaf, a `default` method on the merge interface named after the target component. Or it parses through a `@GenerateMapping` spec whose wire is the source component and whose domain is the target component. Here `customer` parses through `CustomerMappingImpl`, and a failure locates as a dotted path:
 
 ``` java
-record Wrapper(CustomerDto customer) {} // the wire side
+record ProfileForm(CustomerDto customer) {} // the wire side
 
 record ProfileCard(String name, Customer customer) {} // the domain side
 
 @GenerateMerge
 interface ProfileCardAssembly {
-  // ProfileCard.customer fills from Wrapper.customer through CustomerMapping,
-  // so a bad email is: Invalid(NonEmptyList[customer.email: not an email address])
-  Validated<NonEmptyList<FieldError>, ProfileCard> assemble(User user, Wrapper wrapper);
+  // ProfileCard.customer fills from ProfileForm.customer through CustomerMapping, which can fail.
+  Validated<NonEmptyList<FieldError>, ProfileCard> assemble(User user, ProfileForm form);
 }
+
+    Validated<NonEmptyList<FieldError>, ProfileCard> card =
+        ProfileCardAssemblyImpl.INSTANCE.assemble(
+            new User("Ada", "ada@corp.example"), new ProfileForm(new CustomerDto("Bob", "nope")));
+    // Invalid(NonEmptyList[customer.email: not an email address])
 ```
 
-Ambiguity (two sources carrying the component) and unfilled components are compile errors, and the return type must tell the truth: fallible fills demand the `Validated` return; an identity-only merge must declare the plain target.
+The return type must tell the truth. A fill that can fail demands the `Validated` return, and a merge whose every fill is a copy must declare the plain target. [How a merge fills](rules.md#how-a-merge-fills) has the rest, including why an outbound view cannot fill through a spec's `build` yet.
 
-The fallible path carries the [same null doctrine as `parse`](basics.md#null-doctrine) and its constructor guard; a plain-return merge carries neither. [Nulls and guards in a merge](rules.md#nulls-and-guards-in-a-merge) has the details, including how an identity-only merge buys the guards.
+~~~admonish warning title="Not checked for you: a merge with a plain return passes nulls through"
+A merge that returns `Validated` checks what it reads, as `parse` does under the [null rule](basics.md#null-doctrine). A merge with a plain return checks nothing: a `null` flows into the target as it is, and whatever the target's constructor throws propagates. To have a merge check, give a component a leaf that can fail, which makes the merge fallible and its return `Validated` ([Nulls and guards in a merge](rules.md#nulls-and-guards-in-a-merge)).
+~~~
 
 ---
 
 ## Generating error envelopes: `@GenerateErrorEnvelope` {#generating-error-envelopes-generateerrorenvelope}
 
-The third generator in the family targets the other end of the boundary: the typed domain error a fallible mapping produces. A sealed error hierarchy re-declares the same envelope (`code`, `message`, `timestamp`, `context`) on every variant, and `context` is usually an untyped `Map<String, Object>`. `@GenerateErrorEnvelope` supplies the envelope and types the context, so each variant declares only its domain-specific components plus one `ErrorEnvelope<C>` component:
+A sealed error hierarchy tends to re-declare the same envelope on every variant, with an untyped context:
+
+<!-- verify -->
+```java
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+
+sealed interface OrderError {
+  record OutOfStock(
+          List<String> products,
+          String code,
+          String message,
+          Instant timestamp,
+          Map<String, Object> context)
+      implements OrderError {}
+
+  record PaymentDeclined(
+          String card, String code, String message, Instant timestamp, Map<String, Object> context)
+      implements OrderError {}
+}
+```
+
+`@GenerateErrorEnvelope` supplies the envelope and types the context, so each variant declares only its own components, plus one `ErrorEnvelope<C>`. It plays the part Spring's `ProblemDetail` plays for an HTTP response, but on the domain error, and its extra properties are a typed record rather than an untyped map:
 
 ``` java
 // The context is records-as-schema: nullable components, an all-absent default.
@@ -49966,7 +50022,7 @@ record OrderErrorContext(@Nullable OrderId orderId, @Nullable TraceId traceId) {
 sealed interface OrderError {
   ErrorEnvelope<OrderErrorContext> envelope(); // declared once
 
-  // A one-line default so the generated wither reads as an instance method.
+  // A one-line default so the generated editContext reads as an instance method.
   default OrderError editContext(UnaryOperator<OrderErrors.ContextBuilder> edit) {
     return OrderErrors.editContext(this, edit);
   }
@@ -49977,51 +50033,155 @@ sealed interface OrderError {
   record PaymentDeclined(CardRef card, ErrorEnvelope<OrderErrorContext> envelope)
       implements OrderError {}
 }
+
 ```
 
-~~~admonish note title="Two senses of 'context'"
-The *typed context* here is diagnostic metadata attached to an error value: a records-as-schema type such as `OrderErrorContext`. It is unrelated to the [`ErrorContext`](../effect/effect_contexts_error.md) effect type, which is a composable IO-plus-`Either` computation. This page's context is data carried on an error; that one is a way of running effects.
-~~~
+This typed context is data attached to an error value, unrelated to the [`ErrorContext`](../effect/effect_contexts_error.md) effect type.
 
 For `OrderError` the processor generates a companion named `OrderErrors` with three pieces:
 
-- **A factory per variant.** `code` is the UPPER_SNAKE variant name and `message` its humanised form; the timestamp is read from a [`TimeSource`](../monads/io_monad.md): each factory has an overload taking one explicitly, and the convenience overload uses `TimeSource.system()`.
-- **A fluent `context()` builder** over the context record's components.
-- **An `editContext(error, edit)` wither** (a copy-with-changes method) that rebuilds the concrete variant through an exhaustive switch.
+- **A factory per variant.** Its `code` is the UPPER_SNAKE variant name and its `message` the humanised name, the same for every error of that variant. A new error starts with the all-absent context, every component `null`. Each factory has an overload taking a [`TimeSource`](../glossary/data-effects.md#timesource), which the example uses for a fixed clock.
+- **A fluent `context()` builder** over the context record's components, for building a context in a factory of your own.
+- **An `editContext(error, edit)` method** that returns a copy of the error with its context changed, starting from its current values.
 
-Add a one-line `default` so the wither reads as an instance method, and construction plus enrichment matches the shape you would hand-write:
+Add a one-line `default`, as `OrderError` does, and construction plus enrichment reads as you would write it by hand:
 
 ``` java
+    TimeSource clock = TimeSource.fixed(Instant.parse("2026-07-28T12:00:00Z"));
     OrderError error =
-        OrderErrors.outOfStock(products) // typed factory
-            .editContext(
-                ctx -> ctx.orderId(orderId).traceId(traceId)); // typed context, not map.put
+        OrderErrors.outOfStock(clock, products) // typed factory
+            .editContext(ctx -> ctx.orderId(orderId).traceId(traceId)); // typed, not map.put
+    // ErrorEnvelope[code=OUT_OF_STOCK, message=Out of stock, timestamp=2026-07-28T12:00:00Z,
+    //   context=OrderErrorContext[orderId=OrderId[value=ORD-1], traceId=TraceId[value=trace-1]]]
 ```
 
-The context type is discovered **structurally** from the `ErrorEnvelope` component's type argument, never a class literal, and every variant must agree on it. [Error envelope rules](rules.md#error-envelope-rules) lists the three shapes the processor refuses. One thing it cannot check: a compact constructor on the context record that rejects `null` breaks the all-absent context, so keep the context a plain nullable data carrier.
+For a message that varies per error, write a factory of your own that calls `ErrorEnvelope.of(time, code, message, context)`, or change one error's with `envelope().withMessage(...)`. `withContext(D)` is on the envelope too: it replaces the context, perhaps with another type, so the variant must be rebuilt around the new envelope. `editContext` is on the error, and enriches the context it has.
 
-~~~admonish note title="Fine-grained or coarse variants?"
-The design choice is about the *hierarchy*, not the annotation.
+The processor finds the context type from the `ErrorEnvelope` component's type argument, and refuses variants that disagree on it. [Error envelope rules](rules.md#error-envelope-rules) lists the shapes it refuses.
 
-- **Fine-grained** (one variant per failure mode, each with its own typed fields, as in `MarketError`'s `FeedDisconnected` / `RiskLimitBreached` / `StaleData`): the generated `MarketErrors` factories carry everything, and no hand-written construction remains.
-- **Coarse** (a variant grouping several codes, as in `OrderError`'s `CustomerError` covering `CUSTOMER_NOT_FOUND` and `CUSTOMER_SUSPENDED`): suits a boundary whose downstream `switch` presents failures by category. One generated factory per variant derives only one code, so these variants keep a hand-written factory per code, each calling the canonical constructor with `ErrorEnvelope.of(...)` and the generated builder.
+~~~admonish warning title="Not checked for you: every context component must accept null"
+The companion builds an all-absent context on its first use, with every component `null`. A context whose compact constructor rejects `null` compiles, then fails that first use with an `ExceptionInInitializerError`, and every use after with `NoClassDefFoundError`, until the JVM restarts:
 
-Either way the repeated envelope and the untyped `Map<String, Object>` are gone. Reach for fine-grained variants when each failure mode is genuinely distinct, and group them when a boundary treats a whole category uniformly.
+``` java
+record RefundErrorContext(TraceId traceId) {
+  RefundErrorContext {
+    Objects.requireNonNull(traceId, "traceId");
+  }
+}
+
+@GenerateErrorEnvelope
+sealed interface RefundError {
+  ErrorEnvelope<RefundErrorContext> envelope();
+
+  record RefundWindowClosed(String orderId, ErrorEnvelope<RefundErrorContext> envelope)
+      implements RefundError {}
+}
+
+```
+
+Let every component accept `null`, and check a value in a factory of your own that takes it.
 ~~~
 
-Two verbs keep the two operations distinct: `ErrorEnvelope.withContext(D)` is the record wither that **replaces** the context (and may change its type), while the generated `editContext(error, edit)` **transforms** the existing context through the builder, seeded from the current value. Reach for `withContext` to set a context, `editContext` to enrich one.
+~~~admonish tip title="You can ship now"
+You can now assemble a domain value from several sources with a return type that tells the truth, and give a sealed error hierarchy one typed envelope. The rest of this page, [fine-grained or coarse variants](#fine-grained-or-coarse-variants), is for when you need it.
+~~~
+
+~~~admonish question title="Checkpoint: what does a plain-return merge do with a null?" id="check-merge-null"
+`DashboardAssembly`, from the start of the page, returns the plain `Dashboard`. What does it return for the same `Account` and `Settings` and a `User` whose name is `null`, `new User(null, "ada@corp.example")`?
+
+1. It throws a `NullPointerException`
+2. `Invalid(NonEmptyList[name: must not be null])`
+3. `Dashboard[name=null, iban=GB29-XXXX, darkMode=true]`
+4. Nothing: the processor refuses a merge that can read a `null`
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-merge-null-answer"
+**3.** A merge with a plain return checks nothing, so the `null` flows into the `Dashboard` as it is, with no error:
+
+``` java
+    Dashboard dashboard =
+        DashboardAssemblyImpl.INSTANCE.assemble(
+            new User(null, "ada@corp.example"), new Account("GB29-XXXX", 4200), new Settings(true));
+
+    assertThat(dashboard).isEqualTo(new Dashboard(null, "GB29-XXXX", true)); // no check, no error
+```
+
+A leaf that can fail on `name` would make the merge fallible, its return `Validated`, and the `null` a located `must not be null`.
+
+Where this lives: [Merging several sources](#merging-several-sources-generatemerge).
+~~~
+
+~~~admonish question title="Checkpoint: does this context break its companion?" id="check-envelope-context"
+A chargeback error's context checks its trace id too:
+
+``` java
+record ChargebackErrorContext(@Nullable TraceId traceId) {
+  ChargebackErrorContext {
+    if (traceId != null && traceId.value().isBlank()) {
+      throw new IllegalArgumentException("traceId is blank");
+    }
+  }
+}
+
+@GenerateErrorEnvelope
+sealed interface ChargebackError {
+  ErrorEnvelope<ChargebackErrorContext> envelope();
+
+  record ChargebackOpened(String orderId, ErrorEnvelope<ChargebackErrorContext> envelope)
+      implements ChargebackError {}
+}
+
+```
+
+What happens on the first call to `ChargebackErrors.chargebackOpened("ORD-1")`?
+
+1. `ExceptionInInitializerError`, as for `RefundErrors`
+2. It returns an error whose context holds a `null` trace id
+3. The processor refuses the compact constructor at compile time
+4. It returns an error, and a later `editContext` call throws
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-envelope-context-answer"
+**2.** This constructor rejects only a present, blank trace id, so it accepts the all-absent context the companion builds on first use. `RefundErrorContext` rejects `null` itself, which is what breaks its companion:
+
+``` java
+    assertThat(ChargebackErrors.chargebackOpened("ORD-1").envelope().context())
+        .isEqualTo(new ChargebackErrorContext(null)); // accepts the all-absent context
+
+    assertThatThrownBy(() -> RefundErrors.refundWindowClosed("ORD-1")) // the first use
+        .isInstanceOf(ExceptionInInitializerError.class)
+        .cause()
+        .hasMessage("traceId");
+    assertThatThrownBy(() -> RefundErrors.refundWindowClosed("ORD-2")) // and every use after
+        .isInstanceOf(NoClassDefFoundError.class);
+```
+
+Where this lives: [Generating error envelopes](#generating-error-envelopes-generateerrorenvelope).
+~~~
+
+---
+
+## Fine-grained or coarse variants? {#fine-grained-or-coarse-variants}
+
+The design choice is about the *hierarchy*, not the annotation:
+
+| Shape | Example | How its errors are built |
+|---|---|---|
+| **Fine-grained**: one variant per failure mode, each with its own typed fields | the market example's [`MarketError`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/market/error/MarketError.java), used in [Building the market pipeline](../examples/market_building.md) | the generated factory, wherever the code and message are the variant's name; `EnrichmentFailed`, whose message is the lookup detail, keeps a factory of its own |
+| **Coarse**: one variant for a category of codes | the [Order Workflow example](../examples/examples_order.md)'s [`OrderError`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/error/OrderError.java) (not the one on this page), whose `CustomerError` covers `CUSTOMER_NOT_FOUND` and `CUSTOMER_SUSPENDED` | a factory of your own per code, calling `ErrorEnvelope.of(...)` with the generated `context()` builder; the generated `customerError(...)` stays public, with the code `CUSTOMER_ERROR` |
+
+Either way, the repeated envelope and the untyped `Map<String, Object>` are gone. Reach for fine-grained variants when each failure mode is distinct, and group them when a boundary treats a whole category the same way, as a downstream `switch` presenting failures by category does. Give a factory of your own a `TimeSource` parameter, so tests can fix the clock.
 
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **A merge is a method signature**: sources in, target out, each component filled from exactly one source, ambiguity and gaps diagnosed
-* **Return types tell the truth**: fallible fills force the `Validated` return; identity-only merges declare the plain target
-* **`@GenerateErrorEnvelope` retires the copy-pasted envelope**: one `ErrorEnvelope<C>` component, generated factories, a typed context instead of `Map<String, Object>`
-* **`withContext` replaces, `editContext` enriches**
+* **A merge is a method signature**: each target component fills from the one source that names it, and the return type follows the fills
+* **A merge with a plain return checks nothing**: a `null` flows through, so a merge that must check needs a leaf that can fail
+* **`@GenerateErrorEnvelope` retires the copy-pasted envelope**: one `ErrorEnvelope<C>` component, generated factories, and a typed context record whose every component accepts `null`
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Accumulating Assembly](../monads/validated_assembly.md): The `fields()` ladders behind fallible merges
+- [Accumulating Assembly](../monads/validated_assembly.md): The `fields()` ladders behind a fallible merge
 - [Testing With hkj-test](../tooling/test_assertions.md): `assertThatErrorEnvelope` for envelope assertions
 - [Record Mapping Basics](basics.md): The `parse` whose errors these envelopes type
 ~~~
@@ -50570,6 +50730,8 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a generic sealed hierarchy be mapped?](#generic-boundaries) | No, not even at a concrete instantiation: model it as a record. | not supported yet |
 | [What supplies an element-mapped spec's prisms where it nests?](#element-mapped-nesting) | A leaf on the using spec, or another registered mapping. | by design |
 | **Merge and error envelopes** | | |
+| [Can a merge rename a component?](#how-a-merge-fills) | No: a target name must match exactly one source component. | not supported yet |
+| [Can a merge fill a component through a spec's `build`?](#how-a-merge-fills) | No: a merge runs a spec's `parse` only. | not supported yet |
 | [Can an error envelope hierarchy be generic?](#error-envelope-rules) | No: the hierarchy, its variants and the context are non-generic. | by design |
 
 ## Find your symptom {#find-your-symptom}
@@ -50594,7 +50756,7 @@ Nothing refuses these at compile time. Each is a runtime surprise, linked to the
 | [`asIso().reverseGet` threw on a request body](tiers.md) | `reverseGet` is unguarded: a freshly bound wire goes through `parse`. |
 | [A constructor bug reached the client as a message](absence.md#constructor-invariants) | Any `RuntimeException` counts: keep the constructor to checks on its arguments. |
 | [A timestamp came back with fewer fractional digits](codecs.md#canonical-forms-only) | The formatter pattern fixes the precision, so `build` truncates finer values. |
-| [The first call into a generated error companion throws `ExceptionInInitializerError`](merge_envelopes.md#generating-error-envelopes-generateerrorenvelope) | Its all-absent context is built at class initialisation, and the context record's constructor rejects `null`: keep it a plain nullable carrier. |
+| [A generated error companion throws `ExceptionInInitializerError`, then `NoClassDefFoundError`](merge_envelopes.md#generating-error-envelopes-generateerrorenvelope) | Its all-absent context is built on first use, and the context record's constructor rejects `null`: let every component accept `null`. |
 
 ---
 
@@ -51007,17 +51169,35 @@ A leaf's element types go on the spec's own type parameters, and a rename declar
 
 ## Merge and error envelopes {#merge-and-error-envelopes}
 
+### How a merge fills {#how-a-merge-fills}
+
+**A merge is one abstract method on an `@GenerateMerge` interface: two or more record sources in, one record target out.** The processor refuses fewer than two sources, a second abstract method, and a generic merge.
+
+- **Each target component fills from the one source with a component of the same name.** A merge matches by name only and has no rename, so the processor refuses a target component no source names ([`is not filled by any source`](compiler_errors.md#merge-unfilled)), and one two sources carry ([`both carry it`](compiler_errors.md#merge-component-ambiguous)). A source component the target lacks fills nothing.
+- **A fill copies when the types match**, a same-typed container as a [copy](#same-typed-containers-cross-as-copies).
+- **A leaf converts a fill.** It is a zero-parameter `default` method on the merge interface, named after the target component, returning `ValidatedPrism<SourceComponent, TargetComponent>`, source first. An explicit leaf wins even when the types match.
+- **A `@GenerateMapping` spec fills a component as `parse`.** The source component must be the spec's wire and the target component its domain, in this module or a dependency. A merge never runs a spec's `build`, so an outbound view cannot fill through one yet.
+- **The return type follows the fills.** A fill that can fail demands `Validated<NonEmptyList<FieldError>, Target>`, and a merge whose every fill is a copy must declare the plain target ([`every fill is an identity copy`](compiler_errors.md#merge-validated-identity)).
+
 ### Nulls and guards in a merge {#nulls-and-guards-in-a-merge}
 
 A fallible merge, one returning `Validated`, carries the [same null doctrine as `parse`](basics.md#null-doctrine): a null source-component read is a located, accumulated `FieldError`, never an exception, while a null source *argument* stays the caller's `NullPointerException`. It carries parse's [constructor guard](absence.md#constructor-invariants) too: an exception the target's constructor throws becomes an unlabelled `FieldError` with its message. A plain-return merge is total *by its declaration*: nulls flow through to the target constructor exactly as `build` copies them, and whatever that constructor throws propagates. (The return type follows the fills, so the guards cannot be bought by declaration alone: an identity-only merge that wants them should add a normalising `ValidatedPrism<X, X>` leaf, which makes the merge fallible and brings the `Validated` return with it.)
 
 ### Error envelope rules {#error-envelope-rules}
 
-For [`@GenerateErrorEnvelope`](merge_envelopes.md#generating-error-envelopes-generateerrorenvelope), three rules apply, each a what/why/fix diagnostic:
+For [`@GenerateErrorEnvelope`](merge_envelopes.md#generating-error-envelopes-generateerrorenvelope), the processor refuses each of these shapes with a what/why/fix diagnostic:
 
-- the hierarchy, its variants, and the context record must be non-generic;
-- permitted variants must be records; a nested sealed sub-hierarchy is rejected with a flatten-it fix, not recursed into;
-- the context record's components must be nullable reference types. The all-absent context holds `null`, so primitives are rejected at compile time; and because a null-rejecting compact constructor cannot be detected by the processor, keep the context a plain nullable data carrier.
+| Shape | Why |
+|---|---|
+| an annotated type that is not a sealed interface | the companion is generated from the closed set of permitted variants |
+| a generic hierarchy, variant or context record | the builder and the all-absent context are derived from concrete types |
+| a permitted variant that is not a record, or a nested sealed sub-hierarchy | each factory and `editContext` arm is derived from a record variant; flatten a sub-hierarchy into its leaf records |
+| a variant with no `ErrorEnvelope` component, or more than one | exactly one carries the envelope |
+| variants that disagree on the context type | one companion builds one context type |
+| a context type that is not a record | the `ContextBuilder` is derived from the record's components |
+| a primitive context component | the all-absent context holds `null` in every component |
+
+A compact constructor that rejects `null` is the one shape the processor cannot see: it compiles, and fails the companion's first use. [Generating error envelopes](merge_envelopes.md#generating-error-envelopes-generateerrorenvelope) warns of it.
 
 ---
 
@@ -51150,6 +51330,8 @@ When the processor cannot write correct code for a spec, it refuses at compile t
 |---|---|
 | [`both carry it`](#merge-component-ambiguous) | Two merge sources carry one component |
 | [`uses fallible fills but declares a plain`](#merge-plain-return) | A fallible merge declares a plain return |
+| [`declares a Validated return but every fill is an identity copy`](#merge-validated-identity) | A merge of copies declares a Validated return |
+| [`is not filled by any source`](#merge-unfilled) | No merge source names a target component |
 | [`is a primitive`](#envelope-primitive-context) | An envelope context component is a primitive |
 | [`is a class, not a record`](#envelope-variant-not-a-record) | An envelope variant is a class |
 | [`which this companion does not support`](#envelope-generic) | An envelope hierarchy is generic |
@@ -52941,7 +53123,7 @@ Rename the component on all but one source (a typed disambiguation mechanism is 
 follow-on).
 ```
 
-The rule: [Merging several sources](merge_envelopes.md#merging-several-sources-generatemerge).
+The rule: [How a merge fills](rules.md#how-a-merge-fills).
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
 <!-- verify:rejects "both carry it" -->
@@ -52971,7 +53153,7 @@ types: a merge that can fail must say so in its signature. Declare
 'Validated<NonEmptyList<FieldError>, Summary> merge(...)'.
 ```
 
-The rule: [Merging several sources](merge_envelopes.md#merging-several-sources-generatemerge).
+The rule: [How a merge fills](rules.md#how-a-merge-fills).
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
 <!-- verify:rejects "uses fallible fills but declares a plain" -->
@@ -52989,6 +53171,66 @@ interface SummaryMerge {
   default ValidatedPrism<String, EmailAddress> email() {
     return EmailCodecs.EMAIL;
   }
+}
+```
+~~~
+
+### `@GenerateMerge: 'x' declares a Validated return but every fill is an identity copy` {#merge-validated-identity}
+
+Every fill copies its source, so the merge cannot fail, but its signature says it can.
+
+**Fix.** Declare the plain target return, or give a component a leaf that can fail, which makes the `Validated` return true.
+
+```
+@GenerateMerge: 'assemble' declares a Validated return but every fill is an identity copy.
+Truthful types: a merge that cannot fail must not claim it can. Declare the plain 'Header'
+return type.
+```
+
+The rule: [How a merge fills](rules.md#how-a-merge-fills).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "declares a Validated return but every fill is an identity copy" -->
+```java
+record User(String name, String email) {}
+
+record Settings(boolean darkMode) {}
+
+record Header(String name, boolean darkMode) {}
+
+@GenerateMerge
+interface HeaderAssembly {
+  Validated<NonEmptyList<FieldError>, Header> assemble(User user, Settings settings);
+}
+```
+~~~
+
+### `@GenerateMerge: target component 'x' is not filled by any source` {#merge-unfilled}
+
+No source has a component of that name, and a merge matches by name only: it has no rename.
+
+**Fix.** Rename a source component to match, or add a source that carries it.
+
+```
+@GenerateMerge: target component 'OrderView.customerName' is not filled by any source. Every
+target component needs exactly one same-named source component. Add 'customerName' to one of the
+sources, or drop it from the target.
+```
+
+The rule: [How a merge fills](rules.md#how-a-merge-fills).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "is not filled by any source" -->
+```java
+record Order(String orderId) {}
+
+record Customer(String name) {}
+
+record OrderView(String orderId, String customerName) {}
+
+@GenerateMerge
+interface OrderViewAssembly {
+  OrderView assemble(Order order, Customer customer);
 }
 ```
 ~~~
@@ -96992,7 +97234,7 @@ List<Integer> built = snoc.build(Pair.of(List.of(1, 2, 3), 4));
 
 ---
 
-## TimeSource
+## TimeSource {#timesource}
 
 **Definition:** `java.time.Clock` lifted into the effect world, so reading the time is a lazy, composable effect rather than a scattered `Instant.now()` that makes every timestamp untestable. `TimeSource.now()` returns an `IO<Instant>` (with `nowAsync()` for the deferred variant); nothing is read until the effect runs, and each run reads afresh. It is deliberately named `TimeSource`, not `Clock`, so it never clashes with `java.time.Clock`.
 
