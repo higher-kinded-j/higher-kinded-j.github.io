@@ -356,7 +356,8 @@ record EmailAddress(String value) {}
 
 record Customer(String name, EmailAddress email) {}
 
-record LineItem(String sku, int quantity, BigDecimal price) {}
+// Integer, not int: a leaf converts the quantity, and a leaf cannot name a primitive.
+record LineItem(String sku, Integer quantity, BigDecimal price) {}
 
 record Order(
     UUID id,
@@ -370,7 +371,7 @@ record Order(
 <p>The wire is what clients actually send: strings, a rename (<code>fullName</code>), and one field the domain does not store because it can be computed:</p>
 <pre><code class="language-java">record CustomerDto(String fullName, String email) {}
 
-record LineItemDto(String sku, int quantity, String price) {}
+record LineItemDto(String sku, String quantity, String price) {}
 
 record OrderDto(
     String id,
@@ -382,6 +383,8 @@ record OrderDto(
     String displayTotal) {} // no domain counterpart: derived on build, ignored on parse
 
 </code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="solo" data-since="v0.4.10"></div>
+<p>Every value a leaf converts arrives as a <code>String</code>, the quantity included, so <code>parse</code> can locate a bad one. A client can still send the quantity as a JSON number, which Jackson binds as its digits. <a href="codecs.html#standard-codecs">Standard codecs</a> weighs this against an <code>Integer</code> wire field, where a malformed quantity fails inside Jackson and <code>2.5</code> quietly becomes <code>2</code>.</p>
 <p><strong>The task:</strong> accept an <code>OrderDto</code>, return a trusted <code>Order</code>, and when the request is bad, tell the client <em>everything</em> that is wrong with it, in one round trip, with every problem located.</p>
 <hr />
 <h2 id="the-imperative-approach"><a class="header" href="#the-imperative-approach">The Imperative Approach</a></h2>
@@ -394,7 +397,9 @@ record OrderDto(
     }
     List&lt;LineItem&gt; lines = new ArrayList&lt;&gt;();
     for (LineItemDto line : dto.lines()) {
-      lines.add(new LineItem(line.sku(), line.quantity(), new BigDecimal(line.price())));
+      lines.add(
+          new LineItem(
+              line.sku(), Integer.parseInt(line.quantity()), new BigDecimal(line.price())));
     }
     return new Order(
         UUID.fromString(dto.id()), // throws its own exception
@@ -406,7 +411,8 @@ record OrderDto(
   }
 
 </code></pre>
-<p>Count the ways the five-defect request below defeats it. It reports <strong>one</strong> problem (whichever throws first); the message carries <strong>no field path</strong>; seven call sites throw four different exception types (<code>NullPointerException</code>, <code>IllegalArgumentException</code>, <code>DateTimeParseException</code>, <code>NumberFormatException</code>), needing three unrelated catch clauses; and when <code>Order</code> grows a component next quarter, nothing warns that this method no longer covers it.</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJyZXF1ZXN0XSgjdGhlLXBheW9mZiIsICJUaGUiLCAibWFwcGVyIiwgImFuZCIsICJpdHMiLCAiRWlnaHQiLCAiU2luY2UiLCAiYSIsICJOdW1iZXJGb3JtYXRFeGNlcHRpb24iLCAiaXMiLCAiYW4iLCAiSWxsZWdhbEFyZ3VtZW50RXhjZXB0aW9uIiwgImNvdmVyIiwgInRoZW0iLCAiQW5kIl0=" data-since="v0.4.10"></div>
+<p>Count the ways <a href="#the-payoff">the five-defect request</a> defeats it. The mapper reports <strong>one</strong> problem, whichever throws first, and its message carries <strong>no field path</strong>. Eight call sites throw four different exception types (<code>NullPointerException</code>, <code>IllegalArgumentException</code>, <code>DateTimeParseException</code>, <code>NumberFormatException</code>). Since a <code>NumberFormatException</code> is an <code>IllegalArgumentException</code>, three unrelated catch clauses cover them. And when <code>Order</code> grows a component next quarter, nothing warns that this method no longer covers it.</p>
 <hr />
 <h2 id="the-hkj-approach"><a class="header" href="#the-hkj-approach">The HKJ Approach</a></h2>
 <p>One hand-written leaf for the email (everything else is stock), shared through a vocabulary interface:</p>
@@ -440,6 +446,10 @@ interface CustomerMapping extends OrderVocabulary, MappingSpec&lt;Customer, Cust
 
 @GenerateMapping
 interface LineItemMapping extends MappingSpec&lt;LineItem, LineItemDto&gt; {
+  default ValidatedPrism&lt;String, Integer&gt; quantity() {
+    return intFromString();
+  }
+
   default ValidatedPrism&lt;String, BigDecimal&gt; price() {
     return bigDecimal();
   }
@@ -476,7 +486,8 @@ interface OrderMapping extends MappingSpec&lt;Order, OrderDto&gt; {
 }
 
 </code></pre>
-<p>That is the entire declaration: no mapper class, no Bean Validation annotations, no exception handler. Honesty note: it is not <em>shorter</em> than the hand-written mapper (three small interfaces, a vocabulary, and one custom leaf against fourteen lines); what changed is the behaviour per line, because these lines also carry the validation, the locations, the reverse direction, and the laws. <code>build</code> is total (the derived <code>displayTotal</code> is computed, not copied):</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJJdCIsICJhIiwgIm5pbmV0ZWVuLWxpbmUiLCAibWV0aG9kIiwgIldoYXQiLCAid2hhdCIsICJlYWNoIiwgImRvZXMiLCAic2luY2UiLCAiYW5kIl0=" data-since="v0.4.10"></div>
+<p>That is the entire declaration: no mapper class, no Bean Validation annotations, no exception handler. It is not <em>shorter</em> than the hand-written mapper: three small interfaces, a vocabulary, and one custom leaf, against a nineteen-line method. What changed is what each line does, since these lines also carry the validation, the locations, the reverse direction, and the laws. <code>build</code> is total, and the derived <code>displayTotal</code> is computed, not copied:</p>
 <pre><code class="language-java">    Order order =
         new Order(
             UUID.fromString("123e4567-e89b-12d3-a456-426614174000"),
@@ -493,8 +504,9 @@ interface OrderMapping extends MappingSpec&lt;Order, OrderDto&gt; {
 </code></pre>
 <hr />
 <h2 id="the-payoff"><a class="header" href="#the-payoff">The Payoff</a></h2>
-<p>Now the five-defect request. A bad id, a bad email inside the nested customer, a bad price on the <em>second</em> line item, a non-canonical timestamp, and an unknown status:</p>
-<div class="hkj-ct-mark" data-kind="new" data-run="start" data-since="v0.4.10"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJ3aXRoIiwgInByZWRpY3Rpb24iLCAiZmlyc3QiXQ==" data-since="v0.4.10"></div>
+<p>Now the five-defect request, with a prediction first.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <div id="check-capstone-count" class="admonition admonish-question" role="note" aria-labelledby="check-capstone-count-title">
 <div class="admonition-title">
 <div id="check-capstone-count-title">
@@ -503,7 +515,7 @@ interface OrderMapping extends MappingSpec&lt;Order, OrderDto&gt; {
 <a class="admonition-anchor-link" href="#check-capstone-count"></a>
 </div>
 <div>
-<p>The request below has a bad id, a bad email inside the nested customer, a bad price on the second line item, a timestamp in a format the codec does not speak, an unknown status, and <code>null</code> for <code>displayTotal</code>.</p>
+<p>The <code>hostile</code> request has a bad id, a bad email inside the nested customer, and a bad price on the second line item. Its timestamp is in a format the codec does not speak, its status is unknown, and its <code>displayTotal</code> is <code>null</code>.</p>
 <p>Before you read the result: how many located errors does <code>parse</code> report, and is the <code>null</code> one of them?</p>
 </div>
 </div>
@@ -516,15 +528,15 @@ interface OrderMapping extends MappingSpec&lt;Order, OrderDto&gt; {
 <a class="admonition-anchor-link" href="#check-capstone-count-answer"></a>
 </summary>
 <div>
-<p><strong>Five, and the <code>null</code> is not among them.</strong> <code>displayTotal</code> is a derived field: <code>build</code> computes it from the whole domain value and <code>parse</code> never reads it, so the null guard, which covers every value <code>parse</code> does read, has nothing to guard here. The test below asserts the five, in order.</p>
-<p>Where this lives: <a href="basics.html#derived-wire-fields">Derived wire fields</a>, and The Proof at the foot of this page.</p>
+<p><strong>Five, and the <code>null</code> is not among them.</strong> <code>displayTotal</code> is a derived field: <code>build</code> computes it from the whole domain value and <code>parse</code> never reads it, so the null guard, which covers every value <code>parse</code> does read, has nothing to guard here. <a href="#the-proof">The Proof</a> asserts the five, in order.</p>
+<p>Where this lives: <a href="basics.html#derived-wire-fields">Derived wire fields</a>.</p>
 </div>
 </details>
 <pre><code class="language-java">    OrderDto hostile =
         new OrderDto(
             "NOPE", // not a UUID
             new CustomerDto("Ada Lovelace", "not-an-email"), // fails the email leaf
-            List.of(new LineItemDto("SKU-1", 2, "9.99"), new LineItemDto("SKU-2", 1, "1E+3")),
+            List.of(new LineItemDto("SKU-1", "2", "9.99"), new LineItemDto("SKU-2", "1", "1E+3")),
             "28/07/2026", // not an ISO-8601 instant
             "GBP",
             "DISPATCHED", // not a permitted OrderStatus
@@ -551,16 +563,18 @@ interface OrderMapping extends MappingSpec&lt;Order, OrderDto&gt; {
   "errorCount": 5
 }
 </code></pre>
-<p>The client fixes all five and resubmits once, where the hand-written mapper would have surfaced them one 400 at a time. A Bean Validation stack accumulates better than that, but its errors describe the <em>DTO</em>; these describe the domain's components; they come from the same declarations that produce the <code>Order</code>, and the parse that reported them is the only way in.</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJUaGUiLCAiZml2ZSIsICJoZXJlIiwgImJ5IiwgInRoZWlyIiwgImRvbWFpbiIsICJuYW1lcyIsICJldmVuIiwgIndoZXJlIiwgInRoZSIsICJ3aXJlIiwgInJlbmFtZXMiLCAib25lIiwgIlJlbmFtZXNdKGJhc2ljcy5tZCNyZW5hbWVzLW1hcGZpZWxkIiwgIlRoZXkiLCAidGhhdCIsICJmcm9tIiwgInRoZSIsICJ3aXJlIiwgImludG8iLCAidGhlIiwgImRvbWFpbiJd" data-since="v0.4.10"></div>
+<p>The client fixes all five and resubmits once, where the hand-written mapper would have surfaced them one 400 at a time. A Bean Validation stack accumulates better than that, but its errors describe the <em>DTO</em>. The five here describe the domain's components, by their domain names even where the wire renames one (<a href="basics.html#renames-mapfield">Renames</a>). They come from the same declarations that produce the <code>Order</code>, and that parse is the only way from the wire into the domain.</p>
 <h3 id="what-happened-error-by-error"><a class="header" href="#what-happened-error-by-error">What happened, error by error</a></h3>
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJzcGVjXShzdHJ1Y3R1cmUubWQjbmVzdGluZy1jb250YWluZXJzLWFuZC1yZWN1cnNpb24iLCAid2hpY2giLCAiYWNjZXB0cyIsICJjYW5vbmljYWwiLCAiZm9ybXMiLCAib25seV0oY29kZWNzLm1kI2Nhbm9uaWNhbC1mb3Jtcy1vbmx5IiwgImluIiwgInRoZSIsICJzcGVjIiwgImxpZnRzXShzdHJ1Y3R1cmUubWQjbmVzdGluZy1jb250YWluZXJzLWFuZC1yZWN1cnNpb24iLCAiaW5zdGFudCgpYF0oY29kZWNzLm1kI2Nhbm9uaWNhbC1mb3Jtcy1vbmx5IiwgImVudW1CeU5hbWUoLi4uKWBdKGNvZGVjcy5tZCNzdGFuZGFyZC1jb2RlY3MiXQ==" data-since="v0.4.10"></div>
 <div class="table-wrapper"><table><thead><tr><th>Located error</th><th>Machinery that produced it</th></tr></thead><tbody>
 <tr><td><code>id: not a UUID (...)</code></td><td>the stock <a href="codecs.html#standard-codecs"><code>uuid()</code> codec</a></td></tr>
-<tr><td><code>customer.email: not an email address</code></td><td>the hand-written leaf, located <strong>through the nested spec</strong></td></tr>
-<tr><td><code>lines.1.price: not a number in plain notation (...)</code></td><td><code>bigDecimal()</code>, lifted over the list, located <strong>by element index</strong></td></tr>
-<tr><td><code>placedAt: not an ISO-8601 instant (...)</code></td><td><code>instant()</code>, rejecting a format it does not speak</td></tr>
-<tr><td><code>status: unknown OrderStatus (...)</code></td><td><code>enumByName</code>, naming the permitted constants</td></tr>
+<tr><td><code>customer.email: not an email address</code></td><td>the hand-written leaf, located <strong>through the <a href="structure.html#nesting-containers-and-recursion">nested spec</a></strong></td></tr>
+<tr><td><code>lines.1.price: not a number in plain notation (...)</code></td><td><code>bigDecimal()</code>, which accepts <a href="codecs.html#canonical-forms-only">canonical forms only</a>, in the spec the list <a href="structure.html#nesting-containers-and-recursion">lifts</a>, located <strong>by element index</strong></td></tr>
+<tr><td><code>placedAt: not an ISO-8601 instant (...)</code></td><td><a href="codecs.html#canonical-forms-only"><code>instant()</code></a>, rejecting a format it does not speak</td></tr>
+<tr><td><code>status: unknown OrderStatus (...)</code></td><td><a href="codecs.html#standard-codecs"><code>enumByName(...)</code></a>, naming the permitted constants</td></tr>
 </tbody></table>
-</div><div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJFYWNoIiwgImVycm9yIiwgImNhbWUiLCAiZnJvbSIsICJhIiwgInBhZ2UiLCAiYmVmb3JlIiwgInRoaXMiLCAib25lIiwgIm5vIiwgImVycm9yLWhhbmRsaW5nIiwgImNvZGUiLCAidG8iLCAicHJvZHVjZSIsICJhbnkiLCAib2YiLCAidGhlbSJd" data-since="v0.4.10"></div>
+</div><div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJFYWNoIiwgImVycm9yIiwgImNhbWUiLCAiZnJvbSIsICJhIiwgInBhZ2UiLCAiYmVmb3JlIiwgInRoaXMiLCAib25lIiwgIm5vIiwgImVycm9yLWhhbmRsaW5nIiwgImNvZGUiLCAidG8iLCAicHJvZHVjZSIsICJhbnkiLCAib2YiLCAidGhlbSJd" data-since="v0.4.10"></div>
 <p>Each error came from a page before this one, and no error-handling code was written to produce any of them.</p>
 <hr />
 <h2 id="the-encores"><a class="header" href="#the-encores">The Encores</a></h2>
@@ -619,12 +633,13 @@ interface ReceiptAssembly {
 <p><strong>A typed error envelope.</strong> When the service behind a boundary like this fails, its sealed error hierarchy tends to re-declare <code>code</code>/<code>message</code>/<code>timestamp</code>/<code>context</code> on every variant, with <code>context</code> an untyped <code>Map&lt;String, Object&gt;</code>. <a href="merge_envelopes.html#generating-error-envelopes-generateerrorenvelope"><code>@GenerateErrorEnvelope</code></a> generates that envelope and types the context; its running example is an order-domain <code>OrderError</code>, worked in full on the <a href="merge_envelopes.html">Merge and Error Envelopes</a> page.</p>
 <hr />
 <h2 id="the-proof"><a class="header" href="#the-proof">The Proof</a></h2>
-<p>"Lawful" is a passing test, not an adjective. First, the payoff above is asserted message for message, in order: the five-defect wire must produce exactly those five located errors:</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJhIiwgInRlc3QiLCAiYXNzZXJ0cyIsICJwYXlvZmZdKCN0aGUtcGF5b2ZmIiwgIlRoZSJd" data-since="v0.4.10"></div>
+<p>"Lawful" is a passing test, not an adjective. First, a test asserts <a href="#the-payoff">the payoff</a> message for message, in order. The five-defect wire must produce exactly those five located errors:</p>
 <pre><code class="language-java">    OrderDto hostile =
         new OrderDto(
             "NOPE",
             new CustomerDto("Ada Lovelace", "not-an-email"),
-            List.of(new LineItemDto("SKU-1", 2, "9.99"), new LineItemDto("SKU-2", 1, "1E+3")),
+            List.of(new LineItemDto("SKU-1", "2", "9.99"), new LineItemDto("SKU-2", "1", "1E+3")),
             "28/07/2026",
             "GBP",
             "DISPATCHED",
@@ -650,7 +665,7 @@ interface ReceiptAssembly {
         new OrderDto(
             "123e4567-e89b-12d3-a456-426614174000",
             new CustomerDto("Ada Lovelace", "ada@corp.example"),
-            List.of(new LineItemDto("SKU-1", 2, "9.99")),
+            List.of(new LineItemDto("SKU-1", "2", "9.99")),
             "2026-07-28T12:34:56Z",
             "GBP",
             "PAID",
