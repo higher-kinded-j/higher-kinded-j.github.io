@@ -45534,7 +45534,7 @@ The annotation processor adds one code-generation pass to compilation. On a code
 
 Generated sources land under `build/generated/sources/annotationProcessor/java/main` (Gradle) or `target/generated-sources/annotations` (Maven). Most IDEs index these automatically after the first build. If autocomplete cannot see `XLenses` or `XFocus` types, a rebuild and project refresh resolves it.
 
-Incremental compilation is supported, conservatively: every processor that generates code is registered with Gradle as *aggregating*, so a change to any annotated type re-runs generation across the source set rather than regenerating one companion class. That is deliberate, an isolating claim that turned out wrong would produce silently stale output, and consuming source sets stay incremental regardless. The one processor that generates nothing is registered as isolating: it only marks hkj's annotations as handled, so that javac's `-Xlint:processing` does not report them (see below).
+Incremental compilation is supported, conservatively: every processor that generates code is registered with Gradle as *aggregating*, so a change to any annotated type re-runs generation across the source set rather than regenerating one companion class. That is deliberate, an isolating claim that turned out wrong would produce silently stale output, and consuming source sets stay incremental regardless. The one processor that generates nothing is registered as isolating: it marks hkj's annotations as handled, so that javac's `-Xlint:processing` does not report them (see below).
 
 Every class file the processors write carries `@Generated`: the companion class, the navigator and stage classes nested inside it, and the classes that implement each traversal and fold. The marker has class retention, which is what JaCoCo's generated-code filter reads, so a coverage floor needs no exclude patterns for `XLenses`, `XFocus`, `XTraversals` or anything nested in them, and a build that carried such patterns can drop them. The same marker is what the [compile-time checks](../tooling/compile_checks.md#what-the-checker-detects) gate on.
 
@@ -90099,7 +90099,7 @@ The HKJ tooling catches these mistakes before your code ever runs. Both Gradle a
 
 - **[Compile-Time Checks](compile_checks.md)**: A javac plugin that detects Path type mismatches at compile time, preventing runtime `IllegalArgumentException` errors. Follows a strict no-false-positives policy.
 
-- **[Migration Recipes](openrewrite.md)**: The `hkj-openrewrite` recipe catalogue for upgrading between Higher-Kinded-J releases. Covers the 0.2.x to 0.3.0 arity migration, detection-only effect-algebra helpers, and the 0.5.0 deprecation renames; runnable from Gradle or Maven.
+- **[Migration Recipes](openrewrite.md)**: The `hkj-openrewrite` recipe catalogue for upgrading between Higher-Kinded-J releases. Covers the 0.2.x to 0.3.0 arity migration, detection-only effect-algebra helpers, and the 0.5.0 deprecation migration; runnable from Gradle or Maven.
 
 - **[Diagnostics](diagnostics.md)**: The `hkjDiagnostics` Gradle task or `mvn hkj:diagnostics` Maven goal that reports your current HKJ configuration, showing exactly which dependencies, compiler arguments, and checks are active.
 
@@ -90531,7 +90531,7 @@ The [HKJ build plugin](gradle_plugin.md) handles all of the above (dependencies,
 
 ## Incremental compilation
 
-The HKJ annotation processors register with Gradle's incremental annotation processing: the processors that generate code as aggregating, since cross-spec features such as nested mapping resolution may read any annotated element in the compilation and the mapping processors also read the classpath index described below; and `CompanionAnnotationProcessor`, which generates nothing and only claims hkj's annotations so that `-Xlint:processing` does not report them, as isolating. A source set using them keeps incremental compilation; no configuration is needed. Unregistered third-party processors on the same processor path disable incrementality for the whole source set, so if compile times regress, audit the other entries on the path first.
+The HKJ annotation processors register with Gradle's incremental annotation processing: the processors that generate code as aggregating, since cross-spec features such as nested mapping resolution may read any annotated element in the compilation and the mapping processors also read the classpath index described below; and `CompanionAnnotationProcessor`, which generates nothing and claims hkj's annotations so that `-Xlint:processing` does not report them, as isolating. A source set using them keeps incremental compilation; no configuration is needed. Unregistered third-party processors on the same processor path disable incrementality for the whole source set, so if compile times regress, audit the other entries on the path first.
 
 ## Multi-module builds
 
@@ -90906,7 +90906,7 @@ mvn rewrite:dryRun   # preview changes
 mvn rewrite:run      # apply changes
 ```
 
-Pick the `hkj-openrewrite` version that contains the recipe group you need: the arity recipes exist from 0.3.0 onward, and the 0.5.0 deprecation recipes from the 0.5.0-era release onward. Newer releases retain the older recipes.
+Pick the `hkj-openrewrite` version that contains the recipe you need: the arity recipes exist from 0.3.0 onward, and each 0.5.0 deprecation recipe from the release that deprecates its API onward. Newer releases retain the older recipes.
 
 ---
 
@@ -90970,13 +90970,15 @@ Review the matches with `./gradlew rewriteDryRun` (Gradle) or `mvn rewrite:dryRu
 
 ### 0.5.0 deprecation migration
 
-Rewrites call sites of APIs deprecated for removal in 0.5.0 to their signature-compatible replacements. These recipes do rewrite source; both are pure method renames implemented via `org.openrewrite.java.ChangeMethodName`.
+Rewrites call sites of APIs deprecated for removal in 0.5.0 to their replacements, and removes a deprecated annotation that has no effect. These recipes do rewrite source.
 
-| Recipe | Rename |
+| Recipe | Change |
 |--------|--------|
-| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | Composite; runs both renames below |
+| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | Composite; runs all four recipes below |
 | `org.higherkindedj.openrewrite.RenameStateTKindNarrowK` | `StateTKind.narrowK(..)` becomes `StateTKind.narrow(..)`; the wildcard `Kind` overload bypassed witness type safety |
 | `org.higherkindedj.openrewrite.RenameKindValidatorNarrowWithPattern` | `KindValidator.narrowWithPattern(..)` becomes `KindValidator.narrowHolder(..)` |
+| `org.higherkindedj.openrewrite.SwapTryFoldToFoldFailureFirstRecipe` | `Try.fold(successMapper, failureMapper)` and `TryPath.fold(...)` become `foldFailureFirst(failureMapper, successMapper)`, swapping the two arguments as well as renaming the method |
+| `org.higherkindedj.openrewrite.RemovePathConfig` | Removes `@PathConfig` from a `package-info.java`; no processor reads it, so nothing generated changes |
 
 ```kotlin
 rewrite {
@@ -99267,6 +99269,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **`@PathConfig` is deprecated for removal, and `hkj-processor` notes where it is written that it has no effect** ([#890](https://github.com/higher-kinded-j/higher-kinded-j/issues/890)): the package-level `@PathConfig` was documented as defaults for every `@PathSource` in its package, but no processor reads it, so none of its eight settings changes a generated Path. It is now deprecated for removal in 0.5.0, and `hkj-processor` reports a note at the annotation saying it has no effect, where javac used to report only, under `-Xlint:processing`, that no processor claimed it. Removing it changes nothing generated, and the `MigrateDeprecationsTo0_5_0` OpenRewrite recipe does so. To name a Path class with a suffix other than `Path`, add `suffix` to the type's own `@PathSource`, which renames the generated class. See [0.5.0 deprecation migration](tooling/openrewrite.md#050-deprecation-migration).
+
+  _Notes for existing builds._ A `package-info.java` carrying `@PathConfig` now draws javac's `[removal]` warning, which fails a `-Werror` build. A package declaration cannot carry `@SuppressWarnings`, so remove the annotation; the note itself never fails a build.
 
 - **A same-typed container is copied, so the wire and the domain no longer share one** ([#852](https://github.com/higher-kinded-j/higher-kinded-j/issues/852)): a component with the same `List`, `Set`, `Collection`, `Map` or array type on both sides, or the same `Optional` of one, used to cross the mapping as the very container that was read. A caller that changed a wire's list after `parse` changed the domain record with it, and a list changed through a built wire reached back into the domain. Such a component now crosses as a copy, at every level inside it: unmodifiable, in the source's order, with a set copied as a set and a `null` element carried as it is, the shape an element-lifted leg's result already has. That covers `parse`, `build`, `asIso()`, `asLens()`, the validated `patch`, a sparse `UpdateSpec`, a bridged component, a `@MapKey` map's values and `@GenerateMerge`. A container whose declared type has no copy of the same type is handed over as it is, as before: a subtype such as `ArrayList` or `TreeSet`, another interface such as `Deque`, a type variable, an element declared through a wildcard, the collections inside an array, and any element of a set that holds a `Collection`. Each call now allocates one copy per container it hands over. See [Same-typed containers cross as copies](mapping/rules.md#same-typed-containers-cross-as-copies).
 
