@@ -18316,7 +18316,7 @@ This page is the lookup table. Each row links to the page that explores the anno
 
 ## 1. Generate optics for your records
 
-Apply these to your own records and sealed types. The generated class is placed in the same package by default; pass `targetPackage = "..."` to override.
+Apply these to your own records and sealed types. The generated class is placed in the same package by default; pass `targetPackage = "..."` to override. Every type it names has to be visible from that package, so keep a nested type it uses package-private rather than `private` ([Compiler Messages](compiler_errors.md#companion-cannot-be-reached)).
 
 | Annotation | Apply to | Generates | When to reach for it |
 |---|---|---|---|
@@ -43816,6 +43816,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`'x' takes parameters`](#generateisos-x-takes-parameters) | The `@GenerateIsos` method takes arguments |
 | [`does not return an Iso with both type arguments`](#generateisos-x-does-not-return-an-iso-with-both-type-arguments) | The `@GenerateIsos` method returns something else |
 | [`cannot be reached from 'p'`](#generateisos-x-cannot-be-reached-from-p) | The `@GenerateIsos` method is not visible from the generated package |
+| [`The generated companion is a top-level class`](#companion-cannot-be-reached) | A type the generated companion names is `private`, or hidden in another package |
 | [`has a wildcard type argument`, `has a raw Set`](#generatefocus-record-component-xy-has-a-wildcard-type-argument-in-set-extends-t) | A widened container is raw, or has a wildcard type argument |
 | [`no traversal was generated for component`](#generatetraversals-no-traversal-was-generated-for-component-xy-of-type-dequet-a-note) | **Note.** `@GenerateTraversals` found no generator for a container |
 | [`Multiple TraversableGenerator SPI providers with equal priority`](#multiple-traversablegenerator-spi-providers-with-equal-priority-n-support-type-x-a-warning) | **Warning.** Two generators claim one type and neither outranks the other |
@@ -44073,6 +44074,34 @@ final class LengthIsos {
     static Iso<String, Integer> length() {
         return Iso.of(String::length, "x"::repeat);
     }
+}
+```
+~~~
+
+### "@GenerateLenses: record component 'x' of 'X' names 'Y', which cannot be reached from 'p'" {#companion-cannot-be-reached}
+
+A type the generated companion names is hidden from the package the companion is written into: it, or a class enclosing it, is `private`, or it comes from another package and is not `public`. `@GenerateLenses` and the other optics generators, `@ImportOptics`, `@GenerateAssembly`, `@GenerateErrorEnvelope`, `@EffectAlgebra` and `@PathSource` refuse such a type at the annotation. The message names where the companion meets the type: the annotated type itself (`record 'Shop.Item' cannot be reached from 'p'`), or a component, subtype, bound, field, optic, variant, operation, witness or error type.
+
+**Fix.** Remove `private` from the class the message names. From another package, make it `public`; under `targetPackage`, removing `targetPackage` also works for a type beside the annotated one, and the message offers it where it does.
+
+```
+@GenerateLenses: record component 'sku' of 'Item' names 'Sku', which cannot be reached from
+'com.example'. The generated companion is a top-level class in that package, where it names
+every type it reads or writes, so each has to be visible from there. Remove 'private' from 'Sku'.
+```
+
+~~~admonish note title="Why" collapsible=true
+The companion, `ItemLenses` here, is a top-level class beside `Shop`, not nested inside it, so it cannot see a type `Shop` keeps `private`. It names every type it reads or writes, some of them only in a lambda it leaves javac to infer, and javac checks those too. A traversal names only the components it traverses, so a `private` type on any other component compiles.
+~~~
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "names 'Sku', which cannot be reached from" -->
+```java
+class Shop {
+    private record Sku(String value) {}
+
+    @GenerateLenses
+    record Item(Sku sku, String name) {}
 }
 ```
 ~~~
@@ -45306,7 +45335,7 @@ interface Orders {
 
 `targetPackage` puts the bridge in package `p`, and something the bridge writes down, a parameter type, a return type, a bound or the delegate itself, is not visible there. The same message names *the bound on 'T'* when the culprit is a type parameter's bound.
 
-**Fix.** Make the type public, or drop `targetPackage` so the bridge is written beside the interface.
+**Fix.** Make public the class the message names, which may be one enclosing the type. Where the type sits beside the interface, removing `targetPackage` also works, since the bridge is then written there, and the message offers it where it does.
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
 <!-- verify:rejects "cannot be reached from 'com.example.paths'" -->
@@ -50879,8 +50908,8 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [What if a leaf's name matches no component?](#how-the-two-default-families-are-told-apart) | A declared leaf is a compile error, naming the components; an inherited one stays inert. | by design |
 | [Can a getter-shaped helper live on a spec?](#how-the-two-default-families-are-told-apart) | Yes, if `private`, `static` or given a parameter; a `default` one is a derived field. | by design |
 | [Can a sealed spec declare its own leaves, renames or markers?](#how-the-two-default-families-are-told-apart) | No: a dispatch has no components to bind them to. | by design |
-| [Can a member's type be one the spec's package cannot see?](#how-the-two-default-families-are-told-apart) | No: the Impl is generated in that package and must name it. | by design |
 | [Can a projection carry a derived field?](#derived-fields-and-the-emission-tiers) | No: `build` recomputes what the write-back would set. | by design |
+| [Can a mapped type be one the spec's package cannot see?](#visible-from-the-spec-package) | No: the Impl is generated in that package and names it. | by design |
 | **Optional fields** | | |
 | [Can a bridged component be declared non-null, or primitive?](#bridged-component-nullable) | No: `build` writes `null` for empty, so declare it `@Nullable`. | by design |
 | [Can a sparse or sealed spec declare `@OptionalBridge`?](#bridged-component-nullable) | No; one inherited from a mix-in stays inert. | by design |
@@ -51009,13 +51038,17 @@ Leaves are named after *domain* components and return `ValidatedPrism`; derived 
 - *Inherited* [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces) members that match nothing stay inert by design: a shared vocabulary may carry leaves for components only some extending specs have, and likewise derived fields and renames for wire components only some of their wires carry.
 - On a **sealed** mapping, locally declared leaves, derived fields and renames are rejected outright (a dispatch has no components), and so are an `@OptionalBridge` marker, a `@MapKey` key leaf and an `@Unmapped` marker; inherited vocabulary stays inert there too, bar a `@Flatten` marker, which is refused either way.
 
-A rename's, abstract leaf's or marker's type must be visible from the spec's package, where the Impl is generated: a package-private type a mix-in hands over from another package, or a private type nested in the spec's own enclosing class, is refused naming the type and the package. A mapped component's own type, and a `default` leaf's, are not checked: a private nested type there fails inside the generated Impl instead, as [Compiler Messages](compiler_errors.md#private-access-in-an-impl) shows.
-
 Four shapes are rejected, each with a what/why/fix diagnostic: a *locally declared* `Getter` named after a *domain* component (ambiguous with a leaf); a *locally declared* `Getter` naming nothing on the wire; a `Getter` with the wrong type arguments; and a `@MapField` rename targeting a component a derived field already fills. The first two are the typo guard, so an inherited `Getter` in either position stays inert instead; the last two catch a member that does bind, and fire wherever it was declared.
 
 ### Derived fields and the emission tiers {#derived-fields-and-the-emission-tiers}
 
 A spec with any derived field never emits `asIso()`: the wire round trip recomputes the derived component, so it is an identity only for wire values that were already consistent. A mapping whose *only* extra is a derived field is *total-parse*: no **well-formed** wire value can fail it (the null guards above still apply, a domain constructor's [invariant](absence.md#constructor-invariants) can still refuse a value, and a fallible leaf elsewhere in the spec still makes the whole parse fallible). Combining a derived field with a projection (a wire otherwise smaller than the domain) is rejected, because the projection's `asLens()` write-back could never honour a component that `build` recomputes. [What Your Spec Generates](tiers.md) is the full story.
+
+### Every type a mapping crosses is visible from the spec's package {#visible-from-the-spec-package}
+
+**The processor refuses a type the spec's package cannot see wherever the mapping crosses it.** It generates the Impl as a top-level class in the spec's package, and the Impl names every type the mapping crosses, so each one has to be visible from there. That covers the spec and the bounds of its type parameters, its domain and wire types with their type arguments, a sealed pair's subtypes, and each component the wire carries, on both sides. It covers a bean wire's builder, a rename's, leaf's or marker's type, and a merge's target, sources and the components it fills. Where the reads are null-checked, it also covers the element types a container component's own class declares, as `Sku` in `class Grid extends ArrayList<List<Sku>>`. A type fails when it, or a class enclosing it, is `private`, or when it comes from another package and it, or a class enclosing it, is not `public`. The refusal names where the mapping meets the type, `record component 'sku' of 'Item' names 'Sku', which cannot be reached from 'com.example'`, and its fix names the class to change. Every such type is reported in the one compilation.
+
+A domain component the wire does not carry needs no visibility. A projection or a PATCH carries it over from the domain untouched, and the Impl never names its type.
 
 ---
 
@@ -51122,7 +51155,7 @@ Two mix-in shapes are rejected, each naming the offender:
 - a mix-in that **is itself a mapping spec** (directly or transitively extends `MappingSpec`/`UpdateSpec`): a mix-in shares vocabulary, a spec generates an Impl, and inheriting one spec from another would conflate the two;
 - a generic mix-in **reached raw**, which [A generic mix-in reached raw](#a-generic-mix-in-reached-raw) covers.
 
-Diagnostics about an inherited member name its declaring interface, `abstract method 'bogus' (inherited from 'BrokenVocabulary') is neither a rename, a leaf, nor a bridge`, so the fix points at the right file. A member whose type only the mix-in's own package can see is refused the same way: the Impl is generated in the spec's package and writes the member's type out in full, so a package-private type a mix-in hands over from elsewhere has nowhere to be named.
+Diagnostics about an inherited member name its declaring interface, `abstract method 'bogus' (inherited from 'BrokenVocabulary') is neither a rename, a leaf, nor a bridge`, so the fix points at the right file. A package-private type a mix-in hands over from another package is refused the same way, since [every type a mapping crosses is visible from the spec's package](#visible-from-the-spec-package).
 
 ### A generic mix-in reached raw {#a-generic-mix-in-reached-raw}
 
@@ -51411,8 +51444,9 @@ For [`@GenerateErrorEnvelope`](merge_envelopes.md#generating-error-envelopes-gen
 | variants that disagree on the context type | one companion builds one context type |
 | a context type that is not a record | the `ContextBuilder` is derived from the record's components |
 | a primitive context component | the all-absent context holds `null` in every component |
+| a hierarchy, variant, context record or component type the hierarchy's package cannot see, such as a `private` one nested beside it | the companion is a top-level class in that package, and names each of them |
 
-A compact constructor that rejects `null` is the one shape the processor cannot see: it compiles, and fails the companion's first use. [Generating error envelopes](merge_envelopes.md#generating-error-envelopes-generateerrorenvelope) warns of it.
+A compact constructor that rejects `null` is the one shape the processor cannot detect: it compiles, and fails the companion's first use. [Generating error envelopes](merge_envelopes.md#generating-error-envelopes-generateerrorenvelope) warns of it.
 
 ---
 
@@ -51472,7 +51506,8 @@ When the processor cannot write correct code for a spec, it refuses at compile t
 | [`returns a Getter but is named after a domain component`](#getter-named-after-domain) | A derived field carries a domain component's name |
 | [`combines a projection with derived fields`](#projection-with-derived-fields) | A smaller wire also declares a derived field |
 | [`declares type parameters of its own`](#own-type-parameters) | A leaf, rename or marker declares its own `<R>` |
-| [`which cannot be reached from`](#cannot-be-reached) | A member names a type its package cannot see |
+| [`method '…' names '…', which cannot be reached from`](#cannot-be-reached) | A member names a type its package cannot see |
+| [`record component '…' of '…' names '…', which cannot be reached from`](#component-cannot-be-reached) | A mapped type is hidden from the spec's package |
 
 **[Optional fields](#optional-fields)**
 
@@ -51554,12 +51589,7 @@ When the processor cannot write correct code for a spec, it refuses at compile t
 | [`is a primitive`](#envelope-primitive-context) | An envelope context component is a primitive |
 | [`is a class, not a record`](#envelope-variant-not-a-record) | An envelope variant is a class |
 | [`which this companion does not support`](#envelope-generic) | An envelope hierarchy is generic |
-
-**[Inside a generated Impl](#inside-a-generated-impl)**
-
-| The message says | What it means |
-|---|---|
-| [`has private access in`](#private-access-in-an-impl) | A mapped type is private and nested |
+| [`@GenerateErrorEnvelope: … cannot be reached from`](#envelope-cannot-be-reached) | An envelope's type is hidden from its companion's package |
 
 **[At your call site](#at-your-call-site)**
 
@@ -51596,7 +51626,7 @@ flowchart TD
     class OK ok
 ```
 
-Most messages come from the first branch: the processor reads your spec, finds a shape it cannot map correctly, and says so where you declared it. A refused spec writes no Impl, so every call to it also reports `cannot find symbol`; fix the refusal and those go with it. An error inside a generated `*Impl` means the processor accepted a spec it should have refused. Please [report it](https://github.com/higher-kinded-j/higher-kinded-j/issues) with the spec; the cause is usually still in the spec, and the error names it, as [the one known case](#private-access-in-an-impl) shows.
+Most messages come from the first branch: the processor reads your spec, finds a shape it cannot map correctly, and says so where you declared it. A refused spec writes no Impl, so every call to it also reports `cannot find symbol`; fix the refusal and those go with it. An error inside a generated file, an `*Impl` or a companion such as `*Errors`, means the processor accepted a declaration it should have refused. Please [report it](https://github.com/higher-kinded-j/higher-kinded-j/issues) with the declaration, since the cause is usually still there.
 
 ---
 
@@ -52053,23 +52083,23 @@ interface PageMapping extends MappingSpec<Page, PageDto> {
 ```
 ~~~
 
-### `@MapField method 'x' names 'T', which cannot be reached from 'p'` {#cannot-be-reached}
+### `@MapField method 'x' names 'Y', which cannot be reached from 'p'` {#cannot-be-reached}
 
-A member names a type the spec's package cannot see, and the Impl is generated in that package.
+A rename, leaf or marker names a type the spec's package cannot see, and the Impl is generated in that package.
 
-**Fix.** Make the type, and the types enclosing it, `public`, or declare the spec in the package they are visible from.
+**Fix.** In the spec's package, remove `private` from the type and any class enclosing it. From another package, make the type and the classes enclosing it `public`, or, when none is `private`, declare the spec in the type's package.
 
 ```
 @GenerateMapping: @MapField method 'sku' names 'Sku', which cannot be reached from
-'com.example'. The generated Impl writes the member's type out in full, so every type named
-inside it has to be visible in the spec's package, where the Impl is declared. Make 'Sku' and
-the types enclosing it public, or declare the spec in the package they are already visible from.
+'com.example'. The generated Impl is a top-level class in the spec's package, where it names
+every type the mapping crosses, so each has to be visible from there. Remove 'private' from
+'Sku'.
 ```
 
-The rule: [A member's type must be visible from the spec's package](rules.md#how-the-two-default-families-are-told-apart).
+The rule: [Every type a mapping crosses is visible from the spec's package](rules.md#visible-from-the-spec-package).
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
-<!-- verify:rejects "which cannot be reached from" -->
+<!-- verify:rejects "method 'sku' names 'Sku', which cannot be reached from" -->
 ```java
 class Shop {
   private record Sku(String value) {}
@@ -52083,6 +52113,37 @@ class Shop {
     @MapField(to = "code")
     Sku sku();
   }
+}
+```
+~~~
+
+### `record component 'x' of 'X' names 'Y', which cannot be reached from 'p'` {#component-cannot-be-reached}
+
+A type the mapping crosses is hidden from the spec's package, where the Impl is generated. The subject names where: a record component or bean property, a type parameter, a builder, or a merge's target or source component. Where the hidden type is the spec itself, its domain or wire, a permitted subtype or a merge target, the message reads `domain type 'Item' cannot be reached from 'p'`.
+
+**Fix.** In the spec's package, remove `private` from the type and any class enclosing it. From another package, make the type and the classes enclosing it `public`, or, when none is `private`, declare the spec in the type's package.
+
+```
+@GenerateMapping: record component 'sku' of 'Item' names 'Sku', which cannot be reached from
+'com.example'. The generated Impl is a top-level class in the spec's package, where it names
+every type the mapping crosses, so each has to be visible from there. Remove 'private' from
+'Sku'.
+```
+
+The rule: [Every type a mapping crosses is visible from the spec's package](rules.md#visible-from-the-spec-package).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "record component 'sku' of 'Item' names 'Sku', which cannot be reached from" -->
+```java
+class Shop {
+  private record Sku(String value) {}
+
+  record Item(Sku sku) {}
+
+  record ItemDto(Sku sku) {}
+
+  @GenerateMapping
+  interface ItemMapping extends MappingSpec<Item, ItemDto> {}
 }
 ```
 ~~~
@@ -53533,34 +53594,31 @@ sealed interface OrderError<T> {
 ```
 ~~~
 
----
+### `@GenerateErrorEnvelope: context record 'X' cannot be reached from 'p'` {#envelope-cannot-be-reached}
 
-## Inside a generated Impl {#inside-a-generated-impl}
+A type the envelope companion names is hidden from the hierarchy's package, where the companion is generated: the context record here, or the hierarchy, a variant, or a component of either.
 
-### `XImpl.java: error: T has private access in Y` {#private-access-in-an-impl}
-
-A mapped component's type is `private` and nested in the class that holds the spec, and the Impl, generated beside that class, cannot see it. The processor lets this through, where it refuses the same type on a rename or marker.
-
-**Fix.** Make the nested type package-private, or `public`.
+**Fix.** Remove `private` from the class the message names.
 
 ```
-ShopItemMappingImpl.java: Sku has private access in Shop
+@GenerateErrorEnvelope: context record 'Orders.OrderContext' cannot be reached from
+'com.example'. The generated companion is a top-level class in that package, where it names
+every type it reads or writes, so each has to be visible from there. Remove 'private' from
+'OrderContext'.
 ```
 
-The rule: [A member's type must be visible from the spec's package](rules.md#how-the-two-default-families-are-told-apart).
+The rule: [Error envelope rules](rules.md#error-envelope-rules).
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
-<!-- verify:rejects "has private access in" -->
+<!-- verify:rejects "context record 'Orders.OrderContext' cannot be reached from" -->
 ```java
-class Shop {
-  private record Sku(String value) {}
+class Orders {
+  private record OrderContext(String orderId) {}
 
-  record Item(Sku sku) {}
-
-  record ItemDto(Sku sku) {}
-
-  @GenerateMapping
-  interface ItemMapping extends MappingSpec<Item, ItemDto> {}
+  @GenerateErrorEnvelope
+  sealed interface OrderError {
+    record NotFound(String id, ErrorEnvelope<OrderContext> envelope) implements OrderError {}
+  }
 }
 ```
 ~~~
@@ -76089,7 +76147,7 @@ record User(Name name, Email email, Age age) {}
             .assemble(); // canonical constructor baked in
 ```
 
-A component whose type is itself annotated accepts its sub-companion's result directly, and the outer component name prefixes the inner paths (`address.zip`). The companion lives in the record's package, named `<Record>Assembly`; for a nested record the enclosing simple names are joined (`Outer.Inner` gives `OuterInnerAssembly`). Under the hood the companion merges through the same `Validated.ap` / `NonEmptyList.semigroup()` primitives as the builder, so the two agree on every input the record's constructor accepts. Where the constructor throws, they part: the builder's `apply` runs whatever function you hand it, so the exception propagates, while `assemble()` reports it as an unlabelled `FieldError` carrying the exception's message, the same [invariant guard](../mapping/absence.md#constructor-invariants) the generated mappings use. End the builder with [`construct`](#construct) instead of `apply` and the two agree again. Generic records are not supported; use the hand-written `fields()` builder for records you cannot annotate.
+A component whose type is itself annotated accepts its sub-companion's result directly, and the outer component name prefixes the inner paths (`address.zip`). The companion lives in the record's package, named `<Record>Assembly`; for a nested record the enclosing simple names are joined (`Outer.Inner` gives `OuterInnerAssembly`). Under the hood the companion merges through the same `Validated.ap` / `NonEmptyList.semigroup()` primitives as the builder, so the two agree on every input the record's constructor accepts. Where the constructor throws, they part: the builder's `apply` runs whatever function you hand it, so the exception propagates, while `assemble()` reports it as an unlabelled `FieldError` carrying the exception's message, the same [invariant guard](../mapping/absence.md#constructor-invariants) the generated mappings use. End the builder with [`construct`](#construct) instead of `apply` and the two agree again. Generic records are not supported; use the hand-written `fields()` builder for records you cannot annotate. The companion names the record and each component's type from the record's package, so the processor refuses one that is `private`, or nested in a `private` class, naming the class to change ([Compiler Messages](../optics/compiler_errors.md#companion-cannot-be-reached)).
 
 ---
 
@@ -99269,6 +99327,12 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **A mapped type the spec's package cannot see is refused at the spec** ([#918](https://github.com/higher-kinded-j/higher-kinded-j/issues/918)): a spec's `Impl` is generated as a top-level class in the spec's package, so it cannot see a `private` type nested beside the spec, nor a package-private type from another package. The processor refused such a type on a rename or a marker, but let it through on a mapped component, and the build then failed inside the generated `Impl` with `Sku has private access in Shop`. It now checks every type a mapping crosses: the spec, its domain and wire types, each component the wire carries on both sides, a sealed pair's subtypes, a bean wire's builder, and a `@GenerateMerge`'s target, sources and filled components. Each hidden type is refused at the spec, all of them in one compilation, naming where the mapping meets it, with a fix that names the class to change: remove `private` from it, or make it `public`. A refused rename or marker gets the same message and fix, where it used to offer moving the spec for a type no other package can see either. A domain component the wire does not carry, one a projection drops or a PATCH bean has no property for, still needs no visibility. See [Every type a mapping crosses is visible from the spec's package](mapping/rules.md#visible-from-the-spec-package).
+
+  The same check now covers every generator that writes a top-level companion: `@GenerateLenses`, `@GenerateFocus`, `@GeneratePrisms`, `@GenerateTraversals`, `@GenerateGetters`, `@GenerateSetters`, `@GenerateFolds`, `@ImportOptics` (listed types and spec interfaces alike), `@GenerateAssembly`, `@GenerateErrorEnvelope` and `@EffectAlgebra`. A `private` annotated type, component, permitted subtype, variant, context record or operation is refused at its annotation, as is a `@PathSource` witness, or an error type its path recovers from, where each used to fail inside the generated file. Each check names only what the companion uses, so a component a traversal does not traverse stays free to be `private`. A `@GenerateFocus` navigator into a record whose components its package cannot see is left out with a note, and the component keeps its plain path. `@ComposeEffects` declines an algebra `@EffectAlgebra` refuses this way, naming why. `@GenerateIsos` and `@GeneratePathBridge` give the same fix line, which now names the class that actually hides the type. See [Compiler Messages](optics/compiler_errors.md#companion-cannot-be-reached).
+
+  _Behaviour change, in a few corners that compiled before:_ a projection that copies such a component as it is, a build-only bean, a derived field whose type holds it only as a type argument, and a `@GenerateMerge` with a plain return compiled with such a type, because their generated code happened not to name it. They are now refused with the rest, which keeps the rule predictable: adding a leaf, or a `Validated` return, would otherwise start failing inside the generated file. Remove `private` from the nested type, or make a type from another package `public`.
 
 - **`@PathConfig` is deprecated for removal, and `hkj-processor` notes where it is written that it has no effect** ([#890](https://github.com/higher-kinded-j/higher-kinded-j/issues/890)): the package-level `@PathConfig` was documented as defaults for every `@PathSource` in its package, but no processor reads it, so none of its eight settings changes a generated Path. It is now deprecated for removal in 0.5.0, and `hkj-processor` reports a note at the annotation saying it has no effect, where javac used to report only, under `-Xlint:processing`, that no processor claimed it. Removing it changes nothing generated, and the `MigrateDeprecationsTo0_5_0` OpenRewrite recipe does so. To name a Path class with a suffix other than `Path`, add `suffix` to the type's own `@PathSource`, which renames the generated class. See [0.5.0 deprecation migration](tooling/openrewrite.md#050-deprecation-migration).
 
