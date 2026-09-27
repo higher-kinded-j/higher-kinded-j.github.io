@@ -45968,6 +45968,10 @@ This chapter replaces that mapper with one interface you own and one annotation.
 
 The bad email is *inside a nested record*; the bad price is on the *second element of a list*. The client fixes all five and resubmits once. Nobody wrote a line of error-handling code to produce this: it falls out of the declarations. The [Capstone](capstone.md) builds it end to end, and a test the build runs proves its five errors. This copy leaves out the `segments` array the full response carries beside each `path`.
 
+~~~admonish note title="The running example"
+From Record Mapping Basics on, the examples come from the order service behind that request, wherever its shapes fit. A `Customer` carries a checked `EmailAddress`, there is an `Address` to deliver to, an `Order` has its `LineItem`s and its `OrderStatus`, and a sealed `Payment` pays for it. A page whose feature needs another shape adds a piece from the same service, such as a courier or a delivery window. Your attention stays on the feature rather than on a new pair of records. The [Capstone](capstone.md) puts the pieces together at full size.
+~~~
+
 The shape of the machinery is a railway with two directions:
 
 ```mermaid
@@ -46958,15 +46962,15 @@ Where this lives: [Canonical forms only](#canonical-forms-only).
 Declaring the producer's canon, as the browser and Python leaves do, covers any wire with a canon of its own. An uppercase-UUID producer (SQL Server) is not forbidden by the law; only accepting *both* cases through one leaf is. The lenient, throwing `UUID.fromString` is fine inside `ValidatedPrism.canonical`, because the render defines the canon:
 
 ``` java
-record Asset(UUID id, String label) {}
+// A pallet from the warehouse's feed, which writes UUIDs in upper case, as SQL Server does.
+record Pallet(UUID id, String label) {}
 
-record AssetDto(String id, String label) {}
+record PalletDto(String id, String label) {}
 
 @GenerateMapping
-interface AssetMapping extends MappingSpec<Asset, AssetDto> {
-  // An uppercase-UUID wire (SQL Server): the lenient, throwing parse is fine,
-  // because the render defines the canon and the per-value guard rejects
-  // every spelling it cannot reproduce.
+interface PalletMapping extends MappingSpec<Pallet, PalletDto> {
+  // The lenient, throwing parse is fine: the render defines the canon, and the per-value guard
+  // rejects every spelling it cannot reproduce.
   default ValidatedPrism<String, UUID> id() {
     return ValidatedPrism.canonical(
         "not an uppercase UUID",
@@ -46985,7 +46989,7 @@ Conversions the vocabulary does not cover stay hand-written leaves: `ValidatedPr
 
 ## Shared vocabulary: mix-in interfaces {#shared-vocabulary-mix-in-interfaces}
 
-The same rename or leaf tends to recur across an API's specs: every wire calls it `fullName`, and every email parses the same way. Move the shared members onto a **plain interface**, and extend it alongside `MappingSpec`. Like a Jackson mix-in, it holds mapping declarations apart from the types they describe. Unlike one, a spec extends it, so Java's inheritance decides which declaration wins:
+The same rename or leaf tends to recur across an API's specs: every wire calls it `fullName`, and every email parses the same way. Record Mapping Basics' `PartnerCustomerMapping` declared that rename and the email leaf by hand, and every other spec whose wire spells them the same way would repeat both. Move the shared members onto a **plain interface**, and extend it alongside `MappingSpec`. Like a Jackson mix-in, it holds mapping declarations apart from the types they describe. Unlike one, a spec extends it, so Java's inheritance decides which declaration wins:
 
 ``` java
 // Plain vocabulary - not a spec itself. Any spec whose records share these
@@ -46998,7 +47002,7 @@ interface ContactVocabulary {
     return EmailCodecs.EMAIL;
   }
 
-  // Client has no phone, so this leaf stays inert there; only Supplier binds it.
+  // Customer has no phone, so this leaf stays inert there; only Supplier binds it.
   default ValidatedPrism<String, String> phone() {
     return ValidatedPrism.of(
         raw ->
@@ -47009,12 +47013,12 @@ interface ContactVocabulary {
   }
 }
 
-record Client(String name, EmailAddress email) {}
-
-record ClientDto(String fullName, String email) {}
+// A CRM's contact export: the Customer from Record Mapping Basics, calling its name fullName.
+record CustomerContactDto(String fullName, String email) {}
 
 @GenerateMapping
-interface ClientMapping extends ContactVocabulary, MappingSpec<Client, ClientDto> {}
+interface CustomerContactMapping
+    extends ContactVocabulary, MappingSpec<Customer, CustomerContactDto> {}
 
 record Supplier(String name, EmailAddress email, String phone) {}
 
@@ -47025,8 +47029,9 @@ interface SupplierMapping extends ContactVocabulary, MappingSpec<Supplier, Suppl
 
 
     // One vocabulary, two mappings: the rename and email leaf apply to both, phone to Supplier.
-    Validated<NonEmptyList<FieldError>, Client> client =
-        ClientMappingImpl.INSTANCE.parse(new ClientDto("Ada Lovelace", "not-an-email"));
+    Validated<NonEmptyList<FieldError>, Customer> customer =
+        CustomerContactMappingImpl.INSTANCE.parse(
+            new CustomerContactDto("Ada Lovelace", "not-an-email"));
     // Invalid(NonEmptyList[email: not an email address])
     Validated<NonEmptyList<FieldError>, Supplier> supplier =
         SupplierMappingImpl.INSTANCE.parse(
@@ -47034,7 +47039,7 @@ interface SupplierMapping extends ContactVocabulary, MappingSpec<Supplier, Suppl
     // Invalid(NonEmptyList[phone: not a phone number])
 ```
 
-An inherited member binds exactly as if it were declared on the spec. One that binds to nothing, like `phone()` on `ClientMapping`, stays **inert**, so one vocabulary serves specs whose records differ. The processor refuses the same member declared on the spec itself, which is what catches a typo there. The flip side: a misspelt leaf in the mix-in stays inert everywhere, so test each spec's rejections once. [What an inherited member binds against](rules.md#what-an-inherited-member-binds-against) says what "nothing" means for each kind of member. [How a spec collects its vocabulary](rules.md#how-a-spec-collects-its-vocabulary) covers precedence, generic specs and PATCH specs, and [Mix-in shapes the processor refuses](rules.md#refused-mix-in-shapes) names the two it will not take.
+An inherited member binds exactly as if it were declared on the spec. One that binds to nothing, like `phone()` on `CustomerContactMapping`, stays **inert**, so one vocabulary serves specs whose records differ. The processor refuses the same member declared on the spec itself, which is what catches a typo there. The flip side: a misspelt leaf in the mix-in stays inert everywhere, so test each spec's rejections once. [What an inherited member binds against](rules.md#what-an-inherited-member-binds-against) says what "nothing" means for each kind of member. [How a spec collects its vocabulary](rules.md#how-a-spec-collects-its-vocabulary) covers precedence, generic specs and PATCH specs, and [Mix-in shapes the processor refuses](rules.md#refused-mix-in-shapes) names the two it will not take.
 
 A vocabulary also crosses a **module boundary**. The API module that publishes it needs the HKJ libraries its members use, not the annotation processor, and a service module's spec extends it from the jar as if it were local. One API module can therefore own the house vocabulary every service's specs extend, as long as it is on each consumer's compile classpath ([Multi-module builds](../tooling/manual_setup.md#multi-module-builds)).
 
@@ -47556,19 +47561,19 @@ Where this lives: [Nesting a spec, and a list of them](#nesting-containers-and-r
 ~~~
 
 ~~~admonish question title="Checkpoint: whose list is it?" id="check-structure-copy"
-`Memo` and `MemoDto` both hold a `List<String> tags`, and `MemoMapping` is empty:
+`OrderNote` and `OrderNoteDto` both hold a `List<String> tags`, and `OrderNoteMapping` is empty:
 
 ``` java
-record Memo(String text, List<String> tags) {}
+record OrderNote(String text, List<String> tags) {}
 
-record MemoDto(String text, List<String> tags) {}
+record OrderNoteDto(String text, List<String> tags) {}
 
 @GenerateMapping
-interface MemoMapping extends MappingSpec<Memo, MemoDto> {}
+interface OrderNoteMapping extends MappingSpec<OrderNote, OrderNoteDto> {}
 
 ```
 
-A controller parses a `MemoDto` whose `tags` is the `ArrayList` Jackson bound, holding `"vip"`. A later filter clears that `ArrayList`. What does the parsed memo's `tags()` hold then, and what does `memo.tags().add("urgent")` do?
+A controller parses an `OrderNoteDto` whose `tags` is the `ArrayList` Jackson bound, holding `"vip"`. A later filter clears that `ArrayList`. What does the parsed note's `tags()` hold then, and what does `note.tags().add("urgent")` do?
 
 1. Nothing, and the add succeeds
 2. `"vip"`, and the add succeeds
@@ -47577,19 +47582,20 @@ A controller parses a `MemoDto` whose `tags` is the `ArrayList` Jackson bound, h
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-structure-copy-answer"
-**3.** `tags` is declared `List` and needs no conversion, so `parse` copies it, and the copy is unmodifiable. Clearing the request's list cannot reach the memo, and adding to the memo's list throws:
+**3.** `tags` is declared `List` and needs no conversion, so `parse` copies it, and the copy is unmodifiable. Clearing the request's list cannot reach the note, and adding to the note's list throws:
 
 ``` java
     List<String> requestTags = new ArrayList<>(List.of("vip")); // what Jackson bound
-    Memo memo = MemoMappingImpl.INSTANCE.parse(new MemoDto("Call back", requestTags)).get();
+    OrderNote note =
+        OrderNoteMappingImpl.INSTANCE.parse(new OrderNoteDto("Call back", requestTags)).get();
     requestTags.clear(); // a later filter clears the request's list
 
-    assertThat(memo.tags()).containsExactly("vip"); // a copy: still there
-    assertThatThrownBy(() -> memo.tags().add("urgent"))
+    assertThat(note.tags()).containsExactly("vip"); // a copy: still there
+    assertThatThrownBy(() -> note.tags().add("urgent"))
         .isInstanceOf(UnsupportedOperationException.class); // and unmodifiable
 ```
 
-Build a new `Memo` with the tags you want, or copy them first with `new ArrayList<>(memo.tags())`.
+Build a new `OrderNote` with the tags you want, or copy them first with `new ArrayList<>(note.tags())`.
 
 Where this lives: [Nesting a spec, and a list of them](#nesting-containers-and-recursion).
 ~~~
@@ -47630,33 +47636,34 @@ interface ReferralMapping extends MappingSpec<Referral, ReferralDto> {
 A bridged list lifts the same way. Where an absent list and an empty one mean different things, the domain holds an `Optional<List<Customer>>`, and the marker is again all it needs:
 
 ``` java
-// An absent guest list is not an empty one, so the domain keeps the difference.
-record Guestlist(String event, Optional<List<Customer>> guests) {}
+// A promotion open to everyone comes with no invitee list, which is not an empty one: an empty
+// list invites no one. So the domain keeps the difference.
+record Promotion(String name, Optional<List<Customer>> invitees) {}
 
 // A client that sends no list leaves the array out, which the JSON binder reads as null.
-record GuestlistDto(String event, @Nullable List<CustomerDto> guests) {}
+record PromotionDto(String name, @Nullable List<CustomerDto> invitees) {}
 
 @GenerateMapping
-interface GuestlistMapping extends MappingSpec<Guestlist, GuestlistDto> {
+interface PromotionMapping extends MappingSpec<Promotion, PromotionDto> {
   // CustomerMapping maps the elements, so the marker is all the list needs.
   @OptionalBridge
-  Optional<List<Customer>> guests();
+  Optional<List<Customer>> invitees();
 }
 
 
-    GuestlistMappingImpl guestlistMapping = GuestlistMappingImpl.INSTANCE;
+    PromotionMappingImpl promotionMapping = PromotionMappingImpl.INSTANCE;
 
-    Validated<NonEmptyList<FieldError>, Guestlist> absentGuests =
-        guestlistMapping.parse(new GuestlistDto("Launch", null));
-    // Valid(Guestlist[event=Launch, guests=Optional.empty])
+    Validated<NonEmptyList<FieldError>, Promotion> noInvitees =
+        promotionMapping.parse(new PromotionDto("Spring launch", null));
+    // Valid(Promotion[name=Spring launch, invitees=Optional.empty])
 
-    Validated<NonEmptyList<FieldError>, Guestlist> badGuest =
-        guestlistMapping.parse(
-            new GuestlistDto(
-                "Launch",
+    Validated<NonEmptyList<FieldError>, Promotion> badInvitee =
+        promotionMapping.parse(
+            new PromotionDto(
+                "Spring launch",
                 List.of(
                     new CustomerDto("Ada", "ada@example.org"), new CustomerDto("Bob", "nope"))));
-    // Invalid(NonEmptyList[guests.1.email: not an email address])
+    // Invalid(NonEmptyList[invitees.1.email: not an email address])
 ```
 
 An empty list parses to a present, empty `Optional`, and [What converts a bridged value](rules.md#what-converts-a-bridged-value) covers every bridged container. Where an empty list already says there are none, a plain `List<Customer>` is simpler.
@@ -47669,27 +47676,28 @@ A `Set`, an array, an `Optional` and a `Map` lift like a `List`. Each locates a 
 
 | Component | Lifts through the element's leaf or spec | A failure locates by |
 | --- | --- | --- |
-| `List<E>` | ✅ | its **index**: `emails.1`, or `customers.1.email` through a nested spec |
-| `E[]` | ✅ | its **index**, exactly as a list |
-| `Set<E>` | ✅ | the **element's own rendering** (`emails.nope`), since a set has no index |
+| `List<E>` | ✅ | its **index**: `lines.1.price` through a nested spec |
+| `E[]` | ✅ | its **index**, exactly as a list: `standby.1` |
+| `Set<E>` | ✅ | the **element's own rendering** (`agents.nope`), since a set has no index |
 | `Optional<E>` on both sides | ✅ | the component itself, since there is only one element |
-| `Map<K, V>` | ✅ values, and keys with [`@MapKey`](#converting-map-keys) | the **source key**: `attributes.en.email` |
+| `Map<K, V>` | ✅ values, and keys with [`@MapKey`](#converting-map-keys) | the **source key**: `notes.bad-key` |
 
 ``` java
-record Crew(
-    Set<EmailAddress> members, // a Set lifts like a List
-    EmailAddress[] reserves, // so does an array
+// The support desk: its agents, those on standby in turn, and a note per agent.
+record SupportDesk(
+    Set<EmailAddress> agents, // a Set lifts like a List
+    EmailAddress[] standby, // so does an array
     Map<EmailAddress, String> notes) {} // and a Map's KEYS, with @MapKey
 
-record CrewDto(Set<String> members, String[] reserves, Map<String, String> notes) {}
+record SupportDeskDto(Set<String> agents, String[] standby, Map<String, String> notes) {}
 
 @GenerateMapping
-interface CrewMapping extends MappingSpec<Crew, CrewDto> {
-  default ValidatedPrism<String, EmailAddress> members() {
+interface SupportDeskMapping extends MappingSpec<SupportDesk, SupportDeskDto> {
+  default ValidatedPrism<String, EmailAddress> agents() {
     return EmailCodecs.EMAIL;
   }
 
-  default ValidatedPrism<String, EmailAddress> reserves() {
+  default ValidatedPrism<String, EmailAddress> standby() {
     return EmailCodecs.EMAIL;
   }
 
@@ -47702,15 +47710,15 @@ interface CrewMapping extends MappingSpec<Crew, CrewDto> {
 }
 
 
-    Validated<NonEmptyList<FieldError>, Crew> crew =
-        CrewMappingImpl.INSTANCE.parse(
-            new CrewDto(
+    Validated<NonEmptyList<FieldError>, SupportDesk> desk =
+        SupportDeskMappingImpl.INSTANCE.parse(
+            new SupportDeskDto(
                 Set.of("nope"),
                 new String[] {"ada@example.org", "also-nope"},
                 Map.of("bad-key", "a note")));
     // Invalid(NonEmptyList[
-    //   members.nope: not an email address,   <- a Set locates by the element itself
-    //   reserves.1: not an email address,     <- an array locates by index
+    //   agents.nope: not an email address,    <- a Set locates by the element itself
+    //   standby.1: not an email address,      <- an array locates by index
     //   notes.bad-key: not an email address]) <- a key locates by the key it was sent as
 ```
 
@@ -47718,56 +47726,58 @@ A domain `Optional` against a plain nullable wire component is the [bridge](#opt
 
 An array that needs no conversion crosses as a clone. A record compares an array by reference, so a record with an array and no `equals` of its own is not equal to its own round trip.
 
-The generated Impl calls a nested spec as it would a leaf, through its `asValidatedPrism()`, so recursion needs nothing special: a self-referential `Tree(String value, List<Tree> children)` maps with an empty spec. A [one-directional bean mapping](beans.md#one-directional-beans) nests for the direction it has.
+The generated Impl calls a nested spec as it would a leaf, through its `asValidatedPrism()`, so recursion needs nothing special: a catalogue's `Category(String name, List<Category> children)` maps with an empty spec. A [one-directional bean mapping](beans.md#one-directional-beans) nests for the direction it has.
 
 ### Converting Map keys {#converting-map-keys}
 
-A `Map` component's value leaf takes the component's name, so a key leaf carries `@MapKey` naming its component instead, as `noteKey()` does in `CrewMapping`. Keys and values convert independently. Without a key leaf the key types must match exactly, and the processor refuses a mismatch, offering the annotation.
+A `Map` component's value leaf takes the component's name, so a key leaf carries `@MapKey` naming its component instead, as `noteKey()` does in `SupportDeskMapping`. Keys and values convert independently. Without a key leaf the key types must match exactly, and the processor refuses a mismatch, offering the annotation.
 
 A failing key locates by the **source** key, the one the client sent, and an entry whose key and value both fail reports both there. A leaf over the whole `Map` wins over both: [a key leaf beside a whole-map leaf](rules.md#key-leaf-beside-a-whole-map-leaf) says when that is refused.
 
 ~~~admonish warning title="Not checked for you: a set silently drops a collapsed element"
-A leaf that parses two wire values to one domain value (`"1"` and `"01"`, say) breaks the [section law](../optics/validated_prism.md#laws): an accepted wire value must rebuild to exactly itself. [`ValidatedPrismLaws`](../tooling/test_assertions.md#optic-laws) catches such a leaf, and [`ValidatedPrism.canonical`](../optics/validated_prism.md) rules it out. Where one slips through, a `Set` drops the duplicate silently. Two collapsed `Map` keys would lose a whole entry, so they are a located failure: `attributes.ab: duplicates an earlier key`.
+A leaf that parses two wire values to one domain value (`"1"` and `"01"`, say) breaks the [section law](../optics/validated_prism.md#laws): an accepted wire value must rebuild to exactly itself. [`ValidatedPrismLaws`](../tooling/test_assertions.md#optic-laws) catches such a leaf, and [`ValidatedPrism.canonical`](../optics/validated_prism.md) rules it out. Where one slips through, a `Set` drops the duplicate silently. Two collapsed `Map` keys would lose a whole entry, so they are a located failure at the second key as it was sent, such as `notes.01: duplicates an earlier key`.
 ~~~
 
 ---
 
 ## Flattening a nested component onto a flat wire {#flattening-a-nested-component-onto-a-flat-wire}
 
-Nesting assumes the wire nests too. When a wire fixed by someone else carries an [`Address`](basics.md#your-first-mapping) as plain `street`, `city` and `postcode` fields, no single wire component holds it, so no leaf can map it. `@Flatten` on a marker named after the component spreads it instead:
+Nesting assumes the wire nests too. When a courier's API, fixed by someone else, lists a pickup point's [`Address`](basics.md#your-first-mapping) as plain `street`, `city` and `postcode` fields, no single wire component holds it, so no leaf can map it. `@Flatten` on a marker named after the component spreads it instead:
 
 ``` java
-record Vendor(String name, Address address) {} // Address as on Record Mapping Basics
+// A courier's pickup point, whose API lists its address as plain fields.
+record PickupPoint(String name, Address address) {} // Address as on Record Mapping Basics
 
-record VendorDto(String name, String street, String city, String postcode) {} // fixed, flat
+record PickupPointDto(String name, String street, String city, String postcode) {} // flat
 
 @GenerateMapping
-interface VendorMapping extends MappingSpec<Vendor, VendorDto> {
+interface PickupPointMapping extends MappingSpec<PickupPoint, PickupPointDto> {
   @Flatten
   Address address(); // spread by name: street, city and postcode
 }
 
 
-    VendorMappingImpl vendorMapping = VendorMappingImpl.INSTANCE;
+    PickupPointMappingImpl pickupMapping = PickupPointMappingImpl.INSTANCE;
 
-    VendorDto flat =
-        vendorMapping.build(new Vendor("Acme", new Address("1 High Street", "Leeds", "LS1 4AP")));
-    // VendorDto[name=Acme, street=1 High Street, city=Leeds, postcode=LS1 4AP]
-    Validated<NonEmptyList<FieldError>, Vendor> missing =
-        vendorMapping.parse(new VendorDto("Acme", null, "Leeds", null));
+    PickupPointDto flat =
+        pickupMapping.build(
+            new PickupPoint("Kirkstall", new Address("1 High Street", "Leeds", "LS1 4AP")));
+    // PickupPointDto[name=Kirkstall, street=1 High Street, city=Leeds, postcode=LS1 4AP]
+    Validated<NonEmptyList<FieldError>, PickupPoint> missing =
+        pickupMapping.parse(new PickupPointDto("Kirkstall", null, "Leeds", null));
     // Invalid(NonEmptyList[address.street: must not be null, address.postcode: must not be null])
 ```
 
 ```mermaid
 flowchart LR
     accTitle: A flattened address
-    accDescr: Each member of the domain's Address record, address.street, address.city and address.postcode, pairs by name with the flat VendorDto field of the same name.
-    subgraph D["Vendor.address"]
+    accDescr: Each member of the domain's Address record, address.street, address.city and address.postcode, pairs by name with the flat PickupPointDto field of the same name.
+    subgraph D["PickupPoint.address"]
         AS["address.street"]
         AC["address.city"]
         AP["address.postcode"]
     end
-    subgraph W["VendorDto"]
+    subgraph W["PickupPointDto"]
         S["street"]
         C["city"]
         P["postcode"]
@@ -47784,7 +47794,7 @@ flowchart LR
 
 In words: each member of the address pairs with the flat field of the same name, so a bad `street` comes back as `address.street`.
 
-The record's components, spread this way, are the **group**. `parse` builds the `Address` from those fields, with their failures accumulating beside the vendor's, at the domain path `address.street`. The flat wire never sent that name, but like a [rename](basics.md#renames-mapfield), a path always uses domain names.
+The record's components, spread this way, are the **group**. `parse` builds the `Address` from those fields, with their failures accumulating beside the pickup point's, at the domain path `address.street`. The flat wire never sent that name, but like a [rename](basics.md#renames-mapfield), a path always uses domain names.
 
 The vocabulary applies inside the group by name:
 
@@ -48316,7 +48326,7 @@ Every spec whose records carry an email repeats the same `default ValidatedPrism
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-self-mixin-answer"
-**In a mix-in**: a plain interface holding the leaf, which each spec extends alongside `MappingSpec`. An inherited leaf counts as if the spec declared it wherever a component matches it, and stays inert where none does, so `TagMapping` is accepted too:
+**In a mix-in**: a plain interface holding the leaf, which each spec extends alongside `MappingSpec`. An inherited leaf counts as if the spec declared it wherever a component matches it, and stays inert where none does, so `WarehouseMapping` is accepted too:
 
 <!-- verify -->
 ```java
@@ -48326,19 +48336,19 @@ interface EmailVocabulary {
   }
 }
 
-record Lead(String name, EmailAddress email) {}
+record Courier(String name, EmailAddress email) {} // as on Record Mapping Basics
 
-record LeadDto(String name, String email) {}
+record CourierDto(String name, String email) {}
 
-record Tag(String label) {}
+record Warehouse(String code, int bays) {} // as on Record Mapping Basics
 
-record TagDto(String label) {}
-
-@GenerateMapping
-interface LeadMapping extends EmailVocabulary, MappingSpec<Lead, LeadDto> {}
+record WarehouseDto(String code, int bays) {}
 
 @GenerateMapping
-interface TagMapping extends EmailVocabulary, MappingSpec<Tag, TagDto> {}
+interface CourierMapping extends EmailVocabulary, MappingSpec<Courier, CourierDto> {}
+
+@GenerateMapping
+interface WarehouseMapping extends EmailVocabulary, MappingSpec<Warehouse, WarehouseDto> {}
 ```
 
 Where this lives: [Shared vocabulary: mix-in interfaces](codecs.md#shared-vocabulary-mix-in-interfaces).
@@ -48349,12 +48359,12 @@ Does `@GenerateMapping` accept this pair as written? Say what happens to a `null
 
 <!-- verify:rejects "Add '@OptionalBridge java.util.Optional<java.lang.String> phone();' to the spec" -->
 ```java
-record Guest(String name, Optional<String> phone) {}
+record Driver(String name, Optional<String> phone) {} // drives for a courier firm
 
-record GuestDto(String name, String phone) {}
+record DriverDto(String name, String phone) {}
 
 @GenerateMapping
-interface GuestMapping extends MappingSpec<Guest, GuestDto> {}
+interface DriverMapping extends MappingSpec<Driver, DriverDto> {}
 ```
 ~~~
 
@@ -48377,7 +48387,7 @@ The processor refuses this spec. Write what it needs, using `StandardCodecs`.
 ```java
 enum Priority { LOW, HIGH }
 
-record Ticket(UUID id, Priority priority) {}
+record Ticket(UUID id, Priority priority) {} // a support desk ticket
 
 record TicketDto(String id, String priority) {}
 
@@ -48546,16 +48556,15 @@ Where this lives: [Sealed hierarchies](structure.md#sealed-hierarchies).
 ~~~
 
 ~~~admonish question title="Checkpoint 9: would you approve it?" id="check-self-trap"
-A teammate used to MapStruct binds the mapper on the spec itself, so every caller can write `VisitorMapping.MAPPER`:
+A teammate used to MapStruct binds the mapper on the spec itself, so every caller can write `CustomerSummaryMapping.MAPPER`:
 
 ``` java
-record Visitor(String name, EmailAddress email) {}
-
-record VisitorDto(String name, String email) {}
+// The chapter's Customer, on the wire an order summary shows it on.
+record CustomerSummaryDto(String name, String email) {}
 
 @GenerateMapping
-interface VisitorMapping extends MappingSpec<Visitor, VisitorDto> {
-  VisitorMappingImpl MAPPER = VisitorMappingImpl.INSTANCE;
+interface CustomerSummaryMapping extends MappingSpec<Customer, CustomerSummaryDto> {
+  CustomerSummaryMappingImpl MAPPER = CustomerSummaryMappingImpl.INSTANCE;
 
   default ValidatedPrism<String, EmailAddress> email() {
     return EmailCodecs.EMAIL;
@@ -48564,16 +48573,16 @@ interface VisitorMapping extends MappingSpec<Visitor, VisitorDto> {
 
 ```
 
-It compiles, and the teammate's test, which calls `VisitorMapping.MAPPER.parse(...)`, passes. Would you approve it? If not, say what fails, and when.
+It compiles, and the teammate's test, which calls `CustomerSummaryMapping.MAPPER.parse(...)`, passes. Would you approve it? If not, say what fails, and when.
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-self-trap-answer"
-**No.** The Impl implements the spec, and the spec declares an instance method with a body (its email leaf). So initialising the Impl initialises the spec first. A program that reads `VisitorMapping.MAPPER` first is fine, which is why the test passes. A program that uses `VisitorMappingImpl.INSTANCE` first evaluates the constant while the Impl's `INSTANCE` is still `null`, and the constant keeps that `null` for good:
+**No.** The Impl implements the spec, and the spec declares an instance method with a body (its email leaf). So initialising the Impl initialises the spec first. A program that reads `CustomerSummaryMapping.MAPPER` first is fine, which is why the test passes. A program that uses `CustomerSummaryMappingImpl.INSTANCE` first evaluates the constant while the Impl's `INSTANCE` is still `null`, and the constant keeps that `null` for good:
 
 ``` java
     // Two programs, each loading this package afresh, so neither sees what the other ran:
-    assertThat(mapperAfterFirstUsing("VisitorMapping")).isNotNull(); // the spec first
-    assertThat(mapperAfterFirstUsing("VisitorMappingImpl")).isNull(); // the Impl first
+    assertThat(mapperAfterFirstUsing("CustomerSummaryMapping")).isNotNull(); // the spec first
+    assertThat(mapperAfterFirstUsing("CustomerSummaryMappingImpl")).isNull(); // the Impl first
 ```
 
 Which class a program reaches first depends on its code paths, so the failure comes and goes. Bind the Impl in the calling code instead: a local, a field of the calling class, or an injected `ValidatedPrism`.
@@ -49176,20 +49185,20 @@ Where this lives: [Bean-shaped wire targets](#bean-shaped-wire-targets).
 ~~~
 
 ~~~admonish question title="Checkpoint: which methods does the Impl carry?" id="check-beans-direction"
-A vendor SDK builds this `InvoiceView` through its public constructor:
+A payments SDK builds this `CreditNoteView` through its public constructor:
 
 <!-- verify:reports "maps parse-only" -->
 ```java
 import org.higherkindedj.optics.annotations.GenerateMapping;
 import org.higherkindedj.optics.annotations.MappingSpec;
 
-record Invoice(String number, String currency) {}
+record CreditNote(String number, String currency) {}
 
-final class InvoiceView {
+final class CreditNoteView {
   private final String number;
   private final String currency;
 
-  public InvoiceView(String number, String currency) {
+  public CreditNoteView(String number, String currency) {
     this.number = number;
     this.currency = currency;
   }
@@ -49200,10 +49209,10 @@ final class InvoiceView {
 }
 
 @GenerateMapping
-interface InvoiceViewMapping extends MappingSpec<Invoice, InvoiceView> {}
+interface CreditNoteViewMapping extends MappingSpec<CreditNote, CreditNoteView> {}
 ```
 
-What does `InvoiceViewMappingImpl` carry?
+What does `CreditNoteViewMappingImpl` carry?
 
 1. `build` and `parse`: `build` can call the public constructor
 2. `parse` only
@@ -49212,12 +49221,12 @@ What does `InvoiceViewMappingImpl` carry?
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-beans-direction-answer"
-**2.** `build` writes a bean through setters or a builder, never a constructor that takes arguments, and `InvoiceView` has neither. It has getters, so it maps parse-only, and the processor says so in a compiler note:
+**2.** `build` writes a bean through setters or a builder, never a constructor that takes arguments, and `CreditNoteView` has neither. It has getters, so it maps parse-only, and the processor says so in a compiler note:
 
 ```
-@GenerateMapping: 'InvoiceView' maps parse-only: the generated Impl carries parse and
-asValidatedParse(), and no build. 'InvoiceView' has getters but no setX setters and no builder that
-fills it, so nothing can write it. If 'InvoiceView' should be built too, give it a no-args
+@GenerateMapping: 'CreditNoteView' maps parse-only: the generated Impl carries parse and
+asValidatedParse(), and no build. 'CreditNoteView' has getters but no setX setters and no builder
+that fills it, so nothing can write it. If 'CreditNoteView' should be built too, give it a no-args
 constructor with setX setters matching its getters, or a builder.
 ```
 
@@ -49384,15 +49393,15 @@ This is not the REST PATCH contract, even when the bean is a PATCH request: an u
 Some beans leave an accessor unpaired on purpose: a getter with no setter, or a setter with no getter. You need to say so only when the processor refuses the accessor, which it does when the accessor is named after a domain component, as the likely misspelling. A response DTO reused as a PATCH body, from [Sparse PATCH](beans_patch.md), carries a server-assigned `getId()` the client must not change. Declare the omission deliberate with an abstract `@Unmapped` marker named after the *accessor's* property. It is MapStruct's `ignore = true`, except that it names the wire's accessor, and only withholds the refusal:
 
 ``` java
-// A tenant record whose id the server assigns, and a PATCH body shared with the GET response: it
-// reads the id and has no setter for it, so the client cannot change it.
-record Tenant(String id, String name) {}
+// A marketplace merchant whose id the server assigns, and a PATCH body shared with the GET
+// response: it reads the id and has no setter for it, so the client cannot change it.
+record Merchant(String id, String name) {}
 
-class TenantPatchBean {
+class MerchantPatchBean {
   private String name;
 
   public String getId() {
-    return "t-9"; // whatever the body carries, the update never applies it
+    return "m-9"; // whatever the body carries, the update never applies it
   }
 
   public String getName() {
@@ -49405,9 +49414,9 @@ class TenantPatchBean {
 }
 
 @GenerateMapping
-interface TenantPatchMapping extends UpdateSpec<Tenant, TenantPatchBean> {
+interface MerchantPatchMapping extends UpdateSpec<Merchant, MerchantPatchBean> {
   // getId() has no setter, so it is no property of the mapping, and 'id' names a component of
-  // Tenant: without the marker the mapping is refused, in case the accessor is a misspelt pair.
+  // Merchant: without the marker the mapping is refused, in case the accessor is a misspelt pair.
   // The marker says the omission is deliberate. It withholds the refusal and nothing else: the
   // update folds 'name' and never reads getId().
   @Unmapped
@@ -49415,12 +49424,14 @@ interface TenantPatchMapping extends UpdateSpec<Tenant, TenantPatchBean> {
 }
 
 
-    TenantPatchBean tenantPatch = new TenantPatchBean();
-    tenantPatch.setName("Ada Lovelace");
+    MerchantPatchBean merchantPatch = new MerchantPatchBean();
+    merchantPatch.setName("Brightside Homeware");
 
-    Validated<NonEmptyList<FieldError>, Tenant> tenantPatched =
-        TenantPatchMappingImpl.INSTANCE.updateFrom(tenantPatch).apply(new Tenant("t-1", "Ada"));
-    // Valid(Tenant[id=t-1, name=Ada Lovelace]) - the t-9 the bean reads is never applied
+    Validated<NonEmptyList<FieldError>, Merchant> merchantPatched =
+        MerchantPatchMappingImpl.INSTANCE
+            .updateFrom(merchantPatch)
+            .apply(new Merchant("m-1", "Brightside"));
+    // Valid(Merchant[id=m-1, name=Brightside Homeware]) - the m-9 the bean reads is never applied
 ```
 
 The marker withholds the refusal, and nothing else: the component stays out of the mapping. On a `MappingSpec` that leaves the bean narrower than the domain, so the Impl becomes a [projection](#bean-projections), with `build` and `patch` and no `parse`. [What `@Unmapped` withholds](rules.md#what-unmapped-withholds) has the precise rule.
@@ -50023,9 +50034,9 @@ interface PageMapping<T> extends MappingSpec<Page<T>, PageDto<T>> {}
 
 
     // One generic Impl serves every instantiation, and the elements copy as they are.
-    Page<String> tags = new Page<>(List.of("fp", "hkt"), 2);
+    Page<String> tags = new Page<>(List.of("kitchen", "sale"), 2);
     PageDto<String> tagsDto = PageMappingImpl.<String>instance().build(tags);
-    // PageDto[items=[fp, hkt], total=2]
+    // PageDto[items=[kitchen, sale], total=2]
     Validated<NonEmptyList<FieldError>, Page<Integer>> counts =
         PageMappingImpl.<Integer>instance().parse(new PageDto<>(List.of(1, 2, 3), 3));
     // Valid(Page[items=[1, 2, 3], total=3])
@@ -50038,7 +50049,7 @@ A chained call such as `PageMappingImpl.<String>instance().build(tags)` gives Ja
     PageDto<String> again = tagPages.build(tags);
 ```
 
-Multi-parameter and bounded specs thread too (`ResultMapping<E, A>`, `RankedMapping<T extends Number>`), and a same-typed `default` leaf (`ValidatedPrism<T, T>`) is applied to each element. A threaded spec nests as well. The processor matches `Page<String>` against `Page<T>`, so `Report(Page<String> results)` uses `PageMappingImpl.<String>instance()`, and a generic outer spec passes its own variable straight through, as `PageMappingImpl.<T>instance()`.
+Multi-parameter and bounded specs thread too (`ResultMapping<E, A>`, `RankedMapping<T extends Number>`), and a same-typed `default` leaf (`ValidatedPrism<T, T>`) is applied to each element. A threaded spec nests as well. The processor matches `Page<String>` against `Page<T>`, so `TagSearch(Page<String> results)` uses `PageMappingImpl.<String>instance()`, and a generic outer spec passes its own variable straight through, as `PageMappingImpl.<T>instance()`.
 
 ---
 
@@ -50067,7 +50078,7 @@ A prism can be another mapping's `asValidatedPrism()`, so `CodecPageMappingImpl.
 `of(...)` takes one prism per abstract leaf, in the order the spec declares the leaves. Two leaves of the same type swap without a compile error, and each value then parses through the other's leaf, perhaps to a wrong value with no error at all. The generated `of(opens, closes)` names each parameter after its leaf, so your IDE's parameter hints show the order.
 ~~~
 
-Where a record nests an element-mapped spec, the processor composes it, so a `Catalogue(Page<EmailAddress> entries)` reports `entries.items.1: not an email address`. [How an element-mapped spec nests](rules.md#element-mapped-nesting) says what supplies each prism.
+Where a record nests an element-mapped spec, the processor composes it, so a `MailingList(Page<EmailAddress> entries)` reports `entries.items.1: not an email address`. [How an element-mapped spec nests](rules.md#element-mapped-nesting) says what supplies each prism.
 
 ~~~admonish note title="Declare one form for each pair a record nests"
 A generic spec covers every instantiation it matches, so it competes with a concrete spec for the same pair: `CodecPageMapping<T, TDto>` covers `Page<Customer>` against `PageDto<CustomerDto>` too. Declared side by side, as on this page, a record nesting `Page<Customer>` stops with [`matches more than one mapping spec`](compiler_errors.md#more-than-one-spec) until a leaf picks one. Declare one form for each pair a record nests.
@@ -50100,8 +50111,8 @@ How does code reach its generated Impl?
 **1.** The spec declares no type parameters of its own and no abstract leaf. It names `String`, so it is concrete, whatever the records declare, and a concrete Impl is reached through `INSTANCE` only:
 
 ``` java
-    PageDto<String> wire = TagPageMappingImpl.INSTANCE.build(new Page<>(List.of("fp"), 1));
-    assertThat(wire).isEqualTo(new PageDto<>(List.of("fp"), 1));
+    PageDto<String> wire = TagPageMappingImpl.INSTANCE.build(new Page<>(List.of("kitchen"), 1));
+    assertThat(wire).isEqualTo(new PageDto<>(List.of("kitchen"), 1));
 
     assertThatThrownBy(() -> TagPageMappingImpl.class.getMethod("instance"))
         .isInstanceOf(NoSuchMethodException.class); // no generic accessor
@@ -50111,15 +50122,15 @@ Where this lives: [One rule, three access shapes](#one-rule-three-access-shapes)
 ~~~
 
 ~~~admonish question title="Checkpoint: what does a swapped `of(...)` do?" id="check-generics-swap"
-A booking window's two dates come from two partner systems, `opens` as a UK date (`dd/MM/uuuu`) and `closes` as a US one (`MM/dd/uuuu`):
+A partner marketplace sends a sale period assembled by two of its systems, `opens` as a UK date (`dd/MM/uuuu`) and `closes` as a US one (`MM/dd/uuuu`):
 
 ``` java
-record Window<T>(T opens, T closes) {}
+record SalePeriod<T>(T opens, T closes) {}
 
-record WindowDto<TDto>(TDto opens, TDto closes) {}
+record SalePeriodDto<TDto>(TDto opens, TDto closes) {}
 
 @GenerateMapping
-interface WindowMapping<T, TDto> extends MappingSpec<Window<T>, WindowDto<TDto>> {
+interface SalePeriodMapping<T, TDto> extends MappingSpec<SalePeriod<T>, SalePeriodDto<TDto>> {
   ValidatedPrism<TDto, T> opens();
 
   ValidatedPrism<TDto, T> closes();
@@ -50127,7 +50138,7 @@ interface WindowMapping<T, TDto> extends MappingSpec<Window<T>, WindowDto<TDto>>
 
 ```
 
-The caller writes `WindowMappingImpl.of(us, uk)`, and parses `new WindowDto<>("03/04/2026", "05/04/2026")`. What happens?
+The caller writes `SalePeriodMappingImpl.of(us, uk)`, and parses `new SalePeriodDto<>("03/04/2026", "05/04/2026")`. What happens?
 
 1. A compile error: the prisms are in the wrong order
 2. It compiles, and `parse` reports both dates, located
@@ -50143,12 +50154,12 @@ The caller writes `WindowMappingImpl.of(us, uk)`, and parses `new WindowDto<>("0
         StandardCodecs.localDate(DateTimeFormatter.ofPattern("dd/MM/uuuu"));
     ValidatedPrism<String, LocalDate> us = // 05/04/2026 is 4 May
         StandardCodecs.localDate(DateTimeFormatter.ofPattern("MM/dd/uuuu"));
-    WindowDto<String> request = new WindowDto<>("03/04/2026", "05/04/2026");
+    SalePeriodDto<String> request = new SalePeriodDto<>("03/04/2026", "05/04/2026");
 
-    assertThatValidated(WindowMappingImpl.of(uk, us).parse(request)) // opens, then closes
-        .hasValue(new Window<>(LocalDate.of(2026, 4, 3), LocalDate.of(2026, 5, 4)));
-    assertThatValidated(WindowMappingImpl.of(us, uk).parse(request)) // swapped: it compiles
-        .hasValue(new Window<>(LocalDate.of(2026, 3, 4), LocalDate.of(2026, 4, 5))); // no error
+    assertThatValidated(SalePeriodMappingImpl.of(uk, us).parse(request)) // opens, then closes
+        .hasValue(new SalePeriod<>(LocalDate.of(2026, 4, 3), LocalDate.of(2026, 5, 4)));
+    assertThatValidated(SalePeriodMappingImpl.of(us, uk).parse(request)) // swapped: it compiles
+        .hasValue(new SalePeriod<>(LocalDate.of(2026, 3, 4), LocalDate.of(2026, 4, 5))); // no error
 ```
 
 When the caller does not need to choose the codec, a concrete spec with a `default` leaf on each field names the codec where it applies, and cannot be swapped.
@@ -50173,12 +50184,12 @@ interface Renames<T> {
 // The interface below it says what T is. The spec never repeats it, and never sees a T.
 interface TextRenames extends Renames<String> {}
 
-record Contractor(String name, EmailAddress email) {}
-
-record ContractorDto(String fullName, String email) {}
+// Record Mapping Basics' Courier(String name, EmailAddress email), on a carrier's roster of its
+// couriers, which calls the name fullName.
+record CourierRosterDto(String fullName, String email) {}
 
 @GenerateMapping
-interface ContractorMapping extends TextRenames, MappingSpec<Contractor, ContractorDto> {
+interface CourierRosterMapping extends TextRenames, MappingSpec<Courier, CourierRosterDto> {
   default ValidatedPrism<String, EmailAddress> email() {
     return EmailCodecs.EMAIL;
   }
@@ -50231,7 +50242,7 @@ Two more generators complete the family. `@GenerateMerge` covers the assembly a 
 A merge is declared entirely by a method's signature: two or more record sources in, one record target out. It is a MapStruct method with several source parameters, except that each target component fills from the one source that names it, and there is no rename. The processor generates no inverse, since a merge cannot be undone:
 
 ``` java
-record User(String name, String email) {}
+// Customer is the chapter's own, from Record Mapping Basics.
 
 record Account(String iban, int balance) {}
 
@@ -50241,13 +50252,13 @@ record Dashboard(String name, String iban, boolean darkMode) {}
 
 @GenerateMerge
 interface DashboardAssembly {
-  Dashboard assemble(User user, Account account, Settings settings);
+  Dashboard assemble(Customer customer, Account account, Settings settings);
 }
 
 
     Dashboard dashboard =
         DashboardAssemblyImpl.INSTANCE.assemble(
-            new User("Ada", "ada@corp.example"),
+            new Customer("Ada", new EmailAddress("ada@corp.example")),
             new Account("GB29-XXXX", 4200),
             new Settings(true));
     // Dashboard[name=Ada, iban=GB29-XXXX, darkMode=true]
@@ -50256,10 +50267,10 @@ interface DashboardAssembly {
 ```mermaid
 flowchart LR
     accTitle: How a merge fills
-    accDescr: Dashboard's name fills from User's name, its iban from Account's iban, and its darkMode from Settings' darkMode. User's email and Account's balance are not read.
+    accDescr: Dashboard's name fills from Customer's name, its iban from Account's iban, and its darkMode from Settings' darkMode. Customer's email and Account's balance are not read.
     subgraph S["the sources"]
-        UN["User.name"]
-        UE["User.email (not read)"]
+        CN["Customer.name"]
+        CE["Customer.email (not read)"]
         AI["Account.iban"]
         AB["Account.balance (not read)"]
         SD["Settings.darkMode"]
@@ -50269,34 +50280,37 @@ flowchart LR
         TI["iban"]
         TD["darkMode"]
     end
-    UN --> TN
+    CN --> TN
     AI --> TI
     SD --> TD
 
     classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
     classDef domain fill:#a6d189,stroke:#40a02b,color:#232634
-    class UN,UE,AI,AB,SD wire
+    class CN,CE,AI,AB,SD wire
     class TN,TI,TD domain
 ```
 
 In words: each of `Dashboard`'s components comes from the one source that names it, and a source component the target lacks is not read.
 
-A fill copies when the types match, and a same-typed container [crosses as a copy](rules.md#same-typed-containers-cross-as-copies). Otherwise it converts through a leaf, a `default` method on the merge interface named after the target component. Or it parses through a `@GenerateMapping` spec whose wire is the source component and whose domain is the target component. Here `customer` parses through `CustomerMappingImpl`, and a failure locates as a dotted path:
+A fill copies when the types match, and a same-typed container [crosses as a copy](rules.md#same-typed-containers-cross-as-copies). Otherwise it converts through a leaf, a `default` method on the merge interface named after the target component. Or it parses through a `@GenerateMapping` spec whose wire is the source component and whose domain is the target component. Here a support desk ticket takes its agent's department and parses its `customer` through `CustomerMappingImpl`, and a failure locates as a dotted path:
 
 ``` java
-record ProfileForm(CustomerDto customer) {} // the wire side
+// A support desk ticket: the department of the agent who opens it (an Employee, as on What Your
+// Spec Generates), and the customer a form describes.
+record TicketForm(CustomerDto customer) {} // the wire side
 
-record ProfileCard(String name, Customer customer) {} // the domain side
+record TicketCard(String department, Customer customer) {} // the domain side
 
 @GenerateMerge
-interface ProfileCardAssembly {
-  // ProfileCard.customer fills from ProfileForm.customer through CustomerMapping, which can fail.
-  Validated<NonEmptyList<FieldError>, ProfileCard> assemble(User user, ProfileForm form);
+interface TicketCardAssembly {
+  // TicketCard.department fills from the agent's; TicketCard.customer from TicketForm.customer,
+  // through CustomerMapping, which can fail.
+  Validated<NonEmptyList<FieldError>, TicketCard> assemble(Employee agent, TicketForm form);
 }
 
-    Validated<NonEmptyList<FieldError>, ProfileCard> card =
-        ProfileCardAssemblyImpl.INSTANCE.assemble(
-            new User("Ada", "ada@corp.example"), new ProfileForm(new CustomerDto("Bob", "nope")));
+    Validated<NonEmptyList<FieldError>, TicketCard> card =
+        TicketCardAssemblyImpl.INSTANCE.assemble(
+            new Employee("Grace", "Support", 41), new TicketForm(new CustomerDto("Bob", "nope")));
     // Invalid(NonEmptyList[customer.email: not an email address])
 ```
 
@@ -50408,7 +50422,7 @@ You can now assemble a domain value from several sources with a return type that
 ~~~
 
 ~~~admonish question title="Checkpoint: what does a plain-return merge do with a null?" id="check-merge-null"
-`DashboardAssembly`, from the start of the page, returns the plain `Dashboard`. What does it return for the same `Account` and `Settings` and a `User` whose name is `null`, `new User(null, "ada@corp.example")`?
+`DashboardAssembly`, from the start of the page, returns the plain `Dashboard`. What does it return for the same `Account` and `Settings` and a `Customer` loaded from a legacy row whose name is `null`, `new Customer(null, new EmailAddress("ada@corp.example"))`?
 
 1. It throws a `NullPointerException`
 2. `Invalid(NonEmptyList[name: must not be null])`
@@ -50422,7 +50436,9 @@ You can now assemble a domain value from several sources with a return type that
 ``` java
     Dashboard dashboard =
         DashboardAssemblyImpl.INSTANCE.assemble(
-            new User(null, "ada@corp.example"), new Account("GB29-XXXX", 4200), new Settings(true));
+            new Customer(null, new EmailAddress("ada@corp.example")),
+            new Account("GB29-XXXX", 4200),
+            new Settings(true));
 
     assertThat(dashboard).isEqualTo(new Dashboard(null, "GB29-XXXX", true)); // no check, no error
 ```
@@ -50543,7 +50559,7 @@ Unlike a MapStruct mapper, the spec interface is never the bean. Nothing registe
 | a build-only bean mapping's `build` | `ValidatedBuild<CustomerRequest, Customer>` | `CustomerRequestMappingImpl.INSTANCE.asValidatedBuild()` |
 | a projection's `set`, over plain copies | `Lens<Employee, EmployeeCardDto>` | `EmployeeCardMappingImpl.INSTANCE.asLens()` |
 | a validated `patch` | `BiFunction<Subscriber, SubscriberDetailsDto, Validated<NonEmptyList<FieldError>, Subscriber>>` | `SubscriberDetailsMappingImpl.INSTANCE::patch` |
-| a sparse `updateFrom` | `Function<UserPatchDto, Edits.Accumulated<User>>` | `UserPatchMappingImpl.INSTANCE::updateFrom` |
+| a sparse `updateFrom` | `Function<UserPatchRequest, Edits.Accumulated<User>>` | `UserPatchMappingImpl.INSTANCE::updateFrom` |
 
 A `ValidatedPrism` is both a `ValidatedParse` and a `ValidatedBuild`, so one registered prism serves a consumer that asks for either. For a boundary, register `asValidatedPrism()` rather than `asIso()`, which a spec with a leaf does not have anyway. [`reverseGet` has no guard](tiers.md#a-bound-request-goes-to-parse), and neither does a lens's `set`. This is the hkj-spring example app's real configuration, included from source:
 
@@ -51562,7 +51578,7 @@ A one-directional mapping follows these rules:
 
 | The element-mapped spec has | Each prism comes from |
 |---|---|
-| one abstract leaf | a leaf on the using spec, named after the component and typed at the **element** pair (for `record Inbox(Page<EmailAddress> entries)`, `default ValidatedPrism<String, EmailAddress> entries()`), and otherwise another registered mapping for the element pair |
+| one abstract leaf | a leaf on the using spec, named after the component and typed at the **element** pair (for `record MailingList(Page<EmailAddress> entries)`, `default ValidatedPrism<String, EmailAddress> entries()`), and otherwise another registered mapping for the element pair |
 | several abstract leaves | another registered mapping for each element pair, in this module or a dependency: one leaf on the using spec cannot say which of them it replaces |
 
 The registered mapping may itself be a composition, resolved the same way. A failure locates through the whole path, `entries.items.1: not an email address`. When nothing supplies an element pair, the processor refuses the use site:
