@@ -568,9 +568,10 @@ interface ContactPatchMapping extends UpdateSpec&lt;Customer, ContactPatchBean&g
 </div>
 <div>
 <p>The processor accepts this spec without a warning:</p>
-<pre><code class="language-java">record Article(String title, List&lt;String&gt; tags) {}
+<pre><code class="language-java">// A help-centre article, which a PATCH may retitle.
+record HelpArticle(String title, List&lt;String&gt; tags) {}
 
-class ArticlePatchBean {
+class HelpArticlePatchBean {
   private String title;
   private List&lt;String&gt; tags = new ArrayList&lt;&gt;();
 
@@ -592,10 +593,10 @@ class ArticlePatchBean {
 }
 
 @GenerateMapping
-interface ArticlePatchMapping extends UpdateSpec&lt;Article, ArticlePatchBean&gt; {}
+interface HelpArticlePatchMapping extends UpdateSpec&lt;HelpArticle, HelpArticlePatchBean&gt; {}
 
 </code></pre>
-<p>An article is tagged <code>java</code> and <code>patch</code>. A client sends <code>{"title": "Sparse PATCH"}</code>. What are its tags afterwards? And would an identity-law test whose sample article has no tags catch it?</p>
+<p>A help-centre article is tagged <code>refunds</code> and <code>returns</code>. A client sends <code>{"title": "Refunds and returns"}</code>. What are its tags afterwards? And would an identity-law test whose sample article has no tags catch it?</p>
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -608,30 +609,33 @@ interface ArticlePatchMapping extends UpdateSpec&lt;Article, ArticlePatchBean&gt
 </summary>
 <div>
 <p><strong>An empty list, and no.</strong> The field initialiser makes <code>getTags()</code> answer an empty list on every request that omits <code>tags</code>. An empty list is not <code>null</code>, so <code>updateFrom</code> reads it as sent and writes it over the article's tags. A tagless sample hides it, since <code>[]</code> written over <code>[]</code> changes nothing, just as the marketing tests did. With the tagged article, the identity law fails:</p>
-<pre><code class="language-java">    Article tagged = new Article("Draft", List.of("java", "patch"));
-    ArticlePatchBean rename = new ArticlePatchBean();
-    rename.setTitle("Sparse PATCH");
+<pre><code class="language-java">    HelpArticle tagged = new HelpArticle("Refund policy", List.of("refunds", "returns"));
+    HelpArticlePatchBean rename = new HelpArticlePatchBean();
+    rename.setTitle("Refunds and returns");
 
-    assertThatValidated(ArticlePatchMappingImpl.INSTANCE.updateFrom(rename).apply(tagged))
-        .hasValue(new Article("Sparse PATCH", List.of())); // the tags are gone
+    assertThatValidated(HelpArticlePatchMappingImpl.INSTANCE.updateFrom(rename).apply(tagged))
+        .hasValue(new HelpArticle("Refunds and returns", List.of())); // the tags are gone
 
     // On an article with no tags the identity law passes: [] written over [] changes nothing...
     MappingLaws.assertSparseIdentity(
-        ArticlePatchMappingImpl.INSTANCE::updateFrom,
-        new Article("Draft", List.of()),
-        new ArticlePatchBean());
+        HelpArticlePatchMappingImpl.INSTANCE::updateFrom,
+        new HelpArticle("Refund policy", List.of()),
+        new HelpArticlePatchBean());
 
     // ...and on one with tags it fails, with the message your build would report:
     assertThatThrownBy(
             () -&gt;
                 MappingLaws.assertSparseIdentity(
-                    ArticlePatchMappingImpl.INSTANCE::updateFrom, tagged, new ArticlePatchBean()))
+                    HelpArticlePatchMappingImpl.INSTANCE::updateFrom,
+                    tagged,
+                    new HelpArticlePatchBean()))
         .hasMessageContaining(
-            "Sparse identity law: updateFrom(allAbsentWire).apply(Article[title=Draft, tags=[java,"
-                + " patch]]) == Valid(it); got Valid(Article[title=Draft, tags=[]])");
+            "Sparse identity law: updateFrom(allAbsentWire).apply(HelpArticle[title=Refund policy,"
+                + " tags=[refunds, returns]]) == Valid(it); got Valid(HelpArticle[title=Refund"
+                + " policy, tags=[]])");
 </code></pre>
 <p>Your build reports it as:</p>
-<pre><code>Sparse identity law: updateFrom(allAbsentWire).apply(Article[title=Draft, tags=[java, patch]]) == Valid(it); got Valid(Article[title=Draft, tags=[]])
+<pre><code>Sparse identity law: updateFrom(allAbsentWire).apply(HelpArticle[title=Refund policy, tags=[refunds, returns]]) == Valid(it); got Valid(HelpArticle[title=Refund policy, tags=[]])
 </code></pre>
 <p>Where this lives: <a href="#patch-getters-answer-null">A PATCH getter must answer <code>null</code> until set</a> and <a href="#check-a-patch-in-your-build">Check a PATCH bean in your build</a>.</p>
 </div>
@@ -645,7 +649,7 @@ interface ArticlePatchMapping extends UpdateSpec&lt;Article, ArticlePatchBean&gt
 <a class="admonition-anchor-link" href="#check-patch-json-states"></a>
 </div>
 <div>
-<p>An author's nickname is <code>Countess</code>, and the PATCH bean declares <code>Optional&lt;String&gt; nickname</code>. What does each body leave it as: <code>{}</code>, <code>{"nickname": null}</code>, and <code>{"nickname": "Lady Lovelace"}</code>? And what would <code>{"name": null}</code> do to the author's plain <code>String name</code>?</p>
+<p>A customer profile's nickname is <code>Countess</code>, and the PATCH bean declares <code>Optional&lt;String&gt; nickname</code>. What does each body leave it as: <code>{}</code>, <code>{"nickname": null}</code>, and <code>{"nickname": "Lady Lovelace"}</code>? And what would <code>{"name": null}</code> do to the profile's plain <code>String name</code>?</p>
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.10"></div>
@@ -658,13 +662,14 @@ interface ArticlePatchMapping extends UpdateSpec&lt;Article, ArticlePatchBean&gt
 </summary>
 <div>
 <p><strong><code>Countess</code>, empty, <code>Lady Lovelace</code>, and nothing.</strong> An omitted field reads <code>null</code>, so it keeps. Jackson binds an explicit <code>null</code> on an <code>Optional</code> property to <code>Optional.empty()</code>, which clears. A value sets. A plain property has no third state, so its <code>null</code> keeps the name, and a client cannot clear it. Bound by Jackson, as a Spring controller would:</p>
-<pre><code class="language-java">    Author ada = new Author("Ada", Optional.of("Countess"));
+<pre><code class="language-java">    CustomerProfile ada = new CustomerProfile("Ada", Optional.of("Countess"), Optional.empty());
 
     assertThatValidated(applyJson(ada, "{}")).hasValue(ada); // omitted: kept
     assertThatValidated(applyJson(ada, "{\"nickname\": null}"))
-        .hasValue(new Author("Ada", Optional.empty())); // an Optional's null: cleared
+        .hasValue(new CustomerProfile("Ada", Optional.empty(), Optional.empty())); // cleared
     assertThatValidated(applyJson(ada, "{\"nickname\": \"Lady Lovelace\"}"))
-        .hasValue(new Author("Ada", Optional.of("Lady Lovelace"))); // a value: set
+        .hasValue(
+            new CustomerProfile("Ada", Optional.of("Lady Lovelace"), Optional.empty())); // set
     assertThatValidated(applyJson(ada, "{\"name\": null}")).hasValue(ada); // a plain null: kept
 </code></pre>
 <p>Where this lives: <a href="#what-each-json-state-does">What each JSON state does</a>.</p>
@@ -745,21 +750,22 @@ interface PriceBandPatchMapping extends UpdateSpec&lt;PriceBand, PriceBandPatch&
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <pre><code class="language-java">record PhoneNumber(String value) {}
 
-record Roster(String team, List&lt;PhoneNumber&gt; phones) {}
+// A high-street store's phone lines: a PATCH that sends the list replaces it whole.
+record Store(String name, List&lt;PhoneNumber&gt; phones) {}
 
-record RosterDto(String team, List&lt;String&gt; phones) {} // the full tier's wire
+record StoreDto(String name, List&lt;String&gt; phones) {} // the full tier's wire
 
 // A PATCH bean whose phones property is a whole-list replacement, absent when null.
-class RosterPatchBean {
-  private String team;
+class StorePatchBean {
+  private String name;
   private List&lt;String&gt; phones;
 
-  public String getTeam() {
-    return team;
+  public String getName() {
+    return name;
   }
 
-  public void setTeam(String team) {
-    this.team = team;
+  public void setName(String name) {
+    this.name = name;
   }
 
   public List&lt;String&gt; getPhones() {
@@ -784,25 +790,25 @@ interface PhoneVocabulary {
 }
 
 @GenerateMapping
-interface RosterMapping extends PhoneVocabulary, MappingSpec&lt;Roster, RosterDto&gt; {}
+interface StoreMapping extends PhoneVocabulary, MappingSpec&lt;Store, StoreDto&gt; {}
 
 // The full tier lifts the leaf elementwise: a bad element parses as phones.1.
 
 @GenerateMapping
-interface RosterPatchMapping extends PhoneVocabulary, UpdateSpec&lt;Roster, RosterPatchBean&gt; {}
+interface StorePatchMapping extends PhoneVocabulary, UpdateSpec&lt;Store, StorePatchBean&gt; {}
 
 // The sparse tier lifts the SAME leaf: a present list replaces wholesale, each element parsed,
 // failures located phones.1 - one vocabulary, both tiers.
 
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<pre><code class="language-java">    Roster roster = new Roster("core", List.of(new PhoneNumber("+44")));
+<pre><code class="language-java">    Store store = new Store("Leeds", List.of(new PhoneNumber("+44")));
 
-    RosterPatchBean rosterPatch = new RosterPatchBean();
-    rosterPatch.setPhones(List.of("+1", "nope")); // a present list replaces wholesale...
+    StorePatchBean storePatch = new StorePatchBean();
+    storePatch.setPhones(List.of("+1", "nope")); // a present list replaces wholesale...
 
-    Validated&lt;NonEmptyList&lt;FieldError&gt;, Roster&gt; rosterPatched =
-        RosterPatchMappingImpl.INSTANCE.updateFrom(rosterPatch).apply(roster);
+    Validated&lt;NonEmptyList&lt;FieldError&gt;, Store&gt; storePatched =
+        StorePatchMappingImpl.INSTANCE.updateFrom(storePatch).apply(store);
     // ...but each element parses through the phones() leaf, located:
     // Invalid(NonEmptyList[phones.1: not a phone number])
 </code></pre>
@@ -810,11 +816,11 @@ interface RosterPatchMapping extends PhoneVocabulary, UpdateSpec&lt;Roster, Rost
 <p>The same laws hold over container elements:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <pre><code class="language-java">    MappingLaws.assertMappingLaws(
-        RosterPatchMappingImpl.INSTANCE::updateFrom,
-        new Roster("core", List.of(new PhoneNumber("+44"))), // the current value
-        new RosterPatchBean(), // all-absent, as bound from {} -&gt; identity
-        rosterPatch(null, List.of("+1", "+353")), // present valid -&gt; wholesale replacement
-        rosterPatch(null, List.of("+1", "nope"))); // bad element   -&gt; located phones.1
+        StorePatchMappingImpl.INSTANCE::updateFrom,
+        new Store("Leeds", List.of(new PhoneNumber("+44"))), // the current value
+        new StorePatchBean(), // all-absent, as bound from {} -&gt; identity
+        storePatch(null, List.of("+1", "+353")), // present valid -&gt; wholesale replacement
+        storePatch(null, List.of("+1", "nope"))); // bad element   -&gt; located phones.1
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.10"></div>
 <p><a href="rules.html#patch-containers">Containers patch through the element leaf</a> covers a whole-container leaf and a nested spec.</p>
