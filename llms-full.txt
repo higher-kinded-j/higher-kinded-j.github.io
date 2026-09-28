@@ -20558,7 +20558,7 @@ A lawful validated boundary satisfies both round trips, verified with [`Validate
 
 The second law is the subtle one, and it constrains the pair, not either direction alone: every accepted wire value must rebuild to exactly itself: `build(parse(s).get()) == s` whenever `s` parses. `build` is free to define the canonical spelling (zero-padded dates, lowercase hex); what the law demands is that `parse` accept exactly the spelling `build` renders. A normalising parse (trimming whitespace, folding case) accepts an `s` that `build` cannot reproduce, which is exactly the lossy round trip the law forbids. Pick the wire's canonical form (the one `build` renders), accept it alone, and reject every other spelling with a located error.
 
-That discipline need not be hand-written. The natural way to write a codec (wrap a throwing JDK parser, render on the way out) silently violates the section law whenever the parser is more lenient than the renderer (`UUID.fromString` accepts uppercase; `toString` renders lowercase). `ValidatedPrism.canonical(message, parse, render)` builds the guard into the leaf: every accepted source is checked to render back to exactly itself, so the lenient parse is fine. The render defines the canon, and any spelling it cannot reproduce is a located rejection, never a silent normalisation. Any `RuntimeException` from the parse or the render inside the guard is the same located rejection, never an exception on wire input. The canonical form is whatever `render` says it is, so a wire whose canon differs from the JDK's is served lawfully:
+That discipline need not be hand-written. The natural way to write a codec (wrap a throwing JDK parser, render on the way out) silently violates the section law whenever the parser is more lenient than the renderer (`UUID.fromString` accepts uppercase; `toString` renders lowercase). `ValidatedPrism.canonical(message, parse, render)` builds the guard into the leaf: every accepted source is checked to render back to exactly itself, so the lenient parse is fine. The render defines the canon, and any spelling it cannot reproduce is a located rejection, never a silent normalisation. Any `RuntimeException` from the parse or the render inside the guard is the same located rejection, never an exception on wire input. A parse that answers `null` is rejected too, before the render and without an exception, so a shape check in front of a throwing parser spares its stack trace. The canonical form is whatever `render` says it is, so a wire whose canon differs from the JDK's is served lawfully:
 
 ``` java
   // An uppercase-UUID wire (SQL Server): the canonical form is THEIRS, lawfully
@@ -46509,6 +46509,8 @@ interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {
     // Invalid(NonEmptyList[email: not an email address])
 ```
 
+The Impl reads the leaf once, on first use, and keeps what it answers, as [Your own canon](codecs.md#your-own-canon) explains.
+
 The two type-argument orders are opposite. `ValidatedPrism<Wire, Domain>` reads the way `parse` runs, from wire to domain. `MappingSpec<Domain, Wire>` puts your domain type first.
 
 The failure is a value, not an exception. It names the field by the domain component's name, whatever key the JSON used, as [Renames](#renames-mapfield) explains. With several bad fields, `parse` reports them all at once, so the client fixes everything in one round trip. Outside a controller, `fold` the result, with one function for the errors and one for the value. `Valid` and `Invalid` are records, so a `switch` works too:
@@ -46986,6 +46988,20 @@ interface PalletMapping extends MappingSpec<Pallet, PalletDto> {
 A pattern's canon is everything the pattern writes, not just what one producer sends. So `BROWSER_OFFSET` also accepts a `+01:00` offset a browser never sends, lawfully, and rejects extra fraction digits, which the pattern has no room for.
 
 Conversions the vocabulary does not cover stay hand-written leaves: `ValidatedPrism.canonical(...)` where a throwing parser and a render exist, `ValidatedPrism.of(...)` for full control.
+
+A parse given to `canonical` may also answer `null`, which is a rejection that costs no exception. So a leaf that meets malformed input often can check the source's shape first, and answer `null` for a bad one, before a JDK parser builds a stack trace. The stock codecs do this.
+
+~~~admonish warning title="Not checked for you: a leaf answers once, for every caller"
+The generated Impl reads each leaf once, on first use, and keeps what it answers for every caller, on every thread. So a leaf that picks its codec on each call, from a flag, a system property or a field a test changes, keeps its first pick. Make a choice that must vary inside the codec's parse. A codec built over `SimpleDateFormat` or `DecimalFormat` would be shared by threads that each assume it is theirs, so build over `DateTimeFormatter` instead.
+
+```java
+    // enumByName builds a new codec on every call...
+    assertThat(StandardCodecs.enumByName(OrderStatus.class))
+        .isNotSameAs(StandardCodecs.enumByName(OrderStatus.class));
+    // ...but the Impl answers the one its status() leaf built first, every time
+    assertThat(OrderMappingImpl.INSTANCE.status()).isSameAs(OrderMappingImpl.INSTANCE.status());
+```
+~~~
 
 ---
 
@@ -49994,7 +50010,7 @@ Two questions about the spec decide its form, and so how you reach its Impl. Doe
 
 | Form | The spec | Use when | Access | Why |
 |---|---|---|---|---|
-| Concrete | names its type arguments: `MappingSpec<Page<Customer>, PageDto<CustomerDto>>` | one element type | `XImpl.INSTANCE` only | no type parameters and no state: a plain constant |
+| Concrete | names its type arguments: `MappingSpec<Page<Customer>, PageDto<CustomerDto>>` | one element type | `XImpl.INSTANCE` only | no type parameters: a plain constant |
 | Threaded | declares its own: `PageMapping<T>`, over `MappingSpec<Page<T>, PageDto<T>>` | both sides hold the same element type, copied as is | `XImpl.instance()` | a static field cannot mention `T`, so one shared instance sits behind a generic method, as with `Collections.emptyList()` |
 | Element-mapped | declares an abstract leaf, `ValidatedPrism<TDto, T> items()` | the element types differ, and the caller picks the conversion | `XImpl.of(prisms)` | it carries the caller's prisms: each `of(...)` call is a fresh, immutable instance |
 
@@ -51166,6 +51182,8 @@ import org.higherkindedj.optics.validated.ValidatedPrism;
 public final class PersonMappingImpl implements PersonMapping {
   public static final PersonMappingImpl INSTANCE = new PersonMappingImpl();
 
+  private final ValidatedPrism<PersonDto, Person> hkj$adapter = ValidatedPrism.of(this::parse, this::build);
+
   private PersonMappingImpl() {
   }
 
@@ -51188,7 +51206,7 @@ public final class PersonMappingImpl implements PersonMapping {
    * This mapping as a {@link ValidatedPrism} leaf, so other mappings can nest it directly or lift it through containers.
    */
   public ValidatedPrism<PersonDto, Person> asValidatedPrism() {
-    return ValidatedPrism.of(this::parse, this::build);
+    return hkj$adapter;
   }
 
   /**
@@ -51276,8 +51294,8 @@ unset property is an ordinary state. [What Your Spec Generates](tiers.md) explai
 ## What it costs
 
 - **Compile time**, not run time: the Impl is generated once, per build.
-- **No reflection and no startup scan.** A concrete Impl is a stateless singleton; an
-  element-mapped one carries its leaf prisms and is built by `of(...)`.
+- **No reflection and no startup scan.** A concrete Impl is a singleton that keeps each leaf after
+  its first use; an element-mapped one carries its leaf prisms and is built by `of(...)`.
 - **One `Validated` per field read** on the parse side, which is the price of accumulating errors
   rather than throwing on the first.
 - **Lines of spec per field**: nothing for an identical field, one for a rename, one for a stock
@@ -51525,6 +51543,7 @@ Nothing refuses these at compile time. Each is a runtime surprise, linked to the
 | [A sealed request body got a 500, with no field path](structure.md#sealed-hierarchies) | Jackson cannot pick a subtype without type information: annotate the wire interface with `@JsonTypeInfo`. |
 | [A field the client left out reports `must not be null`](absence.md#optional-bridge) | Only `@OptionalBridge` lets a field be left out; a whole-`Optional` leaf still rejects `null`. |
 | [A PATCH that omits a field overwrote the stored value](beans_patch.md#patch-getters-answer-null) | A default the bean gives itself reads as sent: leave PATCH bean fields uninitialised. |
+| [A leaf's codec never changes after the first call, or misreads under load](codecs.md#your-own-canon) | The Impl reads each leaf once and shares its answer: choose inside the codec's parse, and build over thread-safe parts. |
 | [An explicit JSON `null` cleared an `Optional` PATCH property](beans_patch.md#what-each-json-state-does) | Jackson binds it to `Optional.empty()`, which means *clear* there: omit the field to leave it unchanged. |
 | [`build` throws on an empty `Optional`](beans.md#bean-shaped-wire-targets) | A setter, builder or record constructor rejects `null` without declaring it: drop the `Optional`, or encode absence in a leaf. |
 | [Adding to a built wire's list throws `UnsupportedOperationException`](structure.md#nesting-containers-and-recursion) | A same-typed container crosses as an unmodifiable copy: set a new list, or copy it first. |
@@ -100107,6 +100126,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **A generated mapping reads each leaf once, and turns a bad field away without an exception** ([#952](https://github.com/higher-kinded-j/higher-kinded-j/issues/952)): a `@GenerateMapping` or `@GenerateMerge` Impl reads each `default` leaf and derived field it calls on first use and keeps what it answers, so a leaf that builds its codec, such as `localDate(DateTimeFormatter)` or `enumByName`, builds it once rather than on every call. `asValidatedPrism()`, `asValidatedParse()` and `asValidatedBuild()` hand back one kept instance. The stock codecs check a value's shape before a JDK parser sees it, so most malformed values are rejected without the cost of an exception, whose stack trace grows with the caller's depth, and each accepts what it did before. `ValidatedPrism.canonical` rejects a parse that answers `null` before rendering, which a custom codec can use the same way. On the mapping benchmark, a wire with five bad fields now parses in about half the time, and in under a third at a web framework's depth, faster than Bean Validation at both. See [Your own canon](mapping/codecs.md#your-own-canon).
+
+  _Behaviour change:_ what a leaf answers is kept for the life of the Impl and shared by every caller, on every thread. A leaf that picks its codec on each call, from a flag, a system property or a field a test changes, now keeps its first pick, so make that choice inside the codec's parse, and build a codec over thread-safe parts such as `DateTimeFormatter`, never `SimpleDateFormat`. `currency()` now refuses a code with a lower-case letter, such as `XPt`, which the JDK could misread as a currency unequal to `XPT`.
 
 - **Lombok `@Singular` and `@SuperBuilder` builders map** ([#934](https://github.com/higher-kinded-j/higher-kinded-j/issues/934)): a `@Singular` collection is now written whole through the collection setter Lombok gives it, such as `tags(Collection<? extends String>)`, and its singular adder is left alone, so `build` writes each element once. A two-way builder carrying one used to be refused as read and written at different types. A builder with no getters hands the setter the domain's own `List`, `Set`, `Collection` or `Map`, and its elements convert through a leaf or a spec as lifting does. A plain property whose writer shares the adder's name at another type keeps its writer. A `@SuperBuilder` bean, whose `build()` is declared `C build()`, used to be refused as having no way to be built, and now maps both ways, as does any bean whose builder inherits `build()` from a generic base. A `@Singular` collection is never absent, since its builder builds an empty collection when nothing is added, so the processor refuses an `Optional` bridge onto one and a PATCH bean whose builder writes one; drop `@Singular` there. A protobuf-java lite message's builder inherits its `build()` too, so the message now meets the same refusals as one on the full runtime, each pointing to a record converted by hand. See [A Lombok `@Singular` collection](mapping/rules.md#singular-collections).
 
