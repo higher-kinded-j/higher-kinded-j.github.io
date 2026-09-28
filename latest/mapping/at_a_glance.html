@@ -495,15 +495,79 @@ unset property is an ordinary state. <a href="tiers.html">What Your Spec Generat
 <h2 id="what-it-costs"><a class="header" href="#what-it-costs">What it costs</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <ul>
-<li><strong>Compile time</strong>, not run time: the Impl is generated once, per build.</li>
+<li><strong>Generated at compile time</strong>: the Impl is written once per build.</li>
 <li><strong>No reflection and no startup scan.</strong> A concrete Impl is a singleton that keeps each leaf after
 its first use; an element-mapped one carries its leaf prisms and is built by <code>of(...)</code>.</li>
 <li><strong>One <code>Validated</code> per field read</strong> on the parse side, which is the price of accumulating errors
 rather than throwing on the first.</li>
-<li><strong>Lines of spec per field</strong>: nothing for an identical field, one for a rename, one for a stock
-codec (none, where a mix-in already carries it), one for a derived field.</li>
+<li><strong>Lines of spec per field</strong>: <a href="#what-you-write-field-by-field">counted field by field</a>, against
+MapStruct and Bean Validation.</li>
 <li><strong>No component ceiling</strong>: a flat 30-field wire maps like a narrow one.</li>
 </ul>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<h3 id="what-you-write-field-by-field"><a class="header" href="#what-you-write-field-by-field">What you write, field by field</a></h3>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>The project's mapping benchmark maps two pairs, a nested order and a flat record, four ways, so each
+row is counted from code that compiles. The generated mapper's specs, a MapStruct mapper and the
+same wire annotated for Bean Validation sit side by side in
+<a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-benchmarks/src/jmh/java/org/higherkindedj/benchmarks/mapping/OrderMappingModel.java"><code>OrderMappingModel</code></a>
+and
+<a href="https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-benchmarks/src/jmh/java/org/higherkindedj/benchmarks/mapping/FlatMappingModel.java"><code>FlatMappingModel</code></a>,
+and the benchmark checks each claim the last row makes. The last column is what the wire record
+carries for Bean Validation.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<div class="table-wrapper"><table><thead><tr><th>A field that</th><th><code>@GenerateMapping</code></th><th>MapStruct 1.6</th><th>Bean Validation, on the wire</th></tr></thead><tbody>
+<tr><td>keeps its name and type</td><td>nothing</td><td>nothing</td><td><code>@NotNull</code></td></tr>
+<tr><td>is renamed on the wire</td><td><code>@MapField(to = "fullName") String name();</code></td><td><code>@Mapping(target = "fullName", source = "name")</code>, and its inverse or <code>@InheritInverseConfiguration</code></td><td><code>@NotNull</code></td></tr>
+<tr><td>needs a stock conversion: a <code>UUID</code>, an enum, an <code>Instant</code></td><td>a <a href="basics.html#validated-leaves">leaf</a> returning <code>StandardCodecs.uuid()</code> and friends</td><td>nothing: built in</td><td><code>@NotNull @Pattern(regexp = …)</code></td></tr>
+<tr><td>is a <code>String</code> on the wire and a number in the domain</td><td>a leaf, with the domain component <code>Integer</code>, not <code>int</code>: a codec cannot name a primitive</td><td>nothing: built in</td><td><code>@NotNull @Pattern(regexp = …)</code></td></tr>
+<tr><td>has a type of your own, such as an email address</td><td>one leaf, a parse and a render</td><td>a method each way</td><td><code>@NotNull @Pattern(regexp = …)</code></td></tr>
+<tr><td>is a nested record, or a list of them</td><td>a spec for the nested pair</td><td>nothing</td><td><code>@NotNull @Valid</code>, or <code>@NotNull List&lt;@NotNull @Valid …&gt;</code></td></tr>
+<tr><td>is derived on the wire</td><td>a <code>default</code> method returning a <code>Getter</code></td><td><code>@Mapping(target = …, expression = "java(…)")</code></td><td>nothing</td></tr>
+<tr><td>must be checked, every failure located</td><td>nothing more: the leaf is the check, and a <code>null</code> is refused, located</td><td>not available: a bad value throws or passes silently, and a <code>null</code> passes on</td><td>a check of each field's shape: a well-shaped bad value still fails in the conversion, located nowhere</td></tr>
+</tbody></table>
+</div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A leaf declared once on a <a href="codecs.html#shared-vocabulary-mix-in-interfaces">mix-in</a> serves every
+spec that extends it, as a MapStruct <code>uses =</code> class serves every mapper that names it. What each
+approach asks of a whole mapper, from <code>Mappers.getMapper</code> to a <code>@ControllerAdvice</code> for violations,
+is in <a href="from_mapstruct.html">Coming from MapStruct and Bean Validation</a>.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<h3 id="what-a-call-costs"><a class="header" href="#what-a-call-costs">What a call costs</a></h3>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>The order pair is a customer, a list of two line items, a UUID, an <code>Instant</code>, a currency and a
+status. Its bad wire has five bad fields: a malformed id, email, timestamp and status, and a price
+in exponent form, <code>1E+3</code>.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p><code>build</code> checks nothing in any approach. On <code>parse</code>, only the generated mapper and Bean Validation
+check the wire, so each is the other's comparison. The hand-written mapper and plain MapStruct stop
+at the first problem with an exception that locates nothing, and let other bad values through, so
+their figures are a floor rather than a rival.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<div class="table-wrapper"><table><thead><tr><th>Order pair</th><th><code>@GenerateMapping</code></th><th>Hand-written</th><th>MapStruct</th><th>MapStruct and Bean Validation</th></tr></thead><tbody>
+<tr><td><code>build</code></td><td>112 ns</td><td>100 ns</td><td>88 ns</td><td>88 ns, as MapStruct</td></tr>
+<tr><td><code>parse</code>, a valid wire</td><td>2,610 ns</td><td>394 ns</td><td>386 ns</td><td>2,110 ns</td></tr>
+<tr><td>memory that valid <code>parse</code> allocates</td><td>13.6 KB</td><td>1.8 KB</td><td>1.8 KB</td><td>6.7 KB</td></tr>
+<tr><td><code>parse</code>, five bad fields</td><td>4,670 ns, all five located</td><td>477 ns, the first thrown</td><td>534 ns, the first thrown</td><td>5,600 ns, all five located</td></tr>
+<tr><td>the same, 100 frames deeper</td><td>4,810 ns</td><td>2,240 ns</td><td>2,250 ns</td><td>5,710 ns</td></tr>
+</tbody></table>
+</div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>Against Bean Validation, a valid <code>parse</code> costs 24 per cent more, and a wire with five bad fields
+16 to 17 per cent less. Where nothing validates today, a valid <code>parse</code> adds about 2,200 ns a
+request, the price of checking and locating every field. A thrown exception's stack trace grows
+with the caller's depth. So the two mappers that throw cost more than four times as much 100 frames
+down, the benchmark's stand-in for a web framework's stack. The generated mapper rejects these five
+fields without an exception: its stock codecs check a value's shape before a parser can throw, and
+<a href="codecs.html#your-own-canon">your own leaf</a> can too. The ten-field flat pair tells the same story,
+with a valid <code>parse</code> 29 per cent over Bean Validation's and five bad fields 21 to 23 per cent under.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>Two things favour Bean Validation here. It formats its messages with <code>ParameterMessageInterpolator</code>,
+which evaluates no expression language, and its patterns check only a field's shape, so a value
+that passes can still fail in the conversion after it.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>Measured on 0.4.11 with MapStruct 1.6.3 and Hibernate Validator 9.1.0.Final, on an AMD Ryzen 9
+7950X under Temurin 25.0.1. Each figure is the mean of four forks of five one-second iterations
+after three of warm-up, and JMH's error margin is under 4 per cent of each. <a href="../benchmarks.html#the-mapping-benchmark">The Mapping
+Benchmark</a> says how to run it on your own hardware.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
