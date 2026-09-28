@@ -47532,7 +47532,35 @@ The dispatch hands each value to its subtype's spec and adds nothing to the path
 A leaf for `pan` goes on `CardMapping`, because a sealed spec has no components to bind one to ([`has no meaning on a sealed mapping`](compiler_errors.md#no-meaning-on-a-sealed-mapping)). The dispatch cannot be partial. The processor names a missing subtype, with [`has no mapping spec`](compiler_errors.md#subtype-has-no-spec) on the domain side and [`is never produced`](compiler_errors.md#subtype-never-produced) on the wire. A subtype must be a record or a sealed interface, or on the wire a bean as well. A generic subtype, an enum or any other class is not supported yet.
 
 ~~~admonish warning title="Not checked for you: Jackson must be told how to tell the subtypes apart"
-Jackson binds the request before `parse` runs, and cannot construct an interface. Without type information, Jackson fails with a type-definition error, which Spring maps to no status by default. The exception escapes unhandled, and the server answers 500 with no field path. Annotate the wire interface as `PaymentDto` is: `@JsonTypeInfo(use = JsonTypeInfo.Id.DEDUCTION)` with `@JsonSubTypes` naming each record, when each subtype's fields differ. Where they overlap, use `Id.NAME` with a `type` property.
+Jackson binds the request before `parse` runs, and cannot construct an interface. Without type information, Jackson fails with a type-definition error, which Spring maps to no status by default. The exception escapes unhandled, and the server answers 500 with no field path. Annotate the wire interface as `PaymentDto` is: `@JsonTypeInfo(use = JsonTypeInfo.Id.DEDUCTION)` with `@JsonSubTypes` naming each record, when each subtype's fields differ. Where they overlap, use `Id.NAME` with a `type` property. An empty subtype changes what `{}` means:
+
+``` java
+sealed interface Fulfilment permits Shipped, Collected {}
+
+record Shipped(String tracking) implements Fulfilment {}
+
+record Collected() implements Fulfilment {} // collected in store: nothing to carry
+
+@JsonTypeInfo(use = JsonTypeInfo.Id.DEDUCTION) // by their fields, and {} is CollectedDto
+@JsonSubTypes({@JsonSubTypes.Type(ShippedDto.class), @JsonSubTypes.Type(CollectedDto.class)})
+sealed interface FulfilmentDto permits ShippedDto, CollectedDto {}
+
+record ShippedDto(String tracking) implements FulfilmentDto {}
+
+record CollectedDto() implements FulfilmentDto {}
+
+@GenerateMapping
+interface ShippedMapping extends MappingSpec<Shipped, ShippedDto> {}
+
+@GenerateMapping
+interface CollectedMapping extends MappingSpec<Collected, CollectedDto> {}
+
+@GenerateMapping
+interface FulfilmentMapping extends MappingSpec<Fulfilment, FulfilmentDto> {}
+
+```
+
+`DEDUCTION` binds `{}` as `CollectedDto`, so a shipment missing its `tracking` parses as `Collected`, silently. `Id.NAME` avoids that.
 ~~~
 
 ~~~admonish tip title="You can ship now"
@@ -51539,6 +51567,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a generic mix-in be extended raw?](#a-generic-mix-in-reached-raw) | Not if it contributes a member: raw erases what it declares. | by design |
 | [Can two mix-ins declare the same rename?](#inheriting-one-member-twice) | Yes, when the targets agree; conflicting targets are refused. | by design |
 | [Can an `@Unmapped` marker name an accessor that pairs?](#what-unmapped-withholds) | Not one the spec declares; an inherited one stays inert. | by design |
+| [Can an `@Unmapped` marker go on a bean crossed one way?](#what-unmapped-withholds) | Not one the spec declares: such a bean leaves no accessor unpaired. | by design |
 | **Containers** | | |
 | [Is a same-typed container shared with the wire?](#same-typed-containers-cross-as-copies) | Not when declared exactly `List`, `Set`, `Collection`, `Map`, `Optional` or array. | by design |
 | [Does a `List` lift against a `Set`, or an `ArrayList`?](#what-lifts) | No: the same exact container on both sides, one level deep. | by design |
@@ -51605,6 +51634,7 @@ Nothing refuses these at compile time. Each is a runtime surprise, linked to the
 | [A browser's timestamps are rejected some of the time, or Python's every time](codecs.md#canonical-forms-only) | The stock date-time codecs accept only their own render: declare the producer's canon. |
 | [A bad date or enum got Jackson's 400, with no field path](basics.md#validated-leaves) | Jackson rejected a typed wire field before `parse` ran: keep a converted wire field a `String`. |
 | [A sealed request body got a 500, with no field path](structure.md#sealed-hierarchies) | Jackson cannot pick a subtype without type information: annotate the wire interface with `@JsonTypeInfo`. |
+| [A request missing a field parsed as the empty subtype](structure.md#sealed-hierarchies) | `DEDUCTION` binds `{}` as the subtype with no properties: name subtypes with `Id.NAME` where that must fail. |
 | [A field the client left out reports `must not be null`](absence.md#optional-bridge) | Only `@OptionalBridge` lets a field be left out; a whole-`Optional` leaf still rejects `null`. |
 | [A PATCH that omits a field overwrote the stored value](beans_patch.md#patch-getters-answer-null) | A default the bean gives itself reads as sent: leave PATCH bean fields uninitialised. |
 | [A leaf's codec never changes after the first call, or misreads under load](codecs.md#your-own-canon) | The Impl reads each leaf once and shares its answer: choose inside the codec's parse, and build over thread-safe parts. |
@@ -51896,6 +51926,7 @@ The [tier grid](tiers.md#which-methods-your-spec-gets) asks whether every compon
 **The [`@Unmapped`](beans.md#accessors-meant-to-stay-out) marker withholds a refusal and nothing else.** The accessor it names was never a property, so the component stays unmapped, a wire narrower than the domain is still a projection, and nothing else about the generated Impl changes. It answers both refusals it is named for, [an accessor named after a domain component](#unpaired-accessors) and [a `setX` setter a PATCH bean cannot read](#every-patch-setter-has-a-getter), on a `MappingSpec` and a sparse `UpdateSpec` alike. On a `MappingSpec` the component then stays out, so a bean left narrower than the domain is a projection, with no `parse`. The return type is not read, so it may restate the accessor's own type, and the Impl stubs the marker out like a rename.
 
 - **A marker the spec declares must name an unpaired accessor.** The processor refuses one naming a property the mapping carries, or naming nothing at all, as the misspelling it usually is.
+- **A marker the spec declares on a bean crossed [one way](#how-a-beans-direction-is-read) is refused.** Each of its accessors is a property of its own, so none is left unpaired: a parse-only mapping ignores a getter no component names, and a build-only one fills every writer.
 - **An inherited marker binds where it can, and is otherwise inert**, like every other member inherited from a [mix-in](codecs.md#shared-vocabulary-mix-in-interfaces), so one mix-in serves specs whose wires differ.
 
 ### When an unpaired accessor is refused {#unpaired-accessors}
@@ -52192,6 +52223,7 @@ When the processor cannot write correct code for a spec, it refuses at compile t
 | [`is read and written at different types`](#read-and-written-at-different-types) | A getter and its writer disagree on type |
 | [`names no accessor`](#unmapped-names-no-accessor) | An `@Unmapped` marker names nothing left out |
 | [`names a property`](#unmapped-names-a-mapped-property) | An `@Unmapped` marker names a paired property |
+| [`has nothing to leave out`](#unmapped-marker-on-a-one-way-bean) | An `@Unmapped` marker sits on a bean crossed one way |
 | [`which a build cannot fill`](#getter-only-list-build) | A getter-only `List` is raw or a wildcard |
 | [`bridged to the getter-only bean property`](#bridged-to-a-getter-only-list) | A domain `Optional` faces a getter-only `List` |
 | [`bridged to the @Singular bean property`](#bridged-to-a-singular-collection) | A domain `Optional` faces a Lombok `@Singular` collection |
@@ -53698,6 +53730,39 @@ class CustomerBean {
 interface CustomerMapping extends MappingSpec<Customer, CustomerBean> {
   @Unmapped
   String id();
+}
+```
+~~~
+
+### `@Unmapped method 'x' has nothing to leave out: 'Y' is only read` {#unmapped-marker-on-a-one-way-bean}
+
+An `@Unmapped` marker sits on a bean that is only read, or only written, whose accessors are each a property of their own, so none is left unpaired.
+
+**Fix.** Remove the marker. On a bean that is only written, fill a writer no domain component names with a derived field, or remove that writer.
+
+```
+@GenerateMapping: @Unmapped method 'nickname' has nothing to leave out: 'CustomerView' is only
+read. The marker reads an accessor with no partner as deliberate, and each getter of a bean that
+is only read is a property of its own, so none is left unpaired: parse reads those the domain
+needs and never calls the rest. Remove the marker.
+```
+
+The rule: [What `@Unmapped` withholds](rules.md#what-unmapped-withholds).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "has nothing to leave out" -->
+```java
+record Customer(String name) {}
+
+class CustomerView {
+  public String getName() { return "Ada"; }
+  public String getNickname() { return "A"; }
+}
+
+@GenerateMapping
+interface CustomerViewMapping extends MappingSpec<Customer, CustomerView> {
+  @Unmapped
+  String nickname();
 }
 ```
 ~~~
@@ -93364,6 +93429,8 @@ void personMappingIsLawful() {
 
 Three samples need care. The lossless overload's coherence check needs a wire whose reference components are non-null, and whose values the domain accepts. A mapping with a derived field *and* a fallible leaf takes the fallible overload, which keeps the rejection check: give it a parseable wire whose derived components match what `build` produces. For the patch and parse-only overloads, the non-parsing wire must fail on a field, since a refusal by the domain's constructor alone is unlabelled at the top level.
 
+A pair of records with no components has one value on each side, so the lossless overload's guard, which asks for a wire sample independent of the domain sample, can never be met. Check each law the overload combines on its own instead: `IsoLaws.assertIsoLaws`, `MappingLaws.assertBuildAgreesWithIso` and `assertParseAgreesWithIso`, and `ValidatedPrismLaws.assertParseBuild` and `assertBuildParse`.
+
 For asserting on the located failures themselves, `assertThatValidated(...).hasFieldErrors(...)` takes the whole accumulation as rendered lines; `assertThatFieldError` takes one error apart, matching its path (`hasPath("address.zip")`) and message (`hasMessage`, `hasMessageContaining`).
 
 ~~~admonish tip title="See Also"
@@ -100190,6 +100257,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **A record with no components maps, so a sealed hierarchy can have an empty subtype** ([#983](https://github.com/higher-kinded-j/higher-kinded-j/issues/983)): a spec over a record with no components, such as `record Collected()`, the empty subtype of a sealed `Fulfilment`, generated a `parse` that did not compile, and the error pointed inside the generated file. A wire whose only components are derived fields failed the same way. A sealed mapping needs a spec for every subtype, so a hierarchy with an empty one could not be mapped at all. That `parse` now has nothing to read and returns the record, and a refusal from the record's own constructor is reported as a located error, as for any record. The record nests in another, lifts through a list and dispatches as a sealed subtype, and a spec over two empty records gets `asIso()` too. `MappingLaws`' lossless check asks for a wire sample independent of the domain sample, which a pair of empty records cannot give, and its failure now names each law to check on its own instead. See [Sealed hierarchies](mapping/structure.md#sealed-hierarchies).
+
+- **An `@Unmapped` marker on a bean crossed one way says why it has nothing to leave out** ([#985](https://github.com/higher-kinded-j/higher-kinded-j/pull/985)): on a bean that is only read, or only written, each accessor is a property of its own, so a marker has nothing to leave out and is refused. The message used to call the property read and written, and to suggest removing one of its accessors, though such a property has only one. It now says the bean is only read or only written, and to remove the marker, and on a bean only written, how to fill a writer the domain has no component for. A misspelt marker on a bean that leaves no accessor unpaired is told so, where the message used to list the unpaired accessors as `[]`. Only the wording changes. See [What `@Unmapped` withholds](mapping/rules.md#what-unmapped-withholds).
 
 - **A generated mapping reads each leaf once, and turns a bad field away without an exception** ([#952](https://github.com/higher-kinded-j/higher-kinded-j/issues/952)): a `@GenerateMapping` or `@GenerateMerge` Impl reads each `default` leaf and derived field it calls on first use and keeps what it answers, so a leaf that builds its codec, such as `localDate(DateTimeFormatter)` or `enumByName`, builds it once rather than on every call. `asValidatedPrism()`, `asValidatedParse()` and `asValidatedBuild()` hand back one kept instance. The stock codecs check a value's shape before a JDK parser sees it, so most malformed values are rejected without the cost of an exception, whose stack trace grows with the caller's depth, and each accepts what it did before. `ValidatedPrism.canonical` rejects a parse that answers `null` before rendering, which a custom codec can use the same way. On the mapping benchmark, a wire with five bad fields now parses in about half the time, and in under a third at a web framework's depth, faster than Bean Validation at both. See [Your own canon](mapping/codecs.md#your-own-canon).
 
