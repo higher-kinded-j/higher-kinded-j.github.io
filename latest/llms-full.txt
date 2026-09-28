@@ -18362,7 +18362,7 @@ External types like `LocalDate`, Jackson's `JsonNode`, JOOQ records, and Protobu
 |---|---|---|---|
 | [`@GenerateMapping`](../mapping/ch_intro.md) | interface extending `MappingSpec<Domain, Wire>` | `XMappingImpl` with a total `build` and an accumulating, located `parse` | Bidirectional boundary mapping with validation: every bad field reported at once |
 | [`@GenerateMapping`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) | interface extending `UpdateSpec<Domain, Wire>` (bean wire) | `XMappingImpl` with only `updateFrom(Wire) : Edits.Accumulated<Domain>` | Sparse PATCH write-back: fold the present (non-null) request fields into an update, leave the absent ones |
-| [`@MapField(to = "...")`](../mapping/ch_intro.md) | abstract method on the spec, named after the domain component | a rename in both directions | Domain and wire components with different names |
+| [`@MapField(to = "...")`](../mapping/ch_intro.md) | abstract marker method on the spec, named after the domain component, or that component's `default` leaf | a rename in both directions | Domain and wire components with different names |
 | [`@OptionalBridge`](../mapping/absence.md#optional-bridge) | abstract marker method on the spec, or that component's `default` leaf | a domain `Optional<T>` mapped to a nullable wire component `T` | A record wire that encodes absence as `null`, the way a JSON binder writes it |
 | [`@MapKey("component")`](../mapping/structure.md#converting-map-keys) | `default` leaf on the spec, freely named, returning `ValidatedPrism<WireKey, DomainKey>` | the named `Map` component's **keys** converted, alone or beside its value leaf | Two sides that key a map differently (`Map<String, ...>` on the wire, `Map<Locale, ...>` in the domain) |
 | [`@Flatten`](../mapping/structure.md#flattening-a-nested-component-onto-a-flat-wire) | abstract marker method on the spec, named after a nested domain record component | that record's components spread across the wire's flat components by name, both directions | A wire fixed flat (`street`, `city`, `postcode`) where the domain nests an `Address` |
@@ -46664,6 +46664,32 @@ The `email` leaf comes along because this spec maps the whole `Customer`, and ea
 A client that sent `fullName` gets its errors at `name`. The same holds for a Jackson rename: under `@JsonProperty("first_name")` on a `firstName` component, or a snake_case naming strategy, the path stays `firstName`. Every path in the system is domain-named, so paths stay consistent, and stable when the wire is refactored. A client that maps errors back onto its own payload keys applies the renames in reverse.
 ~~~
 
+### Renamed and converted {#renamed-and-converted}
+
+A mailing list's export calls the email `emailAddress`, and its string still has to be checked into an `EmailAddress`. The leaf is already the component's one method named `email()`, and a rename marker beside it would be a second `email()`, which Java refuses. So `@MapField` goes on the leaf, and means both:
+
+``` java
+record MailingListCustomerDto(String name, String emailAddress) {} // a mailing list's export
+
+@GenerateMapping
+interface MailingListCustomerMapping extends MappingSpec<Customer, MailingListCustomerDto> {
+  @MapField(to = "emailAddress") // Customer.email <-> MailingListCustomerDto.emailAddress
+  default ValidatedPrism<String, EmailAddress> email() { // renamed, and converted
+    return EmailCodecs.EMAIL;
+  }
+}
+
+```
+
+The error still names the domain component:
+
+``` java
+    Validated<NonEmptyList<FieldError>, Customer> subscribed =
+        MailingListCustomerMappingImpl.INSTANCE.parse(
+            new MailingListCustomerDto("Ada", "not-an-email"));
+    // Invalid(NonEmptyList[email: not an email address])
+```
+
 ---
 
 ## Derived wire fields {#derived-wire-fields}
@@ -47778,6 +47804,8 @@ The generated Impl calls a nested spec as it would a leaf, through its `asValida
 
 A `Map` component's value leaf takes the component's name, so a key leaf carries `@MapKey` naming its component instead, as `noteKey()` does in `SupportDeskMapping`. Keys and values convert independently. Without a key leaf the key types must match exactly, and the processor refuses a mismatch, offering the annotation.
 
+A key leaf may carry the component's [`@MapField`](basics.md#renamed-and-converted) rename only when it is named after the component it keys, since a rename renames the component its method is named after.
+
 A failing key locates by the **source** key, the one the client sent, and an entry whose key and value both fail reports both there. A leaf over the whole `Map` wins over both: [a key leaf beside a whole-map leaf](rules.md#key-leaf-beside-a-whole-map-leaf) says when that is refused.
 
 ~~~admonish warning title="Not checked for you: a set silently drops a collapsed element"
@@ -48802,7 +48830,7 @@ A two-way mapping's methods turn on two independent questions: does the wire car
 | **The wire carries every component** | *lossless*: `build`, `parse`, `asIso()`, `asValidatedPrism()` | `build`, `parse`, `asValidatedPrism()` |
 | **The wire carries fewer** (a *projection*) | `build`, `asLens()` | `build`, `patch(domain, wire)`: the *validated patch* |
 
-- **A plain copy carries a value across unchanged.** A rename or a flattened group still copies. A leaf does not, and nor does a nested spec, lifted over a container or not. Neither does an `@OptionalBridge` component, or a reference property on a bean wire, which can be left unset.
+- **A plain copy carries a value across unchanged.** A rename alone, or a flattened group, still copies. A leaf does not, and nor does a nested spec, lifted over a container or not. Neither does an `@OptionalBridge` component, or a reference property on a bean wire, which can be left unset.
 - **A derived field is not a plain copy either.** On the bottom row the processor refuses it, since the write-back could never honour a component that `build` recomputes. A flattened group on the bottom row is not supported yet.
 - **A sealed pair dispatches to each subtype's own spec.** It gets `build`, `parse` and `asValidatedPrism()`, never `asIso()`: [Sealed hierarchies](structure.md#sealed-hierarchies).
 
@@ -49983,7 +50011,7 @@ The processor refuses a PATCH spec it cannot honour, and names the fix. The last
 | [A record wire](rules.md#no-record-patch-wire) | refused | a bean |
 | [A bean with only getters, or only setters](rules.md#patch-bean-read-and-written) | refused | a bean both read and written |
 | [A setter with no getter](rules.md#every-patch-setter-has-a-getter) | refused | a getter, or [`@Unmapped`](beans.md#accessors-meant-to-stay-out) on the spec |
-| [A wire property that names no domain component](rules.md#patch-wire-property-names-a-component) | refused | a `@MapField` rename, or drop the property |
+| [A wire property that names no domain component](rules.md#patch-wire-property-names-a-component) | refused | a `@MapField` rename, on the component's leaf where it has one, or drop the property |
 | [A sealed hierarchy](rules.md#no-sealed-patch), on either side | refused | one `UpdateSpec` per concrete record pair |
 | [A `JsonNullable` property](rules.md#no-jsonnullable-patch-property) | not supported yet | an `Optional`-typed property |
 | [An inherited derived field or `@OptionalBridge` marker](rules.md#inherited-vocabulary-on-a-patch) | inert | nothing: one mix-in serves both tiers |
@@ -51458,6 +51486,7 @@ The shapes are close enough that a first spec usually reads like the mapper it r
 | Built-in `String` to `UUID`, enum or date conversion | a `default` leaf returning `StandardCodecs.uuid()` and friends | never implicit: a conversion exists where a spec declares it |
 | `uses = UuidMapper.class` | the same leaf, shared through a [mix-in vocabulary](codecs.md#shared-vocabulary-mix-in-interfaces) | shared by name |
 | `@Named` plus `qualifiedByName` | the leaf **is** the named method | |
+| `@Mapping(target = "email", source = "emailAddress", qualifiedByName = ...)`, renamed and converted | `@MapField(to = "emailAddress")` on the `email()` leaf | [one method](basics.md#renamed-and-converted) carries both |
 | `expression = "java(...)"`, or `@AfterMapping` filling a target field | a `default` method returning `Getter<Domain, T>` | [a derived field](basics.md#derived-wire-fields), build-side only |
 | `uses = CustomerMapper.class` for a nested type | nothing: a spec for the pair nests automatically | failures gain the outer component's path |
 | `@Mapping(target = "a.b", source = ...)`, deep target paths | [`@Flatten`](structure.md#flattening-a-nested-component-onto-a-flat-wire), one level | deeper flattening stays MapStruct's |
@@ -51554,6 +51583,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [What if a leaf's name matches no component?](#how-the-two-default-families-are-told-apart) | A declared leaf is a compile error, naming the components; an inherited one stays inert. | by design |
 | [Can a getter-shaped helper live on a spec?](#how-the-two-default-families-are-told-apart) | Yes, if `private`, `static` or given a parameter; a `default` one is a derived field. | by design |
 | [Can a sealed spec declare its own leaves, renames or markers?](#how-the-two-default-families-are-told-apart) | No: a dispatch has no components to bind them to. | by design |
+| [Can a field be renamed and converted at once?](basics.md#renamed-and-converted) | Yes: `@MapField` goes on its leaf, the one method named after it. | by design |
 | [Can a projection carry a derived field?](#derived-fields-and-the-emission-tiers) | No: `build` recomputes what the write-back would set. | by design |
 | [Can a mapped type be one the spec's package cannot see?](#visible-from-the-spec-package) | No: the Impl is generated in that package and names it. | by design |
 | **Optional fields** | | |
@@ -51575,6 +51605,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a raw or wildcard `Map` have its keys or values converted?](#what-lifts) | No: name its type arguments. | by design |
 | [Can a `Map`'s keys be converted?](structure.md#converting-map-keys) | Yes, with a `@MapKey` leaf; otherwise the key types must match. | by design |
 | [Can a key leaf sit beside a whole-map leaf?](#key-leaf-beside-a-whole-map-leaf) | A declared one is refused; an inherited one stays inert. | by design |
+| [Can a key leaf carry a `@MapField` rename?](structure.md#converting-map-keys) | Only one named after the component it keys. | by design |
 | [Is a `null` inside a `Stream`, `Iterable`, `Maybe` or `NonEmptyList` located?](#the-null-contract-precisely) | No: the component is guarded, its contents are not scanned. | not supported yet |
 | [Can a sealed pair's subtype be an enum, or generic?](structure.md#sealed-hierarchies) | No: records and sealed interfaces, or beans on the wire side. | not supported yet |
 | **Flattening** | | |
@@ -51799,6 +51830,8 @@ An inherited member that binds to nothing stays inert, so one vocabulary can ser
 
 So a projection or a PATCH bean that deliberately carries a subset extends the same vocabulary as the full spec, and simply maps fewer of its members; a sealed dispatch, which has no components at all, inherits the same vocabulary and binds none of it. Nothing is silently mismapped by an inert member, because every wire component still has to name a source: a wire that does carry a rename's target and has no other source for it is reported against that component. The cost is that a `to` typed wrongly *in the mix-in* is now caught only where some spec's wire happens to carry the intended name, which is the same trade the other inherited kinds already make.
 
+A leaf carrying [`@MapField`](basics.md#renamed-and-converted) is both members at once, and an inherited one binds each half on its own terms. On a wire that calls the component by its own name, the rename is inert and the leaf still converts it.
+
 ### Mix-in shapes the processor refuses {#refused-mix-in-shapes}
 
 Two mix-in shapes are rejected, each naming the offender:
@@ -52020,7 +52053,7 @@ A one-directional mapping follows these rules:
 
 ### Every wire property names a component {#patch-wire-property-names-a-component}
 
-**A wire property that names no domain component is rejected.** The client could send it and nothing would read it. Add a `@MapField` rename to the domain component it stands for, or remove the property. Coverage is one-sided: a domain component with no wire property is simply never changed, since a PATCH DTO covers a subset on purpose.
+**A wire property that names no domain component is rejected.** The client could send it and nothing would read it. Add a `@MapField` rename to the domain component it stands for, on the component's leaf where it has one, or remove the property. Coverage is one-sided: a domain component with no wire property is simply never changed, since a PATCH DTO covers a subset on purpose.
 
 ### No `JsonNullable` property {#no-jsonnullable-patch-property}
 
@@ -52168,6 +52201,7 @@ When the processor cannot write correct code for a spec, it refuses at compile t
 | [`both map to wire component`](#both-map-to-one-wire-component) | A rename targets a component already filled |
 | [`targets a wire component another rename already claims`](#rename-already-claimed) | Two renames point at one wire component |
 | [`is neither a rename, a leaf, nor a bridge`](#neither-rename-leaf-bridge) | An abstract method says nothing about what it is |
+| [`@MapField method '…' is neither a marker nor a leaf`](#mapfield-neither-marker-nor-leaf) | A @MapField method has a body that is no leaf |
 | [`returns a Getter but is named after a domain component`](#getter-named-after-domain) | A derived field carries a domain component's name |
 | [`combines a projection with derived fields`](#projection-with-derived-fields) | A smaller wire also declares a derived field |
 | [`declares type parameters of its own`](#own-type-parameters) | A leaf, rename or marker declares its own `<R>` |
@@ -52306,7 +52340,7 @@ Most messages come from the first branch: the processor reads your spec, finds a
 
 A domain component has no wire component of the same name, and no rename points it at one.
 
-**Fix.** Rename one side so the names match, or add a rename to the spec, such as `@MapField(to = "fullName") String name();`.
+**Fix.** Rename one side so the names match, or add a rename to the spec, such as `@MapField(to = "fullName") String name();`. Where the component already has a leaf, put the `@MapField` on the leaf instead, as [Renamed and converted](basics.md#renamed-and-converted) shows.
 
 ```
 @GenerateMapping: domain field 'Customer.name' has no wire counterpart named 'name'. Found on
@@ -52332,7 +52366,7 @@ interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {}
 
 A wire component's type differs from its domain counterpart's, and nothing converts between them.
 
-**Fix.** Add the method the message spells out, a `default ValidatedPrism` that parses the field: a [standard codec](codecs.md#standard-codecs) such as `StandardCodecs.uuid()`, or your own. Where one side is a primitive, the message asks for its wrapper type first. A `List` against a `Set` lands here too, because elements map only when both sides declare the same container.
+**Fix.** Add the method the message spells out, or put it in place of the one the message names, a `default ValidatedPrism` that parses the field: a [standard codec](codecs.md#standard-codecs) such as `StandardCodecs.uuid()`, or your own. Where one side is a primitive, the message asks for its wrapper type first. A `List` against a `Set` lands here too, because elements map only when both sides declare the same container.
 
 ```
 @GenerateMapping: target field 'CustomerDto.email' has no usable source. The types differ
@@ -52484,13 +52518,13 @@ interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {}
 
 A wire with fewer components than the domain maps as a projection, and one of its components is named after nothing the domain has.
 
-**Fix.** Align the component names, or add a `@MapField` rename.
+**Fix.** Align the component names, or add a `@MapField` rename, on the component's leaf where it has one.
 
 ```
 @GenerateMapping: projection field 'CustomerDto.nmae' has no domain source. 'CustomerDto' is
 smaller than 'Customer', so it maps as a projection: every wire component must name a domain
 component. Found on Customer: [name, email]. Align the component names, or add a @MapField
-rename.
+rename, on the component's leaf where it has one.
 ```
 
 The rule: [Renames](basics.md#renames-mapfield).
@@ -52653,6 +52687,40 @@ record CustomerDto(String name) {}
 @GenerateMapping
 interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {
   String displayName();
+}
+```
+~~~
+
+### `@MapField method 'x' is neither a marker nor a leaf` {#mapfield-neither-marker-nor-leaf}
+
+A `@MapField` method has a body, and is not the component's leaf, so it is neither shape a rename takes.
+
+**Fix.** Make it the component's leaf, a zero-parameter `default` method returning `ValidatedPrism<Wire, Domain>`, or remove the body to leave a rename marker. The message names the change the method's shape needs.
+
+```
+@GenerateMapping: @MapField method 'email' is neither a marker nor a leaf. A rename is declared
+on an abstract marker named after the domain component, or, where the component also converts,
+on its zero-parameter 'default' leaf returning ValidatedPrism<WireComponent, DomainComponent>; a
+body of any other shape is neither. Remove the parameters and return
+ValidatedPrism<WireComponent, DomainComponent> to make it the component's leaf, or remove the
+body to leave a rename marker.
+```
+
+The rule: [Renamed and converted](basics.md#renamed-and-converted).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "where the component also converts" -->
+```java
+record Customer(EmailAddress email) {}
+
+record CustomerDto(String emailAddress) {}
+
+@GenerateMapping
+interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {
+  @MapField(to = "emailAddress")
+  default EmailAddress email(String raw) {
+    return new EmailAddress(raw);
+  }
 }
 ```
 ~~~
@@ -99704,7 +99772,7 @@ MappingLaws.assertMappingLaws(
 
 ## MappingSpec
 
-**Definition:** The marker interface a mapping spec extends to name its pair: `interface UserMapping extends MappingSpec<Domain, Wire> {}`. The interface deliberately declares nothing callable (the generated `UserMappingImpl` carries the surface); the spec's members are the *declaration vocabulary*: `default` `ValidatedPrism` methods are leaves, `@MapField` abstracts are renames, `default` `Getter` methods are derived wire fields, `@OptionalBridge` marks a component whose `null` means absent, `@MapKey` names the `Map` component whose keys a leaf converts, `@Flatten` marks a nested record component spread across the wire's flat components. Its sparse sibling is [UpdateSpec](#updatespec), which swaps the whole generated surface for a single `updateFrom`.
+**Definition:** The marker interface a mapping spec extends to name its pair: `interface UserMapping extends MappingSpec<Domain, Wire> {}`. The interface deliberately declares nothing callable (the generated `UserMappingImpl` carries the surface); the spec's members are the *declaration vocabulary*: `default` `ValidatedPrism` methods are leaves, `@MapField` methods are renames (an abstract marker, or the component's leaf when it also converts), `default` `Getter` methods are derived wire fields, `@OptionalBridge` marks a component whose `null` means absent, `@MapKey` names the `Map` component whose keys a leaf converts, `@Flatten` marks a nested record component spread across the wire's flat components. Its sparse sibling is [UpdateSpec](#updatespec), which swaps the whole generated surface for a single `updateFrom`.
 
 **Example:**
 <!-- verify -->
@@ -100257,6 +100325,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **A field that is renamed and converted maps, with `@MapField` on its leaf** ([#981](https://github.com/higher-kinded-j/higher-kinded-j/issues/981)): a component whose wire name and type both differ, such as a wire's `emailAddress` string against a domain's `email: EmailAddress`, can now be declared. The component's leaf is the one method named after it, so `@MapField` goes on the leaf and means the rename and the conversion together. It works on every tier, beside `@OptionalBridge`, from a mix-in, and on a generic spec's abstract leaf. A message that offers a leaf for a renamed component now spells the leaf with its rename, in place of the rename's marker, and names the mix-in to change where that marker is inherited. A message about a component that already has a leaf says to put the rename on the leaf. A leaf a message offers over a type variable is the abstract one a generic spec's `of(...)` factory takes, and a marker it offers restates the component as declared, a `? extends` wildcard included. A spec whose abstract leaf shares its name with a marker asking for a narrower type is now refused at the spec, where its Impl used to fail to compile. See [Renamed and converted](mapping/basics.md#renamed-and-converted).
+
+  _Notes for existing builds._ An abstract `@MapField` method returning `ValidatedPrism` is now read as a leaf. On a spec that is not generic it is refused as an abstract leaf, with a fix that gives it a body, and on a generic spec it becomes one of the leaves the Impl's `of(...)` factory takes, where it used to add nothing to `of(...)` or leave `instance()` in its place. Such a method used to be a plain rename marker, whatever the component's type, so where it only renames, give it a return type other than `ValidatedPrism`, such as the component's own: the mapping never reads a rename's return type.
 
 - **A record with no components maps, so a sealed hierarchy can have an empty subtype** ([#983](https://github.com/higher-kinded-j/higher-kinded-j/issues/983)): a spec over a record with no components, such as `record Collected()`, the empty subtype of a sealed `Fulfilment`, generated a `parse` that did not compile, and the error pointed inside the generated file. A wire whose only components are derived fields failed the same way. A sealed mapping needs a spec for every subtype, so a hierarchy with an empty one could not be mapped at all. That `parse` now has nothing to read and returns the record, and a refusal from the record's own constructor is reported as a located error, as for any record. The record nests in another, lifts through a list and dispatches as a sealed subtype, and a spec over two empty records gets `asIso()` too. `MappingLaws`' lossless check asks for a wire sample independent of the domain sample, which a pair of empty records cannot give, and its failure now names each law to check on its own instead. See [Sealed hierarchies](mapping/structure.md#sealed-hierarchies).
 
