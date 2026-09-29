@@ -398,7 +398,7 @@ interface ContactMapping extends MappingSpec&lt;Customer, ContactBean&gt; {
 <div class="table-wrapper"><table><thead><tr><th>The bean offers</th><th><code>build</code> writes it with</th><th>It maps</th></tr></thead><tbody>
 <tr><td>a no-args constructor the Impl can call, and <code>setX</code> setters (Lombok <code>@Data</code> included)</td><td><code>new</code>, then each setter</td><td>both ways</td></tr>
 <tr><td>a static <code>builder()</code> or <code>newBuilder()</code> whose <code>build()</code> returns it (a hand-written builder, or Lombok's <code>@Builder</code> or <code>@SuperBuilder</code>)</td><td>the builder's setters, then <code>build()</code></td><td>both ways, reading the built type's getters</td></tr>
-<tr><td>a getter-only <code>List</code> beside its setters, the JAXB way</td><td><code>getItems().addAll(...)</code> for that list</td><td>both ways</td></tr>
+<tr><td>a getter-only <code>List</code> beside its setters, the JAXB way</td><td><code>getItems().addAll(...)</code> for that list (when the getter is declared nullable, only if it answers a list)</td><td>both ways</td></tr>
 <tr><td>getters, and nothing that writes it, such as a view built through a constructor with arguments</td><td>nothing</td><td><a href="#one-directional-beans"><code>parse</code> only</a></td></tr>
 <tr><td>setters or a builder, and no getters</td><td>the setters or the builder</td><td><a href="#one-directional-beans"><code>build</code> only</a></td></tr>
 </tbody></table>
@@ -425,8 +425,24 @@ interface ContactMapping extends MappingSpec&lt;Customer, ContactBean&gt; {
 <ul>
 <li><strong>A default applied to it reads back as present</strong>, whether a setter, a builder's <code>build()</code> or a getter applies it. A setter that swaps in <code>"Untitled"</code> turns every empty value into <code>Optional[Untitled]</code>.</li>
 <li><strong>A writer that rejects it throws from <code>build</code></strong>, as a setter that copies with <code>List.copyOf(v)</code> does, or a builder that calls <code>requireNonNull</code>. Guard the copy with <code>v == null ? null : List.copyOf(v)</code>, or declare the component without the <code>Optional</code>.</li>
+<li><strong>A model that tells a sent <code>null</code> from an unset one sends it.</strong> An openapi-generator <code>java</code> client model keeps <code>setX(null)</code> in its <a href="rules.html#jsonnullable-companions"><code>JsonNullable</code> companion</a> as a sent <code>null</code>, and reads both back as <code>null</code>:</li>
 </ul>
-<p>A law check from a domain sample with an empty <code>Optional</code> fails on both, whatever the bean's <code>equals</code>: <code>MappingLaws.assertMappingLaws(mapping.asValidatedPrism(), sample)</code>. The check from two wire samples compares beans with <code>equals</code>, so a hand-written bean without one fails it on identity alone.</p>
+<pre><code class="language-java">    // build writes the empty subtitle through setSubtitle(null), which the model sends as null,
+    ListingModel built = ListingModelMappingImpl.INSTANCE.build(lamp);
+    assertThat(json.writeValueAsString(built)).isEqualTo("{\"title\":\"Lamp\",\"subtitle\":null}");
+    // where a fresh model leaves the property out.
+    ListingModel fresh = new ListingModel();
+    fresh.setTitle("Lamp");
+    assertThat(json.writeValueAsString(fresh)).isEqualTo("{\"title\":\"Lamp\"}");
+
+    // getSubtitle() answers null for an omitted property and for an explicit null alike.
+    ListingModel omitted = json.readValue("{\"title\":\"Lamp\"}", ListingModel.class);
+    ListingModel sentNull =
+        json.readValue("{\"title\":\"Lamp\",\"subtitle\":null}", ListingModel.class);
+    assertThatValidated(ListingModelMappingImpl.INSTANCE.parse(omitted)).hasValue(lamp);
+    assertThatValidated(ListingModelMappingImpl.INSTANCE.parse(sentNull)).hasValue(lamp);
+</code></pre>
+<p>A law check from a domain sample with an empty <code>Optional</code> fails on the first two, whatever the bean's <code>equals</code>: <code>MappingLaws.assertMappingLaws(mapping.asValidatedPrism(), sample)</code>. The check from two wire samples compares beans with <code>equals</code>, so a hand-written bean without one fails it on identity alone. A companion model fails it on a sample that leaves a nullable property unset, which comes back sent.</p>
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -880,7 +896,8 @@ interface MerchantModelMapping extends MappingSpec&lt;Merchant, MerchantModel&gt
 <tr><td>an openapi-generator model, with getters, setters and a no-args constructor</td><td>it maps both ways, even as a response you only read, so the processor refuses a property your domain lacks</td><td>declare a <a href="basics.html#derived-wire-fields">derived field</a> for it, which <code>build</code> fills and <code>parse</code> ignores</td></tr>
 <tr><td>a <code>readOnly</code> property, with a getter and no setter</td><td>it is refused as a likely misspelling, since <code>build</code> could never write it</td><td>declare it <a href="#read-only-properties"><code>@ReadOnly</code></a>: <code>parse</code> reads it and <code>build</code> leaves it out, so the Impl has two halves and no <code>asValidatedPrism()</code></td></tr>
 <tr><td>strictly typed properties: enums, <code>OffsetDateTime</code>, <code>UUID</code></td><td>Jackson has already converted them before <code>parse</code> runs</td><td>map each to your own type with a leaf over the generated type</td></tr>
-<tr><td>openapi-generator's default <code>openApiNullable=true</code></td><td>a <code>getX_JsonNullable()</code> and <code>setX_JsonNullable(...)</code> pair beside each nullable property counts as a property your domain lacks</td><td>generate with <code>openApiNullable=false</code>; a <code>JsonNullable</code> type needs a leaf, and on a PATCH bean is <a href="rules.html#no-jsonnullable-patch-property">not supported yet</a></td></tr>
+<tr><td>an openapi-generator <code>java</code> client model with its default <code>openApiNullable=true</code></td><td>the processor leaves out the <code>getX_JsonNullable()</code> and <code>setX_JsonNullable(...)</code> pair beside each nullable property, and maps it through <code>getX()</code> and <code>setX(...)</code></td><td>nothing: <a href="rules.html#jsonnullable-companions">An openapi-generator <code>JsonNullable</code> companion</a> says what an unset property reads. Clearing one through a PATCH is <a href="rules.html#no-jsonnullable-patch-property">not supported yet</a></td></tr>
+<tr><td>an openapi-generator <code>spring</code> model with its default <code>openApiNullable=true</code></td><td>each nullable property is a <code>JsonNullable&lt;T&gt;</code> itself</td><td>map it through a leaf; on a PATCH bean it is <a href="rules.html#no-jsonnullable-patch-property">not supported yet</a></td></tr>
 <tr><td>a PATCH request bean with <code>default:</code> values or container defaults</td><td>the generator renders them as initialisers, which read as sent</td><td>give the PATCH request its own schema: <a href="beans_patch.html#patch-getters-answer-null">A PATCH getter must answer <code>null</code> until set</a></td></tr>
 <tr><td>a Lombok class</td><td>the processor sees its accessors only once Lombok has run</td><td>list Lombok's <code>annotationProcessor</code> before <code>hkj-processor</code>; the HKJ Gradle plugin adds its own after your <code>dependencies</code> block (<a href="../tooling/manual_setup.html#lombok">Lombok</a>)</td></tr>
 <tr><td>Lombok's <code>@Singular</code> on a collection</td><td>it maps: <code>build</code> writes the collection whole and leaves the singular adder alone. The collection is never <code>null</code>, so it cannot carry an absent <code>Optional</code> or a PATCH's absence</td><td>for an <code>Optional</code> component, declare it a <code>List</code> or drop <code>@Singular</code>; on a PATCH request, drop <code>@Singular</code>: <a href="rules.html#singular-collections">A Lombok <code>@Singular</code> collection</a></td></tr>

@@ -49165,7 +49165,7 @@ An unset property is an ordinary state of a bean, and `parse` reports it as any 
 |---|---|---|
 | a no-args constructor the Impl can call, and `setX` setters (Lombok `@Data` included) | `new`, then each setter | both ways |
 | a static `builder()` or `newBuilder()` whose `build()` returns it (a hand-written builder, or Lombok's `@Builder` or `@SuperBuilder`) | the builder's setters, then `build()` | both ways, reading the built type's getters |
-| a getter-only `List` beside its setters, the JAXB way | `getItems().addAll(...)` for that list | both ways |
+| a getter-only `List` beside its setters, the JAXB way | `getItems().addAll(...)` for that list (when the getter is declared nullable, only if it answers a list) | both ways |
 | getters, and nothing that writes it, such as a view built through a constructor with arguments | nothing | [`parse` only](#one-directional-beans) |
 | setters or a builder, and no getters | the setters or the builder | [`build` only](#one-directional-beans) |
 
@@ -49182,8 +49182,26 @@ Because a property can be unset, three things differ from a record wire:
 
 - **A default applied to it reads back as present**, whether a setter, a builder's `build()` or a getter applies it. A setter that swaps in `"Untitled"` turns every empty value into `Optional[Untitled]`.
 - **A writer that rejects it throws from `build`**, as a setter that copies with `List.copyOf(v)` does, or a builder that calls `requireNonNull`. Guard the copy with `v == null ? null : List.copyOf(v)`, or declare the component without the `Optional`.
+- **A model that tells a sent `null` from an unset one sends it.** An openapi-generator `java` client model keeps `setX(null)` in its [`JsonNullable` companion](rules.md#jsonnullable-companions) as a sent `null`, and reads both back as `null`:
 
-A law check from a domain sample with an empty `Optional` fails on both, whatever the bean's `equals`: `MappingLaws.assertMappingLaws(mapping.asValidatedPrism(), sample)`. The check from two wire samples compares beans with `equals`, so a hand-written bean without one fails it on identity alone.
+``` java
+    // build writes the empty subtitle through setSubtitle(null), which the model sends as null,
+    ListingModel built = ListingModelMappingImpl.INSTANCE.build(lamp);
+    assertThat(json.writeValueAsString(built)).isEqualTo("{\"title\":\"Lamp\",\"subtitle\":null}");
+    // where a fresh model leaves the property out.
+    ListingModel fresh = new ListingModel();
+    fresh.setTitle("Lamp");
+    assertThat(json.writeValueAsString(fresh)).isEqualTo("{\"title\":\"Lamp\"}");
+
+    // getSubtitle() answers null for an omitted property and for an explicit null alike.
+    ListingModel omitted = json.readValue("{\"title\":\"Lamp\"}", ListingModel.class);
+    ListingModel sentNull =
+        json.readValue("{\"title\":\"Lamp\",\"subtitle\":null}", ListingModel.class);
+    assertThatValidated(ListingModelMappingImpl.INSTANCE.parse(omitted)).hasValue(lamp);
+    assertThatValidated(ListingModelMappingImpl.INSTANCE.parse(sentNull)).hasValue(lamp);
+```
+
+A law check from a domain sample with an empty `Optional` fails on the first two, whatever the bean's `equals`: `MappingLaws.assertMappingLaws(mapping.asValidatedPrism(), sample)`. The check from two wire samples compares beans with `equals`, so a hand-written bean without one fails it on identity alone. A companion model fails it on a sample that leaves a nullable property unset, which comes back sent.
 ~~~
 
 ~~~admonish tip title="You can ship now"
@@ -49614,7 +49632,8 @@ Beans are often generated from a schema, and generators have habits. Check these
 | an openapi-generator model, with getters, setters and a no-args constructor | it maps both ways, even as a response you only read, so the processor refuses a property your domain lacks | declare a [derived field](basics.md#derived-wire-fields) for it, which `build` fills and `parse` ignores |
 | a `readOnly` property, with a getter and no setter | it is refused as a likely misspelling, since `build` could never write it | declare it [`@ReadOnly`](#read-only-properties): `parse` reads it and `build` leaves it out, so the Impl has two halves and no `asValidatedPrism()` |
 | strictly typed properties: enums, `OffsetDateTime`, `UUID` | Jackson has already converted them before `parse` runs | map each to your own type with a leaf over the generated type |
-| openapi-generator's default `openApiNullable=true` | a `getX_JsonNullable()` and `setX_JsonNullable(...)` pair beside each nullable property counts as a property your domain lacks | generate with `openApiNullable=false`; a `JsonNullable` type needs a leaf, and on a PATCH bean is [not supported yet](rules.md#no-jsonnullable-patch-property) |
+| an openapi-generator `java` client model with its default `openApiNullable=true` | the processor leaves out the `getX_JsonNullable()` and `setX_JsonNullable(...)` pair beside each nullable property, and maps it through `getX()` and `setX(...)` | nothing: [An openapi-generator `JsonNullable` companion](rules.md#jsonnullable-companions) says what an unset property reads. Clearing one through a PATCH is [not supported yet](rules.md#no-jsonnullable-patch-property) |
+| an openapi-generator `spring` model with its default `openApiNullable=true` | each nullable property is a `JsonNullable<T>` itself | map it through a leaf; on a PATCH bean it is [not supported yet](rules.md#no-jsonnullable-patch-property) |
 | a PATCH request bean with `default:` values or container defaults | the generator renders them as initialisers, which read as sent | give the PATCH request its own schema: [A PATCH getter must answer `null` until set](beans_patch.md#patch-getters-answer-null) |
 | a Lombok class | the processor sees its accessors only once Lombok has run | list Lombok's `annotationProcessor` before `hkj-processor`; the HKJ Gradle plugin adds its own after your `dependencies` block ([Lombok](../tooling/manual_setup.md#lombok)) |
 | Lombok's `@Singular` on a collection | it maps: `build` writes the collection whole and leaves the singular adder alone. The collection is never `null`, so it cannot carry an absent `Optional` or a PATCH's absence | for an `Optional` component, declare it a `List` or drop `@Singular`; on a PATCH request, drop `@Singular`: [A Lombok `@Singular` collection](rules.md#singular-collections) |
@@ -51043,7 +51062,7 @@ public class AddressBean {
 
 ```
 
-The PATCH request is a generator-shaped bean too, with every property `null` until a request sets it. Its nickname is the one hand-shaped property: an `Optional`, so that a client can clear it. openapi-generator writes a `JsonNullable` there by default, which is [not supported yet](rules.md#no-jsonnullable-patch-property).
+The PATCH request is a generator-shaped bean too, with every property `null` until a request sets it. Its nickname is the one hand-shaped property: an `Optional`, so that a client can clear it. openapi-generator's default model maps too, but reads a sent `null` as an omitted property, so clearing through it is [not supported yet](rules.md#no-jsonnullable-patch-property).
 
 ```java
 public class CustomerPatch {
@@ -51435,7 +51454,7 @@ are in [Compiler Messages](compiler_errors.md).
 | JAXB getter-only `List` | ✅ (through `addAll`) | ✅ | ✅ | ❌ (it can never read `null`) |
 | Sealed hierarchy against sealed hierarchy | ✅ | ✅ | ❌ | ❌ |
 | Generic record (`Page<T>`) | ✅ | ✅ | ✅ | ❌ (record-to-record only) |
-| `JsonNullable` property | through a leaf | through a leaf | through a leaf | ❌, not supported yet |
+| `JsonNullable` property (a `_JsonNullable` companion is [left out](rules.md#jsonnullable-companions)) | through a leaf | through a leaf | through a leaf | ❌, not supported yet |
 
 A lossless pair also earns `asIso()`; a bean pair with a reference property does not, because an
 unset property is an ordinary state. [What Your Spec Generates](tiers.md) explains which surface each spec gets, and why.
@@ -51722,6 +51741,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | **Bean wires** | | |
 | [Can the domain be a bean?](#how-a-bean-is-read-and-written) | No: `parse` builds the domain through a record constructor. | by design |
 | [What happens to an accessor with no partner?](#unpaired-accessors) | Left out; refused when named after a component the bean carries under no name. | by design |
+| [Is a getter-only `List` declared nullable filled through its getter?](#how-a-bean-is-read-and-written) | Only when the getter answers a list: otherwise `build` leaves it unwritten. | by design |
 | [Can a getter-only `List` be raw, or a wildcard?](#getter-only-list-element-type) | Not where `build` is emitted: `addAll` needs its element type. | not supported yet |
 | [Can a getter-only `List` carry an absent `Optional`?](#getter-only-list-refuses-the-bridge) | No: its getter creates the list, so absence reads as empty. | not supported yet |
 | [Can a two-way bean map a property that has only a getter?](#what-readonly-reads) | Yes, marked `@ReadOnly`: `parse` reads it and `build` leaves it out, so the Impl has no `asValidatedPrism()`. | by design |
@@ -51729,6 +51749,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a projection, or an `UpdateSpec`, read a property read-only?](#what-readonly-reads) | No: a projection has no `parse`, and an `UpdateSpec` builds nothing. | by design |
 | [Can a Lombok builder use `@Singular` on a collection?](#singular-collections) | Yes: `build` writes the collection whole and leaves its adder alone; a build-only adder it cannot tell apart is refused. | by design |
 | [Can a `@Singular` collection carry an absent `Optional`?](#singular-collections) | No: its builder builds an empty collection, so it is never absent. | not supported yet |
+| [Does an openapi-generator model with `JsonNullable` companions map?](#jsonnullable-companions) | Yes: each `getX_JsonNullable()` pair is left out, and `getX()` and `setX(...)` carry the property. | by design |
 | [Does a protobuf-java message map?](beans.md#generated-client-checklist) | No: its companion accessors pair as extra properties, and a repeated or map field has no setter. | not supported yet |
 | [Where does a one-directional bean nest?](#how-a-beans-direction-is-read) | Only where nothing needs its missing direction. | by design |
 | **Sparse PATCH** | | |
@@ -51771,6 +51792,7 @@ Nothing refuses these at compile time, and only the first draws a warning. Each 
 | [A PATCH that omits a field overwrote the stored value](beans_patch.md#patch-getters-answer-null) | A default the bean gives itself reads as sent: leave PATCH bean fields uninitialised. |
 | [A leaf's codec never changes after the first call, or misreads under load](codecs.md#your-own-canon) | The Impl reads each leaf once and shares its answer: choose inside the codec's parse, and build over thread-safe parts. |
 | [An explicit JSON `null` cleared an `Optional` PATCH property](beans_patch.md#what-each-json-state-does) | Jackson binds it to `Optional.empty()`, which means *clear* there: omit the field to leave it unchanged. |
+| [A built openapi-generator model sends `"x": null`, or fails a law check from wire samples](beans.md#bean-shaped-wire-targets) | Its `setX(null)` stores a sent `null`, where a fresh model leaves `x` out: set each nullable property in a parsing sample. |
 | [`build` throws on an empty `Optional`](beans.md#bean-shaped-wire-targets) | A setter, builder or record constructor rejects `null` without declaring it: drop the `Optional`, or encode absence in a leaf. |
 | [Adding to a built wire's list throws `UnsupportedOperationException`](structure.md#nesting-containers-and-recursion) | A same-typed container crosses as an unmodifiable copy: set a new list, or copy it first. |
 | [A record with an array is not equal to its own round trip](structure.md#other-containers) | The array crosses as a clone and compares by reference: give the record an `equals` that uses `Arrays.equals`. |
@@ -52054,6 +52076,7 @@ The [tier grid](tiers.md#which-methods-your-spec-gets) asks whether every compon
 - **A property is a getter and a writer that share a name.** Getters are `getX()`, and `isX()` returning `boolean` or `Boolean`, the shape JAXB declares for an optional boolean. Where a bean declares both for one name, `getX()` reads it.
 - **An overloaded writer pairs by the getter's type.** Beside `int getAge()`, `setAge(int)` writes the property and `setAge(String)` is passed over, whatever order the two are declared in. A builder setter pairs the same way. With no getter to match, on a bean that is only written, the first overload met decides.
 - **An overload that cannot pair is refused.** When no overload takes the getter's type, the property is read and written at different types. When a second overload would take the value as well, and is no less specific, javac could not choose between the two.
+- **A getter-only `List` declared nullable is filled only when its getter answers a list.** openapi-generator declares every getter it does not require `@Nullable`, and a nullable array's answers `null` until Jackson sets it. `build` then leaves the property unwritten, which a law check from a domain sample reports as missing. `List<@Nullable String>` does not count.
 - **An unpaired accessor is left out of the mapping.** That suits a computed getter such as `getSummary()`, or a [`@Singular` adder](#singular-collections), which the processor never refuses. It refuses any other unpaired accessor named after a domain component: [When an unpaired accessor is refused](#unpaired-accessors).
 - **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the wire may be bean-shaped, and a bean domain gets a diagnostic.
 - **Nesting is unaffected.** A bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a one-directional one nests [where its direction is used](#how-a-beans-direction-is-read). One with a [read-only property](#what-readonly-reads) has two halves instead, and nests where a mapping uses one direction.
@@ -52065,6 +52088,16 @@ The [tier grid](tiers.md#which-methods-your-spec-gets) asks whether every compon
 - **The processor refuses a writer declared non-null**, by a non-null annotation or by a `@NullMarked` scope with no `@Nullable` on it, as it refuses a bridged record component. Mark it `@Nullable`, and on a Lombok bean mark the field, which Lombok copies to the setter.
 - **What the bean does with the `null` is not checked.** A default reads back as present, and a writer that rejects it throws from `build`, as [Bean-shaped wire targets](beans.md#bean-shaped-wire-targets) warns.
 - **A leaf over the whole `Optional` wins over the bridge.** It suits a generated builder that refuses `null`: encode absence the builder's way, a `ValidatedPrism<String, Optional<String>>` mapping empty to `""`, say.
+
+### An openapi-generator `JsonNullable` companion {#jsonnullable-companions}
+
+**A `getX_JsonNullable()` and `setX_JsonNullable(...)` pair beside a property `x` is left out of the mapping.** openapi-generator's `java` client models, on its Jackson libraries such as `native` and `resttemplate`, keep each nullable property that is not required in a `JsonNullable` by default (`openApiNullable=true`), and expose it twice. `getX()` and `setX(T)` read and write its value, and the companion pair reads and writes the `JsonNullable<T>` that Jackson binds. The processor maps `x` through the plain pair, so the model has one property per JSON field.
+
+- **The processor recognises the companion by its shape.** It is a property named `x_JsonNullable` of type `org.openapitools.jackson.nullable.JsonNullable<T>`, beside a property `x` of type `T`. Otherwise it stays a property: when it holds another type, when no `x` is beside it, or when `x` is a getter-only `List`, which the companion alone writes.
+- **The `spring` generator's property has no plain pair.** Its `JsonNullable<T> getX()` is the property itself, so the rules for [a `JsonNullable` property](#no-jsonnullable-patch-property) apply.
+- **An unset property reads `null`**, as on any bean. `getX()` answers `null` for an omitted property and for an explicit `null` alike, so on a [PATCH bean](beans_patch.md) both leave the component unchanged.
+- **A domain `Optional` component is still refused on a PATCH bean.** The plain getter has no state left for *clear*, so it meets [No plain property bridged to a domain `Optional`](#no-optional-bridge-on-a-patch). Clearing through the companion is not supported yet.
+- **What the model does with the `null` an empty `Optional` writes is not checked for you.** It sends an explicit `null`, as [Bean-shaped wire targets](beans.md#bean-shaped-wire-targets) warns.
 
 ### What `@Unmapped` withholds {#what-unmapped-withholds}
 
@@ -52183,7 +52216,7 @@ A one-directional mapping follows these rules:
 
 ### No `JsonNullable` property {#no-jsonnullable-patch-property}
 
-**A `JsonNullable` property is not supported yet.** Declare an `Optional`-typed property instead, which keeps the *clear* state, or a plain nullable one where *clear* has no meaning.
+**A `JsonNullable` property is not supported yet.** Declare an `Optional`-typed property instead, which keeps the *clear* state, or a plain nullable one where *clear* has no meaning. openapi-generator's `spring` models declare such a property. Its `java` client models add a [companion pair](#jsonnullable-companions) instead, which is left out, so the processor reads such a PATCH bean through `getX()`, where a sent `null` reads as an omitted property.
 
 ### A sparse update constructs the record once {#sparse-construct-once}
 
@@ -100720,6 +100753,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 ### 0.4.11-SNAPSHOT (Latest)
 
 _In development. Release notes will be added here as changes land on `main`._
+
+- **openapi-generator's `java` client models map as they are generated** ([#936](https://github.com/higher-kinded-j/higher-kinded-j/issues/936)): with `openApiNullable=true`, the default on the generator's Jackson libraries, a model gives each nullable property a `getX_JsonNullable()` and `setX_JsonNullable(...)` pair beside `getX()` and `setX(...)`. The processor now leaves that companion pair out and maps the property through the plain pair. A model it used to refuse as wider than its domain now maps both ways with no derived field and no change to the generator's options, and as a PATCH bean where the component is not an `Optional`. An omitted property and an explicit `null` both read as `null`, and `build` writes an empty `Optional` through `setX(null)`, which the model sends as `"x": null`. A model generated with `openApiNullable=false` maps as before. A getter-only `List` whose getter is declared nullable, as the generator declares a `readOnly` array's, is now filled only when the getter answers a list, where `build` used to throw on the `null` a nullable array's answers. See [An openapi-generator `JsonNullable` companion](mapping/rules.md#jsonnullable-companions).
+
+  _Notes for existing builds._ A derived field or a `@MapField` rename that names a companion, such as `nickname_JsonNullable`, now names no wire property and is refused: remove it, since `setNickname(...)` writes the same value. One inherited from a mix-in stays inert. A domain component named after a companion no longer finds it, so the mapping becomes a projection, with no `parse`.
 
 - **Many failures accumulate in time proportional to their number, and many edits apply without overflowing the stack** ([#982](https://github.com/higher-kinded-j/higher-kinded-j/issues/982)): a lifted `List`, `Set`, array or `Map` whose elements all fail to parse reports every failure in time proportional to how many there are, so 100,000 failing elements take milliseconds rather than seconds. The `ValidatedParse` bulk forms a generated mapping calls, and `Edits.accumulate`, collect their failures once, in the same order as before. `Edits.combine`, `Edits.accumulate` and `Monoids.update().combineAll` apply any number of updates in a loop, so a hundred thousand edits apply on an ordinary thread stack. `PathOps.sequenceValidated` and `traverseValidated` combine the errors they collect in balanced pairs, which keeps a concatenating `Semigroup` such as `NonEmptyList.semigroup()` to `n log n`. See [The bulk forms](optics/validated_prism.md#the-bulk-forms-parseall-and-parsevalues) and [Multi-Edit and Sparse Updates](optics/multi_edit.md).
 
