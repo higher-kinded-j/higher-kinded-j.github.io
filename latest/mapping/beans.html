@@ -799,7 +799,76 @@ interface MerchantPatchMapping extends UpdateSpec&lt;Merchant, MerchantPatchBean
     // Valid(Merchant[id=m-1, name=Brightside Homeware]) - the m-9 the bean reads is never applied
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<p>The marker withholds the refusal, and nothing else: the component stays out of the mapping. On a <code>MappingSpec</code> that leaves the bean narrower than the domain, so the Impl becomes a <a href="#bean-projections">projection</a>, with <code>build</code> and <code>patch</code> and no <code>parse</code>. <a href="rules.html#what-unmapped-withholds">What <code>@Unmapped</code> withholds</a> has the precise rule.</p>
+<p>The marker withholds the refusal, and nothing else: the component stays out of the mapping. On a <code>MappingSpec</code> that leaves the bean narrower than the domain, so the Impl becomes a <a href="#bean-projections">projection</a>, with <code>build</code> and <code>patch</code> and no <code>parse</code>. To keep <code>parse</code>, mark a getter <a href="#read-only-properties">read-only</a> instead. <a href="rules.html#what-unmapped-withholds">What <code>@Unmapped</code> withholds</a> has the precise rule.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<hr />
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<h2 id="read-only-properties"><a class="header" href="#read-only-properties">Properties you only read</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>An OpenAPI <code>readOnly</code> property is sent in responses and never in requests. openapi-generator gives it a getter and no setter, and sets it through the constructor Jackson calls. You want <code>parse</code> to read it, and <code>build</code> must not send it. Declare an abstract <code>@ReadOnly</code> marker named after the property, as you would <code>@Unmapped</code>:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code class="language-java">// The client model openapi-generator writes for the same merchant, whose schema marks the id
+// readOnly: a response carries it, and a request never sends it, so it has a getter and no setter.
+class MerchantModel {
+  private final String id;
+  private String name;
+
+  public MerchantModel() {
+    this(null);
+  }
+
+  MerchantModel(String id) { // stands in for the generated @JsonCreator constructor
+    this.id = id;
+  }
+
+  public String getId() {
+    return id;
+  }
+
+  public String getName() {
+    return name;
+  }
+
+  public void setName(String name) {
+    this.name = name;
+  }
+}
+
+@GenerateMapping
+interface MerchantModelMapping extends MappingSpec&lt;Merchant, MerchantModel&gt; {
+  // parse reads getId() into Merchant.id, and build leaves it unwritten. The Impl then carries
+  // parse and build as two halves, asValidatedParse() and asValidatedBuild(), and no
+  // asValidatedPrism(): parse cannot read back an id build never wrote.
+  @ReadOnly
+  String id();
+}
+
+
+    MerchantModel fetched = new MerchantModel("m-1"); // as Jackson reads a GET response
+    fetched.setName("Brightside");
+    MerchantModelMappingImpl merchantMapping = MerchantModelMappingImpl.INSTANCE;
+
+    Validated&lt;NonEmptyList&lt;FieldError&gt;, Merchant&gt; merchant = merchantMapping.parse(fetched);
+    // Valid(Merchant[id=m-1, name=Brightside])
+
+    MerchantModel sent = merchantMapping.build(new Merchant("m-1", "Brightside Homeware"));
+    boolean idSent = sent.getId() != null; // build never writes a read-only property
+    // false
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p><code>parse</code> cannot read back a bean that <code>build</code> wrote, because the id is missing, so the mapping is no <code>ValidatedPrism</code>. The Impl carries <code>parse</code> and <code>build</code> as two halves, <code>asValidatedParse()</code> and <code>asValidatedBuild()</code>, and no <code>asValidatedPrism()</code> or <code>asIso()</code>. Each half nests where a mapping uses that direction alone, as a <a href="#one-directional-beans">one-directional bean</a> does. A mapping that builds and parses the component holding it cannot nest it. Law-check each half on its own:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code class="language-java">    MappingLaws.assertMappingLaws(
+        MerchantModelMappingImpl.INSTANCE.asValidatedParse(),
+        merchantModel("m-1", "Brightside"), // parses
+        merchantModel(null, "Brightside")); // located failure: no id to read
+
+    MappingLaws.assertMappingLaws(
+        MerchantModelMappingImpl.INSTANCE.asValidatedBuild(),
+        new Merchant("m-1", "Brightside")); // renders without failing
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A component that converts takes the marker on its leaf. <a href="rules.html#what-readonly-reads">What <code>@ReadOnly</code> reads</a> has the precise rule.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -809,7 +878,7 @@ interface MerchantPatchMapping extends UpdateSpec&lt;Merchant, MerchantPatchBean
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <div class="table-wrapper"><table><thead><tr><th>The generated shape</th><th>What happens</th><th>Instead</th></tr></thead><tbody>
 <tr><td>an openapi-generator model, with getters, setters and a no-args constructor</td><td>it maps both ways, even as a response you only read, so the processor refuses a property your domain lacks</td><td>declare a <a href="basics.html#derived-wire-fields">derived field</a> for it, which <code>build</code> fills and <code>parse</code> ignores</td></tr>
-<tr><td>a <code>readOnly</code> property, with a getter and no setter</td><td>reading it on a two-way bean is not supported yet: <code>@Unmapped</code> lets the bean map, but the component stays out, so there is no <code>parse</code></td><td>leave that component out of the domain you parse into</td></tr>
+<tr><td>a <code>readOnly</code> property, with a getter and no setter</td><td>it is refused as a likely misspelling, since <code>build</code> could never write it</td><td>declare it <a href="#read-only-properties"><code>@ReadOnly</code></a>: <code>parse</code> reads it and <code>build</code> leaves it out, so the Impl has two halves and no <code>asValidatedPrism()</code></td></tr>
 <tr><td>strictly typed properties: enums, <code>OffsetDateTime</code>, <code>UUID</code></td><td>Jackson has already converted them before <code>parse</code> runs</td><td>map each to your own type with a leaf over the generated type</td></tr>
 <tr><td>openapi-generator's default <code>openApiNullable=true</code></td><td>a <code>getX_JsonNullable()</code> and <code>setX_JsonNullable(...)</code> pair beside each nullable property counts as a property your domain lacks</td><td>generate with <code>openApiNullable=false</code>; a <code>JsonNullable</code> type needs a leaf, and on a PATCH bean is <a href="rules.html#no-jsonnullable-patch-property">not supported yet</a></td></tr>
 <tr><td>a PATCH request bean with <code>default:</code> values or container defaults</td><td>the generator renders them as initialisers, which read as sent</td><td>give the PATCH request its own schema: <a href="beans_patch.html#patch-getters-answer-null">A PATCH getter must answer <code>null</code> until set</a></td></tr>
