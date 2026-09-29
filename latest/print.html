@@ -54027,7 +54027,7 @@ will offer the wrong import. And the spec interface is not the thing you call. I
 this endpoint calls (<code>ValidatedParse&lt;UserDto, User&gt;</code>, satisfied by the bean registered in
 <a href="mapping/testing.html#injecting-and-testing-generated-mappings">Injecting and testing</a>) or call
 <code>UserMappingImpl.INSTANCE</code> in the caller. Never declare that constant on the spec itself:
-<a href="mapping/basics.html#bind-in-the-caller">it can read null</a>.</p>
+<a href="mapping/rules.html#impl-constant-on-a-spec">it can read null</a>.</p>
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -54304,29 +54304,35 @@ public class MappingConfiguration {
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p><a href="mapping/testing.html#injecting-and-testing-generated-mappings">Injecting and testing generated mappings</a> lists the surface to register for each kind of mapping.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<div id="admonition-not-checked-for-you-never-bind-the-impl-on-the-spec" class="admonition admonish-warning" role="note" aria-labelledby="admonition-not-checked-for-you-never-bind-the-impl-on-the-spec-title">
-<div class="admonition-title">
-<div id="admonition-not-checked-for-you-never-bind-the-impl-on-the-spec-title">
-<p>Not checked for you: never bind the Impl on the spec</p>
-</div>
-<a class="admonition-anchor-link" href="mapping/basics.html#admonition-not-checked-for-you-never-bind-the-impl-on-the-spec"></a>
-</div>
-<div>
-<p>MapStruct's idiom puts the mapper's instance on its own interface. Here that would be <code>CustomerMappingImpl MAPPER = CustomerMappingImpl.INSTANCE;</code>, declared on <code>CustomerMapping</code>, the spec with an email leaf in <a href="mapping/basics.html#validated-leaves">Validated leaves</a>. It compiles, and it can read <code>null</code>. If any code uses <code>CustomerMappingImpl.INSTANCE</code> before the first read of <code>CustomerMapping.MAPPER</code>, the constant stays <code>null</code> for good, and the next <code>MAPPER.parse(...)</code> throws a <code>NullPointerException</code>. Which class a program reaches first depends on its code paths, so the failure comes and goes. A spec with no leaf or derived field is safe, so the constant can work for months and break the day someone adds one. Keep the Impl in the calling code instead.</p>
-</div>
-</div>
+<p>Never keep the Impl in a constant on the spec, MapStruct's habit. Once the spec declares a leaf, the constant can read <code>null</code>, depending on which class a program uses first. The processor warns at one (<a href="mapping/rules.html#impl-constant-on-a-spec">A spec never holds its Impl in a constant</a>).</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.10"></div>
-<details id="admonition-why-the-constant-reads-null" class="admonition admonish-note" role="note" aria-labelledby="admonition-why-the-constant-reads-null-title">
-<summary class="admonition-title">
-<div id="admonition-why-the-constant-reads-null-title">
-<p>Why the constant reads <code>null</code></p>
+<div id="admonition-not-checked-for-you-a-surface-of-the-impl-held-on-the-spec" class="admonition admonish-warning" role="note" aria-labelledby="admonition-not-checked-for-you-a-surface-of-the-impl-held-on-the-spec-title">
+<div class="admonition-title">
+<div id="admonition-not-checked-for-you-a-surface-of-the-impl-held-on-the-spec-title">
+<p>Not checked for you: a surface of the Impl held on the spec</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/basics.html#admonition-why-the-constant-reads-null"></a>
-</summary>
+<a class="admonition-anchor-link" href="mapping/basics.html#admonition-not-checked-for-you-a-surface-of-the-impl-held-on-the-spec"></a>
+</div>
 <div>
-<p>The Impl implements the spec. Initialising a class first initialises every interface it implements that declares an instance method with a body: every <code>default</code> leaf and derived field, and any <code>private</code> instance helper. Using <code>CustomerMappingImpl.INSTANCE</code> first starts the Impl's initialisation, which initialises <code>CustomerMapping</code> before <code>INSTANCE</code> is assigned. <code>MAPPER</code> is evaluated then, and keeps the <code>null</code> it read. Two threads making those first uses at the same moment can deadlock instead. A constant on a <a href="mapping/codecs.html#shared-vocabulary-mix-in-interfaces">mix-in</a> that declares a leaf fails the same way. The processor sees a field's type but not its initialiser, so it cannot tell this constant from a harmless one, and does not refuse it.</p>
+<p>A constant on the spec holding something built from the Impl, such as its <code>ValidatedPrism</code>, draws no warning, because the processor reads a constant's type, not its initialiser. The <code>contact()</code> leaf arms it, as before:</p>
+<pre><code class="language-java">// A surface of the Impl held on the spec: no warning, and never do this either.
+record Locker(String code, EmailAddress contact) {}
+
+record LockerDto(String code, String contact) {}
+
+@GenerateMapping
+interface LockerMapping extends MappingSpec&lt;Locker, LockerDto&gt; {
+  ValidatedPrism&lt;LockerDto, Locker&gt; PRISM = LockerMappingImpl.INSTANCE.asValidatedPrism();
+
+  default ValidatedPrism&lt;String, EmailAddress&gt; contact() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+</code></pre>
+<p>This one fails harder than a <code>null</code>. A program that uses <code>LockerMappingImpl.INSTANCE</code> first evaluates <code>PRISM</code> while <code>INSTANCE</code> is still <code>null</code>, so the Impl fails to initialise with an <code>ExceptionInInitializerError</code>, and every later use throws <code>NoClassDefFoundError</code>. Keep the Impl and its surfaces in the calling code.</p>
 </div>
-</details>
+</div>
 <hr />
 <div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJ2YWxpZGF0ZWQtbGVhdmVzIl0=" data-since="v0.4.10"></div>
 <h2 id="validated-leaves"><a class="header" href="#validated-leaves">Validated leaves</a></h2>
@@ -54468,7 +54474,7 @@ interface CustomerMapping extends MappingSpec&lt;Customer, CustomerDto&gt; {
 <a class="admonition-anchor-link" href="mapping/basics.html#check-basics-constant"></a>
 </div>
 <div>
-<p>Both of these specs carry the MapStruct-style constant. In each program, some code uses the Impl's <code>INSTANCE</code> before anything reads the spec's <code>MAPPER</code>. Afterwards, which <code>MAPPER</code> can read <code>null</code>?</p>
+<p>Both of these specs carry the MapStruct-style constant, with the processor's warning on it suppressed. In each program, some code uses the Impl's <code>INSTANCE</code> before anything reads the spec's <code>MAPPER</code>. Afterwards, which <code>MAPPER</code> can read <code>null</code>?</p>
 <pre><code class="language-java">// The MapStruct idiom, on two specs: never do this.
 record Warehouse(String code, int bays) {}
 
@@ -54476,6 +54482,7 @@ record WarehouseDto(String code, int bays) {}
 
 @GenerateMapping
 interface WarehouseMapping extends MappingSpec&lt;Warehouse, WarehouseDto&gt; {
+  @SuppressWarnings("impl-constant") // kept to show the trap
   WarehouseMappingImpl MAPPER = WarehouseMappingImpl.INSTANCE;
 }
 
@@ -54485,6 +54492,7 @@ record CourierDto(String name, String email) {}
 
 @GenerateMapping
 interface CourierMapping extends MappingSpec&lt;Courier, CourierDto&gt; {
+  @SuppressWarnings("impl-constant") // kept to show the trap
   CourierMappingImpl MAPPER = CourierMappingImpl.INSTANCE;
 
   default ValidatedPrism&lt;String, EmailAddress&gt; email() {
@@ -54517,7 +54525,7 @@ interface CourierMapping extends MappingSpec&lt;Courier, CourierDto&gt; {
     assertThat(mapperAfterFirstUsing("CourierMappingImpl", "CourierMapping")) // a leaf
         .isNull();
 </code></pre>
-<p>The day someone adds a leaf to <code>WarehouseMapping</code>, its constant breaks too. Delete both constants, and keep each Impl in the calling code.</p>
+<p>The day someone adds a leaf to <code>WarehouseMapping</code>, its constant breaks too, which is why the processor warns on both. Delete both constants, and keep each Impl in the calling code.</p>
 <p>Where this lives: <a href="mapping/basics.html#bind-in-the-caller">Bind in the caller, not on the spec</a>.</p>
 </div>
 </details>
@@ -57282,6 +57290,7 @@ record CustomerSummaryDto(String name, String email) {}
 
 @GenerateMapping
 interface CustomerSummaryMapping extends MappingSpec&lt;Customer, CustomerSummaryDto&gt; {
+  @SuppressWarnings("impl-constant") // kept to show the trap
   CustomerSummaryMappingImpl MAPPER = CustomerSummaryMappingImpl.INSTANCE;
 
   default ValidatedPrism&lt;String, EmailAddress&gt; email() {
@@ -57290,7 +57299,7 @@ interface CustomerSummaryMapping extends MappingSpec&lt;Customer, CustomerSummar
 }
 
 </code></pre>
-<p>It compiles, and the teammate's test, which calls <code>CustomerSummaryMapping.MAPPER.parse(...)</code>, passes. Would you approve it? If not, say what fails, and when.</p>
+<p>The processor warned at the constant, so the teammate suppressed the warning. It compiles, and the teammate's test, which calls <code>CustomerSummaryMapping.MAPPER.parse(...)</code>, passes. Would you approve it? If not, say what fails, and when.</p>
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -57302,13 +57311,13 @@ interface CustomerSummaryMapping extends MappingSpec&lt;Customer, CustomerSummar
 <a class="admonition-anchor-link" href="mapping/self_check.html#check-self-trap-answer"></a>
 </summary>
 <div>
-<p><strong>No.</strong> The Impl implements the spec, and the spec declares an instance method with a body (its email leaf). So initialising the Impl initialises the spec first. A program that reads <code>CustomerSummaryMapping.MAPPER</code> first is fine, which is why the test passes. A program that uses <code>CustomerSummaryMappingImpl.INSTANCE</code> first evaluates the constant while the Impl's <code>INSTANCE</code> is still <code>null</code>, and the constant keeps that <code>null</code> for good:</p>
+<p><strong>No.</strong> The warning was right. The Impl implements the spec, and the spec declares an instance method with a body (its email leaf). So initialising the Impl initialises the spec first. A program that reads <code>CustomerSummaryMapping.MAPPER</code> first is fine, which is why the test passes. A program that uses <code>CustomerSummaryMappingImpl.INSTANCE</code> first evaluates the constant while the Impl's <code>INSTANCE</code> is still <code>null</code>, and the constant keeps that <code>null</code> for good:</p>
 <pre><code class="language-java">    // Two programs, each loading this package afresh, so neither sees what the other ran:
     assertThat(mapperAfterFirstUsing("CustomerSummaryMapping")).isNotNull(); // the spec first
     assertThat(mapperAfterFirstUsing("CustomerSummaryMappingImpl")).isNull(); // the Impl first
 </code></pre>
 <p>Which class a program reaches first depends on its code paths, so the failure comes and goes. Bind the Impl in the calling code instead: a local, a field of the calling class, or an injected <code>ValidatedPrism</code>.</p>
-<p>Where this lives: <a href="mapping/basics.html#bind-in-the-caller">Bind in the caller, not on the spec</a>.</p>
+<p>Where this lives: <a href="mapping/rules.html#impl-constant-on-a-spec">A spec never holds its Impl in a constant</a>.</p>
 </div>
 </details>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -61090,7 +61099,7 @@ mapping nests inside another.</p>
 <tr><td>Sparse PATCH is opt-in, bean-only and wrapper-typed</td><td>A primitive can never be absent, and a record component is always present</td><td><a href="mapping/beans_patch.html#sparse-patch-write-back-updatespec"><code>UpdateSpec</code></a> with <code>Integer</code>, <code>Boolean</code> and friends</td></tr>
 <tr><td>A PATCH replaces a nested object wholesale</td><td>Deep merge is out of scope</td><td>Patch the nested record through its own spec</td></tr>
 <tr><td>A spec-carrying module on the <strong>module path</strong> neither writes nor reads the cross-module index</td><td>The index is one package, and a package belongs to one module</td><td>Delegate with a leaf calling the other Impl, or pass <code>-Ahkj.mapping.index=false</code></td></tr>
-<tr><td>The generated Impl is bound in the caller, never as a constant on the spec</td><td>Class initialisation can leave that constant <code>null</code>, intermittently</td><td><code>XImpl.INSTANCE</code> at the call site, or an injected surface: <a href="mapping/basics.html#bind-in-the-caller">why</a></td></tr>
+<tr><td>The generated Impl is bound in the caller, never as a constant on the spec</td><td>Class initialisation can leave that constant <code>null</code>, intermittently; the processor warns at one typed as the Impl</td><td><code>XImpl.INSTANCE</code> at the call site, or an injected surface: <a href="mapping/rules.html#impl-constant-on-a-spec">why</a></td></tr>
 </tbody></table>
 </div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>Everything the processor refuses says so at compile time, with what is wrong, why it matters and
@@ -61368,8 +61377,8 @@ the house conversions once, extend them everywhere.</li>
 <li><strong>Error paths are domain-named.</strong> A renamed field reports at the domain's name, not the wire's.
 Clients that map errors onto their own payload keys need the rename applied in reverse.</li>
 <li><strong><code>Mappers.getMapper</code> has no equivalent on the interface.</strong> Declaring
-<code>M MAPPER = MImpl.INSTANCE;</code> on the spec compiles and then reads <code>null</code>, intermittently, because
-of the class-initialisation cycle: <a href="mapping/basics.html#bind-in-the-caller">bind it in the caller</a>.</li>
+<code>MImpl MAPPER = MImpl.INSTANCE;</code> on the spec compiles, with a warning, and then reads <code>null</code>,
+intermittently, because of the class-initialisation cycle: <a href="mapping/basics.html#bind-in-the-caller">bind it in the caller</a>.</li>
 </ol>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <h3 id="migrating-one-pair"><a class="header" href="#migrating-one-pair">Migrating one pair</a></h3>
@@ -61531,6 +61540,7 @@ that check belongs after the boundary, on the <a href="mapping/../effect/ch_intr
 <tr><td><a href="mapping/basics.html#renamed-and-converted">Can a field be renamed and converted at once?</a></td><td>Yes: <code>@MapField</code> goes on its leaf, the one method named after it.</td><td>by design</td></tr>
 <tr><td><a href="mapping/rules.html#derived-fields-and-the-emission-tiers">Can a projection carry a derived field?</a></td><td>No: <code>build</code> recomputes what the write-back would set.</td><td>by design</td></tr>
 <tr><td><a href="mapping/rules.html#visible-from-the-spec-package">Can a mapped type be one the spec's package cannot see?</a></td><td>No: the Impl is generated in that package and names it.</td><td>by design</td></tr>
+<tr><td><a href="mapping/rules.html#impl-constant-on-a-spec">Can a spec or a mix-in hold its Impl in a constant?</a></td><td>Not safely: it can read <code>null</code>, so the processor warns; <code>@SuppressWarnings("impl-constant")</code> quiets a deliberate one.</td><td>by design</td></tr>
 <tr><td><strong>Optional fields</strong></td><td></td><td></td></tr>
 <tr><td><a href="mapping/rules.html#bridged-component-nullable">Can a bridged component be declared non-null, or primitive?</a></td><td>No: <code>build</code> writes <code>null</code> for empty, so declare it <code>@Nullable</code>.</td><td>by design</td></tr>
 <tr><td><a href="mapping/rules.html#bridged-component-nullable">Can a sparse or sealed spec declare <code>@OptionalBridge</code>?</a></td><td>No; one inherited from a mix-in stays inert.</td><td>by design</td></tr>
@@ -61605,10 +61615,11 @@ that check belongs after the boundary, on the <a href="mapping/../effect/ch_intr
 </div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <h2 id="find-your-symptom"><a class="header" href="#find-your-symptom">Find your symptom</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<p>Nothing refuses these at compile time. Each is a runtime surprise, linked to the teaching section that warns of it.</p>
+<p>Nothing refuses these at compile time, and only the first draws a warning. Each is a runtime surprise, linked to the section that explains it.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <div class="table-wrapper"><table><thead><tr><th>What you see</th><th>Why, and the fix</th></tr></thead><tbody>
-<tr><td><a href="mapping/basics.html#bind-in-the-caller"><code>MAPPER.parse</code> throws a <code>NullPointerException</code>, sometimes</a></td><td>A constant on the spec can read <code>null</code>: bind the Impl in the caller.</td></tr>
+<tr><td><a href="mapping/rules.html#impl-constant-on-a-spec"><code>MAPPER.parse</code> throws a <code>NullPointerException</code>, sometimes</a></td><td>A constant on the spec can read <code>null</code>, as the processor's warning at it says: bind the Impl in the caller.</td></tr>
+<tr><td><a href="mapping/basics.html#bind-in-the-caller">An Impl's first use throws <code>ExceptionInInitializerError</code>, and every use after it <code>NoClassDefFoundError</code></a></td><td>A constant on the spec holds a surface of the Impl, which draws no warning: bind the Impl in the caller.</td></tr>
 <tr><td><a href="mapping/codecs.html#standard-codecs">The first <code>parse</code> or <code>build</code> throws a <code>StackOverflowError</code></a></td><td>A leaf named like its factory calls itself: write <code>StandardCodecs.currency()</code>, qualified.</td></tr>
 <tr><td><a href="mapping/codecs.html#canonical-forms-only">A browser's timestamps are rejected some of the time, or Python's every time</a></td><td>The stock date-time codecs accept only their own render: declare the producer's canon.</td></tr>
 <tr><td><a href="mapping/basics.html#validated-leaves">A bad date or enum got Jackson's 400, with no field path</a></td><td>Jackson rejected a typed wire field before <code>parse</code> ran: keep a converted wire field a <code>String</code>.</td></tr>
@@ -61684,6 +61695,18 @@ that check belongs after the boundary, on the <a href="mapping/../effect/ch_intr
 <p><strong>The processor refuses a type the spec's package cannot see wherever the mapping crosses it.</strong> It generates the Impl as a top-level class in the spec's package, and the Impl names every type the mapping crosses, so each one has to be visible from there. That covers the spec and the bounds of its type parameters, its domain and wire types with their type arguments, a sealed pair's subtypes, and each component the wire carries, on both sides. It covers a bean wire's builder, a rename's, leaf's or marker's type, and a merge's target, sources and the components it fills. Where the reads are null-checked, it also covers the element types a container component's own class declares, as <code>Sku</code> in <code>class Grid extends ArrayList&lt;List&lt;Sku&gt;&gt;</code>. A type fails when it, or a class enclosing it, is <code>private</code>, or when it comes from another package and it, or a class enclosing it, is not <code>public</code>. The refusal names where the mapping meets the type, <code>record component 'sku' of 'Item' names 'Sku', which cannot be reached from 'com.example'</code>, and its fix names the class to change. Every such type is reported in the one compilation.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>A domain component the wire does not carry needs no visibility. A projection or a PATCH carries it over from the domain untouched, and the Impl never names its type.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<h3 id="impl-constant-on-a-spec"><a class="header" href="#impl-constant-on-a-spec">A spec never holds its Impl in a constant</a></h3>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p><strong>The processor warns at a constant, on a spec or on a mix-in compiled with it, whose type is that spec's generated Impl.</strong> That is MapStruct's habit, <code>CustomerMappingImpl MAPPER = CustomerMappingImpl.INSTANCE;</code>, and such a constant can read <code>null</code>. A <code>@GenerateMerge</code> spec's Impl is looked for the same way. The Impl implements the spec. Initialising a class first initialises every interface it implements that declares an instance method with a body: every <code>default</code> leaf and derived field, and any <code>private</code> instance helper. Using <code>CustomerMappingImpl.INSTANCE</code> first starts the Impl's initialisation, which initialises <code>CustomerMapping</code> before <code>INSTANCE</code> is assigned. <code>MAPPER</code> is evaluated then, and keeps the <code>null</code> it read for good. Two threads making those first uses at the same moment can deadlock instead. A constant on a <a href="mapping/codecs.html#shared-vocabulary-mix-in-interfaces">mix-in</a> fails the same way. Keep the Impl in the calling code, as <a href="mapping/basics.html#bind-in-the-caller">Bind in the caller</a> shows.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<ul>
+<li><strong>It warns whether or not the interface declares such a method</strong>, since the first leaf added arms the trap.</li>
+<li><strong>It is a warning, not a refusal.</strong> The Impl is still generated, and only a <code>-Werror</code> build fails on it.</li>
+<li><strong><code>@SuppressWarnings("impl-constant")</code> keeps a deliberate constant quiet</strong>, on the constant or on a declaration enclosing it. The chapter's checkpoints use it to show the trap. <code>@SuppressWarnings("all")</code> does not, since it is the compiler's own switch.</li>
+<li><strong>Only the constant's type is read, never its initialiser</strong>, so a constant typed as the spec, or as a surface of the Impl, draws no warning. <a href="mapping/basics.html#bind-in-the-caller">Bind in the caller</a> warns of the surface.</li>
+<li><strong>Another spec's Impl draws nothing.</strong> It is initialised on its own, so the constant reads it set, unless specs hold each other's Impls in a cycle, of two specs or more, which the processor does not trace.</li>
+</ul>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -62231,7 +62254,7 @@ annotated method on a mix-in both specs extend; an inherited one draws no note.
 <ul>
 <li><strong>Headings</strong> quote the message with its names replaced: <code>X</code> and <code>Y</code> for types, <code>x</code> and <code>y</code> for components or methods, <code>T</code> for a type argument, <code>p</code> for a package. The <code>@GenerateMapping:</code> prefix is left off.</li>
 <li><strong>The words:</strong> the <em>domain</em> is your record, the <em>wire</em> the DTO, the <em>spec</em> the <code>@GenerateMapping</code> interface, and a <em>leaf</em> a <code>default ValidatedPrism</code> method that converts one field.</li>
-<li><strong>Errors and notes:</strong> an error stops the build; a note stops nothing. One entry is a note, and says so. The processor prints a few other notes, each saying how it read a declaration, such as a bean it maps one way only.</li>
+<li><strong>Errors, warnings and notes:</strong> an error stops the build, a warning stops only a <code>-Werror</code> build, and a note stops nothing. One entry is a warning and one a note, and each says so. The processor prints a few other notes, each saying how it read a declaration, such as a bean it maps one way only.</li>
 <li><strong>The full messages</strong> are printed for declarations compiled in a package <code>com.example</code>.</li>
 </ul>
 </div>
@@ -62273,6 +62296,7 @@ annotated method on a mix-in both specs extend; an inherited one draws no note.
 <tr><td><a href="mapping/compiler_errors.html#own-type-parameters"><code>declares type parameters of its own</code></a></td><td>A leaf, rename or marker declares its own <code>&lt;R&gt;</code></td></tr>
 <tr><td><a href="mapping/compiler_errors.html#cannot-be-reached"><code>method '…' names '…', which cannot be reached from</code></a></td><td>A member names a type its package cannot see</td></tr>
 <tr><td><a href="mapping/compiler_errors.html#component-cannot-be-reached"><code>record component '…' of '…' names '…', which cannot be reached from</code></a></td><td>A mapped type is hidden from the spec's package</td></tr>
+<tr><td><a href="mapping/compiler_errors.html#impl-constant-on-a-spec"><code>holds the generated</code></a></td><td><strong>Warning.</strong> A spec or mix-in holds its Impl in a constant</td></tr>
 </tbody></table>
 </div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p><strong><a href="mapping/compiler_errors.html#optional-fields">Optional fields</a></strong></p>
@@ -63067,6 +63091,43 @@ every type the mapping crosses, so each has to be visible from there. Remove 'pr
 </div>
 </details>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<h3 id="impl-constant-on-a-spec"><a class="header" href="#impl-constant-on-a-spec"><code>'X.y' holds the generated XImpl in a constant, which can read null</code> (a warning)</a></h3>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A spec, or a mix-in it extends, keeps its generated Impl in a constant, MapStruct-style. The constant can read <code>null</code>, depending on which class a program uses first.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p><strong>Fix.</strong> Keep the Impl in the calling code: a local, or a <code>private static final</code> field on the class that calls it. Annotate a constant you keep on purpose <code>@SuppressWarnings("impl-constant")</code>.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code>@GenerateMapping: 'CustomerMapping.MAPPER' holds the generated CustomerMappingImpl in a
+constant, which can read null. CustomerMappingImpl implements 'CustomerMapping', so once
+'CustomerMapping' declares a default method, such as a leaf, or a private instance method, a
+program that uses CustomerMappingImpl.INSTANCE before reading the constant leaves it null for
+good. Keep the Impl in the calling code: a local, or a private static final field on the class
+that calls it. To keep this constant anyway, annotate it @SuppressWarnings("impl-constant").
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>The rule: <a href="mapping/rules.html#impl-constant-on-a-spec">A spec never holds its Impl in a constant</a>.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<details id="admonition-a-declaration-that-produces-it-18" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-18-title">
+<summary class="admonition-title">
+<div id="admonition-a-declaration-that-produces-it-18-title">
+<p>A declaration that produces it</p>
+</div>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-18"></a>
+</summary>
+<div>
+<!-- verify:reports "holds the generated" -->
+<pre><code class="language-java">record Customer(String name) {}
+
+record CustomerDto(String name) {}
+
+@GenerateMapping
+interface CustomerMapping extends MappingSpec&lt;Customer, CustomerDto&gt; {
+  CustomerMappingImpl MAPPER = CustomerMappingImpl.INSTANCE;
+}
+</code></pre>
+</div>
+</details>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <h2 id="optional-fields"><a class="header" href="#optional-fields">Optional fields</a></h2>
@@ -63087,12 +63148,12 @@ java.util.Optional&lt;java.lang.String&gt;&gt; nickname()' to the spec.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/absence.html#optional-bridge">Optional fields: <code>@OptionalBridge</code></a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-18" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-18-title">
+<details id="admonition-a-declaration-that-produces-it-19" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-19-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-18-title">
+<div id="admonition-a-declaration-that-produces-it-19-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-18"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-19"></a>
 </summary>
 <div>
 <!-- verify:rejects "Add '@OptionalBridge" -->
@@ -63119,12 +63180,12 @@ never be null. Declare 'age' on 'ReaderDto' as java.lang.Integer.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#bridged-component-nullable">A bridged component must take <code>null</code></a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-19" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-19-title">
+<details id="admonition-a-declaration-that-produces-it-20" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-20-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-19-title">
+<div id="admonition-a-declaration-that-produces-it-20-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-19"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-20"></a>
 </summary>
 <div>
 <!-- verify:rejects "bridges to the primitive" -->
@@ -63160,12 +63221,12 @@ wire does.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#bridged-component-nullable">A bridged component must take <code>null</code></a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-20" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-20-title">
+<details id="admonition-a-declaration-that-produces-it-21" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-21-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-20-title">
+<div id="admonition-a-declaration-that-produces-it-21-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-20"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-21"></a>
 </summary>
 <div>
 <!-- verify:rejects "which is declared non-null" -->
@@ -63198,12 +63259,12 @@ annotation to keep the whole-Optional leaf.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/absence.html#optional-bridge">Optional fields: <code>@OptionalBridge</code></a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-21" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-21-title">
+<details id="admonition-a-declaration-that-produces-it-22" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-22-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-21-title">
+<div id="admonition-a-declaration-that-produces-it-22-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-21"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-22"></a>
 </summary>
 <div>
 <!-- verify:rejects "is declared over the whole Optional" -->
@@ -63237,12 +63298,12 @@ mix-in both specs extend; an inherited one draws no note.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/absence.html#optional-bridge">Optional fields: <code>@OptionalBridge</code></a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-22" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-22-title">
+<details id="admonition-a-declaration-that-produces-it-23" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-23-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-22-title">
+<div id="admonition-a-declaration-that-produces-it-23-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-22"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-23"></a>
 </summary>
 <div>
 <!-- verify:reports "is redundant on a bean wire" -->
@@ -63285,12 +63346,12 @@ interface and extend that instead.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#refused-mix-in-shapes">Mix-in shapes the processor refuses</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-23" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-23-title">
+<details id="admonition-a-declaration-that-produces-it-24" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-24-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-23-title">
+<div id="admonition-a-declaration-that-produces-it-24-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-23"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-24"></a>
 </summary>
 <div>
 <!-- verify:rejects "is itself a mapping spec" -->
@@ -63325,12 +63386,12 @@ arguments where the spec extends 'Renames', as 'extends Renames&lt;...&gt;'.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#a-generic-mix-in-reached-raw">A generic mix-in reached raw</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-24" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-24-title">
+<details id="admonition-a-declaration-that-produces-it-25" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-25-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-24-title">
+<div id="admonition-a-declaration-that-produces-it-25-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-24"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-25"></a>
 </summary>
 <div>
 <!-- verify:rejects "is extended raw by" -->
@@ -63364,12 +63425,12 @@ Object. Name the type arguments where the spec extends 'Middle', as 'extends Mid
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#a-generic-mix-in-reached-raw">A generic mix-in reached raw</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-25" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-25-title">
+<details id="admonition-a-declaration-that-produces-it-26" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-26-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-25-title">
+<div id="admonition-a-declaration-that-produces-it-26-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-25"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-26"></a>
 </summary>
 <div>
 <!-- verify:rejects "extends raw" -->
@@ -63405,12 +63466,12 @@ or align the mix-ins on one target.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#inheriting-one-member-twice">Inheriting one member twice</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-26" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-26-title">
+<details id="admonition-a-declaration-that-produces-it-27" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-27-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-26-title">
+<div id="admonition-a-declaration-that-produces-it-27-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-26"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-27"></a>
 </summary>
 <div>
 <!-- verify:rejects "has conflicting renames" -->
@@ -63456,12 +63517,12 @@ java.util.List&lt;com.example.Tag&gt;[]&gt; rows()' over the array types.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#what-lifts">What lifts, and what does not</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-27" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-27-title">
+<details id="admonition-a-declaration-that-produces-it-28" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-28-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-27-title">
+<div id="admonition-a-declaration-that-produces-it-28-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-27"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-28"></a>
 </summary>
 <div>
 <!-- verify:rejects "cannot name an array constructor" -->
@@ -63496,12 +63557,12 @@ Remove 'labels()', so the keys convert through 'labelKeys()' and the values copy
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#key-leaf-beside-a-whole-map-leaf">A key leaf beside a whole-map leaf</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-28" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-28-title">
+<details id="admonition-a-declaration-that-produces-it-29" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-29-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-28-title">
+<div id="admonition-a-declaration-that-produces-it-29-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-28"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-29"></a>
 </summary>
 <div>
 <!-- verify:rejects "never runs" -->
@@ -63536,12 +63597,12 @@ and a raw Map declares none. Declare both type arguments, for example Map&lt;Loc
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#what-lifts">What lifts, and what does not</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-29" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-29-title">
+<details id="admonition-a-declaration-that-produces-it-30" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-30-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-29-title">
+<div id="admonition-a-declaration-that-produces-it-30-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-29"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-30"></a>
 </summary>
 <div>
 <!-- verify:rejects "names a raw Map component" -->
@@ -63577,12 +63638,12 @@ delegating to the spec you want, or remove the duplicate spec.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#how-a-dependencys-specs-are-found">How a dependency's specs are found</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-30" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-30-title">
+<details id="admonition-a-declaration-that-produces-it-31" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-31-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-30-title">
+<div id="admonition-a-declaration-that-produces-it-31-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-30"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-31"></a>
 </summary>
 <div>
 <!-- verify:rejects "matches more than one mapping spec" -->
@@ -63620,12 +63681,12 @@ compiled with hkj-processor on its processor path.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/structure.html#sealed-hierarchies">Sealed hierarchies</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-31" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-31-title">
+<details id="admonition-a-declaration-that-produces-it-32" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-32-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-31-title">
+<div id="admonition-a-declaration-that-produces-it-32-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-31"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-32"></a>
 </summary>
 <div>
 <!-- verify:rejects "has no mapping spec" -->
@@ -63663,12 +63724,12 @@ from any. Add a domain subtype and spec for it, or remove it from the sealed wir
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/structure.html#sealed-hierarchies">Sealed hierarchies</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-32" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-32-title">
+<details id="admonition-a-declaration-that-produces-it-33" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-33-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-32-title">
+<div id="admonition-a-declaration-that-produces-it-33-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-32"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-33"></a>
 </summary>
 <div>
 <!-- verify:rejects "is never produced" -->
@@ -63711,12 +63772,12 @@ reverse direction ambiguous. Give each domain subtype its own wire subtype.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/structure.html#sealed-hierarchies">Sealed hierarchies</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-33" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-33-title">
+<details id="admonition-a-declaration-that-produces-it-34" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-34-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-33-title">
+<div id="admonition-a-declaration-that-produces-it-34-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-33"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-34"></a>
 </summary>
 <div>
 <!-- verify:rejects "is targeted by more than one domain subtype" -->
@@ -63756,12 +63817,12 @@ Move the method onto the subtype pair's own spec.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#how-the-two-default-families-are-told-apart">Spec members on a sealed mapping</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-34" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-34-title">
+<details id="admonition-a-declaration-that-produces-it-35" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-35-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-34-title">
+<div id="admonition-a-declaration-that-produces-it-35-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-34"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-35"></a>
 </summary>
 <div>
 <!-- verify:rejects "has no meaning on a sealed mapping" -->
@@ -63808,12 +63869,12 @@ twice. Rename one of the two record components.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#names-in-a-flattened-group">Names in a flattened group</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-35" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-35-title">
+<details id="admonition-a-declaration-that-produces-it-36" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-36-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-35-title">
+<div id="admonition-a-declaration-that-produces-it-36-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-35"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-36"></a>
 </summary>
 <div>
 <!-- verify:rejects "spreads a component" -->
@@ -63845,12 +63906,12 @@ not wired through it. Map the pair with a record wire.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#where-flattening-applies">Where a flattened component can appear</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-36" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-36-title">
+<details id="admonition-a-declaration-that-produces-it-37" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-37-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-36-title">
+<div id="admonition-a-declaration-that-produces-it-37-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-36"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-37"></a>
 </summary>
 <div>
 <!-- verify:rejects "spreads across a bean-shaped wire" -->
@@ -63894,12 +63955,12 @@ flatten 'geo' into Address itself.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#where-flattening-applies">Where a flattened component can appear</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-37" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-37-title">
+<details id="admonition-a-declaration-that-produces-it-38" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-38-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-37-title">
+<div id="admonition-a-declaration-that-produces-it-38-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-37"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-38"></a>
 </summary>
 <div>
 <!-- verify:rejects "names a component of the flattened group" -->
@@ -63942,12 +64003,12 @@ as the wire instead.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#how-a-bean-is-read-and-written">How a bean is read and written</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-38" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-38-title">
+<details id="admonition-a-declaration-that-produces-it-39" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-39-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-38-title">
+<div id="admonition-a-declaration-that-produces-it-39-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-38"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-39"></a>
 </summary>
 <div>
 <!-- verify:rejects "does not support on the domain side" -->
@@ -63981,12 +64042,12 @@ getEmail().
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#unpaired-accessors">When an unpaired accessor is refused</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-39" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-39-title">
+<details id="admonition-a-declaration-that-produces-it-40" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-40-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-39-title">
+<div id="admonition-a-declaration-that-produces-it-40-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-39"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-40"></a>
 </summary>
 <div>
 <!-- verify:rejects "so the mapping leaves it out" -->
@@ -64022,12 +64083,12 @@ declared, or drop one of them.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#how-a-bean-is-read-and-written">How a bean is read and written</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-40" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-40-title">
+<details id="admonition-a-declaration-that-produces-it-41" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-41-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-40-title">
+<div id="admonition-a-declaration-that-produces-it-41-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-40"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-41"></a>
 </summary>
 <div>
 <!-- verify:rejects "is read and written at different types" -->
@@ -64059,12 +64120,12 @@ Name the marker after the accessor's property, or remove it.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/beans.html#accessors-meant-to-stay-out">Accessors meant to stay out</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-41" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-41-title">
+<details id="admonition-a-declaration-that-produces-it-42" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-42-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-41-title">
+<div id="admonition-a-declaration-that-produces-it-42-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-41"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-42"></a>
 </summary>
 <div>
 <!-- verify:rejects "names no accessor" -->
@@ -64102,12 +64163,12 @@ one of its accessors from 'CustomerBean'.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/beans.html#accessors-meant-to-stay-out">Accessors meant to stay out</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-42" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-42-title">
+<details id="admonition-a-declaration-that-produces-it-43" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-43-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-42-title">
+<div id="admonition-a-declaration-that-produces-it-43-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-42"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-43"></a>
 </summary>
 <div>
 <!-- verify:rejects "names a property" -->
@@ -64146,12 +64207,12 @@ needs and never calls the rest. Remove the marker.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#what-unmapped-withholds">What <code>@Unmapped</code> withholds</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-43" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-43-title">
+<details id="admonition-a-declaration-that-produces-it-44" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-44-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-43-title">
+<div id="admonition-a-declaration-that-produces-it-44-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-43"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-44"></a>
 </summary>
 <div>
 <!-- verify:rejects "has nothing to leave out" -->
@@ -64185,12 +64246,12 @@ remove it. Did you mean 'id()'?
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#what-readonly-reads">What <code>@ReadOnly</code> reads</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-44" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-44-title">
+<details id="admonition-a-declaration-that-produces-it-45" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-45-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-44-title">
+<div id="admonition-a-declaration-that-produces-it-45-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-44"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-45"></a>
 </summary>
 <div>
 <!-- verify:rejects "names no getter" -->
@@ -64228,12 +64289,12 @@ carries it both ways. Remove the marker; to leave the property unwritten, remove
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#what-readonly-reads">What <code>@ReadOnly</code> reads</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-45" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-45-title">
+<details id="admonition-a-declaration-that-produces-it-46" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-46-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-45-title">
+<div id="admonition-a-declaration-that-produces-it-46-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-45"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-46"></a>
 </summary>
 <div>
 <!-- verify:rejects "names a property" -->
@@ -64271,12 +64332,12 @@ components are all read and written. Remove the marker.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#what-readonly-reads">What <code>@ReadOnly</code> reads</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-46" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-46-title">
+<details id="admonition-a-declaration-that-produces-it-47" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-47-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-46-title">
+<div id="admonition-a-declaration-that-produces-it-47-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-46"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-47"></a>
 </summary>
 <div>
 <!-- verify:rejects "has nothing to mark read-only" -->
@@ -64313,12 +64374,12 @@ to the spec: this mapping's parse then cannot read back what its build wrote eit
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#what-readonly-reads">What <code>@ReadOnly</code> reads</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-47" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-47-title">
+<details id="admonition-a-declaration-that-produces-it-48" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-48-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-47-title">
+<div id="admonition-a-declaration-that-produces-it-48-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-47"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-48"></a>
 </summary>
 <div>
 <!-- verify:rejects "has a read-only property" -->
@@ -64365,12 +64426,12 @@ parse can read the whole domain; or, to map the projection, replace @ReadOnly wi
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#what-readonly-reads">What <code>@ReadOnly</code> reads</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-48" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-48-title">
+<details id="admonition-a-declaration-that-produces-it-49" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-49-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-48-title">
+<div id="admonition-a-declaration-that-produces-it-49-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-48"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-49"></a>
 </summary>
 <div>
 <!-- verify:rejects "which has no parse to read" -->
@@ -64409,12 +64470,12 @@ mix-in declares for a MappingSpec stays inert here.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#what-readonly-reads">What <code>@ReadOnly</code> reads</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-49" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-49-title">
+<details id="admonition-a-declaration-that-produces-it-50" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-50-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-49-title">
+<div id="admonition-a-declaration-that-produces-it-50-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-49"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-50"></a>
 </summary>
 <div>
 <!-- verify:rejects "has no meaning on a sparse update" -->
@@ -64453,12 +64514,12 @@ the call is unchecked. Declare the type arguments on 'getItems()', for example L
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#getter-only-list-element-type">A getter-only <code>List</code> must name its element type</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-50" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-50-title">
+<details id="admonition-a-declaration-that-produces-it-51" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-51-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-50-title">
+<div id="admonition-a-declaration-that-produces-it-51-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-50"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-51"></a>
 </summary>
 <div>
 <!-- verify:rejects "which a build cannot fill" -->
@@ -64499,12 +64560,12 @@ getter that returns what the setter stored, so absence can be written as null an
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#getter-only-list-refuses-the-bridge">A getter-only <code>List</code> refuses the bridge</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-51" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-51-title">
+<details id="admonition-a-declaration-that-produces-it-52" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-52-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-51-title">
+<div id="admonition-a-declaration-that-produces-it-52-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-51"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-52"></a>
 </summary>
 <div>
 <!-- verify:rejects "bridged to the getter-only bean property" -->
@@ -64544,12 +64605,12 @@ as List&lt;String&gt;, dropping the Optional, so the empty collection encodes no
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#singular-collections">A Lombok <code>@Singular</code> collection</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-52" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-52-title">
+<details id="admonition-a-declaration-that-produces-it-53" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-53-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-52-title">
+<div id="admonition-a-declaration-that-produces-it-53-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-52"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-53"></a>
 </summary>
 <div>
 <!-- verify:rejects "bridged to the @Singular bean property" -->
@@ -64599,12 +64660,12 @@ request bean instead.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#singular-collections">A Lombok <code>@Singular</code> collection</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-53" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-53-title">
+<details id="admonition-a-declaration-that-produces-it-54" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-54-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-53-title">
+<div id="admonition-a-declaration-that-produces-it-54-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-53"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-54"></a>
 </summary>
 <div>
 <!-- verify:rejects "cannot be told apart" -->
@@ -64659,12 +64720,12 @@ direction the wire is not crossed in.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#how-a-beans-direction-is-read">How a bean's direction is read</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-54" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-54-title">
+<details id="admonition-a-declaration-that-produces-it-55" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-55-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-54-title">
+<div id="admonition-a-declaration-that-produces-it-55-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-54"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-55"></a>
 </summary>
 <div>
 <!-- verify:rejects "no property it reads is one it can write" -->
@@ -64704,12 +64765,12 @@ CustomerPatch&gt;'; shared renames and leaves can live on a plain mix-in interfa
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#one-tier-per-spec">One tier per spec</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-55" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-55-title">
+<details id="admonition-a-declaration-that-produces-it-56" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-56-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-55-title">
+<div id="admonition-a-declaration-that-produces-it-56-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-55"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-56"></a>
 </summary>
 <div>
 <!-- verify:rejects "extends both 'MappingSpec" -->
@@ -64743,12 +64804,12 @@ java.lang.Integer.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#no-primitive-patch-property">No primitive wire property</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-56" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-56-title">
+<details id="admonition-a-declaration-that-produces-it-57" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-57-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-56-title">
+<div id="admonition-a-declaration-that-produces-it-57-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-56"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-57"></a>
 </summary>
 <div>
 <!-- verify:rejects "is primitive and can never be absent" -->
@@ -64784,12 +64845,12 @@ getters/setters), or a full MappingSpec&lt;Customer, CustomerPatch&gt; if you me
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#no-record-patch-wire">No record wire</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-57" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-57-title">
+<details id="admonition-a-declaration-that-produces-it-58" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-58-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-57-title">
+<div id="admonition-a-declaration-that-produces-it-58-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-57"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-58"></a>
 </summary>
 <div>
 <!-- verify:rejects "which a sparse UpdateSpec cannot map" -->
@@ -64820,12 +64881,12 @@ a generated class whose getter cannot change needs a hand-written PATCH bean ins
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#no-getter-only-list-on-a-patch">No getter-only <code>List</code> property</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-58" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-58-title">
+<details id="admonition-a-declaration-that-produces-it-59" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-59-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-58-title">
+<div id="admonition-a-declaration-that-produces-it-59-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-58"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-59"></a>
 </summary>
 <div>
 <!-- verify:rejects "cannot carry a sparse update's absence" -->
@@ -64865,12 +64926,12 @@ a hand-written PATCH bean instead.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#singular-collections">A Lombok <code>@Singular</code> collection</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-59" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-59-title">
+<details id="admonition-a-declaration-that-produces-it-60" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-60-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-59-title">
+<div id="admonition-a-declaration-that-produces-it-60-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-59"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-60"></a>
 </summary>
 <div>
 <!-- verify:rejects "is a @Singular collection" -->
@@ -64919,12 +64980,12 @@ empty.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#no-optional-bridge-on-a-patch">No plain property bridged to a domain <code>Optional</code></a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-60" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-60-title">
+<details id="admonition-a-declaration-that-produces-it-61" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-61-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-60-title">
+<div id="admonition-a-declaration-that-produces-it-61-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-60"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-61"></a>
 </summary>
 <div>
 <!-- verify:rejects "which a sparse update cannot express" -->
@@ -64966,12 +65027,12 @@ parameters.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#generic-boundaries">The boundaries of a generic spec</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-61" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-61-title">
+<details id="admonition-a-declaration-that-produces-it-62" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-62-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-61-title">
+<div id="admonition-a-declaration-that-produces-it-62-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-61"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-62"></a>
 </summary>
 <div>
 <!-- verify:rejects "is generic, which a bean-wire mapping does not support yet" -->
@@ -65004,12 +65065,12 @@ types.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#generic-boundaries">The boundaries of a generic spec</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-62" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-62-title">
+<details id="admonition-a-declaration-that-produces-it-63" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-63-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-62-title">
+<div id="admonition-a-declaration-that-produces-it-63-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-62"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-63"></a>
 </summary>
 <div>
 <!-- verify:rejects "needs a generic spec" -->
@@ -65042,12 +65103,12 @@ Rename the component on all but one source (choosing a source is not supported y
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#how-a-merge-fills">How a merge fills</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-63" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-63-title">
+<details id="admonition-a-declaration-that-produces-it-64" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-64-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-63-title">
+<div id="admonition-a-declaration-that-produces-it-64-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-63"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-64"></a>
 </summary>
 <div>
 <!-- verify:rejects "both carry it" -->
@@ -65078,12 +65139,12 @@ failure. Declare 'Validated&lt;NonEmptyList&lt;FieldError&gt;, Summary&gt; merge
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#how-a-merge-fills">How a merge fills</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-64" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-64-title">
+<details id="admonition-a-declaration-that-produces-it-65" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-65-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-64-title">
+<div id="admonition-a-declaration-that-produces-it-65-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-64"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-65"></a>
 </summary>
 <div>
 <!-- verify:rejects "uses fallible fills but declares a plain" -->
@@ -65118,12 +65179,12 @@ cannot happen. Declare the plain 'Header' return type.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#how-a-merge-fills">How a merge fills</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-65" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-65-title">
+<details id="admonition-a-declaration-that-produces-it-66" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-66-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-65-title">
+<div id="admonition-a-declaration-that-produces-it-66-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-65"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-66"></a>
 </summary>
 <div>
 <!-- verify:rejects "declares a Validated return but every fill is an identity copy" -->
@@ -65154,12 +65215,12 @@ sources, or drop it from the target.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#how-a-merge-fills">How a merge fills</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-66" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-66-title">
+<details id="admonition-a-declaration-that-produces-it-67" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-67-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-66-title">
+<div id="admonition-a-declaration-that-produces-it-67-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-66"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-67"></a>
 </summary>
 <div>
 <!-- verify:rejects "is not filled by any source" -->
@@ -65190,12 +65251,12 @@ component cannot represent. Declare the component as 'Integer' or another refere
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#error-envelope-rules">Error envelope rules</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-67" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-67-title">
+<details id="admonition-a-declaration-that-produces-it-68" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-68-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-67-title">
+<div id="admonition-a-declaration-that-produces-it-68-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-67"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-68"></a>
 </summary>
 <div>
 <!-- verify:rejects "is a primitive" -->
@@ -65222,12 +65283,12 @@ Make 'NotFound' a record carrying its domain components plus one ErrorEnvelope&l
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#error-envelope-rules">Error envelope rules</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-68" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-68-title">
+<details id="admonition-a-declaration-that-produces-it-69" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-69-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-68-title">
+<div id="admonition-a-declaration-that-produces-it-69-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-68"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-69"></a>
 </summary>
 <div>
 <!-- verify:rejects "is a class, not a record" -->
@@ -65255,12 +65316,12 @@ without type parameters.
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#error-envelope-rules">Error envelope rules</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-69" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-69-title">
+<details id="admonition-a-declaration-that-produces-it-70" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-70-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-69-title">
+<div id="admonition-a-declaration-that-produces-it-70-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-69"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-70"></a>
 </summary>
 <div>
 <!-- verify:rejects "which this companion does not support" -->
@@ -65288,12 +65349,12 @@ every type it reads or writes, so each has to be visible from there. Remove 'pri
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/rules.html#error-envelope-rules">Error envelope rules</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-70" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-70-title">
+<details id="admonition-a-declaration-that-produces-it-71" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-71-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-70-title">
+<div id="admonition-a-declaration-that-produces-it-71-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-70"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-71"></a>
 </summary>
 <div>
 <!-- verify:rejects "context record 'Orders.OrderContext' cannot be reached from" -->
@@ -65326,12 +65387,12 @@ location: class Probe
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/basics.html#your-first-mapping">Your first mapping</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-71" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-71-title">
+<details id="admonition-a-declaration-that-produces-it-72" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-72-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-71-title">
+<div id="admonition-a-declaration-that-produces-it-72-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-71"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-72"></a>
 </summary>
 <div>
 <!-- verify:rejects "class CustomerMappingImpl" -->
@@ -65359,12 +65420,12 @@ location: variable INSTANCE of type CustomerMappingImpl
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>The rule: <a href="mapping/tiers.html#which-methods-your-spec-gets">Which methods your spec gets</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<details id="admonition-a-declaration-that-produces-it-72" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-72-title">
+<details id="admonition-a-declaration-that-produces-it-73" class="admonition admonish-example" role="note" aria-labelledby="admonition-a-declaration-that-produces-it-73-title">
 <summary class="admonition-title">
-<div id="admonition-a-declaration-that-produces-it-72-title">
+<div id="admonition-a-declaration-that-produces-it-73-title">
 <p>A declaration that produces it</p>
 </div>
-<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-72"></a>
+<a class="admonition-anchor-link" href="mapping/compiler_errors.html#admonition-a-declaration-that-produces-it-73"></a>
 </summary>
 <div>
 <!-- verify:rejects "method asIso()" -->
@@ -120810,6 +120871,12 @@ List&lt;VTask&lt;Result&gt;&gt; tasks = ids.stream()
 <h3 id="0411-snapshot-latest"><a class="header" href="#0411-snapshot-latest">0.4.11-SNAPSHOT (Latest)</a></h3>
 <p><em>In development. Release notes will be added here as changes land on <code>main</code>.</em></p>
 <div class="hkj-ct-mark" data-kind="new" data-run="start" data-since="v0.4.10"></div>
+<ul>
+<li><strong>A mapping's Impl held in a constant on its spec draws a warning</strong> (<a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/984">#984</a>): declaring <code>CustomerMappingImpl MAPPER = CustomerMappingImpl.INSTANCE;</code> on the spec, MapStruct's habit, compiles, but once the spec declares a leaf the constant can read <code>null</code>, depending on which class a program uses first. The processor now warns at such a constant, on a spec or on a mix-in compiled with it, whether or not a leaf is there yet, since the first one added arms the trap, and the same goes for a <code>@GenerateMerge</code> spec. The Impl is still generated. <code>@SuppressWarnings("impl-constant")</code> on the constant, or on a declaration enclosing it, keeps one you mean to keep quiet. Another spec's Impl held in a constant draws nothing, since it is initialised on its own, unless specs hold each other's Impls in a cycle. A constant typed as a surface of the Impl, such as its <code>ValidatedPrism</code>, draws no warning either, since the processor reads a constant's type and not its initialiser, and it fails harder: the Impl's first use throws <code>ExceptionInInitializerError</code>. See <a href="mapping/rules.html#impl-constant-on-a-spec">A spec never holds its Impl in a constant</a>.</li>
+</ul>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p><em>Notes for existing builds.</em> A spec or mix-in that declares such a constant now fails a <code>-Werror</code> build. Move the Impl into the calling code, or suppress the warning where the constant is kept on purpose.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <ul>
 <li><strong>A two-way bean reads a property it has no setter for, with <code>@ReadOnly</code></strong> (<a href="https://github.com/higher-kinded-j/higher-kinded-j/issues/935">#935</a>): openapi-generator writes an OpenAPI <code>readOnly</code> property as a getter with no setter, set through the constructor Jackson calls, beside the getters, setters and no-args constructor of the rest of the model. The processor refused that getter as a likely misspelling, and <code>@Unmapped</code>, which let the bean map, left the property out, so the Impl had no <code>parse</code>: the response a client most wants to read was the one it could not. A <code>@ReadOnly</code> marker named after the property now reads it: <code>parse</code> reads the getter, and <code>build</code> leaves it out, as a request should. Since <code>parse</code> cannot read back what <code>build</code> wrote, the Impl carries the two as halves, <code>asValidatedParse()</code> and <code>asValidatedBuild()</code>, with no <code>asValidatedPrism()</code>, and nests wherever a mapping uses one direction. <code>MappingLaws</code> checks each half. The marker goes on the component's leaf where it converts, and reads a getter-only <code>List</code> too, which <code>build</code> then leaves alone. A bean whose every property is read-only maps parse-only. The refusal for a getter with no setter now offers the marker, wherever following it would let <code>parse</code> read the whole domain. Where the spec already has a method named after the accessor, such as the leaf converting its component, the refusal offers <code>@ReadOnly</code> and <code>@Unmapped</code> on that method rather than a second declaration that would not compile. An <code>@Unmapped</code> method returning <code>ValidatedPrism</code> with no body is now refused as the leaf it reads as, where it used to generate an Impl that did not compile. See <a href="mapping/beans.html#read-only-properties">Properties you only read</a>.</li>
 </ul>

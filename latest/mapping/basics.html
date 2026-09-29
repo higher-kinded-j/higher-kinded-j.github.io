@@ -398,29 +398,35 @@ public class MappingConfiguration {
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p><a href="testing.html#injecting-and-testing-generated-mappings">Injecting and testing generated mappings</a> lists the surface to register for each kind of mapping.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<div id="admonition-not-checked-for-you-never-bind-the-impl-on-the-spec" class="admonition admonish-warning" role="note" aria-labelledby="admonition-not-checked-for-you-never-bind-the-impl-on-the-spec-title">
-<div class="admonition-title">
-<div id="admonition-not-checked-for-you-never-bind-the-impl-on-the-spec-title">
-<p>Not checked for you: never bind the Impl on the spec</p>
-</div>
-<a class="admonition-anchor-link" href="#admonition-not-checked-for-you-never-bind-the-impl-on-the-spec"></a>
-</div>
-<div>
-<p>MapStruct's idiom puts the mapper's instance on its own interface. Here that would be <code>CustomerMappingImpl MAPPER = CustomerMappingImpl.INSTANCE;</code>, declared on <code>CustomerMapping</code>, the spec with an email leaf in <a href="#validated-leaves">Validated leaves</a>. It compiles, and it can read <code>null</code>. If any code uses <code>CustomerMappingImpl.INSTANCE</code> before the first read of <code>CustomerMapping.MAPPER</code>, the constant stays <code>null</code> for good, and the next <code>MAPPER.parse(...)</code> throws a <code>NullPointerException</code>. Which class a program reaches first depends on its code paths, so the failure comes and goes. A spec with no leaf or derived field is safe, so the constant can work for months and break the day someone adds one. Keep the Impl in the calling code instead.</p>
-</div>
-</div>
+<p>Never keep the Impl in a constant on the spec, MapStruct's habit. Once the spec declares a leaf, the constant can read <code>null</code>, depending on which class a program uses first. The processor warns at one (<a href="rules.html#impl-constant-on-a-spec">A spec never holds its Impl in a constant</a>).</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.10"></div>
-<details id="admonition-why-the-constant-reads-null" class="admonition admonish-note" role="note" aria-labelledby="admonition-why-the-constant-reads-null-title">
-<summary class="admonition-title">
-<div id="admonition-why-the-constant-reads-null-title">
-<p>Why the constant reads <code>null</code></p>
+<div id="admonition-not-checked-for-you-a-surface-of-the-impl-held-on-the-spec" class="admonition admonish-warning" role="note" aria-labelledby="admonition-not-checked-for-you-a-surface-of-the-impl-held-on-the-spec-title">
+<div class="admonition-title">
+<div id="admonition-not-checked-for-you-a-surface-of-the-impl-held-on-the-spec-title">
+<p>Not checked for you: a surface of the Impl held on the spec</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-why-the-constant-reads-null"></a>
-</summary>
+<a class="admonition-anchor-link" href="#admonition-not-checked-for-you-a-surface-of-the-impl-held-on-the-spec"></a>
+</div>
 <div>
-<p>The Impl implements the spec. Initialising a class first initialises every interface it implements that declares an instance method with a body: every <code>default</code> leaf and derived field, and any <code>private</code> instance helper. Using <code>CustomerMappingImpl.INSTANCE</code> first starts the Impl's initialisation, which initialises <code>CustomerMapping</code> before <code>INSTANCE</code> is assigned. <code>MAPPER</code> is evaluated then, and keeps the <code>null</code> it read. Two threads making those first uses at the same moment can deadlock instead. A constant on a <a href="codecs.html#shared-vocabulary-mix-in-interfaces">mix-in</a> that declares a leaf fails the same way. The processor sees a field's type but not its initialiser, so it cannot tell this constant from a harmless one, and does not refuse it.</p>
+<p>A constant on the spec holding something built from the Impl, such as its <code>ValidatedPrism</code>, draws no warning, because the processor reads a constant's type, not its initialiser. The <code>contact()</code> leaf arms it, as before:</p>
+<pre><code class="language-java">// A surface of the Impl held on the spec: no warning, and never do this either.
+record Locker(String code, EmailAddress contact) {}
+
+record LockerDto(String code, String contact) {}
+
+@GenerateMapping
+interface LockerMapping extends MappingSpec&lt;Locker, LockerDto&gt; {
+  ValidatedPrism&lt;LockerDto, Locker&gt; PRISM = LockerMappingImpl.INSTANCE.asValidatedPrism();
+
+  default ValidatedPrism&lt;String, EmailAddress&gt; contact() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+</code></pre>
+<p>This one fails harder than a <code>null</code>. A program that uses <code>LockerMappingImpl.INSTANCE</code> first evaluates <code>PRISM</code> while <code>INSTANCE</code> is still <code>null</code>, so the Impl fails to initialise with an <code>ExceptionInInitializerError</code>, and every later use throws <code>NoClassDefFoundError</code>. Keep the Impl and its surfaces in the calling code.</p>
 </div>
-</details>
+</div>
 <hr />
 <div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJ2YWxpZGF0ZWQtbGVhdmVzIl0=" data-since="v0.4.10"></div>
 <h2 id="validated-leaves"><a class="header" href="#validated-leaves">Validated leaves</a></h2>
@@ -562,7 +568,7 @@ interface CustomerMapping extends MappingSpec&lt;Customer, CustomerDto&gt; {
 <a class="admonition-anchor-link" href="#check-basics-constant"></a>
 </div>
 <div>
-<p>Both of these specs carry the MapStruct-style constant. In each program, some code uses the Impl's <code>INSTANCE</code> before anything reads the spec's <code>MAPPER</code>. Afterwards, which <code>MAPPER</code> can read <code>null</code>?</p>
+<p>Both of these specs carry the MapStruct-style constant, with the processor's warning on it suppressed. In each program, some code uses the Impl's <code>INSTANCE</code> before anything reads the spec's <code>MAPPER</code>. Afterwards, which <code>MAPPER</code> can read <code>null</code>?</p>
 <pre><code class="language-java">// The MapStruct idiom, on two specs: never do this.
 record Warehouse(String code, int bays) {}
 
@@ -570,6 +576,7 @@ record WarehouseDto(String code, int bays) {}
 
 @GenerateMapping
 interface WarehouseMapping extends MappingSpec&lt;Warehouse, WarehouseDto&gt; {
+  @SuppressWarnings("impl-constant") // kept to show the trap
   WarehouseMappingImpl MAPPER = WarehouseMappingImpl.INSTANCE;
 }
 
@@ -579,6 +586,7 @@ record CourierDto(String name, String email) {}
 
 @GenerateMapping
 interface CourierMapping extends MappingSpec&lt;Courier, CourierDto&gt; {
+  @SuppressWarnings("impl-constant") // kept to show the trap
   CourierMappingImpl MAPPER = CourierMappingImpl.INSTANCE;
 
   default ValidatedPrism&lt;String, EmailAddress&gt; email() {
@@ -611,7 +619,7 @@ interface CourierMapping extends MappingSpec&lt;Courier, CourierDto&gt; {
     assertThat(mapperAfterFirstUsing("CourierMappingImpl", "CourierMapping")) // a leaf
         .isNull();
 </code></pre>
-<p>The day someone adds a leaf to <code>WarehouseMapping</code>, its constant breaks too. Delete both constants, and keep each Impl in the calling code.</p>
+<p>The day someone adds a leaf to <code>WarehouseMapping</code>, its constant breaks too, which is why the processor warns on both. Delete both constants, and keep each Impl in the calling code.</p>
 <p>Where this lives: <a href="#bind-in-the-caller">Bind in the caller, not on the spec</a>.</p>
 </div>
 </details>
