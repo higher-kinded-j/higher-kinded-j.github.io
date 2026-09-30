@@ -315,7 +315,7 @@
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p><em>Map getter/setter and builder classes as you map records, including ones only read or written.</em></p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
-<p>Generated client models, JAXB payloads and many legacy DTOs are beans: classes with getters and setters, or a builder, rather than records. If your wire is a bean, almost nothing changes: <a href="basics.html#validated-leaves">leaves</a>, <a href="basics.html#renames-mapfield">renames</a>, container lifting, nesting and located errors work exactly as on a record. Three things differ, and all three come from one fact: a bean can exist with some properties never set. This page walks those three first. Mapping a generated client? Read <a href="#generated-client-checklist">the checklist for generated clients</a> as well. A bean used as a PATCH request, where <code>null</code> means <em>not sent</em>, has a page of its own, <a href="beans_patch.html">Sparse PATCH</a>.</p>
+<p>Generated client models, JAXB payloads and many legacy DTOs are beans: classes with getters and setters, or a builder, rather than records. If your wire is a bean, almost nothing changes: <a href="basics.html#validated-leaves">leaves</a>, <a href="basics.html#renames-mapfield">renames</a>, container lifting, nesting and located errors work exactly as on a record. Three things differ, and all three come from one fact: a bean can exist with some properties never set. This page walks those three first. Mapping a generated client? Read <a href="#generated-client-checklist">the checklist for generated clients</a> as well, and for a gRPC boundary, <a href="#protobuf-java-messages">protobuf-java messages</a>. A bean used as a PATCH request, where <code>null</code> means <em>not sent</em>, has a page of its own, <a href="beans_patch.html">Sparse PATCH</a>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <div id="admonition-what-youll-learn" class="admonition admonish-info" role="note" aria-labelledby="admonition-what-youll-learn-title">
 <div class="admonition-title">
@@ -328,6 +328,8 @@
 <ul>
 <li>Map a getter/setter or builder bean like a record, and predict what an unset property does</li>
 <li>Predict which methods a bean's Impl carries, from the bean's shape</li>
+<li>Map a protobuf-java message, and predict what an unset field reads</li>
+<li>Map a protobuf oneof to a sealed type, and apply an update through its <code>FieldMask</code></li>
 </ul>
 </div>
 </div>
@@ -454,7 +456,7 @@ interface ContactMapping extends MappingSpec&lt;Customer, ContactBean&gt; {
 <a class="admonition-anchor-link" href="#admonition-you-can-ship-now"></a>
 </div>
 <div>
-<p>You can now map a getter/setter or builder bean like a record, and know what an unset property does to <code>parse</code>, to an <code>Optional</code> and to the methods the Impl offers. The rest of this page, <a href="#one-directional-beans">beans crossed one way</a>, <a href="#bean-projections">projections</a>, <a href="#accessors-meant-to-stay-out">accessors kept out on purpose</a> and <a href="#generated-client-checklist">the checklist for generated clients</a>, is for when you need it.</p>
+<p>You can now map a getter/setter or builder bean like a record, and know what an unset property does to <code>parse</code>, to an <code>Optional</code> and to the methods the Impl offers. The rest of this page, <a href="#one-directional-beans">beans crossed one way</a>, <a href="#bean-projections">projections</a>, <a href="#accessors-meant-to-stay-out">accessors kept out on purpose</a>, <a href="#protobuf-java-messages">protobuf-java messages</a> and <a href="#generated-client-checklist">the checklist for generated clients</a>, is for when you need it.</p>
 </div>
 </div>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -888,6 +890,261 @@ interface MerchantModelMapping extends MappingSpec&lt;Merchant, MerchantModel&gt
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <hr />
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<h2 id="protobuf-java-messages"><a class="header" href="#protobuf-java-messages">protobuf-java messages</a></h2>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A protobuf-java message is a builder bean, so a gRPC boundary maps as any bean does, with nothing to configure. protoc generates more accessors than a message has fields, such as <code>getNameBytes()</code> beside a string field, so the processor reads a message by its fields. It takes no protobuf dependency of its own, and maps the classes protoc generates wherever they come from: this build, as here, or a jar. Here is the order service's dispatch request, which protoc compiles in the same build:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code class="language-proto">// A dispatch request as the order service's gRPC API sends one.
+syntax = "proto3";
+
+package book.mapping.v1;
+
+import "google/protobuf/field_mask.proto";
+
+option java_package = "org.higherkindedj.example.book.mapping.proto";
+option java_multiple_files = true;
+option java_outer_classname = "DispatchProto";
+
+message CustomerMessage {
+  string name = 1;
+  string email = 2;
+}
+
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0;
+  PRIORITY_STANDARD = 1;
+  PRIORITY_EXPRESS = 2;
+}
+
+message DispatchRequest {
+  CustomerMessage customer = 1;
+  repeated string skus = 2;
+  optional string note = 3;
+  Priority priority = 4;
+  oneof destination {
+    string locker = 5;
+    string pickup_point = 6;
+  }
+}
+
+// An update names the fields it changes in its mask.
+message UpdateDispatchRequest {
+  DispatchRequest dispatch = 1;
+  google.protobuf.FieldMask update_mask = 2;
+}
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>The spec needs nothing new. The customer nests through its own spec, a leaf converts the generated enum, and the oneof maps to a sealed type. The leaf sits in a mix-in, <code>DispatchVocabulary</code>, which <a href="#a-patch-through-its-fieldmask">the update</a> shares:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code class="language-java">// A dispatch as the order service keeps it. DispatchRequest and CustomerMessage are the messages
+// protoc generates from dispatch.proto.
+enum DispatchPriority {
+  STANDARD,
+  EXPRESS
+}
+
+// The oneof 'destination': a record named after each member.
+sealed interface Destination {
+  record Locker(String id) implements Destination {}
+
+  record PickupPoint(String code) implements Destination {}
+}
+
+record Dispatch(
+    Customer customer,
+    List&lt;String&gt; skus,
+    Optional&lt;String&gt; note,
+    DispatchPriority priority,
+    Optional&lt;Destination&gt; destination) {}
+
+@GenerateMapping
+interface CustomerMessageMapping extends MappingSpec&lt;Customer, CustomerMessage&gt; {
+  default ValidatedPrism&lt;String, EmailAddress&gt; email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+// The customer nests through CustomerMessageMapping, the skus copy as a List, the note reads as
+// empty when unset, and so does the oneof, whose set member becomes its record.
+@GenerateMapping
+interface DispatchMapping extends MappingSpec&lt;Dispatch, DispatchRequest&gt;, DispatchVocabulary {}
+
+// The leaves DispatchMapping shares with DispatchPatch, an update over the same pair.
+interface DispatchVocabulary {
+  // The priority converts through this leaf, which refuses the unset PRIORITY_UNSPECIFIED and
+  // the UNRECOGNIZED an unknown number reads as.
+  default ValidatedPrism&lt;Priority, DispatchPriority&gt; priority() {
+    return ValidatedPrism.of(
+        wire -&gt;
+            switch (wire) {
+              case PRIORITY_STANDARD -&gt; Validated.validNel(DispatchPriority.STANDARD);
+              case PRIORITY_EXPRESS -&gt; Validated.validNel(DispatchPriority.EXPRESS);
+              case PRIORITY_UNSPECIFIED, UNRECOGNIZED -&gt;
+                  Validated.invalidNel(FieldError.of("not a priority: " + wire));
+            },
+        domain -&gt;
+            switch (domain) {
+              case STANDARD -&gt; Priority.PRIORITY_STANDARD;
+              case EXPRESS -&gt; Priority.PRIORITY_EXPRESS;
+            });
+  }
+}
+
+
+    DispatchRequest dispatchRequest =
+        DispatchRequest.newBuilder()
+            .setCustomer(CustomerMessage.newBuilder().setName("Ada").setEmail("ada@corp.example"))
+            .addSkus("SKU-1")
+            .setPriority(Priority.PRIORITY_EXPRESS)
+            .setLocker("LK-4")
+            .build(); // no note: hasNote() is false
+    DispatchMappingImpl dispatchMapping = DispatchMappingImpl.INSTANCE;
+
+    Validated&lt;NonEmptyList&lt;FieldError&gt;, Dispatch&gt; dispatch = dispatchMapping.parse(dispatchRequest);
+    // Valid(Dispatch[customer=Customer[name=Ada, email=EmailAddress[value=ada@corp.example]],
+    // skus=[SKU-1], note=Optional.empty, priority=EXPRESS,
+    // destination=Optional[Locker[id=LK-4]]])
+
+    // The customer is a message field, which tracks whether it is set: unset, it reads as null.
+    Validated&lt;NonEmptyList&lt;FieldError&gt;, Dispatch&gt; noCustomer =
+        dispatchMapping.parse(dispatchRequest.toBuilder().clearCustomer().build());
+    // Invalid(NonEmptyList[customer: must not be null])
+
+    // An empty Optional leaves the field unset, so the message built has no note either.
+    Customer grace = new Customer("Grace", new EmailAddress("grace@corp.example"));
+    DispatchRequest built =
+        dispatchMapping.build(
+            new Dispatch(
+                grace,
+                List.of("SKU-2"),
+                Optional.empty(),
+                DispatchPriority.STANDARD,
+                Optional.of(new Destination.PickupPoint("PP-9"))));
+    boolean noteSent = built.hasNote();
+    // false
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A repeated field maps to a <code>List</code> and a map field to a <code>Map</code>, and <code>build</code> writes each whole. What an unset field reads depends on whether protobuf tracks it, which it shows by generating <code>hasX()</code>:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<div class="table-wrapper"><table><thead><tr><th>The field</th><th>Unset, <code>parse</code> reads it as</th><th>A domain <code>Optional</code> over it</th></tr></thead><tbody>
+<tr><td>a message field, a field declared <code>optional</code>, a oneof member, or a singular proto2 field</td><td><code>null</code>, so a plain component reports <code>must not be null</code></td><td>empty, and <code>build</code> leaves the field unset</td></tr>
+<tr><td>a proto3 scalar declared without <code>optional</code></td><td>its default: <code>""</code>, <code>0</code>, <code>false</code> or the first enum constant</td><td>refused, since its default would read back as present</td></tr>
+<tr><td>a repeated or map field</td><td>an empty <code>List</code> or <code>Map</code></td><td>refused, as for a scalar</td></tr>
+</tbody></table>
+</div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A oneof holds one member at a time, which a sealed type says too. A domain component named after the oneof maps it whole, and each variant is a record named after one member: <code>Destination.Locker</code> pairs with <code>locker</code>, and <code>Destination.PickupPoint</code> with <code>pickup_point</code>. A member holding a message becomes its variant through a spec for the pair, and a scalar member fills the variant's one component. As an <code>Optional</code>, the component reads a oneof with no member set as empty. You can instead map each member to an <code>Optional</code> of its own, as <code>DispatchRecord</code> does in the warning that follows. <a href="rules.html#how-a-message-is-read">How a protobuf-java message is read</a> and <a href="rules.html#protobuf-oneof-members">how a oneof maps</a> have the precise rules.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<div id="admonition-not-checked-for-you-what-a-message-cannot-hold" class="admonition admonish-warning" role="note" aria-labelledby="admonition-not-checked-for-you-what-a-message-cannot-hold-title">
+<div class="admonition-title">
+<div id="admonition-not-checked-for-you-what-a-message-cannot-hold-title">
+<p>Not checked for you: what a message cannot hold</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-not-checked-for-you-what-a-message-cannot-hold"></a>
+</div>
+<div>
+<p>The processor cannot see these three, and each shows only at run time:</p>
+<ul>
+<li><strong>An enum number the build does not know.</strong> A newer client can send a number your generated enum lacks, which its getter reads as <code>UNRECOGNIZED</code>. A component keeping the generated enum parses it, and <code>build</code> then throws. Convert the enum through a leaf that refuses <code>UNRECOGNIZED</code>, as <code>priority()</code> does.</li>
+<li><strong>Two members of one oneof.</strong> A domain value holding both a <code>locker</code> and a <code>pickupPoint</code>, as two <code>Optional</code> components, builds a message holding only the last one written. Map the oneof to a sealed type, as <code>Dispatch</code> does, so the domain holds one.</li>
+<li><strong>An unset proto2 <code>required</code> field.</strong> An empty <code>Optional</code> leaves it unset, and the builder's <code>build()</code> then throws <code>UninitializedMessageException</code>. Map a required field to a component without the <code>Optional</code>.</li>
+</ul>
+<pre><code class="language-java">// The same request, its priority kept as the generated enum itself: no leaf converts it.
+record DispatchRecord(
+    Customer customer,
+    List&lt;String&gt; skus,
+    Optional&lt;String&gt; note,
+    Priority priority,
+    Optional&lt;String&gt; locker,
+    Optional&lt;String&gt; pickupPoint) {}
+
+@GenerateMapping
+interface DispatchRecordMapping extends MappingSpec&lt;DispatchRecord, DispatchRequest&gt; {}
+
+
+    DispatchRequest fromNewerClient =
+        DispatchRequest.newBuilder()
+            .setCustomer(CustomerMessage.newBuilder().setName("Ada").setEmail("ada@corp.example"))
+            .setPriorityValue(3) // a priority added to the .proto after this build
+            .build();
+
+    // Kept as the generated enum, it parses as UNRECOGNIZED, which no builder can write back.
+    DispatchRecord kept = DispatchRecordMappingImpl.INSTANCE.parse(fromNewerClient).get();
+    assertThat(kept.priority()).isEqualTo(Priority.UNRECOGNIZED);
+    assertThatThrownBy(() -&gt; DispatchRecordMappingImpl.INSTANCE.build(kept))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Can't get the number of an unknown enum value.");
+
+    // Converted through a leaf, it is refused where it is read.
+    assertThatValidated(DispatchMappingImpl.INSTANCE.parse(fromNewerClient))
+        .isInvalid()
+        .hasFieldErrors("priority: not a priority: UNRECOGNIZED");
+
+    DispatchRecord both =
+        new DispatchRecord(
+            ada,
+            List.of("SKU-1"),
+            Optional.empty(),
+            Priority.PRIORITY_STANDARD,
+            Optional.of("LK-4"), // a locker
+            Optional.of("PP-9")); // and a pickup point: this record allows both
+
+    DispatchRequest built = DispatchRecordMappingImpl.INSTANCE.build(both);
+    assertThat(built.getDestinationCase()).isEqualTo(DispatchRequest.DestinationCase.PICKUP_POINT);
+    assertThat(DispatchRecordMappingImpl.INSTANCE.parse(built).get().locker()).isEmpty();
+</code></pre>
+</div>
+</div>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<h3 id="a-patch-through-its-fieldmask"><a class="header" href="#a-patch-through-its-fieldmask">A PATCH through its <code>FieldMask</code></a></h3>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>A message reads a value for most fields it has not set, so an unset field cannot mean <em>leave unchanged</em>. A gRPC update request names the fields it changes in a <code>FieldMask</code> instead. Extend <code>UpdateSpec</code> over the message, and the Impl's <code>updateFrom(message, mask)</code> returns the edits the mask asks for. <code>DispatchPatch</code> shares its leaves with <code>DispatchMapping</code> through the <code>DispatchVocabulary</code> mix-in:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code class="language-java">@GenerateMapping
+interface DispatchPatch extends UpdateSpec&lt;Dispatch, DispatchRequest&gt;, DispatchVocabulary {}
+
+
+    Dispatch stored =
+        new Dispatch(
+            new Customer("Lin", new EmailAddress("lin@corp.example")),
+            List.of("SKU-3"),
+            Optional.empty(),
+            DispatchPriority.STANDARD,
+            Optional.of(new Destination.Locker("LK-7")));
+    UpdateDispatchRequest update =
+        UpdateDispatchRequest.newBuilder()
+            .setDispatch(
+                DispatchRequest.newBuilder().setNote("leave at the door").setPickupPoint("PP-2"))
+            .setUpdateMask(FieldMask.newBuilder().addPaths("note").addPaths("pickup_point"))
+            .build();
+
+    Validated&lt;NonEmptyList&lt;FieldError&gt;, Dispatch&gt; updated =
+        DispatchPatchImpl.INSTANCE.updateFrom(update.getDispatch(), maskOf(update)).apply(stored);
+    // Valid(Dispatch[customer=Customer[name=Lin, email=EmailAddress[value=lin@corp.example]],
+    // skus=[SKU-3], note=Optional[leave at the door], priority=STANDARD,
+    // destination=Optional[PickupPoint[code=PP-2]]])
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>Each field the mask names parses as <code>parse</code> would read it, and replaces the stored value whole, so the stored locker gave way to the pickup point. A field the mask names and the message leaves unset reads as <code>parse</code> reads it: the note would clear, and the customer would fail. A path is the field's name in the <code>.proto</code> file, or <code>*</code> for every field. A path into a nested message, such as <code>customer.name</code>, is not supported yet, and fails located at the path.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p>An empty mask names no field, so the update changes nothing. A request that omits its mask asks for every field its message sets, as <a href="https://google.aip.dev/134">AIP-134</a> has it, and <code>maskOf</code> builds that mask on the full runtime:</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<pre><code class="language-java">  // A request that omits its mask asks for every field its message sets. An empty mask names none.
+  static FieldMask maskOf(UpdateDispatchRequest update) {
+    return update.hasUpdateMask()
+        ? update.getUpdateMask()
+        : FieldMask.newBuilder()
+            .addAllPaths(
+                update.getDispatch().getAllFields().keySet().stream()
+                    .map(Descriptors.FieldDescriptor::getName)
+                    .toList())
+            .build();
+  }
+</code></pre>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<p><a href="rules.html#protobuf-fieldmask-update">A protobuf-java message updates through its <code>FieldMask</code></a> has the precise rules.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
+<hr />
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <h2 id="generated-client-checklist"><a class="header" href="#generated-client-checklist">Generated clients: a checklist</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
 <p>Beans are often generated from a schema, and generators have habits. Check these where a generated bean meets the mapper:</p>
@@ -901,7 +1158,7 @@ interface MerchantModelMapping extends MappingSpec&lt;Merchant, MerchantModel&gt
 <tr><td>a PATCH request bean with <code>default:</code> values or container defaults</td><td>the generator renders them as initialisers, which read as sent</td><td>give the PATCH request its own schema: <a href="beans_patch.html#patch-getters-answer-null">A PATCH getter must answer <code>null</code> until set</a></td></tr>
 <tr><td>a Lombok class</td><td>the processor sees its accessors only once Lombok has run</td><td>list Lombok's <code>annotationProcessor</code> before <code>hkj-processor</code>; the HKJ Gradle plugin adds its own after your <code>dependencies</code> block (<a href="../tooling/manual_setup.html#lombok">Lombok</a>)</td></tr>
 <tr><td>Lombok's <code>@Singular</code> on a collection</td><td>it maps: <code>build</code> writes the collection whole and leaves the singular adder alone. The collection is never <code>null</code>, so it cannot carry an absent <code>Optional</code> or a PATCH's absence</td><td>for an <code>Optional</code> component, declare it a <code>List</code> or drop <code>@Singular</code>; on a PATCH request, drop <code>@Singular</code>: <a href="rules.html#singular-collections">A Lombok <code>@Singular</code> collection</a></td></tr>
-<tr><td>a protobuf-java message</td><td>not supported yet: protobuf's companions pair up as properties your domain lacks (<code>getUnknownFields()</code>, <code>getXBytes()</code> beside a string field, <code>getXValue()</code> beside an enum), and a repeated or map field has no setter. Each refusal it meets says it is not supported yet</td><td>convert it to a record by hand, and map the record</td></tr>
+<tr><td>a protobuf-java message</td><td>it maps both ways by its fields, and protoc's other accessors, such as <code>getXBytes()</code>, stay out. An unset field with <code>hasX()</code> reads as <code>null</code>, and an update follows its <code>FieldMask</code></td><td>nothing, unless an <code>Optional</code> faces a proto3 scalar: declare that field <code>optional</code> in the <code>.proto</code> (<a href="#protobuf-java-messages">protobuf-java messages</a>)</td></tr>
 <tr><td>a bean another annotation processor generates</td><td>the mapping waits for the type to exist, with nothing to configure</td><td>nothing: <a href="../tooling/manual_setup.html#mapping-over-types-other-processors-generate">Mapping over types other processors generate</a></td></tr>
 </tbody></table>
 </div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.10"></div>
@@ -920,6 +1177,7 @@ interface MerchantModelMapping extends MappingSpec&lt;Merchant, MerchantModel&gt
 <li><strong>Three things follow from an unset property</strong>: a reference property costs <code>asIso()</code>, an <code>Optional</code> bridges with no annotation, and a smaller bean has no <code>parse</code></li>
 <li><strong>What the bean does with a <code>null</code> is not checked for you</strong>: a default reads back as present, and a writer that rejects it throws, so law-check from a domain sample with an empty <code>Optional</code></li>
 <li><strong>A bean's shape decides its direction</strong>: a read model gets <code>parse</code> alone, a write model <code>build</code> alone, and a generated model with getters and setters maps both ways</li>
+<li><strong>A protobuf-java message maps by its fields</strong>: a field with <code>hasX()</code> reads as <code>null</code> when unset, a oneof maps to a sealed type, and an update follows its <code>FieldMask</code></li>
 </ul>
 </div>
 </div>

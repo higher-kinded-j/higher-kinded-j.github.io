@@ -867,6 +867,7 @@ Compile-time domain ↔ wire codecs, generated from a spec interface you own:
 | `build(domain)` | Total domain → wire render | [`@GenerateMapping`](mapping/ch_intro.md) on `MappingSpec<Domain, Wire>` |
 | `parse(wire)` | Accumulating parse: every bad field at once, each located by path | the generated `XMappingImpl.INSTANCE` |
 | `updateFrom(wire)` | Sparse PATCH fold: absent means "leave unchanged" | [`UpdateSpec`](mapping/beans_patch.md#sparse-patch-write-back-updatespec) |
+| `updateFrom(message, mask)` | A protobuf-java message's update: applies the fields its `FieldMask` names | [`UpdateSpec`](mapping/beans.md#a-patch-through-its-fieldmask) |
 | `StandardCodecs.uuid()`, `localDate()`, `enumByName(...)`, ... | Stock `ValidatedPrism` leaves for identifiers, dates, enums, money | [Standard codecs](mapping/codecs.md#standard-codecs) |
 | `Edits.accumulate(...)` | Hand-written validated multi-edit (irregular PATCH shapes) | [Multi-Edit](optics/multi_edit.md) |
 | `MappingLaws.assertMappingLaws(...)` | Law-check any generated mapping in one test call | [hkj-test](tooling/test_assertions.md#optic-laws) |
@@ -18361,7 +18362,7 @@ External types like `LocalDate`, Jackson's `JsonNode`, JOOQ records, and Protobu
 | Annotation | Apply to | Generates | When to reach for it |
 |---|---|---|---|
 | [`@GenerateMapping`](../mapping/ch_intro.md) | interface extending `MappingSpec<Domain, Wire>` | `XMappingImpl` with a total `build` and an accumulating, located `parse` | Bidirectional boundary mapping with validation: every bad field reported at once |
-| [`@GenerateMapping`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) | interface extending `UpdateSpec<Domain, Wire>` (bean wire) | `XMappingImpl` with only `updateFrom(Wire) : Edits.Accumulated<Domain>` | Sparse PATCH write-back: fold the present (non-null) request fields into an update, leave the absent ones |
+| [`@GenerateMapping`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) | interface extending `UpdateSpec<Domain, Wire>` (bean wire, or a protobuf-java message) | `XMappingImpl` with only `updateFrom(Wire) : Edits.Accumulated<Domain>`, or `updateFrom(Wire, FieldMask)` over a message | Sparse PATCH write-back: fold the present (non-null) request fields into an update, leave the absent ones; over a message, apply every field its `FieldMask` names, set or not, and leave the rest |
 | [`@MapField(to = "...")`](../mapping/ch_intro.md) | abstract marker method on the spec, named after the domain component, or that component's `default` leaf | a rename in both directions | Domain and wire components with different names |
 | [`@OptionalBridge`](../mapping/absence.md#optional-bridge) | abstract marker method on the spec, or that component's `default` leaf | a domain `Optional<T>` mapped to a nullable wire component `T` | A record wire that encodes absence as `null`, the way a JSON binder writes it |
 | [`@MapKey("component")`](../mapping/structure.md#converting-map-keys) | `default` leaf on the spec, freely named, returning `ValidatedPrism<WireKey, DomainKey>` | the named `Map` component's **keys** converted, alone or beside its value leaf | Two sides that key a map differently (`Map<String, ...>` on the wire, `Map<Locale, ...>` in the domain) |
@@ -46111,7 +46112,7 @@ Those pages teach the model and put it behind an endpoint. For a particular task
 - A field the client may leave out, read as an empty `Optional`, or a record whose constructor refuses bad values: [Absent Fields and Record Invariants](absence.md)
 - DTOs that nest, hold lists, or dispatch over sealed types: [Nesting, Containers, and Sealed Hierarchies](structure.md)
 - What exactly got generated for your spec, and why: [What Your Spec Generates](tiers.md)
-- A getter/setter or builder DTO: [Bean-Shaped Wires](beans.md)
+- A getter/setter, builder or protobuf DTO: [Bean-Shaped Wires](beans.md)
 - A PATCH endpoint, where an omitted field keeps its current value: [Sparse PATCH](beans_patch.md)
 - A `Page<T>` at the boundary: [Generic Specs](generics.md)
 - Combining several sources, or typing your error context: [Merge and Error Envelopes](merge_envelopes.md)
@@ -46713,7 +46714,7 @@ The error still names the domain component:
 
 ## Derived wire fields {#derived-wire-fields}
 
-A wire component with **no domain counterpart** can be computed from the whole domain value: a `displayName` the domain does not store, because it is derivable. Declare a zero-parameter `default` method named after the *wire* component, returning `Getter<Domain, WireComponentType>`. Read the `Getter` as a `Function<Domain, WireComponentType>`: `Getter.of` takes a plain lambda.
+A wire component with **no domain counterpart** can be computed from the whole domain value: a `displayName` the domain does not store, because it is derivable. Declare a zero-parameter `default` method named after the *wire* component, returning `Getter<Domain, WireComponentType>`. Read the `Getter` as a `Function<Domain, WireComponentType>`: `Getter.of` takes a plain lambda. A primitive component takes its wrapper, `Getter<Domain, Integer>` for an `int`, which `build` unboxes.
 
 ``` java
 record Recipient(String first, String last) {}
@@ -48868,6 +48869,7 @@ A two-way mapping's methods turn on two independent questions: does the wire car
 | `asValidatedParse()` | the bean wire has getters only, [One-directional beans](beans.md#one-directional-beans), or a property is [read-only](beans.md#read-only-properties) |
 | `asValidatedBuild()` | the bean wire has writers only, [One-directional beans](beans.md#one-directional-beans), or a property is [read-only](beans.md#read-only-properties) |
 | `updateFrom(wire)` | the spec extends `UpdateSpec`, over a bean wire: [Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec) |
+| `updateFrom(message, mask)` | the spec extends `UpdateSpec`, over a protobuf-java message: [A PATCH through its `FieldMask`](beans.md#a-patch-through-its-fieldmask) |
 
 ### A bound request goes to `parse` or `patch` {#a-bound-request-goes-to-parse}
 
@@ -49098,11 +49100,13 @@ The patch laws are projection identity (`patch(d, build(d)) == Valid(d)`), idemp
 
 _Map getter/setter and builder classes as you map records, including ones only read or written._
 
-Generated client models, JAXB payloads and many legacy DTOs are beans: classes with getters and setters, or a builder, rather than records. If your wire is a bean, almost nothing changes: [leaves](basics.md#validated-leaves), [renames](basics.md#renames-mapfield), container lifting, nesting and located errors work exactly as on a record. Three things differ, and all three come from one fact: a bean can exist with some properties never set. This page walks those three first. Mapping a generated client? Read [the checklist for generated clients](#generated-client-checklist) as well. A bean used as a PATCH request, where `null` means *not sent*, has a page of its own, [Sparse PATCH](beans_patch.md).
+Generated client models, JAXB payloads and many legacy DTOs are beans: classes with getters and setters, or a builder, rather than records. If your wire is a bean, almost nothing changes: [leaves](basics.md#validated-leaves), [renames](basics.md#renames-mapfield), container lifting, nesting and located errors work exactly as on a record. Three things differ, and all three come from one fact: a bean can exist with some properties never set. This page walks those three first. Mapping a generated client? Read [the checklist for generated clients](#generated-client-checklist) as well, and for a gRPC boundary, [protobuf-java messages](#protobuf-java-messages). A bean used as a PATCH request, where `null` means *not sent*, has a page of its own, [Sparse PATCH](beans_patch.md).
 
 ~~~admonish info title="What You'll Learn"
 - Map a getter/setter or builder bean like a record, and predict what an unset property does
 - Predict which methods a bean's Impl carries, from the bean's shape
+- Map a protobuf-java message, and predict what an unset field reads
+- Map a protobuf oneof to a sealed type, and apply an update through its `FieldMask`
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -49205,7 +49209,7 @@ A law check from a domain sample with an empty `Optional` fails on the first two
 ~~~
 
 ~~~admonish tip title="You can ship now"
-You can now map a getter/setter or builder bean like a record, and know what an unset property does to `parse`, to an `Optional` and to the methods the Impl offers. The rest of this page, [beans crossed one way](#one-directional-beans), [projections](#bean-projections), [accessors kept out on purpose](#accessors-meant-to-stay-out) and [the checklist for generated clients](#generated-client-checklist), is for when you need it.
+You can now map a getter/setter or builder bean like a record, and know what an unset property does to `parse`, to an `Optional` and to the methods the Impl offers. The rest of this page, [beans crossed one way](#one-directional-beans), [projections](#bean-projections), [accessors kept out on purpose](#accessors-meant-to-stay-out), [protobuf-java messages](#protobuf-java-messages) and [the checklist for generated clients](#generated-client-checklist), is for when you need it.
 ~~~
 
 ~~~admonish question title="Checkpoint: which subtitle comes back?" id="check-beans-default"
@@ -49623,6 +49627,258 @@ A component that converts takes the marker on its leaf. [What `@ReadOnly` reads]
 
 ---
 
+## protobuf-java messages {#protobuf-java-messages}
+
+A protobuf-java message is a builder bean, so a gRPC boundary maps as any bean does, with nothing to configure. protoc generates more accessors than a message has fields, such as `getNameBytes()` beside a string field, so the processor reads a message by its fields. It takes no protobuf dependency of its own, and maps the classes protoc generates wherever they come from: this build, as here, or a jar. Here is the order service's dispatch request, which protoc compiles in the same build:
+
+``` proto
+// A dispatch request as the order service's gRPC API sends one.
+syntax = "proto3";
+
+package book.mapping.v1;
+
+import "google/protobuf/field_mask.proto";
+
+option java_package = "org.higherkindedj.example.book.mapping.proto";
+option java_multiple_files = true;
+option java_outer_classname = "DispatchProto";
+
+message CustomerMessage {
+  string name = 1;
+  string email = 2;
+}
+
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0;
+  PRIORITY_STANDARD = 1;
+  PRIORITY_EXPRESS = 2;
+}
+
+message DispatchRequest {
+  CustomerMessage customer = 1;
+  repeated string skus = 2;
+  optional string note = 3;
+  Priority priority = 4;
+  oneof destination {
+    string locker = 5;
+    string pickup_point = 6;
+  }
+}
+
+// An update names the fields it changes in its mask.
+message UpdateDispatchRequest {
+  DispatchRequest dispatch = 1;
+  google.protobuf.FieldMask update_mask = 2;
+}
+```
+
+The spec needs nothing new. The customer nests through its own spec, a leaf converts the generated enum, and the oneof maps to a sealed type. The leaf sits in a mix-in, `DispatchVocabulary`, which [the update](#a-patch-through-its-fieldmask) shares:
+
+``` java
+// A dispatch as the order service keeps it. DispatchRequest and CustomerMessage are the messages
+// protoc generates from dispatch.proto.
+enum DispatchPriority {
+  STANDARD,
+  EXPRESS
+}
+
+// The oneof 'destination': a record named after each member.
+sealed interface Destination {
+  record Locker(String id) implements Destination {}
+
+  record PickupPoint(String code) implements Destination {}
+}
+
+record Dispatch(
+    Customer customer,
+    List<String> skus,
+    Optional<String> note,
+    DispatchPriority priority,
+    Optional<Destination> destination) {}
+
+@GenerateMapping
+interface CustomerMessageMapping extends MappingSpec<Customer, CustomerMessage> {
+  default ValidatedPrism<String, EmailAddress> email() {
+    return EmailCodecs.EMAIL;
+  }
+}
+
+// The customer nests through CustomerMessageMapping, the skus copy as a List, the note reads as
+// empty when unset, and so does the oneof, whose set member becomes its record.
+@GenerateMapping
+interface DispatchMapping extends MappingSpec<Dispatch, DispatchRequest>, DispatchVocabulary {}
+
+// The leaves DispatchMapping shares with DispatchPatch, an update over the same pair.
+interface DispatchVocabulary {
+  // The priority converts through this leaf, which refuses the unset PRIORITY_UNSPECIFIED and
+  // the UNRECOGNIZED an unknown number reads as.
+  default ValidatedPrism<Priority, DispatchPriority> priority() {
+    return ValidatedPrism.of(
+        wire ->
+            switch (wire) {
+              case PRIORITY_STANDARD -> Validated.validNel(DispatchPriority.STANDARD);
+              case PRIORITY_EXPRESS -> Validated.validNel(DispatchPriority.EXPRESS);
+              case PRIORITY_UNSPECIFIED, UNRECOGNIZED ->
+                  Validated.invalidNel(FieldError.of("not a priority: " + wire));
+            },
+        domain ->
+            switch (domain) {
+              case STANDARD -> Priority.PRIORITY_STANDARD;
+              case EXPRESS -> Priority.PRIORITY_EXPRESS;
+            });
+  }
+}
+
+
+    DispatchRequest dispatchRequest =
+        DispatchRequest.newBuilder()
+            .setCustomer(CustomerMessage.newBuilder().setName("Ada").setEmail("ada@corp.example"))
+            .addSkus("SKU-1")
+            .setPriority(Priority.PRIORITY_EXPRESS)
+            .setLocker("LK-4")
+            .build(); // no note: hasNote() is false
+    DispatchMappingImpl dispatchMapping = DispatchMappingImpl.INSTANCE;
+
+    Validated<NonEmptyList<FieldError>, Dispatch> dispatch = dispatchMapping.parse(dispatchRequest);
+    // Valid(Dispatch[customer=Customer[name=Ada, email=EmailAddress[value=ada@corp.example]],
+    // skus=[SKU-1], note=Optional.empty, priority=EXPRESS,
+    // destination=Optional[Locker[id=LK-4]]])
+
+    // The customer is a message field, which tracks whether it is set: unset, it reads as null.
+    Validated<NonEmptyList<FieldError>, Dispatch> noCustomer =
+        dispatchMapping.parse(dispatchRequest.toBuilder().clearCustomer().build());
+    // Invalid(NonEmptyList[customer: must not be null])
+
+    // An empty Optional leaves the field unset, so the message built has no note either.
+    Customer grace = new Customer("Grace", new EmailAddress("grace@corp.example"));
+    DispatchRequest built =
+        dispatchMapping.build(
+            new Dispatch(
+                grace,
+                List.of("SKU-2"),
+                Optional.empty(),
+                DispatchPriority.STANDARD,
+                Optional.of(new Destination.PickupPoint("PP-9"))));
+    boolean noteSent = built.hasNote();
+    // false
+```
+
+A repeated field maps to a `List` and a map field to a `Map`, and `build` writes each whole. What an unset field reads depends on whether protobuf tracks it, which it shows by generating `hasX()`:
+
+| The field | Unset, `parse` reads it as | A domain `Optional` over it |
+|---|---|---|
+| a message field, a field declared `optional`, a oneof member, or a singular proto2 field | `null`, so a plain component reports `must not be null` | empty, and `build` leaves the field unset |
+| a proto3 scalar declared without `optional` | its default: `""`, `0`, `false` or the first enum constant | refused, since its default would read back as present |
+| a repeated or map field | an empty `List` or `Map` | refused, as for a scalar |
+
+A oneof holds one member at a time, which a sealed type says too. A domain component named after the oneof maps it whole, and each variant is a record named after one member: `Destination.Locker` pairs with `locker`, and `Destination.PickupPoint` with `pickup_point`. A member holding a message becomes its variant through a spec for the pair, and a scalar member fills the variant's one component. As an `Optional`, the component reads a oneof with no member set as empty. You can instead map each member to an `Optional` of its own, as `DispatchRecord` does in the warning that follows. [How a protobuf-java message is read](rules.md#how-a-message-is-read) and [how a oneof maps](rules.md#protobuf-oneof-members) have the precise rules.
+
+~~~admonish warning title="Not checked for you: what a message cannot hold"
+The processor cannot see these three, and each shows only at run time:
+
+- **An enum number the build does not know.** A newer client can send a number your generated enum lacks, which its getter reads as `UNRECOGNIZED`. A component keeping the generated enum parses it, and `build` then throws. Convert the enum through a leaf that refuses `UNRECOGNIZED`, as `priority()` does.
+- **Two members of one oneof.** A domain value holding both a `locker` and a `pickupPoint`, as two `Optional` components, builds a message holding only the last one written. Map the oneof to a sealed type, as `Dispatch` does, so the domain holds one.
+- **An unset proto2 `required` field.** An empty `Optional` leaves it unset, and the builder's `build()` then throws `UninitializedMessageException`. Map a required field to a component without the `Optional`.
+
+``` java
+// The same request, its priority kept as the generated enum itself: no leaf converts it.
+record DispatchRecord(
+    Customer customer,
+    List<String> skus,
+    Optional<String> note,
+    Priority priority,
+    Optional<String> locker,
+    Optional<String> pickupPoint) {}
+
+@GenerateMapping
+interface DispatchRecordMapping extends MappingSpec<DispatchRecord, DispatchRequest> {}
+
+
+    DispatchRequest fromNewerClient =
+        DispatchRequest.newBuilder()
+            .setCustomer(CustomerMessage.newBuilder().setName("Ada").setEmail("ada@corp.example"))
+            .setPriorityValue(3) // a priority added to the .proto after this build
+            .build();
+
+    // Kept as the generated enum, it parses as UNRECOGNIZED, which no builder can write back.
+    DispatchRecord kept = DispatchRecordMappingImpl.INSTANCE.parse(fromNewerClient).get();
+    assertThat(kept.priority()).isEqualTo(Priority.UNRECOGNIZED);
+    assertThatThrownBy(() -> DispatchRecordMappingImpl.INSTANCE.build(kept))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Can't get the number of an unknown enum value.");
+
+    // Converted through a leaf, it is refused where it is read.
+    assertThatValidated(DispatchMappingImpl.INSTANCE.parse(fromNewerClient))
+        .isInvalid()
+        .hasFieldErrors("priority: not a priority: UNRECOGNIZED");
+
+    DispatchRecord both =
+        new DispatchRecord(
+            ada,
+            List.of("SKU-1"),
+            Optional.empty(),
+            Priority.PRIORITY_STANDARD,
+            Optional.of("LK-4"), // a locker
+            Optional.of("PP-9")); // and a pickup point: this record allows both
+
+    DispatchRequest built = DispatchRecordMappingImpl.INSTANCE.build(both);
+    assertThat(built.getDestinationCase()).isEqualTo(DispatchRequest.DestinationCase.PICKUP_POINT);
+    assertThat(DispatchRecordMappingImpl.INSTANCE.parse(built).get().locker()).isEmpty();
+```
+~~~
+
+### A PATCH through its `FieldMask` {#a-patch-through-its-fieldmask}
+
+A message reads a value for most fields it has not set, so an unset field cannot mean *leave unchanged*. A gRPC update request names the fields it changes in a `FieldMask` instead. Extend `UpdateSpec` over the message, and the Impl's `updateFrom(message, mask)` returns the edits the mask asks for. `DispatchPatch` shares its leaves with `DispatchMapping` through the `DispatchVocabulary` mix-in:
+
+``` java
+@GenerateMapping
+interface DispatchPatch extends UpdateSpec<Dispatch, DispatchRequest>, DispatchVocabulary {}
+
+
+    Dispatch stored =
+        new Dispatch(
+            new Customer("Lin", new EmailAddress("lin@corp.example")),
+            List.of("SKU-3"),
+            Optional.empty(),
+            DispatchPriority.STANDARD,
+            Optional.of(new Destination.Locker("LK-7")));
+    UpdateDispatchRequest update =
+        UpdateDispatchRequest.newBuilder()
+            .setDispatch(
+                DispatchRequest.newBuilder().setNote("leave at the door").setPickupPoint("PP-2"))
+            .setUpdateMask(FieldMask.newBuilder().addPaths("note").addPaths("pickup_point"))
+            .build();
+
+    Validated<NonEmptyList<FieldError>, Dispatch> updated =
+        DispatchPatchImpl.INSTANCE.updateFrom(update.getDispatch(), maskOf(update)).apply(stored);
+    // Valid(Dispatch[customer=Customer[name=Lin, email=EmailAddress[value=lin@corp.example]],
+    // skus=[SKU-3], note=Optional[leave at the door], priority=STANDARD,
+    // destination=Optional[PickupPoint[code=PP-2]]])
+```
+
+Each field the mask names parses as `parse` would read it, and replaces the stored value whole, so the stored locker gave way to the pickup point. A field the mask names and the message leaves unset reads as `parse` reads it: the note would clear, and the customer would fail. A path is the field's name in the `.proto` file, or `*` for every field. A path into a nested message, such as `customer.name`, is not supported yet, and fails located at the path.
+
+An empty mask names no field, so the update changes nothing. A request that omits its mask asks for every field its message sets, as [AIP-134](https://google.aip.dev/134) has it, and `maskOf` builds that mask on the full runtime:
+
+``` java
+  // A request that omits its mask asks for every field its message sets. An empty mask names none.
+  static FieldMask maskOf(UpdateDispatchRequest update) {
+    return update.hasUpdateMask()
+        ? update.getUpdateMask()
+        : FieldMask.newBuilder()
+            .addAllPaths(
+                update.getDispatch().getAllFields().keySet().stream()
+                    .map(Descriptors.FieldDescriptor::getName)
+                    .toList())
+            .build();
+  }
+```
+
+[A protobuf-java message updates through its `FieldMask`](rules.md#protobuf-fieldmask-update) has the precise rules.
+
+---
+
 ## Generated clients: a checklist {#generated-client-checklist}
 
 Beans are often generated from a schema, and generators have habits. Check these where a generated bean meets the mapper:
@@ -49637,7 +49893,7 @@ Beans are often generated from a schema, and generators have habits. Check these
 | a PATCH request bean with `default:` values or container defaults | the generator renders them as initialisers, which read as sent | give the PATCH request its own schema: [A PATCH getter must answer `null` until set](beans_patch.md#patch-getters-answer-null) |
 | a Lombok class | the processor sees its accessors only once Lombok has run | list Lombok's `annotationProcessor` before `hkj-processor`; the HKJ Gradle plugin adds its own after your `dependencies` block ([Lombok](../tooling/manual_setup.md#lombok)) |
 | Lombok's `@Singular` on a collection | it maps: `build` writes the collection whole and leaves the singular adder alone. The collection is never `null`, so it cannot carry an absent `Optional` or a PATCH's absence | for an `Optional` component, declare it a `List` or drop `@Singular`; on a PATCH request, drop `@Singular`: [A Lombok `@Singular` collection](rules.md#singular-collections) |
-| a protobuf-java message | not supported yet: protobuf's companions pair up as properties your domain lacks (`getUnknownFields()`, `getXBytes()` beside a string field, `getXValue()` beside an enum), and a repeated or map field has no setter. Each refusal it meets says it is not supported yet | convert it to a record by hand, and map the record |
+| a protobuf-java message | it maps both ways by its fields, and protoc's other accessors, such as `getXBytes()`, stay out. An unset field with `hasX()` reads as `null`, and an update follows its `FieldMask` | nothing, unless an `Optional` faces a proto3 scalar: declare that field `optional` in the `.proto` ([protobuf-java messages](#protobuf-java-messages)) |
 | a bean another annotation processor generates | the mapping waits for the type to exist, with nothing to configure | nothing: [Mapping over types other processors generate](../tooling/manual_setup.md#mapping-over-types-other-processors-generate) |
 
 ---
@@ -49647,6 +49903,7 @@ Beans are often generated from a schema, and generators have habits. Check these
 * **Three things follow from an unset property**: a reference property costs `asIso()`, an `Optional` bridges with no annotation, and a smaller bean has no `parse`
 * **What the bean does with a `null` is not checked for you**: a default reads back as present, and a writer that rejects it throws, so law-check from a domain sample with an empty `Optional`
 * **A bean's shape decides its direction**: a read model gets `parse` alone, a write model `build` alone, and a generated model with getters and setters maps both ways
+* **A protobuf-java message maps by its fields**: a field with `hasX()` reads as `null` when unset, a oneof maps to a sealed type, and an update follows its `FieldMask`
 ~~~
 
 ~~~admonish tip title="See Also"
@@ -49666,7 +49923,7 @@ Beans are often generated from a schema, and generators have habits. Check these
 
 _Map a PATCH request so an omitted field keeps its current value and a bad one still fails._
 
-A PATCH request carries only the fields the client wants to change, so a `null` in it means *not sent*, not *broken*. This page maps such a request onto your domain record, a Java `record`, with `UpdateSpec`: sent fields are validated and applied, and omitted ones keep their current value. The request must be a class with getters and setters, which [Bean-Shaped Wires](beans.md) covers. The mapper needs Java 25 and the hkj Gradle plugin, and the [Quickstart](quickstart.md) sets both up.
+A PATCH request carries only the fields the client wants to change, so a `null` in it means *not sent*, not *broken*. This page maps such a request onto your domain record, a Java `record`, with `UpdateSpec`: sent fields are validated and applied, and omitted ones keep their current value. The request must be a class with getters and setters, which [Bean-Shaped Wires](beans.md) covers. A protobuf-java message names the fields it changes in a `FieldMask` instead, as [A PATCH through its `FieldMask`](beans.md#a-patch-through-its-fieldmask) shows. The mapper needs Java 25 and the hkj Gradle plugin, and the [Quickstart](quickstart.md) sets both up.
 
 ~~~admonish info title="What You'll Learn"
 - Tell what a `null` in a PATCH body means, and why no mapper can infer it
@@ -51549,10 +51806,10 @@ blocker. Each ❌ means keep what you have for that case.
 | Domain types are records | ✅ |
 | Domain types are JPA entities or other mutable beans | ❌ keep MapStruct here |
 | Wire types are records | ✅ |
-| Wire types come from a generated client (getter/setter beans, builders) | ✅, except protobuf-java messages, not supported yet |
+| Wire types come from a generated client (getter/setter beans, builders, protobuf-java messages) | ✅ (a protobuf oneof maps to a sealed type) |
 | Lombok `@Data`, `@Value`, `@Builder` or `@SuperBuilder` wires, `@Singular` included | ✅ (order Lombok before the processor; drop `@Singular` on a PATCH request) |
 | Lombok `@Accessors(fluent = true)` wires | ⚠ the accessors are not `getX`/`isX`, so they do not pair |
-| PATCH endpoints where an omitted field means *leave unchanged* | ✅ `UpdateSpec` |
+| PATCH endpoints where an omitted field means *leave unchanged* | ✅ `UpdateSpec` (a protobuf-java message's through its `FieldMask`) |
 | PATCH DTOs from openapi-generator with `default:` values in the schema | ⚠ the defaults read as sent: see [A PATCH getter must answer `null` until set](beans_patch.md#patch-getters-answer-null) |
 | PATCH bodies that must distinguish *clear* from *absent* | ⚠ an `Optional`-typed property; `JsonNullable` is not supported yet |
 | Nested objects patched field by field | ❌ replacement is wholesale |
@@ -51607,7 +51864,7 @@ The shapes are close enough that a first spec usually reads like the mapper it r
 | `@SubclassMapping` | [sealed dispatch](structure.md#sealed-hierarchies) | exhaustive both ways, or it does not compile |
 | `@MappingTarget` plus `NullValuePropertyMappingStrategy.IGNORE` | [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) and `updateFrom(wire).apply(current)` | returns `Validated`; nested objects replace wholesale |
 | `@MappingTarget` for a dense write-back | a projection's [`patch(domain, wire)`](tiers.md#leaf-carrying-projections-the-validated-patch) or `asLens()` | every projected field written, and validated |
-| `ignore = true` on a target | [`@Unmapped`](beans.md#accessors-meant-to-stay-out) on a bean accessor; a narrower wire is simply a projection | |
+| `ignore = true` on a target | [`@Unmapped`](beans.md#accessors-meant-to-stay-out) on a bean accessor; a narrower wire is simply a projection | a protobuf message's field takes a [derived field](basics.md#derived-wire-fields) instead |
 | `ignore = true` on a request's target, read back from the response | [`@ReadOnly`](beans.md#read-only-properties) on a bean getter with no setter | one spec, with `parse` and `build` as two halves |
 | `unmappedTargetPolicy = ERROR` | always on | an unmapped wire component is a compile error |
 | `@InheritInverseConfiguration` | not needed | the inverse is the same declaration |
@@ -51750,7 +52007,13 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a Lombok builder use `@Singular` on a collection?](#singular-collections) | Yes: `build` writes the collection whole and leaves its adder alone; a build-only adder it cannot tell apart is refused. | by design |
 | [Can a `@Singular` collection carry an absent `Optional`?](#singular-collections) | No: its builder builds an empty collection, so it is never absent. | not supported yet |
 | [Does an openapi-generator model with `JsonNullable` companions map?](#jsonnullable-companions) | Yes: each `getX_JsonNullable()` pair is left out, and `getX()` and `setX(...)` carry the property. | by design |
-| [Does a protobuf-java message map?](beans.md#generated-client-checklist) | No: its companion accessors pair as extra properties, and a repeated or map field has no setter. | not supported yet |
+| [Does a protobuf-java message map?](#how-a-message-is-read) | Yes, both ways, by its fields: protoc's other accessors, such as `getXBytes()`, stay out. | by design |
+| [Can an `Optional` map a message field with no `hasX()`?](#protobuf-field-without-presence) | No: unset, the field reads its default, so an empty `Optional` would read back as present. | by design |
+| [Can a oneof member map to a plain component?](#protobuf-oneof-members) | No: `build` would keep only the last member it wrote, so map the oneof to a sealed type, or each member to an `Optional`. | by design |
+| [Can a oneof map to a sealed domain type?](#protobuf-oneof-members) | Yes: a record named after each member, filled through a spec or its one component. | by design |
+| [Can a oneof's variant convert its member through a leaf?](#protobuf-oneof-members) | No: a scalar member fills the variant's one component as it is, so check it in the variant's constructor. | not supported yet |
+| [Can a oneof's sealed type, or a variant, be generic?](#protobuf-oneof-members) | No: declare them without type parameters. | not supported yet |
+| [Can a `@MapField` rename point a component at a oneof?](#protobuf-oneof-members) | No: name the component after the oneof. | not supported yet |
 | [Where does a one-directional bean nest?](#how-a-beans-direction-is-read) | Only where nothing needs its missing direction. | by design |
 | **Sparse PATCH** | | |
 | [Can one spec extend `MappingSpec` and `UpdateSpec`?](#one-tier-per-spec) | No: declare a spec per tier and share a mix-in. | by design |
@@ -51762,7 +52025,10 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a PATCH bean have a getter-only `List`?](#no-getter-only-list-on-a-patch) | No: it never reads `null`, so it cannot be absent. | not supported yet |
 | [Can a PATCH bean's builder write a Lombok `@Singular` collection?](#singular-collections) | No: it never reads `null`, so it cannot be absent. | not supported yet |
 | [Can a PATCH bean carry a `JsonNullable` property?](#no-jsonnullable-patch-property) | No: use an `Optional`-typed property. | not supported yet |
-| [Does a nested spec lift through a PATCH container?](#patch-containers) | No: give the component an element leaf that delegates to it. | not supported yet |
+| [Can a PATCH body be a protobuf-java message?](#protobuf-fieldmask-update) | Yes: `updateFrom` takes the message and its `FieldMask`, and edits the fields the mask names. | by design |
+| [Can a `FieldMask` path reach into a nested message?](#protobuf-fieldmask-update) | No: the path fails, so name the whole field, which replaces the nested value. | not supported yet |
+| [Can a message's `UpdateSpec` leave a field without a domain component?](#protobuf-fieldmask-update) | No, since a mask may name any field, unless a derived field it shares with a `MappingSpec` fills it. | by design |
+| [Does a nested spec lift through a PATCH bean's container?](#patch-containers) | No: give the component an element leaf that delegates to it. A `FieldMask` update lifts it, as `parse` does. | not supported yet |
 | [Can a PATCH spec dispatch over a sealed hierarchy?](#no-sealed-patch) | No: an absent property cannot choose a subtype. | by design |
 | [Does a PATCH merge a nested object field by field?](#patch-replaces-wholesale) | No: a nested record, list or map is replaced whole. | by design |
 | **Generic specs** | | |
@@ -51794,6 +52060,9 @@ Nothing refuses these at compile time, and only the first draws a warning. Each 
 | [An explicit JSON `null` cleared an `Optional` PATCH property](beans_patch.md#what-each-json-state-does) | Jackson binds it to `Optional.empty()`, which means *clear* there: omit the field to leave it unchanged. |
 | [A built openapi-generator model sends `"x": null`, or fails a law check from wire samples](beans.md#bean-shaped-wire-targets) | Its `setX(null)` stores a sent `null`, where a fresh model leaves `x` out: set each nullable property in a parsing sample. |
 | [`build` throws on an empty `Optional`](beans.md#bean-shaped-wire-targets) | A setter, builder or record constructor rejects `null` without declaring it: drop the `Optional`, or encode absence in a leaf. |
+| [`build` throws `Can't get the number of an unknown enum value.`](beans.md#protobuf-java-messages) | A generated enum kept in the domain parsed a number the build does not know as `UNRECOGNIZED`: convert it through a leaf that refuses it. |
+| [A message built from a domain value lost one of its oneof members](beans.md#protobuf-java-messages) | The domain value held two members of one oneof as `Optional`s, and setting one clears the other: map the oneof to a sealed type. |
+| [A `FieldMask` update changed nothing](beans.md#a-patch-through-its-fieldmask) | Its mask was empty: a request that omits its mask asks for every field its message sets, a mask you build before the call. |
 | [Adding to a built wire's list throws `UnsupportedOperationException`](structure.md#nesting-containers-and-recursion) | A same-typed container crosses as an unmodifiable copy: set a new list, or copy it first. |
 | [A record with an array is not equal to its own round trip](structure.md#other-containers) | The array crosses as a clone and compares by reference: give the record an `equals` that uses `Arrays.equals`. |
 | [Two swapped prisms passed to `of(...)` compiled](generics.md#element-mapped-specs) | Two abstract leaves of one type swap silently: pass them in declaration order. |
@@ -52080,6 +52349,7 @@ The [tier grid](tiers.md#which-methods-your-spec-gets) asks whether every compon
 - **An unpaired accessor is left out of the mapping.** That suits a computed getter such as `getSummary()`, or a [`@Singular` adder](#singular-collections), which the processor never refuses. It refuses any other unpaired accessor named after a domain component: [When an unpaired accessor is refused](#unpaired-accessors).
 - **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the wire may be bean-shaped, and a bean domain gets a diagnostic.
 - **Nesting is unaffected.** A bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a one-directional one nests [where its direction is used](#how-a-beans-direction-is-read). One with a [read-only property](#what-readonly-reads) has two halves instead, and nests where a mapping uses one direction.
+- **A protobuf-java message is read by its fields instead**, as [How a protobuf-java message is read](#how-a-message-is-read) says.
 
 ### The automatic `Optional` bridge on a bean {#bean-optional-bridge}
 
@@ -52088,6 +52358,7 @@ The [tier grid](tiers.md#which-methods-your-spec-gets) asks whether every compon
 - **The processor refuses a writer declared non-null**, by a non-null annotation or by a `@NullMarked` scope with no `@Nullable` on it, as it refuses a bridged record component. Mark it `@Nullable`, and on a Lombok bean mark the field, which Lombok copies to the setter.
 - **What the bean does with the `null` is not checked.** A default reads back as present, and a writer that rejects it throws from `build`, as [Bean-shaped wire targets](beans.md#bean-shaped-wire-targets) warns.
 - **A leaf over the whole `Optional` wins over the bridge.** It suits a generated builder that refuses `null`: encode absence the builder's way, a `ValidatedPrism<String, Optional<String>>` mapping empty to `""`, say.
+- **A protobuf-java message's field is left unset instead of written `null`**, and one with no `hasX()` refuses the bridge, as [A field with no `hasX()` refuses the bridge](#protobuf-field-without-presence) says.
 
 ### An openapi-generator `JsonNullable` companion {#jsonnullable-companions}
 
@@ -52162,6 +52433,36 @@ A one-directional mapping follows these rules:
 - **The processor refuses a build-only adder it cannot tell apart.** A derived field for it would add its value on top of the collection's. Drop `@Singular` there, so the builder takes the collection whole.
 - **A `@Singular` collection is never absent.** Its builder builds an empty collection when nothing is added, and refuses a `null`. So the processor refuses an [`Optional` bridge](#bean-optional-bridge) onto one, and a PATCH bean whose builder writes one, as it refuses a [getter-only `List`](#no-getter-only-list-on-a-patch). Neither is supported yet: drop `@Singular`, so the builder stores what it is given.
 
+### How a protobuf-java message is read {#how-a-message-is-read}
+
+**The processor reads a [protobuf-java message](beans.md#protobuf-java-messages) by its fields, which are the names its builder can clear.** It takes any subtype of `com.google.protobuf.MessageLite` for a message, on the full runtime and the lite one, and writes it through `newBuilder()` and `build()`. protoc gives the builder a `clearX()` for every field and every oneof, and for none of the other accessors it generates.
+
+- **A singular field is read by `getX()` and written by `setX(...)`.** The overload taking the type `getX()` returns writes it, so a message field's `setX(X.Builder)` is passed over.
+- **A repeated field is a `List`, and a map field a `Map`.** `parse` reads them through `getXList()` and `getXMap()`, and `build` writes each whole, through `addAllX(...)` and `putAllX(...)` on a fresh builder. A map field's deprecated `getX()` is never called.
+- **A field is named as protobuf names it in Java.** A field `k_int` is `kInt`, where the JavaBeans rule would read its getter `getKInt()` as `KInt`.
+- **The other accessors are not fields.** `getXBytes()`, `getXValue()` beside an open enum, `getUnknownFields()`, counts, element getters and `OrBuilder` views stay out of the mapping. A domain component named after one has no wire counterpart.
+- **A field with `hasX()` reads `null` when it is unset.** A message field has one, as has a field declared `optional`, a oneof member and every singular proto2 field. Any component but an `Optional` then reports `must not be null`, so every message `parse` accepts builds back equal, bar the unknown fields and extensions it carries, which no domain component holds.
+- **An `Optional` over such a field reads it as empty when it is unset.** `build` leaves the field unset for an empty one, since protobuf's setters refuse `null`.
+- **A field with no `hasX()` reads its default when unset**, as protobuf's own getter does: `""`, `0`, `false`, the first enum constant, or an empty collection.
+- **A primitive field reads as its wrapper where the domain holds a reference.** So a `ValidatedPrism<Long, Instant>` leaf converts an `int64` field, and an `Integer` component maps an `int32` field as it is.
+- **A message maps both ways, and leaves no accessor unpaired.** So an [`@Unmapped`](#what-unmapped-withholds) or [`@ReadOnly`](#what-readonly-reads) marker has nothing on it to name.
+
+### A field with no `hasX()` refuses the bridge {#protobuf-field-without-presence}
+
+**The processor refuses a domain `Optional` over a message field that does not track whether it is set.** That is a proto3 scalar declared without `optional`, a repeated field or a map field. Unset, such a field reads its default or an empty collection, so an empty `Optional` would read back as a present one. Declare the component without the `Optional`, so the default stands for nothing. For a scalar, you can instead declare the field `optional` in its `.proto` file, so protoc generates `hasX()`. Where the `.proto` file is not yours to change, give the component a leaf over the whole `Optional`, such as a `ValidatedPrism<Long, Optional<Long>>` that reads `0` as empty.
+
+### A oneof maps to a sealed type, or member by member {#protobuf-oneof-members}
+
+**The processor maps a oneof whole to a domain component named after it, typed as a sealed interface or an `Optional` of one, or each member to an `Optional` of its own.** Setting one member of a oneof clears the others, so `build`, which writes every field it fills, would keep only the last member it wrote. So a member filled by anything but an `Optional`, a derived field included, is refused. The processor finds a oneof through its case getter, `getKindCase()` for a oneof named `kind`.
+
+- **A variant pairs with the member named after it, capitalised**: `Locker` with `locker`, `PickupPoint` with `pickup_point`, and `XRay` with `x_ray`. A member with no variant, a variant naming no member, two variants of one name and a variant that is no record are each refused. A generic sealed type or variant is not supported yet.
+- **A member's value becomes its variant through a spec for the pair**, as a nested message does, or fills the variant's one component when that component has the member's type. A variant filled neither way is refused.
+- **No leaf stands in for a variant**, so a method named after the component is refused. A scalar member fills its variant as it is, and an enum member keeps the generated enum, `UNRECOGNIZED` included: refuse it in the variant's constructor. Converting a member through a leaf is not supported yet.
+- **The component carries the oneof's name.** A `@MapField` rename onto a oneof is not supported yet, and a component filling a member the sealed component holds is refused.
+- **`build` writes the member the variant names**, and leaves the oneof unset for an empty `Optional`. A plain sealed component holding `null` throws, as a protobuf setter does.
+- **`parse` reads the member the message has set as its variant.** With no member set, an `Optional` reads as empty, and a sealed component reports `must not be null`. That failure, and a variant's own refusal, are located at the component.
+- **An `Optional` for each member reads a member that is not set as empty**, and `build` writes only the members present. The domain can then hold two members, and `build` keeps only the last one it wrote.
+
 ---
 
 ## Sparse PATCH {#sparse-patch}
@@ -52218,6 +52519,18 @@ A one-directional mapping follows these rules:
 
 **A `JsonNullable` property is not supported yet.** Declare an `Optional`-typed property instead, which keeps the *clear* state, or a plain nullable one where *clear* has no meaning. openapi-generator's `spring` models declare such a property. Its `java` client models add a [companion pair](#jsonnullable-companions) instead, which is left out, so the processor reads such a PATCH bean through `getX()`, where a sent `null` reads as an omitted property.
 
+### A protobuf-java message updates through its `FieldMask` {#protobuf-fieldmask-update}
+
+**An `UpdateSpec` over a [protobuf-java message](beans.md#a-patch-through-its-fieldmask) generates `updateFrom(message, mask)`, which edits only the fields a `FieldMask` names.** A message reads a value for most fields it has not set, so an unset field cannot mean *leave unchanged*. An update request built with protobuf names the fields it changes in a `FieldMask` instead.
+
+- **A field the mask names parses as `parse` would read it, and replaces the stored value whole.** A list is replaced, never appended to. Named and unset, a field with `hasX()` clears an `Optional` and fails a plain component, a proto3 scalar without `optional` reads its default, and a repeated or map field empties.
+- **A field the mask leaves out keeps its current value**, and an empty mask names no field. A request that omits its mask asks for every field its message sets, a mask the caller builds ([A PATCH through its `FieldMask`](beans.md#a-patch-through-its-fieldmask)).
+- **A path is a field's name in the `.proto` file**, such as `pickup_point` or `displayName`, or `*` for every field. The update reads each name from the message's descriptor. A lite message keeps no names, so there a capital that comes first, or follows a digit or an underscore, reads as lower case.
+- **A oneof's component takes the member the message holds** when the mask names that member, and clears when the message holds none and the mask names any member.
+- **A path the update cannot follow fails, located at the path, once however often it is named.** A path into a nested message, such as `customer.name`, is not supported yet: name the whole field. A oneof's own name, which a mask never holds, fails naming its members, and so does a name the message lacks.
+- **Every field must name a domain component**, since a mask may name any field, and every missing one is reported at once. A field that a derived field fills, from a mix-in shared with a `MappingSpec`, needs none, and a mask naming it edits nothing. A component no field names is never edited.
+- **Each field reads as it does for a `MappingSpec`.** A primitive field, an `Optional` over a field with `hasX()`, a sealed oneof and a nested spec lifted over a container all map, though a PATCH bean refuses the first two and the last. The domain's constructor runs once, as [the next section](#sparse-construct-once) says.
+
 ### A sparse update constructs the record once {#sparse-construct-once}
 
 **The domain's constructor runs once, over the values the PATCH ends on.** `updateFrom` writes the present values onto a private record holding just the components the PATCH can set, and reads every other component from the current value. The constructor runs only once every sent field has validated, so its refusal never joins their errors. A PATCH that sends nothing hands back the current value itself, without running the constructor. How a refusal reports, and where it throws instead, is in [Which surfaces a constructor's refusal reaches](#constructor-refusal-surfaces). The generated update is [`Edits.accumulate(focus, ...)`](../optics/multi_edit.md#fields-a-constructor-checks-together), which a hand-written PATCH can use too.
@@ -52227,7 +52540,7 @@ A one-directional mapping follows these rules:
 **A present container parses through the element leaf named after its component.** It lifts only when both sides declare the same container: `List`, `Set`, a reference-element array, `Optional` or `Map`. Replacement stays wholesale, and each failing element locates the way its container locates anything: by index (`phones.1`), by key, or, in a `Set`, by the element's own rendering.
 
 - **A whole-container leaf wins.** `ValidatedPrism<List<S>, List<A>>` is the more specific declaration, so it replaces the element interpretation.
-- **Lifting a nested spec through a sparse container is not supported yet.** When the elements need a whole mapping, give the component an element leaf that delegates to the nested Impl's `asValidatedPrism()`.
+- **Lifting a nested spec through a PATCH bean's container is not supported yet.** When the elements need a whole mapping, give the component an element leaf that delegates to the nested Impl's `asValidatedPrism()`. A [`FieldMask` update](#protobuf-fieldmask-update) lifts it, as `parse` does.
 
 ---
 
@@ -52323,7 +52636,7 @@ _The refusals you are most likely to meet from the mapping processor, what each 
 When the processor cannot write correct code for a spec, it refuses at compile time, pointing at your declaration, with a message that says what is wrong, why, and what to write. Look the message up in [Find your message](#find-your-message): each entry gives the fix and the full message in the open, with a declaration that produces it folded away. Every declaration here is compiled on each build, and the build fails if its message stops carrying the words the entry quotes. A message not listed still carries its own what, why and fix, and its rule is on [Rules and Limits](rules.md).
 
 ~~~admonish info title="Reading an entry"
-- **Headings** quote the message with its names replaced: `X` and `Y` for types, `x` and `y` for components or methods, `T` for a type argument, `p` for a package. The `@GenerateMapping:` prefix is left off.
+- **Headings** quote the message with its names replaced: `X`, `Y` and `Z` for types, `x`, `y` and `z` for components, fields or methods, `T` for a type argument, `p` for a package. The `@GenerateMapping:` prefix is left off.
 - **The words:** the *domain* is your record, the *wire* the DTO, the *spec* the `@GenerateMapping` interface, and a *leaf* a `default ValidatedPrism` method that converts one field.
 - **Errors, warnings and notes:** an error stops the build, a warning stops only a `-Werror` build, and a note stops nothing. One entry is a warning and one a note, and each says so. The processor prints a few other notes, each saying how it read a declaration, such as a bean it maps one way only.
 - **The full messages** are printed for declarations compiled in a package `com.example`.
@@ -52427,6 +52740,14 @@ When the processor cannot write correct code for a spec, it refuses at compile t
 | [`which a build cannot fill`](#getter-only-list-build) | A getter-only `List` is raw or a wildcard |
 | [`bridged to the getter-only bean property`](#bridged-to-a-getter-only-list) | A domain `Optional` faces a getter-only `List` |
 | [`bridged to the @Singular bean property`](#bridged-to-a-singular-collection) | A domain `Optional` faces a Lombok `@Singular` collection |
+| [`which does not track whether it is set`](#protobuf-field-without-presence) | A domain `Optional` faces a message field with no `hasX()` |
+| [`a member of the oneof`](#protobuf-oneof-member) | A oneof member is filled by something other than an `Optional` |
+| [`which maps to a sealed interface or an Optional of one`](#protobuf-oneof-unsealed) | A component named after a oneof is not sealed |
+| [`maps a oneof to, is not a record`](#protobuf-oneof-variant-not-record) | A oneof's sealed variant is not a record |
+| [`do not pair with the members of the oneof`](#protobuf-oneof-unpaired) | A oneof's members and variants do not pair by name |
+| [`and nothing fills it from one`](#protobuf-oneof-variant-unfilled) | Nothing fills a oneof's variant from its member |
+| [`a member of the oneof that domain field`](#protobuf-oneof-held-twice) | A component fills a member a sealed component holds |
+| [`through its variants, so nothing calls it`](#protobuf-oneof-method) | A method is named after a component that maps a oneof |
 | [`cannot be told apart`](#singular-adder-not-told-apart) | A build-only builder's `@Singular` adder is ambiguous |
 | [`no property it reads is one it can write`](#reads-some-writes-others) | A bean reads some names and writes others |
 
@@ -52438,6 +52759,7 @@ When the processor cannot write correct code for a spec, it refuses at compile t
 | [`is primitive and can never be absent`](#primitive-patch-property) | A PATCH property is a primitive |
 | [`which a sparse UpdateSpec cannot map`](#record-patch-wire) | A PATCH wire is a record |
 | [`cannot carry a sparse update's absence`](#getter-only-list-patch) | A PATCH bean has a getter-only `List` |
+| [`fields […] of the protobuf-java message '…' name no component of`](#protobuf-field-names-no-component) | A message field names no component of a `FieldMask` update |
 | [`is a @Singular collection`](#singular-collection-patch) | A PATCH bean has a Lombok `@Singular` collection |
 | [`which a sparse update cannot express`](#optional-on-a-patch) | A plain PATCH property faces a domain `Optional` |
 
@@ -52654,7 +52976,7 @@ interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {
 
 The wire has components nothing on the domain fills, so `build` cannot write them. The message names each one.
 
-**Fix.** Remove the extra wire components, add domain components to match, derive them with `default Getter` methods, or spread a nested domain record across them with `@Flatten`. For a protobuf-java message, which is not supported yet, convert it to a record by hand and map the record.
+**Fix.** Remove the extra wire components, add domain components to match, derive them with `default Getter` methods, or spread a nested domain record across them with `@Flatten`.
 
 ```
 @GenerateMapping: 'CustomerDto' has more components than 'Customer', leaving [email] unfilled.
@@ -54388,6 +54710,278 @@ interface OrderMapping extends MappingSpec<Order, OrderDto> {}
 ```
 ~~~
 
+### `domain field 'X.y' is Optional<T>, bridged to the field 'y' of the protobuf-java message 'Z', which does not track whether it is set` {#protobuf-field-without-presence}
+
+A domain `Optional` faces a message field with no `hasX()`: a proto3 scalar declared without `optional`, a repeated field or a map field. Unset, it reads its default, so an empty `Optional` would read back as present.
+
+**Fix.** Drop the `Optional`, so the field's default stands for nothing, or declare the field `optional` in its `.proto` file, so protoc generates `hasX()`. Where the `.proto` file is not yours, as for `Timestamp`, give the component a leaf over the whole `Optional`, a `ValidatedPrism<Long, Optional<Long>>` that reads `0` as empty.
+
+```
+@GenerateMapping: domain field 'Stamp.seconds' is Optional<Long>, bridged to the field 'seconds'
+of the protobuf-java message 'Timestamp', which does not track whether it is set. The bridge
+needs hasSeconds() to tell an unset field from a set one, and protobuf generates none for a
+proto3 scalar declared without optional, which reads its default when unset, so an empty
+Optional would read back as present. Declare 'seconds' as long, dropping the Optional, so the
+field's default encodes nothing; declare the field optional in its .proto file, so protoc
+generates hasSeconds(); or give 'seconds' a leaf over the whole Optional, a ValidatedPrism<Long,
+Optional<Long>> that reads the default as empty.
+```
+
+The rule: [A field with no `hasX()` refuses the bridge](rules.md#protobuf-field-without-presence).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "which does not track whether it is set" -->
+```java
+record Stamp(Optional<Long> seconds, int nanos) {}
+
+@GenerateMapping
+interface StampMapping extends MappingSpec<Stamp, com.google.protobuf.Timestamp> {}
+```
+~~~
+
+### `domain field 'X.y' is T, and fills 'y', a member of the oneof 'z' of the protobuf-java message 'Z'` {#protobuf-oneof-member}
+
+A plain component or a derived field fills a oneof member. Setting one member clears the others, so `build` would keep only the last it wrote.
+
+**Fix.** Declare every component that fills a member of the oneof as an `Optional`, and remove a derived field that fills one. Or map the whole oneof to one component named after it, of a sealed type.
+
+```
+@GenerateMapping: domain field 'Json.stringValue' is String, and fills 'stringValue', a member
+of the oneof 'kind' of the protobuf-java message 'Value'. Setting one member of a oneof clears
+the others, so build, which writes every field it fills, would keep only the last member of
+'kind' it wrote. A domain Optional reads a member that is not set as empty, and leaves an empty
+one unwritten. Declare 'stringValue' as Optional<String>, as every domain component filling a
+member of 'kind' must be; or map the whole oneof to one component named 'kind', a sealed
+interface with a record named after each member.
+```
+
+The rule: [A oneof maps to a sealed type, or member by member](rules.md#protobuf-oneof-members).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "a member of the oneof" -->
+```java
+// Value's oneof 'kind' has six members; the domain fills 'stringValue' with a plain String.
+record Json(
+    Optional<com.google.protobuf.NullValue> nullValue,
+    Optional<Double> numberValue,
+    String stringValue,
+    Optional<Boolean> boolValue,
+    Optional<com.google.protobuf.Struct> structValue,
+    Optional<com.google.protobuf.ListValue> listValue) {}
+
+@GenerateMapping
+interface JsonMapping extends MappingSpec<Json, com.google.protobuf.Value> {}
+```
+~~~
+
+### `domain field 'X.y' is T, and names the oneof 'y' of the protobuf-java message 'Z', which maps to a sealed interface or an Optional of one` {#protobuf-oneof-unsealed}
+
+A domain component named after a oneof maps the whole oneof, and only a sealed type holds one of its members at a time.
+
+**Fix.** Declare the component as a sealed interface with a record named after each member, or an `Optional` of one. To map each member to an `Optional` of its own instead, rename the component.
+
+```
+@GenerateMapping: domain field 'Json.kind' is String, and names the oneof 'kind' of the
+protobuf-java message 'Value', which maps to a sealed interface or an Optional of one. The oneof
+holds at most one of its members, [nullValue, numberValue, stringValue, boolValue, structValue,
+listValue], and a sealed interface with a record for each is the domain type that holds the same
+choice. Declare 'kind' as a sealed interface permitting records named after the members,
+[NullValue, NumberValue, StringValue, BoolValue, StructValue, ListValue], or as an Optional of
+one; or rename 'kind', and map each member to an Optional component named after it.
+```
+
+The rule: [A oneof maps to a sealed type, or member by member](rules.md#protobuf-oneof-members).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "which maps to a sealed interface or an Optional of one" -->
+```java
+// Value's oneof is named 'kind', as this String component is.
+record Json(String kind) {}
+
+@GenerateMapping
+interface JsonMapping extends MappingSpec<Json, com.google.protobuf.Value> {}
+```
+~~~
+
+### `the variant 'X' of 'Y', which domain field 'Z.z' maps a oneof to, is not a record` {#protobuf-oneof-variant-not-record}
+
+`parse` builds the variant a member's value becomes through a record's canonical constructor, so every variant of the sealed type must be a record.
+
+**Fix.** Make the variant a record.
+
+```
+@GenerateMapping: the variant 'ListValue' of 'Json', which domain field 'JsonValue.kind' maps a
+oneof to, is not a record. parse builds the variant a member's value becomes through a record's
+canonical constructor. Make 'ListValue' a record.
+```
+
+The rule: [A oneof maps to a sealed type, or member by member](rules.md#protobuf-oneof-members).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "maps a oneof to, is not a record" -->
+```java
+sealed interface Json {
+  record NullValue(com.google.protobuf.NullValue value) implements Json {}
+  record NumberValue(double value) implements Json {}
+  record StringValue(String value) implements Json {}
+  record BoolValue(boolean value) implements Json {}
+  record StructValue(com.google.protobuf.Struct value) implements Json {}
+  final class ListValue implements Json {}
+}
+
+record JsonValue(Json kind) {}
+
+@GenerateMapping
+interface JsonValueMapping extends MappingSpec<JsonValue, com.google.protobuf.Value> {}
+```
+~~~
+
+### `the variants of 'Y' do not pair with the members of the oneof 'z' of 'Z', which domain field 'X.z' maps` {#protobuf-oneof-unpaired}
+
+Each member of the oneof pairs with the variant named after it, `Locker` with `locker`, and a member or a variant is left without its partner.
+
+**Fix.** Name a record of the sealed type after each member, and rename or remove a variant that names none.
+
+```
+@GenerateMapping: the variants of 'Json' do not pair with the members of the oneof 'kind' of
+'Value', which domain field 'JsonValue.kind' maps: members [listValue] have no variant, and
+variants [Items] name no member. Each member pairs with the variant named after it, capitalised,
+NullValue with nullValue, since build writes every variant and parse reads every member. Name a
+record of 'Json' after each member, adding [ListValue], and rename or remove [Items].
+```
+
+The rule: [A oneof maps to a sealed type, or member by member](rules.md#protobuf-oneof-members).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "do not pair with the members of the oneof" -->
+```java
+// Value's oneof 'kind' has a member 'listValue', and no member named 'items'.
+sealed interface Json {
+  record NullValue(com.google.protobuf.NullValue value) implements Json {}
+  record NumberValue(double value) implements Json {}
+  record StringValue(String value) implements Json {}
+  record BoolValue(boolean value) implements Json {}
+  record StructValue(com.google.protobuf.Struct value) implements Json {}
+  record Items(com.google.protobuf.ListValue value) implements Json {}
+}
+
+record JsonValue(Json kind) {}
+
+@GenerateMapping
+interface JsonValueMapping extends MappingSpec<JsonValue, com.google.protobuf.Value> {}
+```
+~~~
+
+### `the variant 'X' of 'Y' pairs with the oneof member 'x', of type T, and nothing fills it from one` {#protobuf-oneof-variant-unfilled}
+
+A member's value becomes its variant through a spec for the pair, or fills the variant's one component when that component has the member's type. The variant has neither.
+
+**Fix.** Give the variant one component of the member's type. For a member holding a message, you can instead declare a spec mapping the variant to it.
+
+```
+@GenerateMapping: the variant 'NumberValue' of 'Json' pairs with the oneof member 'numberValue',
+of type double, and nothing fills it from one. A member's value becomes its variant through a
+spec for the pair, or fills the variant's one component when that component has the member's
+type. Give 'NumberValue' one component of type double.
+```
+
+The rule: [A oneof maps to a sealed type, or member by member](rules.md#protobuf-oneof-members).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "and nothing fills it from one" -->
+```java
+// The member 'numberValue' is a double.
+sealed interface Json {
+  record NullValue(com.google.protobuf.NullValue value) implements Json {}
+  record NumberValue(String value) implements Json {}
+  record StringValue(String value) implements Json {}
+  record BoolValue(boolean value) implements Json {}
+  record StructValue(com.google.protobuf.Struct value) implements Json {}
+  record ListValue(com.google.protobuf.ListValue value) implements Json {}
+}
+
+record JsonValue(Json kind) {}
+
+@GenerateMapping
+interface JsonValueMapping extends MappingSpec<JsonValue, com.google.protobuf.Value> {}
+```
+~~~
+
+### `domain field 'X.x' fills 'x', a member of the oneof that domain field 'X.y' maps whole` {#protobuf-oneof-held-twice}
+
+A component fills a member that another component, named after the oneof, already holds as its variant. A oneof maps whole or member by member, never both.
+
+**Fix.** Remove the component, or map each member to an `Optional` of its own in place of the sealed component.
+
+```
+@GenerateMapping: domain field 'JsonValue.stringValue' fills 'stringValue', a member of the
+oneof that domain field 'JsonValue.kind' maps whole. A oneof maps whole, through the component
+named after it, or member by member, never both: 'kind' holds 'stringValue' as its variant
+StringValue. Remove 'stringValue', or map each member to an Optional component of its own in
+place of 'kind'.
+```
+
+The rule: [A oneof maps to a sealed type, or member by member](rules.md#protobuf-oneof-members).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "a member of the oneof that domain field" -->
+```java
+// Json.kind holds the member 'stringValue' as its variant StringValue.
+sealed interface Json {
+  record NullValue(com.google.protobuf.NullValue value) implements Json {}
+  record NumberValue(double value) implements Json {}
+  record StringValue(String value) implements Json {}
+  record BoolValue(boolean value) implements Json {}
+  record StructValue(com.google.protobuf.Struct value) implements Json {}
+  record ListValue(com.google.protobuf.ListValue value) implements Json {}
+}
+
+record JsonValue(Json kind, Optional<String> stringValue) {}
+
+@GenerateMapping
+interface JsonValueMapping extends MappingSpec<JsonValue, com.google.protobuf.Value> {}
+```
+~~~
+
+### `'y()' is named after domain field 'X.y', which maps the oneof 'y' through its variants, so nothing calls it` {#protobuf-oneof-method}
+
+A leaf, or another method, is named after a component that maps a oneof. The component is read and written through its variants, so the method would validate nothing.
+
+**Fix.** Remove the method. To refuse a member's value, check it in its variant's constructor.
+
+```
+@GenerateMapping: 'kind()' is named after domain field 'JsonValue.kind', which maps the oneof
+'kind' through its variants, so nothing calls it. A member's value becomes its variant through a
+spec for the pair, or fills the variant's one component, and no leaf stands in for either.
+Remove 'kind()'.
+```
+
+The rule: [A oneof maps to a sealed type, or member by member](rules.md#protobuf-oneof-members).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "through its variants, so nothing calls it" -->
+```java
+sealed interface Json {
+  record NullValue(com.google.protobuf.NullValue value) implements Json {}
+  record NumberValue(double value) implements Json {}
+  record StringValue(String value) implements Json {}
+  record BoolValue(boolean value) implements Json {}
+  record StructValue(com.google.protobuf.Struct value) implements Json {}
+  record ListValue(com.google.protobuf.ListValue value) implements Json {}
+}
+
+record JsonValue(Json kind) {}
+
+@GenerateMapping
+interface JsonValueMapping extends MappingSpec<JsonValue, com.google.protobuf.Value> {
+  default ValidatedPrism<String, Json> kind() {
+    return ValidatedPrism.of(
+        text -> Validated.invalidNel(FieldError.of("unused")), json -> json.toString());
+  }
+}
+```
+~~~
+
 ### `the singular adder of the @Singular collection 'x' on 'Y' cannot be told apart` {#singular-adder-not-told-apart}
 
 A builder with no getters has several writers that might be a `@Singular` collection's adder. The processor knows an adder by a regular English singular, `tag` for `tags`, so it cannot pick out `person` for `people`.
@@ -54616,6 +55210,32 @@ class OrderPatch {
 
 @GenerateMapping
 interface OrderPatchMapping extends UpdateSpec<Order, OrderPatch> {}
+```
+~~~
+
+### `the fields [x] of the protobuf-java message 'Z' name no component of X` {#protobuf-field-names-no-component}
+
+An `UpdateSpec` over a message applies the fields a `FieldMask` names, and a mask may name any field, so each one needs a domain component to write into. Every such field is listed at once.
+
+**Fix.** Add a component named after each field, or a `@MapField` rename to it from one. A oneof's members take one component named after the oneof, of a sealed type. A field a derived field fills, from a mix-in the spec shares with a `MappingSpec`, needs none.
+
+```
+@GenerateMapping: the fields [nanos] of the protobuf-java message 'Timestamp' name no component
+of Stamp. updateFrom writes each field its FieldMask names into the domain component named after
+it, and a mask may name any field of the message. Found on Stamp: [seconds]. Add to Stamp a
+component named after each, or a @MapField rename to it from one, on its leaf where it has one.
+```
+
+The rule: [A protobuf-java message updates through its `FieldMask`](rules.md#protobuf-fieldmask-update).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "of the protobuf-java message 'Timestamp' name no component of" -->
+```java
+// Timestamp has the fields 'seconds' and 'nanos'.
+record Stamp(long seconds) {}
+
+@GenerateMapping
+interface StampPatch extends UpdateSpec<Stamp, com.google.protobuf.Timestamp> {}
 ```
 ~~~
 
@@ -100350,7 +100970,7 @@ Basket discounted = Traversals.modify(
 
 ## UpdateSpec
 
-**Definition:** The sparse-PATCH sibling of [MappingSpec](#mappingspec). Annotate an interface extending `UpdateSpec<Domain, Wire>` (with `@GenerateMapping`) to opt into the null-as-absent contract: a null bean property means *not provided, leave unchanged* rather than broken data. The processor generates a single method, `updateFrom(Wire) : Edits.Accumulated<Domain>` (no `build`, `parse`, or `as*` tier), folding the present (non-null) properties into an [Update](#edits) and skipping the absent ones. One spec names one tier, so an interface extending `UpdateSpec` must not also extend `MappingSpec`. The wire must be bean-shaped, and a primitive property is rejected (it can never be absent); every property's getter must answer `null` until set, which is not checked, since a default the bean gives itself (a field initialiser, a constructor assignment, a getter that creates its value) reads as sent; a domain `Optional` without a whole-component leaf is patchable only from an `Optional`-typed property whose field defaults to `null` (a present empty Optional encodes "set to empty"). A present container parses through the element leaf lifted over it (the same vocabulary the dense tiers lift, each failing element located: `phones.1`), with a whole-container leaf winning as the more specific declaration. Present-but-invalid fields still fail, located and accumulating.
+**Definition:** The sparse-PATCH sibling of [MappingSpec](#mappingspec). Annotate an interface extending `UpdateSpec<Domain, Wire>` (with `@GenerateMapping`) to opt into the null-as-absent contract: a null bean property means *not provided, leave unchanged* rather than broken data. The processor generates a single method, `updateFrom(Wire) : Edits.Accumulated<Domain>` (no `build`, `parse`, or `as*` tier), folding the present (non-null) properties into an [Update](#edits) and skipping the absent ones. One spec names one tier, so an interface extending `UpdateSpec` must not also extend `MappingSpec`. Over a protobuf-java message it generates `updateFrom(Wire, FieldMask)` instead, which edits the fields the mask names, each parsed as `parse` would read it. Otherwise the wire must be bean-shaped, and a primitive property is rejected (it can never be absent); every property's getter must answer `null` until set, which is not checked, since a default the bean gives itself (a field initialiser, a constructor assignment, a getter that creates its value) reads as sent; a domain `Optional` without a whole-component leaf is patchable only from an `Optional`-typed property whose field defaults to `null` (a present empty Optional encodes "set to empty"). A present container parses through the element leaf lifted over it (the same vocabulary the dense tiers lift, each failing element located: `phones.1`), with a whole-container leaf winning as the more specific declaration. Present-but-invalid fields still fail, located and accumulating.
 
 **Example:**
 <!-- verify -->
@@ -100754,6 +101374,10 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 
 _In development. Release notes will be added here as changes land on `main`._
 
+- **protobuf-java messages map, so a gRPC boundary maps like any other** ([#954](https://github.com/higher-kinded-j/higher-kinded-j/issues/954)): a `MappingSpec` over a protobuf-java message now maps both ways, on the full runtime and the lite one, with nothing to configure. The processor reads a message by its fields, the names its builder can clear, so the accessors protoc generates beside them, such as `getXBytes()`, `getXValue()` and `getUnknownFields()`, no longer count as properties your domain lacks. A repeated field maps to a `List` and a map field to a `Map`, and `build` writes each whole. A field that tracks whether it is set, through `hasX()`, reads as `null` when unset: a domain `Optional` reads it as empty, and `build` leaves the field unset rather than hand its setter a `null`, while any other component reports `must not be null`. A primitive field reads as its wrapper where your domain holds a reference, so a `ValidatedPrism<Long, Instant>` leaf converts an `int64` field. A oneof maps to a domain component named after it, a sealed interface with a record named after each member, so the domain holds one member as the message does; each member can map to an `Optional` of its own instead. The processor refuses an `Optional` over a field with no `hasX()`, whose default would read back as present. An `UpdateSpec` over a message generates `updateFrom(message, mask)`, which edits only the fields a `FieldMask` names, parsing each as `parse` would, so a gRPC update request maps as a PATCH body does. See [protobuf-java messages](mapping/beans.md#protobuf-java-messages), [How a protobuf-java message is read](mapping/rules.md#how-a-message-is-read) and [A protobuf-java message updates through its `FieldMask`](mapping/rules.md#protobuf-fieldmask-update).
+
+  A derived field now fills a primitive wire component on any wire, record and bean included, declared over its wrapper: `Getter<Domain, Integer>` for an `int`, which `build` unboxes. None could be declared before, and the fix line offered `Getter<Domain, int>`, which is not Java. See [Derived wire fields](mapping/basics.md#derived-wire-fields).
+
 - **openapi-generator's `java` client models map as they are generated** ([#936](https://github.com/higher-kinded-j/higher-kinded-j/issues/936)): with `openApiNullable=true`, the default on the generator's Jackson libraries, a model gives each nullable property a `getX_JsonNullable()` and `setX_JsonNullable(...)` pair beside `getX()` and `setX(...)`. The processor now leaves that companion pair out and maps the property through the plain pair. A model it used to refuse as wider than its domain now maps both ways with no derived field and no change to the generator's options, and as a PATCH bean where the component is not an `Optional`. An omitted property and an explicit `null` both read as `null`, and `build` writes an empty `Optional` through `setX(null)`, which the model sends as `"x": null`. A model generated with `openApiNullable=false` maps as before. A getter-only `List` whose getter is declared nullable, as the generator declares a `readOnly` array's, is now filled only when the getter answers a list, where `build` used to throw on the `null` a nullable array's answers. See [An openapi-generator `JsonNullable` companion](mapping/rules.md#jsonnullable-companions).
 
   _Notes for existing builds._ A derived field or a `@MapField` rename that names a companion, such as `nickname_JsonNullable`, now names no wire property and is refused: remove it, since `setNickname(...)` writes the same value. One inherited from a mix-in stays inert. A domain component named after a companion no longer finds it, so the mapping becomes a projection, with no `parse`.
@@ -100780,7 +101404,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   _Behaviour change:_ what a leaf answers is kept for the life of the Impl and shared by every caller, on every thread. A leaf that picks its codec on each call, from a flag, a system property or a field a test changes, now keeps its first pick, so make that choice inside the codec's parse, and build a codec over thread-safe parts such as `DateTimeFormatter`, never `SimpleDateFormat`. `currency()` now refuses a code with a lower-case letter, such as `XPt`, which the JDK could misread as a currency unequal to `XPT`.
 
-- **Lombok `@Singular` and `@SuperBuilder` builders map** ([#934](https://github.com/higher-kinded-j/higher-kinded-j/issues/934)): a `@Singular` collection is now written whole through the collection setter Lombok gives it, such as `tags(Collection<? extends String>)`, and its singular adder is left alone, so `build` writes each element once. A two-way builder carrying one used to be refused as read and written at different types. A builder with no getters hands the setter the domain's own `List`, `Set`, `Collection` or `Map`, and its elements convert through a leaf or a spec as lifting does. A plain property whose writer shares the adder's name at another type keeps its writer. A `@SuperBuilder` bean, whose `build()` is declared `C build()`, used to be refused as having no way to be built, and now maps both ways, as does any bean whose builder inherits `build()` from a generic base. A `@Singular` collection is never absent, since its builder builds an empty collection when nothing is added, so the processor refuses an `Optional` bridge onto one and a PATCH bean whose builder writes one; drop `@Singular` there. A protobuf-java lite message's builder inherits its `build()` too, so the message now meets the same refusals as one on the full runtime, each pointing to a record converted by hand. See [A Lombok `@Singular` collection](mapping/rules.md#singular-collections).
+- **Lombok `@Singular` and `@SuperBuilder` builders map** ([#934](https://github.com/higher-kinded-j/higher-kinded-j/issues/934)): a `@Singular` collection is now written whole through the collection setter Lombok gives it, such as `tags(Collection<? extends String>)`, and its singular adder is left alone, so `build` writes each element once. A two-way builder carrying one used to be refused as read and written at different types. A builder with no getters hands the setter the domain's own `List`, `Set`, `Collection` or `Map`, and its elements convert through a leaf or a spec as lifting does. A plain property whose writer shares the adder's name at another type keeps its writer. A `@SuperBuilder` bean, whose `build()` is declared `C build()`, used to be refused as having no way to be built, and now maps both ways, as does any bean whose builder inherits `build()` from a generic base. A `@Singular` collection is never absent, since its builder builds an empty collection when nothing is added, so the processor refuses an `Optional` bridge onto one and a PATCH bean whose builder writes one; drop `@Singular` there. See [A Lombok `@Singular` collection](mapping/rules.md#singular-collections).
 
 - **`@ImportOptics` prints no notes on a clean build** ([#908](https://github.com/higher-kinded-j/higher-kinded-j/issues/908)): the processor used to report each step it took as a compiler note, ten for every spec interface and at least one for every other use of the annotation, on every compile. Those notes are gone, so the notes it does print, such as one naming a wither it leaves out, are no longer buried among them. A note never fails a build, `-Werror` included.
 
@@ -100796,7 +101420,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   _Behaviour change:_ `peek` now returns a new Path on every witness, rather than the same one. On a lazy witness its action runs each time the effect runs; on an eager one it still runs once, at the call, and an exception the action throws now reaches the returned Path wherever the witness's `map` captures it, as `Try`'s does. A generic `errorType` on the `RECOVERABLE` capability, such as `List.class`, is now refused at the annotation: a class literal can name only its raw type, so the generated `of` and `pure` took a `MonadError` over the raw type, and no `MonadError` over a parameterised one could be passed to them. Use a non-generic error type, such as a record with a `List` component.
 
-- **A wider wire's refusal names the components nothing fills, and an overloaded bean writer pairs by the getter's type** ([#933](https://github.com/higher-kinded-j/higher-kinded-j/issues/933)): the `has more components than` refusal now lists the wire components that no domain component, rename, flattened group or derived field fills, so a generated class's extra accessors are named where they used to be counted. Where a bean's setter or builder setter is overloaded, the overload whose parameter is the getter's type writes the property, whatever order the overloads are declared in, so `setAge(String)` declared before `setAge(int)` no longer refuses the bean as read and written at different types. Two overloads that would both take the value, neither more specific, are refused at the spec rather than left to fail in the generated source. A protobuf-java message remains not supported yet: each refusal it meets says so and points to a record converted by hand, or a PATCH bean for an `UpdateSpec`. It no longer offers derived fields for the message's companions, since a derived `xBytes` would write its string field a second time. See [How a bean is read and written](mapping/rules.md#how-a-bean-is-read-and-written) and [Generated clients: a checklist](mapping/beans.md#generated-client-checklist).
+- **A wider wire's refusal names the components nothing fills, and an overloaded bean writer pairs by the getter's type** ([#933](https://github.com/higher-kinded-j/higher-kinded-j/issues/933)): the `has more components than` refusal now lists the wire components that no domain component, rename, flattened group or derived field fills, so a generated class's extra accessors are named where they used to be counted. Where a bean's setter or builder setter is overloaded, the overload whose parameter is the getter's type writes the property, whatever order the overloads are declared in, so `setAge(String)` declared before `setAge(int)` no longer refuses the bean as read and written at different types. Two overloads that would both take the value, neither more specific, are refused at the spec rather than left to fail in the generated source. See [How a bean is read and written](mapping/rules.md#how-a-bean-is-read-and-written) and [Generated clients: a checklist](mapping/beans.md#generated-client-checklist).
 
   _Notes for existing builds._ A bean that was refused because the first overload of a setter took another type now maps. A builder setter named `setX` that takes the getter's type now writes the property even where a property-named `x(...)` of another type is declared, which was refused before. On a bean that is only written, the first overload met still decides the property's type.
 
@@ -100906,7 +101530,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   The same default defeats a sparse `UpdateSpec`, where there is no write to correct it: a PATCH bean field declared `private List<String> tags = new ArrayList<>()` reads as a present empty list when the client omits it, and `updateFrom` replaces the domain's list with it. No signature shows an initialiser, so this cannot be refused. The book, the `UpdateSpec` javadoc and the refusal for a getter-only `List` now say that a PATCH bean needs more than a setter: every getter must answer `null` until its property is set, whether the default would come from a field initialiser, the constructor or a getter that creates its value. The sparse law examples now take a freshly constructed bean as the all-absent wire, which is what a binder makes of an empty body and which catches such a default in your own tests wherever the current value differs from it. See [Bean-shaped wire targets](mapping/beans.md#bean-shaped-wire-targets) and [Sparse PATCH](mapping/beans_patch.md#sparse-patch-write-back-updatespec).
 
-  _Notes for existing builds._ A bean built from an empty `Optional` now holds `null` in that property, not the value it was constructed with, so an outbound DTO that relied on an initialiser to send a default (`currency = "GBP"`, an empty list) no longer sends it; carry the default in the domain value instead. A setter or builder setter that refuses `null` without declaring it now throws from `build` when its `Optional` is empty, where before it was not called; one that declares it is refused when it compiles, as the entry above describes. That includes a setter that copies defensively (`List.copyOf(v)`), which needs a guard (`v == null ? null : List.copyOf(v)`), and a generated builder such as protobuf's or Immutables', which cannot take one: declare that component without the `Optional`, or give it a leaf over the whole `Optional` that encodes absence the builder's way. A nullness checker reading the generated source sees the `null` too, which is why a bridged setter's parameter in a `@NullMarked` package must be `@Nullable`.
+  _Notes for existing builds._ A bean built from an empty `Optional` now holds `null` in that property, not the value it was constructed with, so an outbound DTO that relied on an initialiser to send a default (`currency = "GBP"`, an empty list) no longer sends it; carry the default in the domain value instead. A setter or builder setter that refuses `null` without declaring it now throws from `build` when its `Optional` is empty, where before it was not called; one that declares it is refused when it compiles, as the entry above describes. That includes a setter that copies defensively (`List.copyOf(v)`), which needs a guard (`v == null ? null : List.copyOf(v)`), and a generated builder such as Immutables', which cannot take one: declare that component without the `Optional`, or give it a leaf over the whole `Optional` that encodes absence the builder's way. A nullness checker reading the generated source sees the `null` too, which is why a bridged setter's parameter in a `@NullMarked` package must be `@Nullable`.
 
 - **Optics imported from a class compile under `-Werror`, and traverse a wildcard element** ([#873](https://github.com/higher-kinded-j/higher-kinded-j/issues/873)): a generic type written without its type arguments, in a record or wither class imported with `@ImportOptics({Doc.class})`, gave generated code that failed a build run with `-Xlint:rawtypes` and `-Werror`, in a file the `@SuppressWarnings("rawtypes")` on your own declaration cannot reach. It could sit in a component or field, `List tags` or `Optional<List> contacts`, or in the bound of a type parameter, `record Doc<T extends List>`, which every generated method redeclares. The lenses and `with` methods generated for either kind of type, and the traversals generated for a record's containers, now carry that suppression on each member that writes out or infers such a type, as the optics `@GenerateLenses` and `@GenerateTraversals` generate for the same record already do. A traversal's implementation class repeats the type as well, the bounds in its type-parameter clause and a raw element type in its superinterface clause, and carries the suppression too. Only `rawtypes` is suppressed: an unchecked operation in generated code is still reported.
 
