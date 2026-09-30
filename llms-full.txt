@@ -48853,8 +48853,8 @@ A two-way mapping's methods turn on two independent questions: does the wire car
 
 - **A plain copy carries a value across unchanged.** A rename alone, or a flattened group, still copies. A leaf does not, and nor does a nested spec, lifted over a container or not. Neither does an `@OptionalBridge` component, or a reference property on a bean wire, which can be left unset.
 - **A derived field is not a plain copy either.** On the bottom row the processor refuses it, since the write-back could never honour a component that `build` recomputes. A flattened group on the bottom row is not supported yet.
-- **A [read-only](beans.md#read-only-properties) bean property crosses one way.** `parse` reads it and `build` leaves it out, so `parse` cannot read back what `build` wrote. The Impl has `asValidatedParse()` and `asValidatedBuild()` in place of `asValidatedPrism()`, and no `asIso()`.
-- **A sealed pair dispatches to each subtype's own spec.** It gets `build`, `parse` and `asValidatedPrism()`, never `asIso()`: [Sealed hierarchies](structure.md#sealed-hierarchies).
+- **A [read-only](beans.md#read-only-properties) bean property crosses one way.** `parse` reads it and `build` leaves it out, so `parse` cannot read back what `build` wrote. The Impl has `asValidatedParse()` and `asValidatedBuild()` in place of `asValidatedPrism()`, and no `asIso()`. So does a mapping that [nests such a spec](rules.md#nesting-two-halves) where it builds and parses.
+- **A sealed pair dispatches to each subtype's own spec.** It gets `build`, `parse` and `asValidatedPrism()`, or [two halves](rules.md#nesting-two-halves) in its place when a subtype's spec has them, and never `asIso()`: [Sealed hierarchies](structure.md#sealed-hierarchies).
 
 `asValidatedPrism()` is the whole mapping as a leaf, so it nests in another spec and lifts over containers. [Where a bean or a bridged component lands](rules.md#where-a-bean-or-bridged-component-lands) has the precise rules. The same methods, as a table to search:
 
@@ -48863,11 +48863,11 @@ A two-way mapping's methods turn on two independent questions: does the wire car
 | `build` | the spec maps both ways, or its bean wire has writers only |
 | `parse` | the spec maps both ways and the wire carries every component, or its bean wire has getters only |
 | `asIso()` | the wire carries every component, and each is a plain copy; never on a sealed pair |
-| `asValidatedPrism()` | the Impl has both `build` and `parse`, and no property is [read-only](beans.md#read-only-properties) |
+| `asValidatedPrism()` | the Impl has both `build` and `parse`, and no property is [read-only](beans.md#read-only-properties), here or in a spec it [nests or dispatches to](rules.md#nesting-two-halves) |
 | `asLens()` | the wire carries fewer components, and each is a plain copy |
 | `patch(domain, wire)` | the wire carries fewer components, and some are not plain copies: [the validated `patch`](#leaf-carrying-projections-the-validated-patch) |
-| `asValidatedParse()` | the bean wire has getters only, [One-directional beans](beans.md#one-directional-beans), or a property is [read-only](beans.md#read-only-properties) |
-| `asValidatedBuild()` | the bean wire has writers only, [One-directional beans](beans.md#one-directional-beans), or a property is [read-only](beans.md#read-only-properties) |
+| `asValidatedParse()` | the bean wire has getters only, [One-directional beans](beans.md#one-directional-beans), or a property is [read-only](beans.md#read-only-properties), here or in a spec it [nests or dispatches to](rules.md#nesting-two-halves) |
+| `asValidatedBuild()` | the bean wire has writers only, [One-directional beans](beans.md#one-directional-beans), or a property is [read-only](beans.md#read-only-properties), here or in a spec it [nests or dispatches to](rules.md#nesting-two-halves) |
 | `updateFrom(wire)` | the spec extends `UpdateSpec`, over a bean wire: [Sparse PATCH](beans_patch.md#sparse-patch-write-back-updatespec) |
 | `updateFrom(message, mask)` | the spec extends `UpdateSpec`, over a protobuf-java message: [A PATCH through its `FieldMask`](beans.md#a-patch-through-its-fieldmask) |
 
@@ -48930,7 +48930,7 @@ Each tier has its own overload:
 | `patch` | `patch` and `build` as method references, a domain value, a wire that parses and one that does not |
 | `asValidatedParse()` | `asValidatedParse()`, a wire that parses and one that does not |
 | `asValidatedBuild()` | `asValidatedBuild()` and a domain value |
-| both halves, from a [read-only](beans.md#read-only-properties) property | each half to its own overload, as above |
+| both halves, from a [read-only](beans.md#read-only-properties) property, or from a spec it [nests or dispatches to](rules.md#nesting-two-halves) | each half to its own overload, as above |
 | `updateFrom` | `updateFrom` as a method reference, a domain value, and an all-absent, a valid and an invalid wire |
 
 [Testing With hkj-test](../tooling/test_assertions.md#optic-laws) says what each overload checks, and how to choose its samples.
@@ -49610,7 +49610,7 @@ interface MerchantModelMapping extends MappingSpec<Merchant, MerchantModel> {
     // false
 ```
 
-`parse` cannot read back a bean that `build` wrote, because the id is missing, so the mapping is no `ValidatedPrism`. The Impl carries `parse` and `build` as two halves, `asValidatedParse()` and `asValidatedBuild()`, and no `asValidatedPrism()` or `asIso()`. Each half nests where a mapping uses that direction alone, as a [one-directional bean](#one-directional-beans) does. A mapping that builds and parses the component holding it cannot nest it. Law-check each half on its own:
+`parse` cannot read back a bean that `build` wrote, because the id is missing, so the mapping is no `ValidatedPrism`. The Impl carries `parse` and `build` as two halves, `asValidatedParse()` and `asValidatedBuild()`, and no `asValidatedPrism()` or `asIso()`. Each half nests where a mapping uses that direction alone, as a [one-directional bean](#one-directional-beans) does. Law-check each half on its own:
 
 ``` java
     MappingLaws.assertMappingLaws(
@@ -49622,6 +49622,49 @@ interface MerchantModelMapping extends MappingSpec<Merchant, MerchantModel> {
         MerchantModelMappingImpl.INSTANCE.asValidatedBuild(),
         new Merchant("m-1", "Brightside")); // renders without failing
 ```
+
+A generated model that holds the merchant needs no declaration for it. Its mapping builds and parses, so it nests each half in its own direction and takes two halves itself, and a note says so:
+
+``` java
+// openapi-generator's model for a storefront: an ordinary two-way bean, holding the merchant model.
+class StorefrontModel {
+  private String url;
+  private MerchantModel merchant;
+
+  public String getUrl() {
+    return url;
+  }
+
+  public void setUrl(String url) {
+    this.url = url;
+  }
+
+  public MerchantModel getMerchant() {
+    return merchant;
+  }
+
+  public void setMerchant(MerchantModel merchant) {
+    this.merchant = merchant;
+  }
+}
+
+// It nests MerchantModelMapping where it builds and parses, so it takes two halves too: parse
+// nests through asValidatedParse(), build through asValidatedBuild(), and a note says so.
+@GenerateMapping
+interface StorefrontModelMapping extends MappingSpec<Storefront, StorefrontModel> {}
+
+
+    MappingLaws.assertMappingLaws(
+        StorefrontModelMappingImpl.INSTANCE.asValidatedParse(),
+        storefrontModel(merchantModel("m-1", "Brightside")), // parses
+        storefrontModel(merchantModel(null, "Brightside"))); // located failure: merchant.id
+
+    MappingLaws.assertMappingLaws(
+        StorefrontModelMappingImpl.INSTANCE.asValidatedBuild(),
+        new Storefront("https://brightside.example", new Merchant("m-1", "Brightside")));
+```
+
+A projection cannot nest either, since its write-back needs a whole prism: [Nesting a mapping with two halves](rules.md#nesting-two-halves).
 
 A component that converts takes the marker on its leaf. [What `@ReadOnly` reads](rules.md#what-readonly-reads) has the precise rule.
 
@@ -49886,7 +49929,7 @@ Beans are often generated from a schema, and generators have habits. Check these
 | The generated shape | What happens | Instead |
 |---|---|---|
 | an openapi-generator model, with getters, setters and a no-args constructor | it maps both ways, even as a response you only read, so the processor refuses a property your domain lacks | declare a [derived field](basics.md#derived-wire-fields) for it, which `build` fills and `parse` ignores |
-| a `readOnly` property, with a getter and no setter | it is refused as a likely misspelling, since `build` could never write it | declare it [`@ReadOnly`](#read-only-properties): `parse` reads it and `build` leaves it out, so the Impl has two halves and no `asValidatedPrism()` |
+| a `readOnly` property, with a getter and no setter | it is refused as a likely misspelling, since `build` could never write it | declare it [`@ReadOnly`](#read-only-properties): `parse` reads it and `build` leaves it out, so the Impl has two halves and no `asValidatedPrism()`, as does a model that holds it |
 | strictly typed properties: enums, `OffsetDateTime`, `UUID` | Jackson has already converted them before `parse` runs | map each to your own type with a leaf over the generated type |
 | an openapi-generator `java` client model with its default `openApiNullable=true` | the processor leaves out the `getX_JsonNullable()` and `setX_JsonNullable(...)` pair beside each nullable property, and maps it through `getX()` and `setX(...)` | nothing: [An openapi-generator `JsonNullable` companion](rules.md#jsonnullable-companions) says what an unset property reads. Clearing one through a PATCH is [not supported yet](rules.md#no-jsonnullable-patch-property) |
 | an openapi-generator `spring` model with its default `openApiNullable=true` | each nullable property is a `JsonNullable<T>` itself | map it through a leaf; on a PATCH bean it is [not supported yet](rules.md#no-jsonnullable-patch-property) |
@@ -51001,7 +51044,7 @@ Unlike a MapStruct mapper, the spec interface is never the bean. Nothing registe
 | `parse` alone | `ValidatedParse<UserDto, User>` | the same `ValidatedPrism` bean, or `asValidatedParse()` on a parse-only bean mapping |
 | `build` alone | `Function<User, UserDto>` | `UserMappingImpl.INSTANCE::build`, from any tier that has one |
 | a build-only bean mapping's `build` | `ValidatedBuild<CustomerRequest, Customer>` | `CustomerRequestMappingImpl.INSTANCE.asValidatedBuild()` |
-| either half of a mapping with a [read-only property](beans.md#read-only-properties) | `ValidatedParse<MerchantModel, Merchant>` or `ValidatedBuild<MerchantModel, Merchant>` | `MerchantModelMappingImpl.INSTANCE.asValidatedParse()`, or `.asValidatedBuild()` |
+| either half of a mapping with a [read-only property](beans.md#read-only-properties), or [nesting one](rules.md#nesting-two-halves) | `ValidatedParse<MerchantModel, Merchant>` or `ValidatedBuild<MerchantModel, Merchant>` | `MerchantModelMappingImpl.INSTANCE.asValidatedParse()`, or `.asValidatedBuild()` |
 | a projection's `set`, over plain copies | `Lens<Employee, EmployeeCardDto>` | `EmployeeCardMappingImpl.INSTANCE.asLens()` |
 | a validated `patch` | `BiFunction<Subscriber, SubscriberDetailsDto, Validated<NonEmptyList<FieldError>, Subscriber>>` | `SubscriberDetailsMappingImpl.INSTANCE::patch` |
 | a sparse `updateFrom` | `Function<UserPatchRequest, Edits.Accumulated<User>>` | `UserPatchMappingImpl.INSTANCE::updateFrom` |
@@ -51865,7 +51908,7 @@ The shapes are close enough that a first spec usually reads like the mapper it r
 | `@MappingTarget` plus `NullValuePropertyMappingStrategy.IGNORE` | [`UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec) and `updateFrom(wire).apply(current)` | returns `Validated`; nested objects replace wholesale |
 | `@MappingTarget` for a dense write-back | a projection's [`patch(domain, wire)`](tiers.md#leaf-carrying-projections-the-validated-patch) or `asLens()` | every projected field written, and validated |
 | `ignore = true` on a target | [`@Unmapped`](beans.md#accessors-meant-to-stay-out) on a bean accessor; a narrower wire is simply a projection | a protobuf message's field takes a [derived field](basics.md#derived-wire-fields) instead |
-| `ignore = true` on a request's target, read back from the response | [`@ReadOnly`](beans.md#read-only-properties) on a bean getter with no setter | one spec, with `parse` and `build` as two halves |
+| `ignore = true` on a request's target, read back from the response | [`@ReadOnly`](beans.md#read-only-properties) on a bean getter with no setter | one spec, with `parse` and `build` as two halves, which a model that nests it takes too |
 | `unmappedTargetPolicy = ERROR` | always on | an unmapped wire component is a compile error |
 | `@InheritInverseConfiguration` | not needed | the inverse is the same declaration |
 | `componentModel = "spring"` | a `@Bean` of `ValidatedPrism<Wire, Domain>` from `asValidatedPrism()` | [Injecting and testing](testing.md#injecting-and-testing-generated-mappings) |
@@ -52002,7 +52045,9 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a getter-only `List` be raw, or a wildcard?](#getter-only-list-element-type) | Not where `build` is emitted: `addAll` needs its element type. | not supported yet |
 | [Can a getter-only `List` carry an absent `Optional`?](#getter-only-list-refuses-the-bridge) | No: its getter creates the list, so absence reads as empty. | not supported yet |
 | [Can a two-way bean map a property that has only a getter?](#what-readonly-reads) | Yes, marked `@ReadOnly`: `parse` reads it and `build` leaves it out, so the Impl has no `asValidatedPrism()`. | by design |
-| [Where does a mapping with a read-only property nest?](#what-readonly-reads) | Only where a mapping uses one direction: it has two halves and no whole prism. | by design |
+| [Where does a mapping with a read-only property nest?](#nesting-two-halves) | Anywhere but a site needing a whole prism: a mapping that builds and parses takes two halves too, and a one-way site uses its half. Not in a projection, a generic mapping or an `of(...)`. | by design |
+| [Can sealed dispatch reach a subtype whose spec has two halves?](#nesting-two-halves) | Yes: the dispatch takes two halves too. | by design |
+| [Can a generic mapping nest a spec with two halves?](#nesting-two-halves) | No: it refuses one where it builds and parses. | not supported yet |
 | [Can a projection, or an `UpdateSpec`, read a property read-only?](#what-readonly-reads) | No: a projection has no `parse`, and an `UpdateSpec` builds nothing. | by design |
 | [Can a Lombok builder use `@Singular` on a collection?](#singular-collections) | Yes: `build` writes the collection whole and leaves its adder alone; a build-only adder it cannot tell apart is refused. | by design |
 | [Can a `@Singular` collection carry an absent `Optional`?](#singular-collections) | No: its builder builds an empty collection, so it is never absent. | not supported yet |
@@ -52348,7 +52393,7 @@ The [tier grid](tiers.md#which-methods-your-spec-gets) asks whether every compon
 - **A getter-only `List` declared nullable is filled only when its getter answers a list.** openapi-generator declares every getter it does not require `@Nullable`, and a nullable array's answers `null` until Jackson sets it. `build` then leaves the property unwritten, which a law check from a domain sample reports as missing. `List<@Nullable String>` does not count.
 - **An unpaired accessor is left out of the mapping.** That suits a computed getter such as `getSummary()`, or a [`@Singular` adder](#singular-collections), which the processor never refuses. It refuses any other unpaired accessor named after a domain component: [When an unpaired accessor is refused](#unpaired-accessors).
 - **The domain stays a record.** `parse` assembles the domain through its canonical constructor, so only the wire may be bean-shaped, and a bean domain gets a diagnostic.
-- **Nesting is unaffected.** A bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a one-directional one nests [where its direction is used](#how-a-beans-direction-is-read). One with a [read-only property](#what-readonly-reads) has two halves instead, and nests where a mapping uses one direction.
+- **Nesting is unaffected.** A bean mapping that builds and parses exposes `asValidatedPrism()` like any other, so record specs nest it and containers lift it, and a one-directional one nests [where its direction is used](#how-a-beans-direction-is-read). One with a [read-only property](#what-readonly-reads) has two halves instead, and a mapping that nests it where it builds and parses [takes them too](#nesting-two-halves).
 - **A protobuf-java message is read by its fields instead**, as [How a protobuf-java message is read](#how-a-message-is-read) says.
 
 ### The automatic `Optional` bridge on a bean {#bean-optional-bridge}
@@ -52385,12 +52430,24 @@ The [tier grid](tiers.md#which-methods-your-spec-gets) asks whether every compon
 - **The Impl carries two halves and no prism.** `parse` cannot read back a bean `build` wrote, since the property is missing, so the Impl has `parse`, `build`, `asValidatedParse()` and `asValidatedBuild()`, and no `asValidatedPrism()` or `asIso()`. `MappingLaws` checks each half with its one-directional overload.
 - **A bean whose every property is read-only maps parse-only.** It has nothing left to build.
 - **Each half nests where a mapping uses its direction alone**, as a [one-directional bean](#how-a-beans-direction-is-read) does: a parse-only mapping, a [sparse `UpdateSpec`](beans_patch.md#sparse-patch-write-back-updatespec), a [`@GenerateMerge`](merge_envelopes.md) source and a build-only mapping. So does a read-only component of another mapping, which is only parsed.
-- **A mapping that builds and parses the component cannot nest it.** The failed lookup names the read-only property.
+- **A mapping that builds and parses the component takes two halves too**, as [Nesting a mapping with two halves](#nesting-two-halves) says.
 - **A converting component takes the marker on its leaf.** A marker and a same-named leaf would be one method, so the `default` leaf carries the annotation, and the processor offers that leaf in the marker's place.
 - **The rest of the bean must cover the domain.** A bean still narrower than the domain is a projection, which has no `parse` to read the property. The processor refuses a marker the spec declares there, and leaves an inherited one inert.
 - **A marker the spec declares must read a getter.** The processor refuses one on an `UpdateSpec`, which builds nothing. It refuses one on a bean crossed [one way](#how-a-beans-direction-is-read), or on a record. And it refuses one naming a property the mapping writes, a setter, a getter no component maps to, or nothing, as well as one marked `@Unmapped` too.
 - **An inherited marker binds where it can, and is otherwise inert.** It wins over an inherited `@Unmapped` naming the same getter. So one mix-in whose bare marker carries both serves a `MappingSpec`, which reads the property, and a projection or an `UpdateSpec`, which leave it out.
 - **A leaf cannot carry `@Unmapped`**, so a converting property's marker belongs on the `MappingSpec` itself.
+
+### Nesting a mapping with two halves {#nesting-two-halves}
+
+**A mapping that builds and parses takes two halves when it nests or dispatches to a spec that has them.** Its `parse` nests through that spec's `asValidatedParse()`, and its `build` through its `asValidatedBuild()`, lifted through containers and the `Optional` bridge like any nested spec. Its Impl has `parse`, `build`, `asValidatedParse()` and `asValidatedBuild()`, and no `asValidatedPrism()` or `asIso()`. A note names the tier and the spec it came from.
+
+- **The tier carries on outwards.** A mapping that nests this one takes two halves too, at any depth. A dependency's spec keeps the tier it was compiled with.
+- **Sealed dispatch takes it from a subtype.** A sealed mapping that dispatches to a spec with two halves routes each direction through that spec, and has two halves itself.
+- **A read-only property of its own decides first.** A mapping with one has two halves whatever it nests, and draws no note.
+- **A leaf over the component keeps the whole prism.** A leaf joining the halves, `ValidatedPrism.of(XImpl.INSTANCE::parse, XImpl.INSTANCE::build)`, keeps `asValidatedPrism()`. Its round trip then loses what the nested `build` leaves out.
+- **A site that needs a whole prism refuses it.** A projection's write-back reads back what its `build` wrote, and an element-mapped spec's `of(...)` takes a `ValidatedPrism` for each leaf. The failed lookup names the read-only property the spec inherits, through each spec on the way.
+- **A generic mapping does not take the tier.** It refuses a spec with two halves at a component it builds and parses: not supported yet.
+- **`MappingLaws` checks each half** with its one-directional overload.
 
 ### When an unpaired accessor is refused {#unpaired-accessors}
 
@@ -52734,7 +52791,8 @@ When the processor cannot write correct code for a spec, it refuses at compile t
 | [`names no getter`](#read-only-names-no-getter) | A `@ReadOnly` marker names no unpaired getter |
 | [`@ReadOnly method '…' names a property`](#read-only-names-a-mapped-property) | A `@ReadOnly` marker names a paired property |
 | [`has nothing to mark read-only`](#read-only-on-a-record) | A `@ReadOnly` marker sits on a record, or a one-way bean |
-| [`has a read-only property`](#read-only-nested-both-ways) | A spec with a read-only property is nested both ways |
+| [`has a read-only property`](#read-only-nested-both-ways) | A spec with two halves is nested where a whole prism is needed |
+| [`maps as two halves`](#maps-as-two-halves) | **Note.** A mapping takes two halves from a spec it nests |
 | [`which has no parse to read`](#read-only-on-a-projection) | A `@ReadOnly` property sits on a projection |
 | [`has no meaning on a sparse update`](#read-only-on-a-sparse-update) | A `@ReadOnly` marker sits on an `UpdateSpec` |
 | [`which a build cannot fill`](#getter-only-list-build) | A getter-only `List` is raw or a wildcard |
@@ -53871,7 +53929,7 @@ interface InvoiceMapping extends MappingSpec<Invoice, InvoiceDto> {}
 
 A sealed pair has a domain subtype that no spec maps, so the generated switch would miss a case.
 
-**Fix.** Declare a spec for the subtype pair, in this module or in a dependency compiled with `hkj-processor`.
+**Fix.** Declare a spec for the subtype pair, in this module or in a dependency compiled with `hkj-processor`. Where the message names a spec that maps the pair but cannot take part, change that spec instead, since a second one would make the pair ambiguous.
 
 ```
 @GenerateMapping: permitted subtype 'com.example.Bank' of 'Payment' has no mapping spec. Sealed
@@ -54460,27 +54518,75 @@ interface CustomerMapping extends MappingSpec<Customer, CustomerDto> {
 
 ### `... has no usable source. 'X' maps this pair but has a read-only property 'y' (no asValidatedPrism) ...` {#read-only-nested-both-ways}
 
-A component nests a spec with a read-only property, in a mapping that builds and parses. That spec has no whole prism, since its `parse` cannot read back what its `build` leaves out.
+A projection nests a spec with two halves, which has no whole prism for its write-back, since its `parse` cannot read back what its `build` leaves out. A generic mapping, or an element-mapped spec's `of(...)`, refuses one the same way. The spec may have taken its halves from a spec it nests, which the message names.
 
-**Fix.** Nest it where a mapping only parses or only builds, or where the property holding it is itself `@ReadOnly`. The message spells out a leaf joining its halves for a mapping that must nest it anyway, at the cost of its own round trip.
+**Fix.** Nest it in a mapping that builds and parses its whole domain, which takes two halves too, or where a mapping only parses or only builds. The message spells out a leaf joining its halves for a mapping that must nest it anyway, at the cost of its own round trip.
 
 ```
 @GenerateMapping: target field 'TicketDto.customer' has no usable source. The types differ
 (com.example.CustomerModel vs com.example.Customer) and no matching leaf method was found.
 'CustomerMapping' maps this pair but has a read-only property 'id' (no asValidatedPrism), so it
-cannot be nested in a mapping that builds and parses: its build leaves that property out, so its
-parse cannot read back what its build wrote. Found on Ticket: [ref, customer]. Nest
-'CustomerMapping' where a mapping only parses or only builds, or where the property holding it
-is itself @ReadOnly. To nest it here anyway, add 'default
+cannot be nested in a projection, which needs a whole prism for its write-back: its build leaves
+that property out, so its parse cannot read back what its build wrote. Found on Ticket: [ref,
+customer, note]. Nest 'CustomerMapping' in a mapping that builds and parses its whole domain, or
+in one that only parses or only builds. To nest it here anyway, add 'default
 ValidatedPrism<com.example.CustomerModel, com.example.Customer> customer() { return
 ValidatedPrism.of(CustomerMappingImpl.INSTANCE::parse, CustomerMappingImpl.INSTANCE::build); }'
-to the spec: this mapping's parse then cannot read back what its build wrote either.
+to the spec: this mapping's patch then cannot restore what the nested build leaves out. On a
+projection, a leaf's write-back can fail, so the projection maps through the validated
+patch(domain, wire), never asLens().
 ```
 
-The rule: [What `@ReadOnly` reads](rules.md#what-readonly-reads).
+The rule: [Nesting a mapping with two halves](rules.md#nesting-two-halves).
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
 <!-- verify:rejects "has a read-only property" -->
+```java
+record Customer(String id, String name) {}
+
+class CustomerModel {
+  private String id;
+  private String name;
+
+  public String getId() { return id; }
+  public String getName() { return name; }
+  public void setName(String name) { this.name = name; }
+}
+
+@GenerateMapping
+interface CustomerMapping extends MappingSpec<Customer, CustomerModel> {
+  @ReadOnly
+  String id();
+}
+
+record Ticket(String ref, Customer customer, String note) {}
+
+record TicketDto(String ref, CustomerModel customer) {}
+
+@GenerateMapping
+interface TicketMapping extends MappingSpec<Ticket, TicketDto> {}
+```
+~~~
+
+### `'X' maps as two halves: the generated Impl carries parse, build, asValidatedParse() and asValidatedBuild(), and no asValidatedPrism()` (a note) {#maps-as-two-halves}
+
+A mapping that builds and parses nests, or dispatches to, a spec with a read-only property, so its own `parse` cannot read back what its `build` wrote. It takes the two halves, each nesting through that spec's half, and the note names the spec.
+
+**Fix.** Nothing, unless you need `asValidatedPrism()`: law-check each half with its `MappingLaws` overload. A leaf joining the nested spec's halves keeps the whole prism, at the cost of a round trip that loses the read-only property.
+
+```
+@GenerateMapping: 'TicketMapping' maps as two halves: the generated Impl carries parse, build,
+asValidatedParse() and asValidatedBuild(), and no asValidatedPrism(). It nests 'CustomerMapping'
+at 'customer', which has a read-only property 'id': build leaves that property out, so parse
+cannot read back what build wrote. Law-check each direction with the MappingLaws overloads for
+one direction. To keep asValidatedPrism() anyway, declare a leaf joining the nested halves for
+'customer', at the cost of a round trip that loses what the nested build leaves out.
+```
+
+The rule: [Nesting a mapping with two halves](rules.md#nesting-two-halves).
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:reports "maps as two halves" -->
 ```java
 record Customer(String id, String name) {}
 
@@ -55661,7 +55767,7 @@ CustomerMappingImpl mapper = CustomerMappingImpl.INSTANCE;
 
 ### `cannot find symbol: method asIso()` {#no-such-surface}
 
-The Impl has no such method, because your spec's shape does not support it: a leaf withholds `asIso()`, a projection has no `parse`, a one-directional bean has only `build` or only `parse`, and an `UpdateSpec` has only `updateFrom`.
+The Impl has no such method, because your spec's shape does not support it: a leaf withholds `asIso()`, a projection has no `parse`, a one-directional bean has only `build` or only `parse`, and an `UpdateSpec` has only `updateFrom`. A mapping with a read-only property, or nesting or dispatching to one, has `asValidatedParse()` and `asValidatedBuild()` in place of `asValidatedPrism()`.
 
 **Fix.** Call a method your spec's shape gets; [the method table](tiers.md#which-methods-your-spec-gets) says when each appears.
 
@@ -94527,6 +94633,7 @@ void statusPrismIsLawful() {
 - **Sparse update** (an `UpdateSpec`): pass the `updateFrom` method reference, a domain sample, and an all-absent, a valid and an invalid wire; checks identity, idempotence and located validation. Make the all-absent wire a freshly constructed bean, as a binder makes of an empty body, and the domain sample unlike any default, so a default the bean gives itself, which would defeat absence, fails the identity law. The invalid wire must fail on a field: a domain constructor's refusal is unlabelled, so a domain with no leaf checks `assertSparseIdentity` and `assertSparseIdempotent` on their own.
 - **Parse-only** (a bean that is only read): pass `asValidatedParse()` with a parsing and a non-parsing wire; checks that the first parses and the second fails with every error located.
 - **Build-only** (a bean that is only written): pass `asValidatedBuild()` with a domain sample; checks that `build` renders it without failing.
+- **Two halves** (a `@ReadOnly` property, its own or nested): check each half alone.
 
 The laws compare by `equals`. A same-typed array crosses as a clone, and a record compares an array component by reference, so a record with an array component needs an `equals` of its own that uses `Arrays.equals` before these laws apply to it; otherwise assert its round trip elementwise.
 
@@ -101374,6 +101481,8 @@ This page documents the evolution of Higher-Kinded-J from its initial release th
 
 _In development. Release notes will be added here as changes land on `main`._
 
+- **A model holding another with a read-only property maps both ways** ([#992](https://github.com/higher-kinded-j/higher-kinded-j/issues/992)): an openapi-generator model often holds another whose schema has a `readOnly` id, as an `Order` holds a `Pet`. A mapping that builds and parses, and nests or dispatches to a spec with a `@ReadOnly` property, now takes the same two halves itself: its `parse` nests through that spec's `asValidatedParse()` and its `build` through its `asValidatedBuild()`, lifted through containers and the `Optional` bridge, and its Impl carries both halves and no `asValidatedPrism()`. A note names the tier and each place it comes from. The tier carries on outwards, to a model holding that one and so on, across modules too, and a sealed dispatch over such a spec takes it as well. A leaf joining the nested spec's halves keeps the whole prism instead. A projection, a generic mapping and an element-mapped spec's `of(...)` need a whole prism, and their refusal names the read-only property the spec inherits, through each spec on the way. The message for a sealed subtype whose spec cannot take part in dispatch now asks you to change that spec, where it used to ask for a second one that would have made the pair ambiguous. See [Nesting a mapping with two halves](mapping/rules.md#nesting-two-halves).
+
 - **protobuf-java messages map, so a gRPC boundary maps like any other** ([#954](https://github.com/higher-kinded-j/higher-kinded-j/issues/954)): a `MappingSpec` over a protobuf-java message now maps both ways, on the full runtime and the lite one, with nothing to configure. The processor reads a message by its fields, the names its builder can clear, so the accessors protoc generates beside them, such as `getXBytes()`, `getXValue()` and `getUnknownFields()`, no longer count as properties your domain lacks. A repeated field maps to a `List` and a map field to a `Map`, and `build` writes each whole. A field that tracks whether it is set, through `hasX()`, reads as `null` when unset: a domain `Optional` reads it as empty, and `build` leaves the field unset rather than hand its setter a `null`, while any other component reports `must not be null`. A primitive field reads as its wrapper where your domain holds a reference, so a `ValidatedPrism<Long, Instant>` leaf converts an `int64` field. A oneof maps to a domain component named after it, a sealed interface with a record named after each member, so the domain holds one member as the message does; each member can map to an `Optional` of its own instead. The processor refuses an `Optional` over a field with no `hasX()`, whose default would read back as present. An `UpdateSpec` over a message generates `updateFrom(message, mask)`, which edits only the fields a `FieldMask` names, parsing each as `parse` would, so a gRPC update request maps as a PATCH body does. See [protobuf-java messages](mapping/beans.md#protobuf-java-messages), [How a protobuf-java message is read](mapping/rules.md#how-a-message-is-read) and [A protobuf-java message updates through its `FieldMask`](mapping/rules.md#protobuf-fieldmask-update).
 
   A derived field now fills a primitive wire component on any wire, record and bean included, declared over its wrapper: `Getter<Domain, Integer>` for an `int`, which `build` unboxes. None could be declared before, and the fix line offered `Getter<Domain, int>`, which is not Java. See [Derived wire fields](mapping/basics.md#derived-wire-fields).
@@ -101390,7 +101499,7 @@ _In development. Release notes will be added here as changes land on `main`._
 
   _Notes for existing builds._ A spec or mix-in that declares such a constant now fails a `-Werror` build. Move the Impl into the calling code, or suppress the warning where the constant is kept on purpose.
 
-- **A two-way bean reads a property it has no setter for, with `@ReadOnly`** ([#935](https://github.com/higher-kinded-j/higher-kinded-j/issues/935)): openapi-generator writes an OpenAPI `readOnly` property as a getter with no setter, set through the constructor Jackson calls, beside the getters, setters and no-args constructor of the rest of the model. The processor refused that getter as a likely misspelling, and `@Unmapped`, which let the bean map, left the property out, so the Impl had no `parse`: the response a client most wants to read was the one it could not. A `@ReadOnly` marker named after the property now reads it: `parse` reads the getter, and `build` leaves it out, as a request should. Since `parse` cannot read back what `build` wrote, the Impl carries the two as halves, `asValidatedParse()` and `asValidatedBuild()`, with no `asValidatedPrism()`, and nests wherever a mapping uses one direction. `MappingLaws` checks each half. The marker goes on the component's leaf where it converts, and reads a getter-only `List` too, which `build` then leaves alone. A bean whose every property is read-only maps parse-only. The refusal for a getter with no setter now offers the marker, wherever following it would let `parse` read the whole domain. Where the spec already has a method named after the accessor, such as the leaf converting its component, the refusal offers `@ReadOnly` and `@Unmapped` on that method rather than a second declaration that would not compile. An `@Unmapped` method returning `ValidatedPrism` with no body is now refused as the leaf it reads as, where it used to generate an Impl that did not compile. See [Properties you only read](mapping/beans.md#read-only-properties).
+- **A two-way bean reads a property it has no setter for, with `@ReadOnly`** ([#935](https://github.com/higher-kinded-j/higher-kinded-j/issues/935)): openapi-generator writes an OpenAPI `readOnly` property as a getter with no setter, set through the constructor Jackson calls, beside the getters, setters and no-args constructor of the rest of the model. The processor refused that getter as a likely misspelling, and `@Unmapped`, which let the bean map, left the property out, so the Impl had no `parse`: the response a client most wants to read was the one it could not. A `@ReadOnly` marker named after the property now reads it: `parse` reads the getter, and `build` leaves it out, as a request should. Since `parse` cannot read back what `build` wrote, the Impl carries the two as halves, `asValidatedParse()` and `asValidatedBuild()`, with no `asValidatedPrism()`, and nests wherever a mapping uses one direction, or both each on its own ([#992](https://github.com/higher-kinded-j/higher-kinded-j/issues/992)). `MappingLaws` checks each half. The marker goes on the component's leaf where it converts, and reads a getter-only `List` too, which `build` then leaves alone. A bean whose every property is read-only maps parse-only. The refusal for a getter with no setter now offers the marker, wherever following it would let `parse` read the whole domain. Where the spec already has a method named after the accessor, such as the leaf converting its component, the refusal offers `@ReadOnly` and `@Unmapped` on that method rather than a second declaration that would not compile. An `@Unmapped` method returning `ValidatedPrism` with no body is now refused as the leaf it reads as, where it used to generate an Impl that did not compile. See [Properties you only read](mapping/beans.md#read-only-properties).
 
 - **A field that is renamed and converted maps, with `@MapField` on its leaf** ([#981](https://github.com/higher-kinded-j/higher-kinded-j/issues/981)): a component whose wire name and type both differ, such as a wire's `emailAddress` string against a domain's `email: EmailAddress`, can now be declared. The component's leaf is the one method named after it, so `@MapField` goes on the leaf and means the rename and the conversion together. It works on every tier, beside `@OptionalBridge`, from a mix-in, and on a generic spec's abstract leaf. A message that offers a leaf for a renamed component now spells the leaf with its rename, in place of the rename's marker, and names the mix-in to change where that marker is inherited. A message about a component that already has a leaf says to put the rename on the leaf. A leaf a message offers over a type variable is the abstract one a generic spec's `of(...)` factory takes, and a marker it offers restates the component as declared, a `? extends` wildcard included. A spec whose abstract leaf shares its name with a marker asking for a narrower type is now refused at the spec, where its Impl used to fail to compile. See [Renamed and converted](mapping/basics.md#renamed-and-converted).
 
