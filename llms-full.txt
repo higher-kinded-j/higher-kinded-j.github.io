@@ -161,14 +161,14 @@ You don't need to learn an esoteric functional library to feel the benefit. Each
 |-------------|---------------------|---------------------------|
 | Nested `Optional`, thrown exceptions, and validation that stops at the first error | the standard library | one railway vocabulary (`map` / `via` / `recover`) across absence, typed errors, async, and **accumulating** validation |
 | `Option` / `Either` / `Try` from **Vavr** | the FP library most Java developers know | the same core types **plus** higher-kinded abstraction, a full optics suite, monad transformers, and an effect system, built natively on modern Java (records, sealed types, virtual threads), where Vavr keeps a Java 8 foundation |
-| Hand-written DTO↔domain mappers and validation glue | custom converter classes per pair | `@GenerateMapping` over record, bean-shaped and generic wires: a total `build`, an accumulating `parse` that reports every bad field (nulls located, never an NPE), a stock codec vocabulary, and generated PATCH write-backs, all law-checked by the build's test suite |
+| A mapper in one place and validation in another | **MapStruct** with Bean Validation, or converter classes per pair | `@GenerateMapping`: one declaration gives both directions, and each field's conversion is its check, so `parse` locates every bad field, a `null` included. Records, beans, protobuf messages and generic wires, a stock codec vocabulary and generated PATCH write-backs, all law-checked ([Coming from MapStruct and Bean Validation](mapping/from_mapstruct.md)) |
 | **Resilience4j** annotations for retry / circuit-breaker / bulkhead | AOP-style resilience | the same policies as composable path combinators (`withRetry` / `withCircuitBreaker` / `withBulkhead`) that treat a business `Left` as a value, never as a failure to retry |
 | Hand-written `wither` / copy-constructor updates on records | manual boilerplate | generated lenses, prisms, and traversals: the most comprehensive optics available for Java |
 
 And unlike any of those tools, effects and data navigation speak **the same language**: the [Effect-Optics bridge](#the-bridge-effects-meet-optics) above is something no other Java library offers.
 
 ~~~admonish tip title="Why this matters"
-Every row in that table is a guarantee, not a convenience. An `Either` in a return type is checked by the compiler where an exception is not; an accumulating `parse` answers a client once where a first-failure mapper costs one round trip per defect; a generated lens is law-checked where a hand-written wither is trusted. The library holds itself to the same bar: every emission tier is pinned by golden files, the optic and mapping laws ship in `hkj-test` for your own types, and every HKJ module compiles under the HKJ checker at zero findings.
+Every row in that table is a guarantee, not a convenience. An `Either` in a return type is checked by the compiler where an exception is not; an accumulating `parse` answers a client once where a mapper that throws on the first bad value costs one round trip per defect; a generated lens is law-checked where a hand-written wither is trusted. The library holds itself to the same bar: every emission tier is pinned by golden files, the optic and mapping laws ship in `hkj-test` for your own types, and every HKJ module compiles under the HKJ checker at zero findings.
 ~~~
 
 ~~~admonish note title="How the optics compare to other Java optics libraries" collapsible=true
@@ -191,7 +191,7 @@ Higher-Kinded-J also offers the most advanced optics implementation in the Java 
 | **Focus DSL** | ✓ | ✗ | ✗ | ✗ |
 | **Profunctor Architecture** | ✓ | ✓ | ✓ | ✗ |
 | **Fluent API** | ✓ | ✗ | ✗ | ✗ |
-| **Modern Java (21+)** | ✓ | ✗ | ✗ | ✗ |
+| **Modern Java (25)** | ✓ | ✗ | ✗ | ✗ |
 | **Virtual Threads** | ✓ | ✗ | ✗ | ✗ |
 | **Effect Handlers / Free Monads** | ✓ | ✗ | ✗ | ✗ |
 
@@ -250,7 +250,7 @@ Write the records, add the annotations, and the processor writes `StreetLenses`,
 
 ### [Mapping at the Boundary](mapping/ch_intro.md)
 
-One spec interface and one annotation replace the hand-written mapper. `@GenerateMapping` derives both directions at compile time for record, bean-shaped and generic wires of any width (the one direction a bean supports, where it can only be read or only be written): a total `build` out, an accumulating `parse` back that locates every bad field, and both PATCH styles as write-backs. A [stock codec vocabulary](mapping/codecs.md#standard-codecs) covers the standard conversions, so a typical boundary needs no hand-written leaves, and every tier is law-checked and pinned by golden files.
+One spec interface and one annotation replace the hand-written mapper. `@GenerateMapping` derives both directions at compile time: a total `build` out, an accumulating `parse` back that locates every bad field, and both PATCH styles as write-backs. It maps records, beans and generic wires of any width, including the classes code generators write: [protobuf-java messages](mapping/beans.md#protobuf-java-messages), and the openapi-generator models and Lombok builders in the [generated-client checklist](mapping/beans.md#generated-client-checklist). Specs nest [across modules](mapping/structure.md#across-modules), and share a [vocabulary of leaves](mapping/codecs.md#shared-vocabulary-mix-in-interfaces) there too. A [stock codec vocabulary](mapping/codecs.md#standard-codecs) covers the standard conversions, so a typical boundary needs no hand-written leaves, and every tier is law-checked and pinned by golden files. To weigh the mapper against MapStruct and Bean Validation, [Mapper at a Glance](mapping/at_a_glance.md) shows the code it generates and what a call costs.
 
 ~~~admonish example title="Quick example" collapsible=true
 <!-- verify -->
@@ -340,7 +340,7 @@ public interface UserClientApi {
 }
 ```
 
-Auto-configuration handles the conversions; `Right` is a 200 and a typed `Left` maps to its status. Actuator metrics for success rates and error distributions, Spring Security integration with `Either`-based authentication, and an `EffectBoundary` that selects interpreters by profile come with it. See [Declarative HTTP Clients](spring/declarative_http_clients.md) and [Migrating to Functional Errors](spring/migrating_to_functional_errors.md).
+Auto-configuration handles the conversions; `Right` is a 200 and a typed `Left` maps to its status. Actuator metrics for success rates and error distributions, Spring Security integration with `Either`-based authentication, and an `EffectBoundary` that selects interpreters by profile come with it. The client is generated by `hkj-spring-boot-client-processor`, which a dependency cannot bring: add it to the processor path, or enable `spring` on the HKJ build plugin. See [Declarative HTTP Clients](spring/declarative_http_clients.md) and [Migrating to Functional Errors](spring/migrating_to_functional_errors.md).
 ~~~
 
 **[Get Started with Spring Boot Integration →](spring/spring_boot_integration.md)**
@@ -361,7 +361,7 @@ assertThatMaybe(value).isJust().hasValue("hello");
 assertThatTry(computation).isFailure().hasExceptionOfType(IOException.class);
 ```
 
-Coverage spans the discriminated unions, the effect types (`IO`, `VTask`, `VStream`), the Reader / Writer / State trio, every monad transformer, the `Free` / `EitherF` algebras and the `VTaskPath` / `VStreamPath` / `VTaskContext` Path-and-context assertions. On Java 25 with `--enable-preview`, `import module org.higherkindedj.test;` brings every helper into scope in one line.
+Coverage spans the discriminated unions, the effect types (`IO`, `VTask`, `VStream`), the Reader / Writer / State trio, every monad transformer, the `Free` / `EitherF` algebras and the `VTaskPath` / `VStreamPath` / `VTaskContext` Path-and-context assertions. On Java 25, `import module org.higherkindedj.test;` brings every helper into scope in one line.
 ~~~
 
 **[Explore hkj-test →](tooling/test_assertions.md)**
@@ -461,16 +461,33 @@ If you want working code immediately, start with the **[Quickstart](quickstart.m
 ~~~
 
 ~~~admonish note title="Mapping at the Boundary" collapsible=true
+**Ship**, read in order:
+
 1. **[Introduction](mapping/ch_intro.md):** The mapper every service carries, and the one response that replaces it
 2. **[Quickstart](mapping/quickstart.md):** Five steps from a blank build to a located 422
 3. **[Basics](mapping/basics.md):** One spec interface, both directions, every bad field located
 4. **[Standard Codecs and Shared Vocabulary](mapping/codecs.md):** The stock `ValidatedPrism` leaves, custom codecs, and mix-in interfaces
 5. **[Absent Fields and Record Invariants](mapping/absence.md):** A field whose `null` means absent, and a record's own checks
 6. **[Nesting, Containers, and Sealed Hierarchies](mapping/structure.md):** Nested specs, lifted containers, and dotted error paths
-7. **[Capstone](mapping/capstone.md):** One 422, every bad field, compiled and law-checked
+7. **[Capstone: One 422, Every Bad Field](mapping/capstone.md):** One boundary built end to end, compiled and law-checked
 8. **[Check Your Understanding](mapping/self_check.md):** Ten questions on the Quickstart through the Capstone, with answers the build proves
-9. **[Bean-Shaped Wires](mapping/beans.md):** Getter/setter and builder wires, with the full feature set
-10. **[Sparse PATCH](mapping/beans_patch.md):** The `UpdateSpec` write-back
+
+**On demand**, when a task calls for it:
+
+9. **[What Your Spec Generates](mapping/tiers.md):** Which methods each spec shape gets, and why
+10. **[Bean-Shaped Wires](mapping/beans.md):** Getter/setter, builder, one-directional and protobuf-java wires
+11. **[Sparse PATCH](mapping/beans_patch.md):** The `UpdateSpec` write-back, where an omitted field keeps its value
+12. **[Generic Specs](mapping/generics.md):** A `Page<T>` at the boundary
+13. **[Merge and Error Envelopes](mapping/merge_envelopes.md):** One record from several sources, and a typed error context
+14. **[Injecting, Testing, and Diagnostics](mapping/testing.md):** Spring beans, test fakes, and how wide a record may be
+15. **[Capstone: An Estate in Three Modules](mapping/estate.md):** A shared vocabulary, a client jar, a Lombok bean and a PATCH across modules
+
+**Look it up**, when you hold a question:
+
+16. **[Mapper at a Glance](mapping/at_a_glance.md):** The generated code, what it costs, and the decisions to know before adopting
+17. **[Coming from MapStruct and Bean Validation](mapping/from_mapstruct.md):** Both vocabularies, translated
+18. **[Rules and Limits](mapping/rules.md):** Every enforced rule and limit, in one place
+19. **[Compiler Messages](mapping/compiler_errors.md):** The common refusals, what each means, and the fix
 ~~~
 
 ~~~admonish note title="Monad Transformers" collapsible=true
@@ -524,7 +541,7 @@ These sections document the underlying machinery. Most users can start with Effe
 
 ---
 
-## Prerequisites
+## Prerequisites {#prerequisites}
 
 Higher-Kinded-J is built on **Java 25** today, and parts of it are compiled with **preview features**, so the build sets `--enable-preview`.
 
@@ -92543,7 +92560,7 @@ The plugin creates an `hkj` extension block with these options:
 hkj {
     version = "0.3.7-SNAPSHOT"       // HKJ library version (default: plugin version)
     preview = true           // add --enable-preview flags (default: true)
-    spring = false           // add hkj-spring-boot-starter (default: false)
+    spring = false           // add the starter and the @HkjHttpClient processor (default: false)
     skills = false           // install Claude Code skills (default: false)
     checks {
         pathTypeMismatch = true   // enable compile-time Path type checking (default: true)
@@ -92557,7 +92574,7 @@ hkj {
 |----------|---------|-------------|
 | `version` | Plugin version | Version of HKJ libraries to use |
 | `preview` | `true` | Adds `--enable-preview` to compile, test, exec, and javadoc tasks |
-| `spring` | `false` | Adds `hkj-spring-boot-starter` to implementation dependencies |
+| `spring` | `false` | Adds `hkj-spring-boot-starter` to `implementation`, and the `@HkjHttpClient` processor to every annotation processor configuration |
 | `skills` | `false` | Installs Claude Code skills into `.claude/skills/` during build |
 | `checks.pathTypeMismatch` | `true` | Enables compile-time Path type mismatch detection |
 
@@ -92582,7 +92599,7 @@ hkj {
 }
 ```
 
-This adds `hkj-spring-boot-starter` to the `implementation` configuration, which provides auto-configuration for using HKJ types with Spring's dependency injection and web layer.
+This adds `hkj-spring-boot-starter` to the `implementation` configuration, which provides auto-configuration for using HKJ types with Spring's dependency injection and web layer. It also adds `hkj-spring-boot-client-processor` to every annotation processor configuration, which generates the [`@HkjHttpClient`](../spring/declarative_http_clients.md) clients: a dependency never adds to the processor path, so the starter alone would not.
 
 ~~~admonish tip title="See Also"
 - [Spring Boot Integration](../spring/spring_boot_integration.md) - Full guide to using HKJ with Spring Boot
@@ -92622,7 +92639,7 @@ hkj {
 }
 ```
 
-All HKJ dependencies (`hkj-core`, `hkj-processor-plugins`, `hkj-checker`, `hkj-spring-boot-starter`) use the same version.
+All HKJ dependencies (`hkj-core`, `hkj-processor-plugins`, `hkj-checker`, `hkj-spring-boot-starter`, `hkj-spring-boot-client-processor`) use the same version.
 
 ---
 
@@ -92695,13 +92712,13 @@ The plugin automatically adds `hkj-core`, annotation processors, compile-time ch
 <configuration>
     <version>0.3.7-SNAPSHOT</version>   <!-- HKJ library version (default: plugin version) -->
     <preview>true</preview>              <!-- add --enable-preview flags (default: true) -->
-    <spring>false</spring>               <!-- add hkj-spring-boot-starter (default: false) -->
+    <spring>false</spring>               <!-- add hkj-spring-boot-starter and the @HkjHttpClient processor (default: false) -->
     <skills>false</skills>               <!-- install Claude Code skills (default: false) -->
     <pathTypeMismatch>true</pathTypeMismatch>  <!-- enable compile-time checks (default: true) -->
 </configuration>
 ```
 
-Run diagnostics with `mvn hkj:diagnostics` or install skills with `mvn hkj:install-skills`.
+The plugin writes `<annotationProcessorPaths>` into every compiler execution, which replaces javac's processor discovery, so list any other processor, such as Lombok, there too. Run diagnostics with `mvn hkj:diagnostics` or install skills with `mvn hkj:install-skills`.
 
 ### Manual Maven Setup
 
@@ -92735,6 +92752,8 @@ Projects that cannot apply the Maven plugin should see [Manual Gradle and Maven 
 Most projects should use the [HKJ build plugin](gradle_plugin.md): a single line replaces all the boilerplate below. This page documents the full manual configuration for the projects that cannot use the plugin (constrained environments, in-house build frameworks, or plugins that conflict with the HKJ plugin). If the plugin is an option for you, start there instead.
 
 Both configurations below pin the release to **25** and enable preview features, which go together: `javac` accepts `--enable-preview` only for the release it is running on, so the toolchain has to be Java 25 as well. [Prerequisites](../quickstart.md#prerequisites) explains what the flag is for, and where it is genuinely needed.
+
+The Spring Boot starter, and the processor that generates `@HkjHttpClient` clients, are not covered here: [Declarative HTTP Clients](../spring/declarative_http_clients.md#step-1-add-the-starter) shows both, for Gradle and Maven.
 
 ---
 
@@ -93243,7 +93262,7 @@ mvn rewrite:dryRun   # preview changes
 mvn rewrite:run      # apply changes
 ```
 
-Pick the `hkj-openrewrite` version that contains the recipe you need: the arity recipes exist from 0.3.0 onward, and each 0.5.0 deprecation recipe from the release that deprecates its API onward. Newer releases retain the older recipes.
+`hkj-openrewrite` is published from 0.4.11. Each release keeps every recipe before it, so the latest version carries them all. A recipe for an API deprecated after 0.4.11 arrives with the release that deprecates it.
 
 ---
 
@@ -93337,7 +93356,7 @@ rewrite {
 
 ~~~admonish tip title="See Also"
 - [Compile-Time Checks](compile_checks.md) - The `migration-nudge`, `free-switch-exhaustive`, and `witness-arity` checks are the compile-time equivalents of the recipes above
-- [Build Plugins](gradle_plugin.md) - The Gradle and Maven plugins that wire `hkj-openrewrite` into a project alongside the other tooling
+- [Build Plugins](gradle_plugin.md) - The Gradle and Maven plugins that set up the rest of the tooling; add `hkj-openrewrite` to the rewrite plugin as the [Quick Start](#quick-start) shows
 - [Release History](../release-history.md) - Per-version notes; recipe groups are documented in the release that introduces them
 - [Removals in 0.5.0](../release-history/upgrading.md#removals-in-050) - Every API deprecated for removal, the release that deprecated it, and the recipe that migrates it
 ~~~
@@ -93405,7 +93424,7 @@ HKJ Configuration:
 |---------|--------------|
 | **Version** | The HKJ library version used for all dependencies |
 | **Preview features** | Whether `--enable-preview` is added to compile, test, exec, and javadoc tasks |
-| **Spring integration** | Whether `hkj-spring-boot-starter` is included |
+| **Spring integration** | Whether `hkj-spring-boot-starter` and the `@HkjHttpClient` processor are included |
 | **Compile-time checks** | Which compile-time checks are active |
 | **Dependencies added** | The exact Maven coordinates added to each configuration |
 | **Compiler args added** | Additional arguments passed to `javac` |
@@ -94813,7 +94832,7 @@ Functional error handling clarifies thought. When a method returns `Either<Domai
 
 This chapter bridges functional programming and enterprise Java. The `hkj-spring-boot-starter` allows Spring controllers to return `Either`, `Validated`, `CompletableFuturePath`, `VTaskPath`, and `VStreamPath` directly. The framework handles the translation to HTTP responses: `Right` becomes 200 OK; `Left` becomes the appropriate error status. Validation errors accumulate properly. Async operations compose cleanly. Virtual thread operations run without thread pool configuration, and SSE streaming works without WebFlux or Reactor.
 
-The starter also closes the other half of the loop. Once a service speaks typed errors over HTTP, the services that call it should understand them. `@HkjHttpClient` generates a declarative client whose methods return the same Effect Paths, decoding the response back into a typed error so the error channel survives the network hop. The server encodes; the client decodes; the typed error never collapses into a bare status code.
+The starter also closes the other half of the loop. Once a service speaks typed errors over HTTP, the services that call it should understand them. `@HkjHttpClient`, with `hkj-spring-boot-client-processor`, generates a declarative client whose methods return the same Effect Paths, decoding the response back into a typed error so the error channel survives the network hop. The server encodes; the client decodes; the typed error never collapses into a bare status code.
 
 For applications that compose multiple effects, `EffectBoundary` bridges Free monad programs into the existing handler ecosystem. `@EnableEffectBoundary` auto-discovers `@Interpreter` beans, combines them, and registers an `EffectBoundary` that interprets programs and returns `IOPath` or `FreePath`, which the existing handlers convert to HTTP responses.
 
@@ -94881,7 +94900,7 @@ Spring.
 | `FreePath` return types | Composable effect programs interpreted at the boundary |
 | `EffectBoundary` | Auto-wired interpret-and-execute for Free monad programs |
 | `@Interpreter` beans | Spring-managed interpreters with DI and profile switching |
-| `@HkjHttpClient` interfaces | Declarative clients that keep the typed error when calling other services |
+| `@HkjHttpClient` interfaces | Declarative clients that keep the typed error when calling other services (generated by `hkj-spring-boot-client-processor`) |
 | Automatic status mapping | Error types to HTTP status codes (inbound) and back to typed errors (outbound) |
 | JSON serialisation | Configurable output formats |
 | Actuator integration | Metrics for functional operations |
@@ -95024,9 +95043,10 @@ Or with Maven:
 ```
 
 ~~~admonish tip title="Already using the HKJ build plugin?"
-The [HKJ Gradle and Maven plugins](../tooling/gradle_plugin.md) import the
-BOM for you and add the starter when Spring integration is enabled, so you
-do not need the version management above. This BOM snippet is for Spring
+The [HKJ Gradle and Maven plugins](../tooling/gradle_plugin.md) add
+`hkj-core`, and with Spring integration enabled the starter and the
+`@HkjHttpClient` processor, all at the plugin's version. They do not add
+`hkj-test`: give it a version, or import the BOM for it. This BOM snippet is for Spring
 projects that wire HKJ in by hand.
 ~~~
 
@@ -96607,14 +96627,35 @@ Profile show(String id) {
 
 ### Step 1: Add the Starter
 
-The client lives in `hkj-spring-boot-starter`; if you already have it for the server side, you have the client too.
+The client runtime lives in `hkj-spring-boot-starter`, and the code generator in `hkj-spring-boot-client-processor`. A dependency never adds to the processor path, so a starter you already have for the server side brings the runtime but not the generator. Add both:
 
 ```gradle
 // build.gradle.kts
 dependencies {
     implementation("io.github.higher-kinded-j:hkj-spring-boot-starter:LATEST_VERSION")
+    annotationProcessor("io.github.higher-kinded-j:hkj-spring-boot-client-processor:LATEST_VERSION")
 }
 ```
+
+In Maven, the processor goes on the compiler plugin's processor path. `<annotationProcessorPaths>` is the whole path, so add the `<path>` to the list you already have, beside `hkj-processor-plugins`, rather than as a second list:
+
+```xml
+<!-- maven-compiler-plugin <configuration>: one list, holding every processor -->
+<annotationProcessorPaths>
+    <path>
+        <groupId>io.github.higher-kinded-j</groupId>
+        <artifactId>hkj-processor-plugins</artifactId>
+        <version>LATEST_VERSION</version>
+    </path>
+    <path>
+        <groupId>io.github.higher-kinded-j</groupId>
+        <artifactId>hkj-spring-boot-client-processor</artifactId>
+        <version>LATEST_VERSION</version>
+    </path>
+</annotationProcessorPaths>
+```
+
+With the [HKJ build plugin](../tooling/gradle_plugin.md#spring-boot-mode), `spring = true` (Maven: `<spring>true</spring>`) adds both.
 
 ### Step 2: Declare and Configure
 
@@ -96818,6 +96859,7 @@ The streaming case is consumed through this translator rather than through a gen
 A generic `@HkjHttpClient` interface is supported **codegen-only**: the native interface and facade carry the type parameters, but the `@ImportHttpServices`/`@Bean` wiring is skipped, because a generic client cannot be a singleton bean. You instantiate the facade for a concrete type argument yourself.
 
 ~~~admonish warning title="Common Mistakes"
+- **The starter without the processor.** The interface compiles, nothing is generated, and startup fails with `required a bean of type 'com.example.UserClientApi' that could not be found`. Add `hkj-spring-boot-client-processor` to the processor path, as [Step 1](#step-1-add-the-starter) shows.
 - **A sealed error type with no `@JsonTypeInfo`.** Jackson cannot pick the subtype, so decoding fails. Add the type info, or use a concrete error type.
 - **Client interfaces outside the component scan.** If your `@HkjHttpClient` interfaces are not under your `@SpringBootApplication`'s scanned packages, the generated configuration is not picked up and Spring never creates the proxy. Add an explicit `@ImportHttpServices(basePackages = "...")`.
 - **Expecting a transport failure to become a `Left`.** Connection-refused and timeout are not domain errors; they propagate. Use the `VTaskPath` variant and `runSafe()` to capture them as the failure arm of `Try<Either<E, T>>`.
@@ -101935,6 +101977,7 @@ This release maps the wires that generated clients produce: openapi-generator mo
 ## Spring {#spring}
 
 - **A client keeps the `@OnStatus` overrides it inherits from a jar** ([#849](https://github.com/higher-kinded-j/higher-kinded-j/issues/849)): the annotations are now kept in the class file, and an inherited override is checked as a local one is. See [Declarative HTTP clients](../spring/declarative_http_clients.md#1-per-method-onstatus).
+- **`spring = true` on the build plugins also generates `@HkjHttpClient` clients** ([#1002](https://github.com/higher-kinded-j/higher-kinded-j/pull/1002)): the Gradle and Maven plugins now add `hkj-spring-boot-client-processor` beside the starter, since a dependency never adds to the processor path. A build that wires Higher-Kinded-J by hand adds the processor itself. See [Declarative HTTP Clients](../spring/declarative_http_clients.md#step-1-add-the-starter).
 
 ---
 
@@ -101954,6 +101997,9 @@ This release maps the wires that generated clients produce: openapi-generator mo
 - **A dependency's spec with a mix-in off the classpath is passed over** ([#895](https://github.com/higher-kinded-j/higher-kinded-j/pull/895)): the use site's error names the missing type, where javac used to report `cannot access` inside generated source. See [Multi-module builds](../tooling/manual_setup.md#multi-module-builds).
 - **Every processor runs from the module path** ([#889](https://github.com/higher-kinded-j/higher-kinded-j/issues/889)): all twenty run there, and `Path.from()` finds a `VStreamPath`. Builds that use Gradle's `annotationProcessor` or Maven's `<annotationProcessorPaths>` see no change. See [PathProvider SPI Registration](../monads/vstream_advanced.md#pathprovider-spi-registration).
 - **Coverage tools skip every generated type** ([#798](https://github.com/higher-kinded-j/higher-kinded-j/issues/798), [#817](https://github.com/higher-kinded-j/higher-kinded-j/issues/817)): nested generated types carry `@Generated` themselves, and traversals and folds are named nested classes rather than anonymous ones. See [Build-time impact](../optics/production_readiness.md#build-time-impact).
+- **The Maven plugin adds the libraries at its own version** ([#1002](https://github.com/higher-kinded-j/higher-kinded-j/pull/1002)): without a `<version>` in its configuration it uses the plugin's version, as the Gradle plugin does, where it used your project's. See [Maven Users](../tooling/gradle_plugin.md#maven-users).
+- **The Maven plugin configures the build's compile and test runs** ([#1002](https://github.com/higher-kinded-j/higher-kinded-j/pull/1002)): they get release 25, preview features, the HKJ processors and the checker, with no configuration of their own. `--enable-preview` joins surefire's `argLine` property, so JaCoCo's agent keeps its place, and `mvn hkj:diagnostics` prints the plugin's settings. See [Maven Users](../tooling/gradle_plugin.md#maven-users).
+- **`hkj-openrewrite` is published, and `hkj-bom` manages every published module** ([#1002](https://github.com/higher-kinded-j/higher-kinded-j/pull/1002)): the migration recipes are on Maven Central from 0.4.11, and the BOM now covers `hkj-processor`, `hkj-spring-boot-client` and `hkj-spring-boot-client-processor`. See [Migration Recipes](../tooling/openrewrite.md).
 
 ---
 
@@ -101978,7 +102024,7 @@ For most changes, the processor stops at your declaration on a shape that used t
 
 - **Rebuild libraries that publish specs with 0.4.11 first.** That means mapping specs, mix-ins, `@GenerateFocus` records and `@HkjHttpClient` base interfaces. Their class files now carry annotations a consuming build reads ([#844](https://github.com/higher-kinded-j/higher-kinded-j/issues/844), [#847](https://github.com/higher-kinded-j/higher-kinded-j/issues/847), [#849](https://github.com/higher-kinded-j/higher-kinded-j/issues/849)). Both sides must agree on a bean's properties and a leaf order ([#868](https://github.com/higher-kinded-j/higher-kinded-j/issues/868), [#876](https://github.com/higher-kinded-j/higher-kinded-j/issues/876)).
 - **A module that declares specs ships index classes** ([#676](https://github.com/higher-kinded-j/higher-kinded-j/issues/676)): they live in `org.higherkindedj.mapping.index`. Two such jars cannot load together as automatic modules, so a library bound for a module path passes `-Ahkj.mapping.index=false`. A module with its own `module-info` writes none.
-- **A build that names its processors adds one** ([#877](https://github.com/higher-kinded-j/higher-kinded-j/issues/877)): with `-processor` or Maven's `<annotationProcessors>`, add `org.higherkindedj.optics.processing.CompanionAnnotationProcessor`. Put a processor claiming every annotation, such as Lombok's, ahead of `hkj-processor`.
+- **A build that names its processors adds the companion processors** ([#877](https://github.com/higher-kinded-j/higher-kinded-j/issues/877)): with `-processor` or Maven's `<annotationProcessors>`, add `org.higherkindedj.optics.processing.CompanionAnnotationProcessor`, and a build that generates `@HkjHttpClient` clients also adds `org.higherkindedj.spring.client.processor.CompanionAnnotationProcessor` beside `org.higherkindedj.spring.client.processor.HkjHttpClientProcessor`. Put a processor claiming every annotation, such as Lombok's, ahead of `hkj-processor`.
 
 ### What a running program can notice {#runtime-changes}
 
@@ -102049,6 +102095,7 @@ Most of these fail at your declaration, or warn there under `-Werror`, naming th
 | Effect Paths | A `toEitherPath` error whose own type is a functional interface, written as a lambda | Name the error type: `path.<MyError>toEitherPath(...)` | [#794](https://github.com/higher-kinded-j/higher-kinded-j/issues/794) |
 | Effect Paths | `@PathConfig`, `EFFECTFUL` or `ACCUMULATING` (a `[removal]` warning), or a generic `errorType` on `RECOVERABLE` | Run `MigrateDeprecationsTo0_5_0`; use a non-generic error type | [#890](https://github.com/higher-kinded-j/higher-kinded-j/issues/890), [#945](https://github.com/higher-kinded-j/higher-kinded-j/issues/945), [#949](https://github.com/higher-kinded-j/higher-kinded-j/issues/949) |
 | Spring | An inherited `@OnStatus` naming a type the method cannot return or the classpath lacks, or drawing the duplicate-status or `MaybePath` warning; a module reading it without `hkj-spring-boot-client` (a warning) | Fix the override, and expose the client with Gradle's `api` | [#849](https://github.com/higher-kinded-j/higher-kinded-j/issues/849) |
+| Build and tooling | `spring = true` with `version` set below 0.4.7, which has no `hkj-spring-boot-client-processor` to resolve | Use 0.4.7 or later, or set `spring = false` and add the starter by hand | [#1002](https://github.com/higher-kinded-j/higher-kinded-j/pull/1002) |
 
 ### Deprecated for removal in 0.5.0 {#deprecated}
 
