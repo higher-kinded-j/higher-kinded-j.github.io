@@ -928,9 +928,10 @@ import static org.higherkindedj.hkt.instances.Witnesses.*;
 |------|----|--------|
 | `MaybePath<A>` | `EitherPath<E, A>` | `.toEitherPath(error)`, `.toEitherPath(errorSupplier)` |
 | `MaybePath<A>` | `TryPath<A>` | `.toTryPath(exceptionSupplier)` |
-| `MaybePath<A>` | `ValidationPath<E, A>` | `.toValidationPath(error, semigroup)` |
+| `MaybePath<A>` | `ValidationPath<E, A>` | `.toValidationPath(error, semigroup)`, `.toValidationPathGet(errorSupplier, semigroup)` |
 | `MaybePath<A>` | `OptionalPath<A>` | `.toOptionalPath()` |
 | `OptionalPath<A>` | `EitherPath<E, A>` | `.toEitherPath(error)`, `.toEitherPath(errorSupplier)` |
+| `OptionalPath<A>` | `ValidationPath<E, A>` | `.toValidationPath(error, semigroup)`, `.toValidationPathGet(errorSupplier, semigroup)` |
 | `EitherPath<E, A>` | `MaybePath<A>` | `.toMaybePath()` |
 | `EitherPath<E, A>` | `TryPath<A>` | `.toTryPath(errorToException)` |
 | `EitherPath<E, A>` | `ValidationPath<E, A>` | `.toValidationPath(semigroup)` |
@@ -4253,7 +4254,7 @@ VResultPath<OrderError, OrderResult> fulfilled =
 - **`allSucceed`**: fail-fast; the first typed failure cancels the remaining tasks and becomes the result.
 - **`allSucceedAccumulating`**: run everything to completion and collect every typed failure at once.
 - **`withTimeout(duration, onTimeout)`**: a timeout becomes the designated typed error, on the railway.
-- **`bracketOutcome`**: once the resource is acquired, release *always* runs and receives the `Either` outcome (a typed failure from `acquire` skips both `use` and `release`, since nothing was acquired), so confirm-vs-compensate is decided from the result; defects inside `use` are typed through `onDefect` first, so release always observes a real outcome. This is the substrate the order example's deferred compensation Saga hangs on.
+- **`bracketOutcome`**: once the resource is acquired, release *always* runs and receives the `Either` outcome (a typed failure from `acquire` skips both `use` and `release`, since nothing was acquired), so confirm-vs-compensate is decided from the result. Defects inside `use` are typed through `onDefect` first, so release observes a typed outcome whenever `onDefect` can build one. If `onDefect` throws or returns null, release still runs and sees `Left(null)`, so decide on `isRight()` or `fold`, not on the error's value. The path then fails with what `onDefect` threw, or with a `NullPointerException` whose cause is the defect. This is the substrate the order example's deferred compensation Saga hangs on.
 
 ~~~admonish note title="Why these live on VResultPath, not Scope"
 The issue sketched `Scope.firstSuccess(...)`, but `Scope` lives in `hkt.vtask`, which `hkt.effect` depends on; statics there referencing `VResultPath` would create a package cycle. The combinators sit on `VResultPath`, implemented over the same `Scope`/`ScopeJoiner` substrate (which gained an `Either`-aware `firstSuccessEither` joiner).
@@ -4750,7 +4751,7 @@ Exception becomes a typed error:
 <!-- verify -->
 ```java
 TryPath<Config> tried = Path.tryOf(() -> loadConfig());
-EitherPath<String, Config> either = tried.toEitherPath(Throwable::getMessage);
+EitherPath<String, Config> either = tried.toEitherPath(Throwable::toString);
 ```
 
 ### IOPath → TryPath
@@ -9417,7 +9418,7 @@ ErrorContext<IOKind.Witness, String, Unit> workflow =
 ErrorContext<IOKind.Witness, String, Config> config =
     ErrorContext.<String, Config>io(
         () -> loadConfigFromServer(),
-        Throwable::getMessage)
+        Throwable::toString)
     .recover(error -> {
         log.warn("Using defaults: {}", error);
         return Config.defaults();
@@ -10915,7 +10916,7 @@ MutableContext<IOKind.Witness, Counter, ErrorContext<IOKind.Witness, String, Dat
     return MutableContext.<Counter>modify(Counter::increment)
         .map(u -> ErrorContext.<String, Data>io(
             () -> dataService.fetch(),
-            Throwable::getMessage));
+            Throwable::toString));
 }
 ```
 
@@ -16619,9 +16620,12 @@ The Path API supports rich conversions between all path types. Some conversions 
 │  VALIDATION PATHS                                                                │
 │  ────────────────                                                                │
 │    EitherPath ←─────────────────────────────────────────────→ ValidationPath     │
-│              toValidationPath() / toEitherPath()                                 │
+│              toValidationPath(semigroup) / toEitherPath()                        │
 │                                                                                  │
-│    TryPath ─────── toValidationPath(mapper) ────────────────→ ValidationPath     │
+│    TryPath ─────── toValidationPath(mapper, semigroup) ─────→ ValidationPath     │
+│                                                                                  │
+│    MaybePath ───── toValidationPath(error, semigroup) ──────→ ValidationPath     │
+│                    toValidationPathGet(errorSupplier, semigroup)                 │
 │                                                                                  │
 │  ASYNC TYPED-ERROR PATHS                                                         │
 │  ───────────────────────                                                         │
@@ -16666,15 +16670,17 @@ EitherPath<String, User> withError =
 EitherPath<UserError, User> withLazyError =
     maybeUser.toEitherPath(() -> new UserError("User " + id + " not found"));
 
-// Mid-chain nothing downstream settles E, so the witness names it here
-EitherPath<UserError, String> named =
-    maybeUser.<UserError>toEitherPath(() -> new UserError("not found")).map(User::name);
+// Mid-chain nothing downstream settles E: name it when the supplier builds a subtype
+EitherPath<ServiceError, String> named =
+    maybeUser.<ServiceError>toEitherPath(() -> new ServiceError.UserNotFound()).map(User::name);
 ```
 
 ~~~admonish tip title="Which of the two overloads runs"
 A lambda, a method reference, or a variable whose type is a `Supplier` picks the deferred overload; every other argument picks the eager one. Reach for the deferred form when building the error is not free - it formats a message, reads a `MessageSource`, or captures a stack trace - because on the `Just` branch the supplier is never called. For a plain record the eager form reads better and costs nothing.
 
-An error whose own type is a functional interface is unaffected, since it is not a `Supplier`. Two shapes do need a hand, and both name the error type to reach the eager overload: such an error written *as a lambda*, which reads as a supplier and fails to infer (`maybeUser.<MyError>toEitherPath(() -> "boom")`); and a bare `null`, which selects the deferred overload and is rejected as a null supplier (`maybeUser.toEitherPath((MyError) null)` if a null left was meant - note the **cast**, since a type witness still picks the deferred overload here).
+An error whose own type is a functional interface is unaffected, since it is not a `Supplier`. The one shape that needs a hand is such an error written *as a lambda*, which reads as a supplier and fails to infer; name the error type to reach the eager overload: `maybeUser.<MyError>toEitherPath(() -> "boom")`.
+
+Neither overload takes a null error. A null value or a null supplier is rejected with a `NullPointerException` where the conversion is written, and so is a supplier that returns null when the path is empty. A bare `null` picks the deferred overload, so its message reads `errorSupplier must not be null`. Where no detail is needed, pass a real error such as `Unit.INSTANCE`.
 ~~~
 
 This is useful when:
@@ -16726,10 +16732,12 @@ EitherPath<Throwable, Config> withException =
 EitherPath<ConfigError, Config> withTypedError =
     tryConfig.toEitherPath(ex -> new ConfigError("Failed to load: " + ex.getMessage()));
 
-// Extract just the message
+// Describe the exception: unlike getMessage(), toString() is never null
 EitherPath<String, Config> withMessage =
-    tryConfig.toEitherPath(Throwable::getMessage);
+    tryConfig.toEitherPath(Throwable::toString);
 ```
+
+The function must not return null, and a null is refused with a `NullPointerException` rather than becoming a `Left(null)`. `Throwable::getMessage` returns null for an exception built without a message, so describe the exception another way.
 
 ### TryPath → MaybePath
 
@@ -16833,6 +16841,26 @@ EitherPath<List<String>, User> either = validated.toEitherPath();
 EitherPath<List<String>, Order> order = either
     .via(user -> Path.<List<String>, Order>right(createOrder(user)));
 ```
+
+### MaybePath → ValidationPath
+
+`toValidationPath` takes the error and the `Semigroup` that combines errors, and `toValidationPathGet` takes a supplier of the error instead. `OptionalPath` has both.
+
+<!-- verify -->
+```java
+MaybePath<User> maybeUser = Path.maybe(findUser(id));
+Semigroup<ServiceError> firstError = Semigroups.first();
+
+// The error is built whichever way the Maybe went
+ValidationPath<ServiceError, User> checked =
+    maybeUser.toValidationPath(new ServiceError.UserNotFound(), firstError);
+
+// Deferred: the supplier runs only on the Nothing branch
+ValidationPath<ServiceError, User> deferred =
+    maybeUser.toValidationPathGet(() -> new ServiceError.UserNotFound(), firstError);
+```
+
+A `Semigroup` typed to the parent, such as `firstError`, settles the error type, so a supplier that builds one subtype of a sealed error needs no type witness. The deferred form has its own name because, beside a `Semigroup`, a lambda could not tell the compiler which form was meant.
 
 ### TryPath → ValidationPath
 
@@ -17334,7 +17362,7 @@ public EitherPath<HttpError, UserDto> getUser(String id) {
 
 | From | To | Method | Notes |
 |------|-----|--------|-------|
-| MaybePath | EitherPath | `toEitherPath(error)` | Nothing → Left |
+| MaybePath | EitherPath | `toEitherPath(error)`, `toEitherPath(errorSupplier)` | Nothing → Left |
 | EitherPath | MaybePath | `toMaybePath()` | Left → Nothing |
 | TryPath | EitherPath | `toEitherPath(mapper)` | Exception → Left |
 | TryPath | MaybePath | `toMaybePath()` | Failure → Nothing |
@@ -17345,9 +17373,11 @@ public EitherPath<HttpError, UserDto> getUser(String id) {
 
 | From | To | Method | Notes |
 |------|-----|--------|-------|
-| EitherPath | ValidationPath | `toValidationPath()` | Preserves success/failure |
+| MaybePath | ValidationPath | `toValidationPath(error, semigroup)`, `toValidationPathGet(errorSupplier, semigroup)` | Nothing → Invalid |
+| OptionalPath | ValidationPath | `toValidationPath(error, semigroup)`, `toValidationPathGet(errorSupplier, semigroup)` | Empty → Invalid |
+| EitherPath | ValidationPath | `toValidationPath(semigroup)` | Preserves success/failure |
 | ValidationPath | EitherPath | `toEitherPath()` | Preserves valid/invalid |
-| TryPath | ValidationPath | `toValidationPath(mapper)` | Exception → Invalid |
+| TryPath | ValidationPath | `toValidationPath(mapper, semigroup)` | Exception → Invalid |
 
 ### Utility Path Conversions
 
@@ -17357,7 +17387,7 @@ public EitherPath<HttpError, UserDto> getUser(String id) {
 | MaybePath | IdPath | `toIdPath(default)` | Nothing → default value |
 | OptionalPath | MaybePath | `toMaybePath()` | Empty → Nothing |
 | MaybePath | OptionalPath | `toOptionalPath()` | Nothing → Empty |
-| OptionalPath | EitherPath | `toEitherPath(error)` | Empty → Left |
+| OptionalPath | EitherPath | `toEitherPath(error)`, `toEitherPath(errorSupplier)` | Empty → Left |
 | Any Kind | GenericPath | `Path.generic(kind, monad)` | Universal wrapper |
 
 Continue to [Patterns and Recipes](patterns.md) for real-world usage patterns.
@@ -83752,7 +83782,7 @@ VResultPath<OrderError, OrderResult> processWithReservation(
 }
 ```
 
-Release *always* runs and receives the `Either` outcome: a `Right` confirms the reservation, a `Left` releases it. There is no mutable "confirmed" flag. A defect (a thrown exception) inside the use phase is first typed through the final `onDefect` argument (here as a `SystemError`), so the release always observes a real outcome, and the reservation is released.
+Release *always* runs and receives the `Either` outcome: a `Right` confirms the reservation, a `Left` releases it. There is no mutable "confirmed" flag. A defect (a thrown exception) inside the use phase is first typed through the final `onDefect` argument (here as a `SystemError`), so the release observes a typed outcome and the reservation is released. Should `onDefect` itself fail, the release still runs and sees `Left(null)`, which this release also treats as a failure.
 
 ### General-Purpose Resource
 
@@ -101804,7 +101834,7 @@ This release maps the wires that generated clients produce: openapi-generator mo
 - **Mappings share more.** One mix-in vocabulary serves every spec that extends it, and specs nest, dispatch and merge across modules.
 - **More failures are located errors.** A record's own invariant, which used to throw, and a `null` at any depth, which used to pass, now join the accumulated errors.
 - **Parsing a bad wire got cheaper.** A wire with five bad fields parses in about half the time, and 100,000 failures accumulate in milliseconds.
-- **Other areas gain smaller improvements.** `toEitherPath` takes a supplier for its error, `Maybe` gains `toOptional()` and `stream()`, and generated optics compile under `-Xlint:rawtypes` and `-Xlint:cast` with `-Werror`.
+- **Other areas gain smaller improvements.** `toEitherPath` and the new `toValidationPathGet` take a supplier for their error, `Maybe` gains `toOptional()` and `stream()`, and generated optics compile under `-Xlint:rawtypes` and `-Xlint:cast` with `-Werror`.
 - **Some changes alter what a running program does.** Most surface as a compile error that names its fix, so read [Upgrading from 0.4.10](#upgrading) first.
 ~~~
 
@@ -101893,7 +101923,7 @@ This release maps the wires that generated clients produce: openapi-generator mo
 
 ## Effect Paths {#effect-paths}
 
-- **`MaybePath`, `OptionalPath` and `AffinePath` take a supplier for the error** ([#794](https://github.com/higher-kinded-j/higher-kinded-j/issues/794)): `toEitherPath(() -> new NotFound(id))` builds the error only on the branch that uses it. See [Type Conversions](../effect/conversions.md#maybepath--eitherpath).
+- **`MaybePath`, `OptionalPath` and `AffinePath` take a supplier for the error** ([#794](https://github.com/higher-kinded-j/higher-kinded-j/issues/794), [#821](https://github.com/higher-kinded-j/higher-kinded-j/issues/821)): `toEitherPath(() -> new NotFound(id))` builds the error only on the branch that uses it, and on `MaybePath` and `OptionalPath`, `toValidationPathGet(() -> new NotFound(id), firstError)` does the same for a `ValidationPath`. See [MaybePath → EitherPath](../effect/conversions.md#maybepath--eitherpath) and [MaybePath → ValidationPath](../effect/conversions.md#maybepath--validationpath).
 - **`Maybe` bridges to the JDK** ([#784](https://github.com/higher-kinded-j/higher-kinded-j/pull/784)): `toOptional()` completes the round trip `fromOptional` started, and `stream()` lets `.flatMap(Maybe::stream)` keep a pipeline's hits. See [Maybe Monad](../monads/maybe_monad.md#interacting-with-maybe-values).
 - **A `@PathSource` Path's `peek` runs with its effect** ([#949](https://github.com/higher-kinded-j/higher-kinded-j/issues/949)): on a lazy witness such as `IO`, the action now runs when the effect runs.
 - **`@PathSource` applies to a record, and waits for a generated witness** ([#949](https://github.com/higher-kinded-j/higher-kinded-j/issues/949)): a witness another processor writes in the same build, such as one from `@EffectAlgebra`, now works.
@@ -101974,7 +102004,10 @@ For most changes, the processor stops at your declaration on a shape that used t
 
 #### Effect Paths {#runtime-effect-paths}
 
-- **`toEitherPath(null)` now throws** ([#794](https://github.com/higher-kinded-j/higher-kinded-j/issues/794)): the call selects the new supplier overload, so cast the `null` to the error type if a `Left(null)` was meant. A `Supplier` passed as the error itself now supplies the error.
+- **A null error is refused** ([#821](https://github.com/higher-kinded-j/higher-kinded-j/issues/821)): `Path.left`, `Path.either`, `ErrorContext.failure`, `ErrorContext.fromEither`, `GenericPath.raiseError`, `MaybePath.toEitherPath`, `AffinePath.toEitherPath`, `EitherPath.focus`, and `toErrorContext` on `OptionalContext` and `JavaOptionalContext`, throw `NullPointerException` for one, even when the path holds a value. A path never holds `Left(null)`, so a re-raise such as `recoverWith(e -> Path.left(e))` is safe. Pass a real error, such as `Unit.INSTANCE`.
+- **An error that is itself a `Supplier` now supplies it** ([#794](https://github.com/higher-kinded-j/higher-kinded-j/issues/794)): `toEitherPath` calls it for its value, and a bare `toEitherPath(null)` picks that overload and throws `NullPointerException`.
+- **A function that builds an error must not return null** ([#821](https://github.com/higher-kinded-j/higher-kinded-j/issues/821)): `mapError`, `bimap`, `TryPath.toEitherPath`, `catching`, `ErrorContext.io`, and the error factories of `withTimeout`, `withCircuitBreaker` and `withBulkhead`, refuse a null result. `Throwable::toString` is never null. Eager paths throw `NullPointerException` at the call, deferred ones when run, keeping any mapped exception as the cause. `AffinePath.toTryPath` now checks its supplier even on a match.
+- **`bracketOutcome` releases even when `onDefect` fails** ([#821](https://github.com/higher-kinded-j/higher-kinded-j/issues/821)): if `onDefect` throws or returns null, `release` still runs, seeing `Left(null)`. The path then fails with that exception or a `NullPointerException`, which a failing `release` carries as suppressed. A throwing `onDefect` used to skip `release` and leak the resource, and a null one returned `Left(null)`.
 - **A `@PathSource` Path's `peek` returns a new Path** ([#949](https://github.com/higher-kinded-j/higher-kinded-j/issues/949)): on a lazy witness its action runs each time the effect runs. On an eager one it runs once, and an exception it throws reaches the returned Path.
 - **`sequenceValidated` groups its combines in balanced pairs** ([#982](https://github.com/higher-kinded-j/higher-kinded-j/issues/982)): any associative `Semigroup` that leaves its arguments alone gives the same result, and `traverseValidated` matches it.
 - **A Path with a custom `suffix` prints its own class name** ([#945](https://github.com/higher-kinded-j/higher-kinded-j/issues/945)): from `toString`, where it printed the annotated type's name.
