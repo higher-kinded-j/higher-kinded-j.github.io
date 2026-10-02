@@ -1,0 +1,337 @@
+# Optics: Focus DSL Journey
+
+~~~admonish info title="What We'll Learn"
+- Type-safe path navigation with automatic type transitions
+- The FocusPath, AffinePath, and TraversalPath types
+- Effectful modifications with Applicative and Monad
+- Aggregating values with Monoid and foldMap
+- Kind field support and type class integration
+- The Focus-Effect bridge for combining optic navigation with Effect Paths
+- List Prisms, optics for external types (Jackson, jOOQ), VStream integration
+- Fold combination, navigator generation, container-type navigation
+~~~
+
+**Tutorials**: 9 (T12-T20) | **Exercises**: 90
+<!-- exercises: optics/Tutorial12_FocusDSL optics/Tutorial13_AdvancedFocusDSL optics/Tutorial14_FocusEffectBridge optics/Tutorial15_ListPrisms optics/Tutorial16_OpticsSpecInterfaces optics/Tutorial17_VStreamOptics optics/Tutorial18_FoldCombination optics/Tutorial19_NavigatorGeneration optics/Tutorial20_ContainerNavigation -->
+
+~~~admonish tip title="Where This Fits in the Bigger Picture"
+The Focus DSL is the ergonomic layer that lets us write `.focus().attributes().at(key)` from [One Line, Six Layers](../../hkts/one_line_six_layers.md) as a single fluent path. Tutorials 12-13 cover the basics; Tutorial 14 is the bridge to Effect Paths; Tutorials 15-20 cover specialised cases (list prisms, external types, VStream integration, fold combination, navigator generation, container-type navigation). Each tutorial opens with a Pain → Promise header showing the imperative-Java pattern it replaces.
+~~~
+
+**Prerequisites**: [Optics: Lens & Prism Journey](lens_prism_journey.md)
+
+## Journey Overview
+
+The Focus DSL provides an ergonomic, type-safe way to navigate nested data structures. Path types automatically widen as you navigate through optional values and collections.
+
+```
+FocusPath → via(Prism) → AffinePath → via(Traversal) → TraversalPath
+```
+
+This is often the most practical way to work with optics in day-to-day code.
+
+---
+
+## Tutorial 12: Focus DSL Basics
+**File**: `Tutorial12_FocusDSL.java` | **Exercises**: 10
+
+Learn the Focus DSL for ergonomic, type-safe path navigation through nested data structures.
+
+**What you'll learn**:
+- Creating `FocusPath` from a Lens with `FocusPath.of()`
+- Composing paths with `via()` for deep navigation
+- `AffinePath` for optional values using `some()`
+- `TraversalPath` for collections using `each()`
+- Accessing specific elements with `at(index)` and `atKey(key)`
+- Filtering traversals with `filter()`
+- Converting paths with `toLens()`, `asAffine()`, `asTraversal()`
+
+**Key insight**: Path types automatically widen as you navigate. `FocusPath` becomes `AffinePath` through optional values, and becomes `TraversalPath` through collections.
+
+**Path type transitions**:
+```
+FocusPath (Lens-like: exactly 1)
+    │
+    ├── via(Lens)     → FocusPath
+    ├── via(Prism)    → AffinePath
+    ├── via(Affine)   → AffinePath
+    └── each()        → TraversalPath
+
+AffinePath (0 or 1)
+    │
+    ├── via(Lens)     → AffinePath
+    ├── via(Prism)    → AffinePath
+    └── each()        → TraversalPath
+
+TraversalPath (0 to many)
+    │
+    └── via(anything) → TraversalPath
+```
+
+**Example**:
+<!-- verify -->
+```java
+// Build a path through nested structure
+var path = FocusPath.of(companyLens)       // FocusPath<Root, Company>
+    .via(departmentsLens)                   // FocusPath<Root, List<Dept>>
+    .<Dept>each()                           // TraversalPath<Root, Dept>
+    .via(managerLens)                       // TraversalPath<Root, Manager>
+    .via(emailLens);                        // TraversalPath<Root, String>
+
+// Get all manager emails
+List<String> emails = path.getAll(root);
+
+// Update all manager emails
+Root updated = path.modifyAll(String::toLowerCase, root);
+```
+
+**Links to documentation**: [Focus DSL](../../optics/focus_dsl.md)
+
+[Hands On Practice](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial12_FocusDSL.java)
+
+---
+
+## Tutorial 13: Advanced Focus DSL
+**File**: `Tutorial13_AdvancedFocusDSL.java` | **Exercises**: 8
+
+Master advanced Focus DSL features including type class integration, monoid aggregation, and Kind field navigation.
+
+**What you'll learn**:
+- `modifyF()` for effectful modifications with Applicative/Monad
+- `foldMap()` for aggregating values using Monoid
+- `traverseOver()` for generic collection traversal via Traverse type class
+- `modifyWhen()` for conditional modifications
+- `instanceOf()` for sum type navigation
+- `traced()` for debugging path navigation
+
+**Key insight**: `traverseOver()` bridges the HKT Traverse type class with optics, letting you navigate into `Kind<F, A>` wrapped collections. This is the foundation for automatic Kind field support in `@GenerateFocus`.
+
+**Effectful modifications**:
+<!-- verify -->
+```java
+// Validate while modifying
+Kind<EitherKind.Witness<AppError>, User> result = path.modifyF(
+    value -> validateAndTransform(value),
+    user,
+    Instances.monadError(either())
+);
+
+// Async modification
+Kind<CompletableFutureKind.Witness, User> futureUser = path.modifyF(
+    value -> fetchAndUpdate(value),
+    user,
+    Instances.monad(completableFuture())
+);
+```
+
+**Aggregation with Monoid**:
+<!-- verify -->
+```java
+// Sum all salaries
+Integer total = salaryPath.foldMap(
+    Monoids.integerAddition(),
+    salary -> salary,
+    company
+);
+
+// Collect all names
+String allNames = namePath.foldMap(
+    Monoids.string(),
+    name -> name + ", ",
+    team
+);
+```
+
+**Kind field support**:
+<!-- verify -->
+```java
+// Manual traverseOver for Kind<ListKind.Witness, Role> field
+FocusPath<User, Kind<ListKind.Witness, Role>> rolesKindPath = FocusPath.of(userRolesLens);
+TraversalPath<User, Role> allRolesPath = rolesKindPath
+    .<ListKind.Witness, Role>traverseOver(ListTraverse.INSTANCE);
+
+// With @GenerateFocus, this is generated automatically:
+// TraversalPath<User, Role> roles = UserFocus.roles();
+```
+
+**Links to documentation**: [Kind Field Support](../../optics/kind_field_support.md) | [Foldable and Traverse](../../functional/foldable_and_traverse.md)
+
+[Hands On Practice](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial13_AdvancedFocusDSL.java)
+
+---
+
+## Tutorial 19: Navigator Generation
+**File**: `Tutorial19_NavigatorGeneration.java` | **Exercises**: 8
+
+Learn how generated navigators enable fluent cross-type navigation, and how SPI-aware path widening determines the correct path type for container fields.
+
+**What you'll learn**:
+- Navigator delegation: wrapping FocusPath with get/set/modify
+- Path widening through Optional (AffinePath) and List (TraversalPath)
+- SPI-aware widening for Map, Either, Try, and Validated via Cardinality
+- Compound widening rules (AFFINE + TRAVERSAL = TRAVERSAL)
+- Depth limiting with `maxNavigatorDepth` and fallback to `.via()`
+
+**Key insight**: The `TraversableGenerator` SPI declares a `Cardinality` for each container type, and one widening analysis consults it to select `AffinePath` (ZERO_OR_ONE) or `TraversalPath` (ZERO_OR_MORE, under `widenCollections` or when the element is itself navigable), so types like `Map`, `Either` and `Try` are handled without hardcoding — and a navigator method reports the same path type as the static Focus method for the same component.
+
+**Compound widening rules**:
+```
+FOCUS    + AFFINE    = AFFINE
+FOCUS    + TRAVERSAL = TRAVERSAL
+AFFINE   + AFFINE    = AFFINE
+AFFINE   + TRAVERSAL = TRAVERSAL
+TRAVERSAL + anything = TRAVERSAL
+```
+
+**Example**:
+<!-- verify -->
+```java
+@GenerateFocus(generateNavigators = true)
+record Company(String name, Either<String, Address> backup) {}
+
+@GenerateFocus(generateNavigators = true)
+record Address(String street, Map<String, String> metadata) {}
+
+// Either (AFFINE via SPI) reaches the Address; the Map field is one more hop
+TraversalPath<Company, String> values = CompanyFocus.backup().metadata().each();
+```
+
+Note the container: `Optional`, `Maybe`, `List`, `Set` and `Collection` are widened
+by the processor before navigators are considered, so those fields never produce a
+navigator. Containers that arrive through the SPI, such as `Either` here, do.
+
+**Links to documentation**: [Focus DSL](../../optics/focus_dsl.md) | [Traversal Generator Plugins](../../tooling/generator_plugins.md)
+
+[Hands On Practice](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial19_NavigatorGeneration.java)
+
+---
+
+## Tutorial 20: Container Navigation
+**File**: `Tutorial20_ContainerNavigation.java` | **Exercises**: 4
+
+Navigate container types discovered via the `TraversableGenerator` SPI, including HKJ native types (`Either`, `Try`, `Validated`) and composition with standard lenses.
+
+**What you'll learn**:
+- Navigating `Either` right values via SPI-generated `AffinePath`
+- Navigating `Try` success values via SPI-generated `AffinePath`
+- Composing SPI-aware container paths with lens-based field access
+- Navigating `Validated` valid values via SPI-generated `AffinePath`
+
+**Key insight**: Container navigation paths are generated automatically when `@GenerateFocus(generateNavigators = true)` is used. The `TraversableGenerator` SPI determines the cardinality, so `Either`, `Try`, and `Validated` all produce `AffinePath` navigators without any manual optic composition.
+
+**Example**:
+<!-- verify -->
+```java
+@GenerateFocus(generateNavigators = true)
+record Position(
+    String ticker,
+    Either<PricingError, MarketPrice> livePrice  // → AffinePath
+) {}
+
+// SPI-aware AffinePath navigation
+AffinePath<Position, MarketPrice> pricePath = PositionFocus.livePrice();
+Optional<MarketPrice> price = pricePath.getOptional(position);
+```
+
+**Links to documentation**: [Focus Containers](../../optics/focus_containers.md) | [Focus Navigation](../../optics/focus_navigation.md)
+
+[Hands On Practice](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial20_ContainerNavigation.java)
+
+---
+
+## Running the Tutorials
+
+```bash
+./gradlew :hkj-examples:test --tests "*Tutorial12_FocusDSL*"
+./gradlew :hkj-examples:test --tests "*Tutorial13_AdvancedFocusDSL*"
+./gradlew :hkj-examples:test --tests "*Tutorial19_NavigatorGeneration*"
+./gradlew :hkj-examples:test --tests "*Tutorial20_ContainerNavigation*"
+```
+
+---
+
+## Focus DSL Cheat Sheet
+
+### Path Types
+
+| Type | Focus Count | Created By |
+|------|-------------|------------|
+| `FocusPath<S,A>` | Exactly 1 | `FocusPath.of(lens)` |
+| `AffinePath<S,A>` | 0 or 1 | `.via(prism)`, `.some()` |
+| `TraversalPath<S,A>` | 0 to many | `.each()`, `.via(traversal)` |
+
+### Common Operations
+
+| Operation | Available On | Description |
+|-----------|--------------|-------------|
+| `get(s)` | FocusPath | Get the single value |
+| `getOptional(s)` | AffinePath | Get optional value |
+| `getAll(s)` | TraversalPath | Get all values as List |
+| `set(a, s)` | All | Set value(s) |
+| `modify(f, s)` | All | Transform value(s) |
+| `modifyF(m, f, s)` | All | Effectful modification |
+| `foldMap(m, f, s)` | TraversalPath | Aggregate with Monoid |
+
+### Navigation
+
+| Method | Effect |
+|--------|--------|
+| `via(lens)` | Navigate through required field |
+| `via(prism)` | Navigate to sum type variant (widens to Affine) |
+| `some()` | Navigate into Optional (widens to Affine) |
+| `each()` | Navigate into collection (widens to Traversal) |
+| `at(index)` | Navigate to specific index (widens to Affine) |
+| `atKey(key)` | Navigate to map key (widens to Affine) |
+| `filter(pred)` | Filter traversal targets |
+
+---
+
+## Common Pitfalls
+
+### 1. Expecting get() on AffinePath
+**Problem**: Calling `get()` on an AffinePath when you need `getOptional()`.
+
+**Solution**: AffinePath might have zero elements. Use `getOptional()`:
+<!-- verify -->
+```java
+Optional<String> value = affinePath.getOptional(source);
+```
+
+### 2. Type Inference Issues with modifyF
+**Problem**: Java can't infer type parameters for `modifyF`.
+
+**Solution**: Explicitly specify the monad instance:
+```java
+path.<EitherKind.Witness<AppError>>modifyF(Instances.monadError(either()), ...)
+```
+
+### 3. Forgetting traverseOver for Kind Fields
+**Problem**: Can't navigate into `Kind<ListKind.Witness, A>` field.
+
+**Solution**: Use `traverseOver` with the appropriate Traverse instance:
+```java
+path.traverseOver(ListTraverse.INSTANCE)
+```
+
+---
+
+## What's Next?
+
+Two journeys remain in the Optics track. You now understand:
+- Lens, Prism, Affine, and Traversal
+- Optic composition rules
+- Generated optics with annotations
+- The Fluent API and Free Monad DSL
+- The Focus DSL for type-safe navigation
+
+**Recommended next steps**:
+
+1. **Batching & Coupled Updates Journey**: Optic-driven request batching, plan guardrails, and atomic coupled-field updates
+2. **Boundary Mapping Journey**: Finish the track where the optics meet the wire, from multi-edits and `ValidatedPrism` to the generated DTO boundary
+3. **Effect API Journey**: Combine optics with Effect paths
+4. **Study Production Examples**: See [Draughts Game](../../hkts/draughts.md)
+
+---
+
+**Previous:** [Optics: Fluent & Free DSL](fluent_free_journey.md)
+**Next:** [Optics: Batching & Coupled Updates](batching_journey.md)

@@ -1,0 +1,454 @@
+# Taming JSON with Jackson
+
+## _Spec Interfaces for Jackson and Beyond_
+
+> *"The art of programming is the art of organising complexity, of mastering multitude and avoiding its bastard chaos."*
+>
+> – Edsger W. Dijkstra
+
+---
+
+Dijkstra's words ring especially true when facing JSON: a nested, dynamically-typed structure with optional fields, variable array contents, and no compile-time guarantees. The imperative approach fights that with defensive code, null checks upon null checks, type assertions, deeply nested conditionals.
+
+Spec interfaces take the other path. You declare the *shapes* the data might take, the processor generates type-safe prisms for them, and navigation becomes composition. Here is the destination first, on a real API response:
+
+```java
+    List<String> emails = Traversals.getAll(USER_EMAILS, response);
+    // [alice@example.com, bob@example.com, carol@example.com]
+
+    List<Double> overForty = Traversals.getAll(USER_AGES.filtered(age -> age > 40), response);
+    // [45.0]
+
+    double page = PAGE.getOrElse(0.0, response);
+    // 1.0
+```
+
+No null checks, no casts, no nested conditionals. And the write direction is the same paths, run backwards:
+
+```java
+    JsonNode anonymised = Traversals.modify(USER_EMAILS, JsonApiBook::mask, response);
+    // every data.users[].email is masked; response itself is unchanged
+
+    JsonNode aged = Traversals.modify(USER_AGES, age -> age + 1, response);
+    List<Double> ages = Traversals.getAll(USER_AGES, aged);
+    // [33.0, 29.0, 46.0]
+```
+
+~~~admonish info title="What You'll Learn"
+- How a spec interface gives you precise control over an external type
+- Building a complete optics toolkit for Jackson's `JsonNode`
+- `@InstanceOf` and `@MatchWhen`, and when each applies
+- Where composed helpers belong, and why not in the spec interface
+~~~
+
+~~~admonish example title="See Example Code"
+[JsonNodeOpticsSpec.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/JsonNodeOpticsSpec.java) | [JsonPaths.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/JsonPaths.java) | [JsonApiBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/JsonApiBook.java)
+
+The page includes these directly, so the build compiles every line above. The output comments were produced by running the class.
+~~~
+
+---
+
+## Why `JsonNode` Resists Auto-Detection
+
+Point `@ImportOptics` at `JsonNode` and it has nothing to work with:
+
+1. **No sealed hierarchy.** `ObjectNode`, `ArrayNode` and `StringNode` exist, but `JsonNode` is not sealed, so the processor cannot enumerate the variants.
+2. **No copy strategy to detect.** `ObjectNode` and `ArrayNode` are mutable, and `deepCopy()` will isolate an edit, which is what `JsonPaths.field` below does before calling `set`. What is missing is anything declarative: no builder, no withers, no all-args constructor for the processor to rebuild a changed node through.
+3. **Predicate-based type checks.** Jackson offers `isObject()` and `isArray()`, which auto-detection has no rule for.
+
+Types like this need you to say what you want. That is a **spec interface**.
+
+---
+
+## The Spec Interface
+
+An interface extending `OpticsSpec<S>`, with one annotated abstract method per optic:
+
+```java
+@ImportOptics
+public interface JsonNodeOpticsSpec extends OpticsSpec<JsonNode> {
+
+  @InstanceOf(ObjectNode.class)
+  Prism<JsonNode, ObjectNode> object();
+
+  @InstanceOf(ArrayNode.class)
+  Prism<JsonNode, ArrayNode> array();
+
+  @InstanceOf(StringNode.class)
+  Prism<JsonNode, StringNode> text();
+
+  @InstanceOf(NumericNode.class)
+  Prism<JsonNode, NumericNode> numeric();
+
+  @InstanceOf(BooleanNode.class)
+  Prism<JsonNode, BooleanNode> bool();
+}
+```
+
+`@InstanceOf` tells the processor to generate a prism that matches when the node is an instance of the given class, rebuilding through identity. From this declaration you get a class of static prisms:
+
+<!-- verify -->
+```java
+Prism<JsonNode, ObjectNode>  object  = JsonNodeOptics.object();
+Prism<JsonNode, ArrayNode>   array   = JsonNodeOptics.array();
+Prism<JsonNode, StringNode>  text    = JsonNodeOptics.text();
+Prism<JsonNode, NumericNode> numeric = JsonNodeOptics.numeric();
+Prism<JsonNode, BooleanNode> bool    = JsonNodeOptics.bool();
+```
+
+~~~admonish note title="The generated class name"
+An interface whose name ends in `Spec` loses that suffix: `JsonNodeOpticsSpec` generates `JsonNodeOptics`. Any other name gains `Impl` instead, so `JsonOptics` would generate `JsonOpticsImpl`. Naming the interface `...Spec` is the convention worth following: it keeps the name you actually call short.
+~~~
+
+A spec declares `OpticsSpec<S>` and each of its optic methods itself. Inheriting `OpticsSpec<S>` or an optic method from another interface is not supported yet.
+
+---
+
+## Building Richer Tools
+
+The generated prisms are primitives. Real JSON work wants field access, array traversal and value extraction, which are compositions of those primitives. Put them in an ordinary utility class:
+
+```java
+  /**
+   * A named field of an object node: empty when the node is not an object, or has no such field.
+   */
+  public static Affine<JsonNode, JsonNode> field(String name) {
+    return JsonNodeOptics.object()
+        .andThen(
+            Affine.of(
+                obj -> Optional.ofNullable(obj.get(name)),
+                (obj, value) -> {
+                  ObjectNode copy = obj.deepCopy();
+                  copy.set(name, value);
+                  return copy;
+                }));
+  }
+
+```
+
+```java
+  /** Every element of an array node, rebuilt as an array node after modification. */
+  public static Traversal<JsonNode, JsonNode> elements() {
+    return JsonNodeOptics.array()
+        .andThen(
+            Traversals.<ArrayNode, JsonNode>forIterableCollecting(
+                list -> {
+                  ArrayNode rebuilt = JsonNodeFactory.instance.arrayNode();
+                  list.forEach(rebuilt::add);
+                  return rebuilt;
+                }));
+  }
+
+```
+
+```java
+  /** The String behind a string node. */
+  public static Affine<JsonNode, String> textValue() {
+    return JsonNodeOptics.text()
+        .andThen(
+            Affine.of(
+                node -> Optional.of(node.stringValue()),
+                (node, value) -> (StringNode) JsonNodeFactory.instance.stringNode(value)));
+  }
+
+  /** The double behind a numeric node. */
+  public static Affine<JsonNode, Double> numericValue() {
+    return JsonNodeOptics.numeric()
+        .andThen(
+            Affine.of(
+                node -> Optional.of(node.doubleValue()),
+                (node, value) -> DoubleNode.valueOf(value)));
+  }
+```
+
+Each is a prism composed with a hand-written `Affine` or `Traversal`, and the result types tell the story: `field` may miss (an `Affine`), `elements` may hit many (a `Traversal`).
+
+~~~admonish warning title="Composed optics do not belong in the spec interface"
+A `default` method on a spec interface looks like the natural home for these, but it is not: the processor cannot read a method body during annotation processing, so there is nothing for the generated class to carry. The processor rejects one at the declaration, naming the two homes composition does have. Keep the spec interface to annotated abstract methods, and build everything else either in a `static` method on the interface or, as here, in a normal class; both call the generated statics.
+~~~
+
+---
+
+## A Real Pipeline: API Response Processing
+
+The response this page works on:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "users": [
+      { "id": 1, "name": "Alice", "email": "alice@example.com", "age": 32 },
+      { "id": 2, "name": "Bob",   "email": "bob@example.com",   "age": 28 },
+      { "id": 3, "name": "Carol", "email": "carol@example.com", "age": 45 }
+    ],
+    "page": 1
+  }
+}
+```
+
+Name the paths once, at the top of the class, and the business logic reads as intent:
+
+```java
+  /** Each user object inside data.users. */
+  static final Traversal<JsonNode, JsonNode> EACH_USER =
+      JsonPaths.field("data").andThen(JsonPaths.field("users")).andThen(JsonPaths.elements());
+
+  // A Traversal composes with an Affine through asTraversal(): there is no
+  // Traversal.andThen(Affine) overload, because the result is a Traversal either way.
+  /** Every user's email address, as a String. */
+  static final Traversal<JsonNode, String> USER_EMAILS =
+      EACH_USER.andThen(JsonPaths.field("email").andThen(JsonPaths.textValue()).asTraversal());
+
+  /** Every user's age, as a double. */
+  static final Traversal<JsonNode, Double> USER_AGES =
+      EACH_USER.andThen(JsonPaths.field("age").andThen(JsonPaths.numericValue()).asTraversal());
+
+  /** The page number: a single value, so an Affine rather than a Traversal. */
+  static final Affine<JsonNode, Double> PAGE =
+      JsonPaths.field("data").andThen(JsonPaths.field("page")).andThen(JsonPaths.numericValue());
+
+```
+
+Those four constants are the whole abstraction. `Traversals.getAll` reads through them, `Traversals.modify` writes through them, and `filtered` narrows them, exactly as shown at the top of this page.
+
+~~~admonish tip title="Why this matters"
+The JSON structure is now stated in one place. When the API moves `users` under a `payload` wrapper, you change one composition and every reader and writer follows. Compare the defensive version, where the shape is restated at every access site as a chain of `has()` and `isArray()` checks, and a structural change means finding all of them.
+~~~
+
+~~~admonish warning title="Composing a Traversal with an Affine"
+`Traversal` has `andThen` overloads for `Traversal`, `Lens` and `Prism`, but not for `Affine`. Convert first: `traversal.andThen(affine.asTraversal())`. The result is a `Traversal` either way, since a traversal composed with anything stays a traversal.
+~~~
+
+---
+
+## `@InstanceOf` versus `@MatchWhen`
+
+**`@InstanceOf`** is for hierarchies whose variants are real Java subtypes:
+
+<!-- verify -->
+```java
+@InstanceOf(ObjectNode.class)
+Prism<JsonNode, ObjectNode> object();
+// generates: node instanceof ObjectNode o ? Optional.of(o) : Optional.empty()
+```
+
+**`@MatchWhen`** is for libraries that expose a check-then-extract pair instead of subtypes:
+
+<!-- verify -->
+```java
+@MatchWhen(predicate = "isObject", getter = "asObject")
+Prism<Value, ObjectValue> object();
+// generates: value.isObject() ? Optional.of(value.asObject()) : Optional.empty()
+```
+
+Both produce a `Prism`, so both compose the same way afterwards. Pick by what the library gives you: a type to test, or a method to ask.
+
+~~~admonish warning title="The focus has to be a variant, not the value it carries"
+A prism runs both ways. The generated one builds back with identity — it returns the value it narrowed — so the focus must be a type the source accepts:
+
+<!-- verify:rejects "focuses 'String', which is not a 'Value'" -->
+```java
+@ImportOptics
+interface ValueOpticsSpec extends OpticsSpec<Value> {
+
+    @MatchWhen(predicate = "isString", getter = "asString")
+    Prism<Value, String> string();   // rejected: a String is not a Value
+}
+```
+
+There is nothing the processor could rebuild a `Value` from a bare `String` with. Focus the variant that carries it — `StringValue`, `TextNode` — and read the payload with a lens or a further optic. Where the value type really is the point, write that prism by hand with `Prism.of` and a build side that constructs the source, such as `TextNode::valueOf`.
+~~~
+
+### Parameterised Targets
+
+`@InstanceOf` takes a class constant, which is always raw, and the generated test runs after erasure. A parameterised target may therefore only be narrowed to the type arguments the source type *pins down* — the ones a value of that source type must already have had to reach the test at all.
+
+```mermaid
+flowchart TD
+    T["@InstanceOf(Circle.class)<br/>Prism&lt;S, Circle&lt;T&gt;&gt;"] --> Q{"Does S carry the<br/>argument Circle is<br/>reached under?"}
+    Q -->|"Shape&lt;T&gt;, and<br/>Circle&lt;X&gt; implements Shape&lt;X&gt;"| P(["source instanceof Circle&lt;T&gt;<br/>javac checks it"])
+    Q -->|"Shape, which<br/>declares nothing"| E(["Rejected: declare<br/>Circle&lt;?&gt;, or use @MatchWhen"])
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef error fill:#e78284,stroke:#d20f39,color:#232634
+    class T tier
+    class Q decision
+    class P tier
+    class E error
+```
+
+A generic hierarchy pins its own argument, so the prism can promise it. `T` is the spec's own type parameter, and `Circle<X> implements Shape<X>` is what lets the test check it:
+
+<!-- verify -->
+```java
+sealed interface Shape<X> permits Circle {}
+record Circle<X>(X tag) implements Shape<X> {}
+
+@ImportOptics
+interface ShapeOpticsSpec<T> extends OpticsSpec<Shape<T>> {
+
+    @InstanceOf(Circle.class)
+    Prism<Shape<T>, Circle<T>> circle();
+    // generates: source instanceof Circle<T> t ? Optional.of(t) : Optional.empty()
+}
+```
+
+A base that says nothing about the argument pins nothing. Every instantiation passes the same test, so the same declaration is rejected:
+
+<!-- verify:rejects "which the test cannot narrow to" -->
+```java
+class Shape {}
+class Circle<X> extends Shape {}
+
+@ImportOptics
+interface ShapeOpticsSpec<T> extends OpticsSpec<Shape> {
+
+    @InstanceOf(Circle.class)
+    Prism<Shape, Circle<T>> circle();   // rejected: nothing checks T
+}
+```
+
+Widened to the wildcard, which is what the test earns, it is accepted — and the spec needs no type parameter of its own once the prism stops promising one:
+
+<!-- verify -->
+```java
+@ImportOptics
+interface ShapeOpticsSpec extends OpticsSpec<Shape> {
+
+    @InstanceOf(Circle.class)
+    Prism<Shape, Circle<?>> circle();
+    // generates: source instanceof Circle<?> t ? Optional.of(t) : Optional.empty()
+}
+```
+
+~~~admonish info title="Where the argument matters"
+Widening to `Circle<?>` keeps the prism, at the cost of the argument. Where you need the argument, `@MatchWhen` is the sound alternative: it narrows through a predicate and getter of the source type, so the argument is the source's to honour rather than the test's to invent.
+~~~
+
+---
+
+## Layering Domain Optics
+
+The paths above are still shaped like the JSON. One more layer names them in the language of the domain, so the rest of the code never mentions `field("data")` at all:
+
+```java
+public final class UserJson {
+
+  private UserJson() {}
+
+  public static Traversal<JsonNode, String> emails() {
+    return JsonApiBook.USER_EMAILS;
+  }
+
+  public static Traversal<JsonNode, Double> ages() {
+    return JsonApiBook.USER_AGES;
+  }
+
+  public static Affine<JsonNode, Double> page() {
+    return JsonApiBook.PAGE;
+  }
+}
+```
+
+Now a service reads `UserJson.emails()`, and the wire format is an implementation detail of one class. (`USER_EMAILS`, `USER_AGES` and `PAGE` are package-private, so this facade sits in the same package as them; in your own code make them `public` or put the facade alongside.)
+
+---
+
+## Generic Spec Interfaces
+
+A spec interface can carry type parameters of its own, and the source type can name them:
+
+<!-- verify -->
+```java
+@ImportOptics
+public interface BoxOpticsSpec<U> extends OpticsSpec<Box<U>> {
+    @Wither("withLabel")
+    Lens<Box<U>, String> label();
+}
+```
+
+generates `public static <U> Lens<Box<U>, String> label()`. The parameters are the *spec's*, not the source type's, so you name them: `Box<T>`'s own `T` never appears.
+
+Each method declares the parameters **its own** source and focus types reach, which is what makes the two edges work:
+
+| the spec declares | the method | why |
+|---|---|---|
+| `<U>`, source `Box<U>` | `static <U> Lens<Box<U>, String>` | reached by the source type |
+| nothing, source `Box<String>` | `static Lens<Box<String>, String>` | a concrete instantiation reaches nothing |
+| `<T>`, source `Shape` | `static <T> Prism<Shape, Circle<T>>` | reached by the **focus** alone |
+| `<T, UNUSED>`, source `Box<T>` | `static <T> Lens<Box<T>, String>` | `UNUSED` is reached by neither |
+
+The third row is worth noting: the source type need not be generic at all. A prism or traversal whose *focus* is parameterised brings the parameter in on its own.
+
+One parameter is carried without being reached directly — one that a kept parameter's bound names, since the bound has to resolve. `interface SubjectOpticsSpec<T, V extends List<T>> extends OpticsSpec<Box<V>>` focused through `V` generates `static <T, V extends List<T>> Lens<Box<V>, String> label()`: `T` appears nowhere in the signature's source or focus, and is declared anyway so that `V`'s bound means something.
+
+An optic method cannot declare parameters of its own. The source type is fixed by `OpticsSpec<S>`, so nothing could ever bind them, and the declaration is rejected rather than generating a method no call could resolve:
+
+<!-- verify:rejects "declares its own type parameters" -->
+```java
+@ImportOptics
+interface BoxOpticsSpec extends OpticsSpec<Box<String>> {
+
+    @Wither("withContent")
+    <X> Lens<Box<String>, X> content();
+}
+```
+
+---
+
+## The fine print: error reporting
+
+A raw optic answers "is it there?" and nothing more: a missing field and a field of the wrong type both come back as an empty `Optional`. When you need to know *which* it was, the answer is not a special optic but the surrounding machinery:
+
+- **[ValidatedPrism](validated_prism.md)** parses instead of matching, returning `Validated<NonEmptyList<FieldError>, A>` with a located error per failure.
+- **[`OpticOps` validation methods](fluent_api.md#part-2-validation-aware-modification)** run a validating function through a traversal, accumulating every failure.
+- **[Mapping at the Boundary](../mapping/ch_intro.md)** is the whole-boundary answer: a generated `parse` that reports every bad field at once, each located by path.
+
+Reach for optics to *navigate*, and for one of those to *diagnose*.
+
+---
+
+## Beyond Jackson
+
+The same pattern fits any external type that resists auto-detection: Protocol Buffers (`@MatchWhen` on the generated `hasX`/`getX` oneof accessors, where the field is a message type rather than a scalar), XML DOM (prisms for element types), compiler or parser ASTs, and awkward legacy library types. The next page covers the other half of the story, the copy strategies (`@ViaBuilder`, `@Wither`, `@ViaConstructor`, `@ViaCopyAndSet`) that give you lenses rather than prisms.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **A spec interface declares primitives, nothing more.** One annotated abstract method per optic, and the processor generates a class of statics.
+* **`@InstanceOf` for real subtypes, `@MatchWhen` for check-and-extract APIs.** Both yield prisms.
+* **Composed helpers belong in a plain class**, or in a `static` method on the spec interface. A `default` method is rejected at the declaration, because its body cannot be carried into the generated class.
+* **A `Spec` suffix is stripped from the generated name**, so `JsonNodeOpticsSpec` gives you `JsonNodeOptics`; any other name gains `Impl`.
+* **Name the paths once.** Structure lives in the composition, so an API change is a one-line edit rather than a search.
+~~~
+
+~~~admonish example title="Testing a spec interface's optics"
+The generated prisms are ordinary optics, so the law harness applies:
+
+<!-- verify -->
+```java
+PrismLaws.assertPrismLaws(JsonNodeOptics.object(), anObjectNode, aStringNode);
+```
+
+See [Test Assertions](../tooling/test_assertions.md#optic-laws) for the full family.
+~~~
+
+~~~admonish tip title="See Also"
+- [Optics for External Types](importing_optics.md): `@ImportOptics` and what auto-detection covers
+- [Database Records with JOOQ](copy_strategies.md): `@ViaBuilder` and the other copy strategies
+- [Validated Prisms](validated_prism.md): parsing rather than matching, with located errors
+~~~
+
+~~~admonish tip title="Further Reading"
+- **Jackson**: [jackson-databind](https://github.com/FasterXML/jackson-databind): core databinding. Jackson 3.x moved the packages from `com.fasterxml.jackson` to `tools.jackson`, and renamed `TextNode` to `StringNode`
+- **Gson**: [github.com/google/gson](https://github.com/google/gson): the same spec-interface pattern fits its `JsonElement` hierarchy
+- **Jakarta JSON Processing**: [jakarta.ee](https://jakarta.ee/specifications/jsonp/): the standard API, another `@InstanceOf` candidate
+~~~
+
+---
+
+**Previous:** [Optics for External Types](importing_optics.md)
+**Next:** [Database Records with JOOQ](copy_strategies.md)

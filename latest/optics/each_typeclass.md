@@ -1,0 +1,458 @@
+# Each: Canonical Element-Wise Traversal
+
+## _One Canonical Traversal per Container_
+
+> *"Simplicity is the ultimate sophistication."*
+>
+> – Leonardo da Vinci
+
+~~~admonish info title="What You'll Learn"
+- How the `Each` type class provides canonical traversals for container types
+- Using `EachInstances` for Java collections (List, Set, Collection, Map, Optional, arrays, Stream, VStream, String)
+- Using `EachExtensions` for HKT types (Maybe, Either, Try, Validated)
+- Indexed traversal support via `EachIndexed.indexedTraversal()` for position-aware operations
+- Integration with Focus DSL using `.each(Each)` method
+- Creating custom `Each` instances for your own types
+- When to use `Each` vs direct `Traversal` creation
+~~~
+
+~~~admonish example title="See Example Code"
+[EachInstancesExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/EachInstancesExample.java)
+~~~
+
+Every container type has a natural way to traverse its elements. A `List` iterates from first to last. A `Map` visits each value. An `Optional` yields zero or one element. The **Each** type class captures this canonical traversal pattern, providing a uniform interface across diverse container types.
+
+Rather than writing traversal logic repeatedly for each container, `Each` gives you a single method: `each()`. Call it, receive a `Traversal`, and you're ready to read or modify all elements.
+
+---
+
+## The Problem: Repeated Traversal Patterns
+
+When working with different container types, you often need similar traversal operations:
+
+<!-- verify -->
+```java
+// List: traverse all elements
+Traversal<List<String>, String> listTraversal = Traversals.forList();
+
+// Map: traverse all values
+Traversal<Map<String, Integer>, Integer> mapTraversal = Traversals.forMapValues();
+
+// Optional: traverse the value if present
+Traversal<Optional<String>, String> optTraversal = Traversals.forOptional();
+
+// Each time you need a traversal, you must know which factory method to use
+```
+
+With `Each`, the pattern becomes uniform:
+
+<!-- verify -->
+```java
+// Get the canonical traversal for any container
+Traversal<List<String>, String> listTrav = EachInstances.<String>listEach().each();
+Traversal<Map<String, Integer>, Integer> mapTrav = EachInstances.<String, Integer>mapValuesEach().each();
+Traversal<Optional<String>, String> optTrav = EachInstances.<String>optionalEach().each();
+```
+
+More importantly, `Each` integrates with the Focus DSL, enabling fluent navigation through any container type.
+
+---
+
+## Think of Each Like...
+
+* **A universal remote**: One interface controls many devices
+* **An iterator factory**: Each container knows how to produce its own iterator
+* **A catalogue index**: Every library has a standard way to browse its contents
+* **The "for-each" loop**: Java's enhanced for loop works on any `Iterable`; `Each` works on any container
+
+The key insight: `Each` abstracts the *how* of traversal, letting you focus on the *what*.
+
+---
+
+## The Each Type Class
+
+```java
+@FunctionalInterface
+public interface Each<S, A> {
+
+    // The canonical traversal for all elements
+    Traversal<S, A> each();
+
+    // Check if indexed access is supported (i.e. this is an EachIndexed).
+    // The real body also falls back to the deprecated eachWithIndex() for
+    // back-compatibility; that member is omitted here for clarity.
+    default boolean supportsIndexed() {
+        return this instanceof EachIndexed<?, ?, ?>;
+    }
+}
+
+// Containers with a meaningful index implement EachIndexed, which fixes the
+// index type I at the type level: no Optional, no cast.
+public interface EachIndexed<I, S, A> extends Each<S, A> {
+    IndexedTraversal<I, S, A> indexedTraversal();
+}
+```
+
+The interface is simple by design. Implement `each()` to provide a traversal; if your container has meaningful indices, implement `EachIndexed` and provide `indexedTraversal()` instead.
+
+~~~admonish warning title="Deprecated: eachWithIndex()"
+Earlier releases exposed `Each.eachWithIndex()`, which returned an `Optional<IndexedTraversal<I, S, A>>` and let the caller choose the index type `<I>` freely even though the real index type was fixed; a mismatched request compiled but failed at runtime with a `ClassCastException`. It is **deprecated (for removal in 0.5.0)** in favour of `EachIndexed.indexedTraversal()`, which fixes the index type at the type level and needs no `Optional` unwrap. Migrate by typing the variable as `EachIndexed` and calling `indexedTraversal()` directly.
+~~~
+
+---
+
+## Available Each Instances
+
+### Standard Java Types (EachInstances)
+
+| Type | `each()` | Indexed? | Index type | Factory |
+|---|---|---|---|---|
+| `List<A>` | ✓ | ✓ | `Integer` | `listEach()` |
+| `Set<A>` | ✓ |   |   | `setEach()` |
+| `Collection<A>` | ✓ |   |   | `collectionEach()` |
+| `Map<K, V>` | ✓ | ✓ | `K` | `mapValuesEach()` |
+| `Optional<A>` | ✓ |   |   | `optionalEach()` |
+| `A[]` | ✓ | ✓ | `Integer` | `arrayEach()` |
+| `Stream<A>` | ✓ |   |   | `streamEach()` |
+| `VStream<A>` | ✓ |   |   | `vstreamEach()` |
+| `String` | ✓ | ✓ | `Integer` | `stringCharsEach()`, focusing `Character` |
+
+<!-- verify -->
+```java
+import org.higherkindedj.optics.each.EachInstances;
+
+// List traversal with index support
+Each<List<String>, String> listEach = EachInstances.listEach();
+
+// Set traversal (no meaningful index)
+Each<Set<Integer>, Integer> setEach = EachInstances.setEach();
+
+// Collection traversal: a set comes back a set, anything else comes back a list
+Each<Collection<String>, String> collectionEach = EachInstances.collectionEach();
+
+// Map values traversal with key as index
+Each<Map<String, Double>, Double> mapEach = EachInstances.mapValuesEach();
+
+// Optional traversal (0 or 1 element)
+Each<Optional<String>, String> optEach = EachInstances.optionalEach();
+
+// Array traversal with index support
+Each<Integer[], Integer> arrayEach = EachInstances.arrayEach();
+
+// Stream traversal (consumed during traversal)
+Each<Stream<String>, String> streamEach = EachInstances.streamEach();
+
+// VStream traversal (materialises during traversal; finite streams only)
+Each<VStream<String>, String> vstreamEach = EachInstances.vstreamEach();
+
+// String character traversal with index support
+Each<String, Character> stringEach = EachInstances.stringCharsEach();
+```
+
+### HKT Types (EachExtensions)
+
+For Higher-Kinded-J core types, use `EachExtensions`:
+
+| Type | `each()` | Indexed? | Factory | Focuses |
+|---|---|---|---|---|
+| `Maybe<A>` | ✓ |   | `maybeEach()` | the value when present |
+| `Either<L, R>` | ✓ |   | `eitherRightEach()` | the right side only |
+| `Try<A>` | ✓ |   | `trySuccessEach()` | the success only |
+| `Validated<E, A>` | ✓ |   | `validatedEach()` | the valid side only |
+
+<!-- verify -->
+```java
+import org.higherkindedj.optics.extensions.EachExtensions;
+
+// Maybe traversal (0 or 1 element)
+Each<Maybe<String>, String> maybeEach = EachExtensions.maybeEach();
+
+// Either right value traversal
+Each<Either<AppError, Value>, Value> eitherEach = EachExtensions.eitherRightEach();
+
+// Try success value traversal
+Each<Try<String>, String> tryEach = EachExtensions.trySuccessEach();
+
+// Validated valid value traversal
+Each<Validated<List<AppError>, Value>, Value> validatedEach = EachExtensions.validatedEach();
+```
+
+---
+
+## Basic Usage
+
+### Traversing All Elements
+
+<!-- verify -->
+```java
+Each<List<String>, String> listEach = EachInstances.listEach();
+Traversal<List<String>, String> traversal = listEach.each();
+
+List<String> names = List.of("alice", "bob", "charlie");
+
+// Get all elements
+List<String> all = Traversals.getAll(traversal, names);
+// Result: ["alice", "bob", "charlie"]
+
+// Modify all elements
+List<String> upper = Traversals.modify(traversal, String::toUpperCase, names);
+// Result: ["ALICE", "BOB", "CHARLIE"]
+
+// Set all elements to the same value (set is modify with a constant)
+List<String> same = Traversals.modify(traversal, _ -> "anonymous", names);
+// Result: ["anonymous", "anonymous", "anonymous"]
+```
+
+### Using Indexed Traversal
+
+When position matters, type the instance as `EachIndexed` and call `indexedTraversal()`. The index type (`Integer` for lists) is fixed at compile time:
+
+<!-- verify -->
+```java
+EachIndexed<Integer, List<String>, String> listEach = EachInstances.listEach();
+IndexedTraversal<Integer, List<String>, String> indexed = listEach.indexedTraversal();
+
+List<String> items = List.of("apple", "banana", "cherry");
+
+// Number each element
+List<String> numbered = IndexedTraversals.imodify(
+    indexed,
+    (index, value) -> (index + 1) + ". " + value,
+    items
+);
+// Result: ["1. apple", "2. banana", "3. cherry"]
+```
+
+### Map Key as Index
+
+For maps, the index is the key, so the `EachIndexed` index type is `K`:
+
+<!-- verify -->
+```java
+EachIndexed<String, Map<String, Integer>, Integer> mapEach = EachInstances.mapValuesEach();
+IndexedTraversal<String, Map<String, Integer>, Integer> indexed = mapEach.indexedTraversal();
+
+Map<String, Integer> scores = Map.of("alice", 100, "bob", 85, "charlie", 92);
+
+// Award a bonus point to one particular entrant, by key
+Map<String, Integer> adjusted = IndexedTraversals.imodify(
+    indexed,
+    (key, value) -> key.equals("bob") ? value + 5 : value,
+    scores
+);
+// Result: {"alice": 100, "bob": 90, "charlie": 92}
+
+// A traversal cannot change the value type: imodify takes A -> A and returns the
+// same map type. To build a differently-typed map, extract the pairs and collect:
+Map<String, String> labelled =
+    IndexedTraversals.toIndexedList(indexed, scores).stream()
+        .collect(toMap(Pair::first, pair -> pair.first() + ": " + pair.second()));
+```
+
+---
+
+## Integration with Focus DSL
+
+The Focus DSL is covered properly in [Java-Friendly APIs](ch4_intro.md); this section shows only where `Each` plugs into it, so skim it now and return when you reach that chapter.
+
+The Focus DSL provides an `.each(Each)` method on `FocusPath`, `AffinePath`, and `TraversalPath`. This enables fluent navigation through custom container types:
+
+<!-- verify -->
+```java
+record User(String name, List<Order> orders) {}
+record Order(String id, Map<String, Integer> items) {}
+
+// Create lenses
+Lens<User, List<Order>> ordersLens = Lens.of(User::orders, (u, o) -> new User(u.name(), o));
+Lens<Order, Map<String, Integer>> itemsLens = Lens.of(Order::items, (o, i) -> new Order(o.id(), i));
+
+// Navigate using Each instances
+FocusPath<User, List<Order>> userOrders = FocusPath.of(ordersLens);
+
+// Use listEach to traverse orders
+TraversalPath<User, Order> allOrders = userOrders.each(EachInstances.listEach());
+
+// Continue navigation
+TraversalPath<User, Map<String, Integer>> allItems = allOrders.via(itemsLens);
+
+// Use mapValuesEach to traverse item quantities
+TraversalPath<User, Integer> allQuantities = allItems.each(EachInstances.mapValuesEach());
+
+// Now modify all quantities across all orders
+User updated = allQuantities.modifyAll(qty -> qty * 2, user);
+```
+
+This is particularly useful when the container type isn't a standard `List` that `.each()` recognises automatically.
+
+---
+
+## Creating Custom Each Instances
+
+A custom instance implements `each()` by writing the traversal's `modifyF` directly; its `F extends WitnessArity<TypeArity.Unary>` bound is the same one `Traversal.modifyF` carries, naming the applicative effect the traversal runs in.
+
+For custom container types, implement the `Each` interface:
+
+<!-- verify -->
+```java
+// A simple tree structure
+public sealed interface Tree<A> {
+    record Leaf<A>(A value) implements Tree<A> {}
+    record Branch<A>(Tree<A> left, Tree<A> right) implements Tree<A> {}
+}
+
+// Each instance for Tree
+public static <A> Each<Tree<A>, A> treeEach() {
+    return new Each<>() {
+        @Override
+        public Traversal<Tree<A>, A> each() {
+            return new Traversal<>() {
+                @Override
+                public <F extends WitnessArity<TypeArity.Unary>> Kind<F, Tree<A>> modifyF(
+                        Function<A, Kind<F, A>> f,
+                        Tree<A> source,
+                        Applicative<F> app) {
+                    return switch (source) {
+                        case Tree.Leaf<A> leaf ->
+                            app.map(Tree.Leaf::new, f.apply(leaf.value()));
+                        case Tree.Branch<A> branch ->
+                            app.map2(
+                                modifyF(f, branch.left(), app),
+                                modifyF(f, branch.right(), app),
+                                Tree.Branch::new
+                            );
+                    };
+                }
+            };
+        }
+    };
+}
+```
+
+### From Existing Traversal
+
+If you already have a `Traversal`, wrap it:
+
+```java
+Traversal<MyContainer<A>, A> existingTraversal = ...;
+Each<MyContainer<A>, A> each = Each.fromTraversal(existingTraversal);
+```
+
+### From IndexedTraversal
+
+If you have an `IndexedTraversal`, `Each.fromIndexedTraversal` returns an `EachIndexed`, so you get both the element and indexed traversals with the index type preserved:
+
+```java
+IndexedTraversal<Integer, MyList<A>, A> indexed = ...;
+EachIndexed<Integer, MyList<A>, A> each = Each.fromIndexedTraversal(indexed);
+
+// Both work
+Traversal<MyList<A>, A> trav = each.each();
+IndexedTraversal<Integer, MyList<A>, A> iTrav = each.indexedTraversal();
+```
+
+---
+
+## Each vs Traverse
+
+You might wonder how `Each` relates to the `Traverse` type class from HKT. Here's the distinction:
+
+| Aspect | Each<S, A> | Traverse<F> |
+|--------|------------|-------------|
+| Works on | Concrete types (`List<A>`, `Map<K, V>`) | Higher-kinded types (`Kind<F, A>`) |
+| Returns | `Traversal<S, A>` | Sequence/traverse methods |
+| Use case | Optics composition | Applicative traversal |
+| Java-friendly | Very (no Kind wrappers) | Requires HKT encoding |
+
+**Use Each** when working with optics and standard Java collections. **Use Traverse** when working with HKT-encoded types and applicative effects.
+
+---
+
+## Common Patterns
+
+### Bulk Validation
+
+<!-- verify -->
+```java
+Each<List<Order>, Order> orderEach = EachInstances.listEach();
+Traversal<List<Order>, Order> allOrders = orderEach.each();
+
+// Validate all orders, accumulating errors
+Validated<List<String>, List<Order>> result = VALIDATED.narrow(allOrders.modifyF(
+    order -> validateOrder(order),
+    orders,
+    Instances.validated(Semigroups.list())
+));
+```
+
+### Conditional Modification with Index
+
+<!-- verify -->
+```java
+EachIndexed<Integer, List<Product>, Product> productEach = EachInstances.listEach();
+IndexedTraversal<Integer, List<Product>, Product> indexed = productEach.indexedTraversal();
+
+// Apply discount to even-indexed products
+List<Product> discounted = IndexedTraversals.imodify(
+    indexed,
+    (index, product) -> index % 2 == 0
+        ? product.withPrice(product.price() * 0.9)
+        : product,
+    products
+);
+```
+
+### Nested Container Navigation
+
+<!-- verify -->
+```java
+// User -> List<Project> -> Map<String, Task>
+Each<List<Project>, Project> projectEach = EachInstances.listEach();
+Each<Map<String, Task>, Task> taskEach = EachInstances.mapValuesEach();
+
+TraversalPath<User, Task> allTasks =
+    FocusPath.of(userProjectsLens)
+        .each(projectEach)
+        .via(projectTasksLens)
+        .each(taskEach);
+
+// Update all tasks across all projects
+User updated = allTasks.modifyAll(Task::markReviewed, user);
+```
+
+---
+
+## When to Use Each
+
+**Use Each when:**
+- You need a canonical traversal for a container type
+- Integrating with Focus DSL's `.each(Each)` method
+- Building reusable optics for custom containers
+- You want indexed access when available
+
+**Use direct Traversal when:**
+- You need a non-canonical traversal (e.g., every second element)
+- The traversal is one-off and doesn't need reuse
+- Performance is critical and you want to avoid the extra indirection
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **Each<S, A>** provides a canonical `Traversal<S, A>` for any container type
+* **EachInstances** covers Java collections: List, Set, Collection, Map, Optional, arrays, Stream, VStream, String
+* **EachExtensions** covers HKT types: Maybe, Either, Try, Validated
+* **EachIndexed.indexedTraversal()** returns an `IndexedTraversal` when the container supports meaningful indices (`eachWithIndex()` is deprecated for removal in 0.5.0)
+* **Focus DSL integration** via `.each(Each)` enables fluent navigation through custom containers
+* **Each.fromTraversal()** and **Each.fromIndexedTraversal()** wrap existing optics
+~~~
+
+~~~admonish tip title="See Also"
+- [Traversals](traversals.md): understanding the Traversal optic
+- [Indexed Optics](indexed_optics.md): position-aware operations with IndexedTraversal
+- [Focus DSL](focus_dsl.md): fluent path-based navigation
+- [Foldable and Traverse](../functional/foldable_and_traverse.md): the HKT Traverse type class
+~~~
+
+---
+
+**Previous:** [Indexed Optics: Advanced Patterns](indexed_optics_advanced.md)
+**Next:** [String Traversals](string_traversals.md)

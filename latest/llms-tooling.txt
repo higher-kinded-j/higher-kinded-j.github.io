@@ -1,0 +1,2400 @@
+# Higher-Kinded-J: Tooling
+
+> The "Tooling" chapter of the Higher-Kinded-J documentation, in reading
+> order, with its code examples inlined. llms.txt indexes the whole book, and
+> llms-full.txt holds all of it.
+
+<!-- Source: tooling/ch_intro.md -->
+
+<!-- description: Add Higher-Kinded-J with the Gradle or Maven plugin, catch Path type mismatches at compile time, migrate with OpenRewrite recipes, and test with hkj-test. -->
+
+# Tooling
+## _Build-Time Safety for Higher-Kinded-J_
+> _"Make illegal states unrepresentable."_
+> — Yaron Minsky
+
+Every Path type in Higher-Kinded-J can only chain with the same type. Mix a `MaybePath` into an `EitherPath` chain, and you get an `IllegalArgumentException` at runtime. The code compiles; the tests pass (until someone hits that branch); production breaks at 2 AM.
+
+The HKJ tooling catches these mistakes before your code ever runs. Both Gradle and Maven are supported with dedicated build plugins.
+
+---
+
+~~~admonish info title="In This Chapter"
+- **[Build Plugins](gradle_plugin.md)**: One-line setup for Gradle or Maven that configures dependencies, preview features, and compile-time checks automatically. This is the recommended way to add Higher-Kinded-J to a project; reach for it first.
+
+- **[Manual Gradle and Maven Setup](manual_setup.md)**: Full `build.gradle.kts` and `pom.xml` configuration for the projects that cannot use the build plugin (constrained environments, in-house build frameworks, or a conflicting plugin). The fallback, not the starting point.
+
+- **[Compile-Time Checks](compile_checks.md)**: A javac plugin that detects Path type mismatches at compile time, preventing runtime `IllegalArgumentException` errors. Follows a strict no-false-positives policy.
+
+- **[Migration Recipes](openrewrite.md)**: The `hkj-openrewrite` recipe catalogue for upgrading between Higher-Kinded-J releases. Covers the 0.2.x to 0.3.0 arity migration, detection-only effect-algebra helpers, and the 0.5.0 deprecation migration; runnable from Gradle or Maven.
+
+- **[Diagnostics](diagnostics.md)**: The `hkjDiagnostics` Gradle task or `mvn hkj:diagnostics` Maven goal that reports your current HKJ configuration, showing exactly which dependencies, compiler arguments, and checks are active.
+
+- **[Traversal Generator Plugins](generator_plugins.md)**: The 30 built-in generators that power `@GenerateTraversals`, covering JDK collections, HKJ core types, and five third-party libraries (Eclipse Collections, Guava, Vavr, Apache Commons, PCollections). Includes a guide to writing your own generator for custom container types.
+
+- **[PCollections Integration](pcollections_integration.md)**: Tests, benchmarks, and an example that confirm PCollections persistent collections (`PVector`, `PStack`) compose with the existing `ListKind` infrastructure through `java.util.List` compatibility, with no production code changes.
+
+- **[PCollections Optics](pcollections_optics.md)**: Seven `@GenerateTraversals` plugins that recognise `PVector`, `PStack`, `PSet`, `PSortedSet`, `PBag`, `PMap`, and `PSortedMap` fields and generate type-correct traversals against them.
+
+- **[Claude Code Skills](claude_code_skills.md)**: Eight bundled skills that bring contextual HKJ guidance directly into your editor. Covers Path selection, optics, record mapping, effect handlers, the effects-optics bridge, Spring Boot integration, functional core / imperative shell architecture, and AssertJ-based testing with hkj-test.
+
+- **[Testing With hkj-test](test_assertions.md)**: A test-scope dependency that ships fluent AssertJ helpers for every HKJ type. Replaces hand-written unwrapping with assertions that read like the business intent: `isRight()`, `hasJustValue(...)`, `whenExecuted().hasValue(...)`, and so on across discriminated unions, effect types, and monad transformers.
+~~~
+
+## Chapter Contents
+
+1. [Build Plugins](gradle_plugin.md) - One-line project setup for Gradle and Maven (recommended)
+2. [Manual Gradle and Maven Setup](manual_setup.md) - Full manual build configuration (fallback)
+3. [Compile-Time Checks](compile_checks.md) - Path type mismatch detection
+4. [Migration Recipes](openrewrite.md) - OpenRewrite recipes for upgrading between releases
+5. [Diagnostics](diagnostics.md) - Configuration reporting and troubleshooting
+6. [Traversal Generator Plugins](generator_plugins.md) - Supported types and custom generators
+7. [PCollections Integration](pcollections_integration.md) - PCollections compatibility through `ListKind`
+8. [PCollections Optics](pcollections_optics.md) - `@GenerateTraversals` plugins for PCollections types
+9. [Claude Code Skills](claude_code_skills.md) - In-editor guidance via Claude Code
+10. [Testing With hkj-test](test_assertions.md) - Fluent assertions for HKJ types
+
+---
+
+**Next:** [Build Plugins](gradle_plugin.md)
+
+<!-- Source: tooling/gradle_plugin.md -->
+
+# Build Plugins: One-Line HKJ Setup
+
+~~~admonish info title="What You'll Learn"
+- How to replace multi-block build configuration with a single plugin for Gradle or Maven
+- The full Gradle `hkj { }` extension DSL and its defaults
+- Maven plugin configuration via `<configuration>` block
+- How to enable Spring Boot integration
+- How to override the HKJ library version
+- Manual setup for projects not using the plugins
+~~~
+
+---
+
+## Before and After
+
+### Without the Plugin
+
+A manual setup requires dependencies, annotation processors, the compile-time checker, and preview flags wired into every task that needs them. The full build file runs to roughly 30 lines; see [Manual Gradle and Maven Setup](manual_setup.md) for the complete configuration.
+
+### With the Plugin
+
+```gradle
+// build.gradle.kts
+plugins {
+    id("io.github.higher-kinded-j.hkj") version "LATEST_VERSION"
+}
+```
+
+That is it. The plugin wires in dependencies, preview flags, compile-time checks, and Javadoc configuration automatically. It also enables "-parameters", which keeps constructor parameter names in the compiled class files: some copy strategies read them today, and the [record mapper](../mapping/ch_intro.md) uses them too. In a multi-module build, apply the plugin to **every** module that declares mapping specs or `@GenerateFocus` records other modules navigate into, not only the one that consumes them: a spec is nested through its generated `Impl` and a record is navigated through its generated `Focus`, so each must exist. See [Multi-module builds](manual_setup.md#multi-module-builds).
+
+### Using SNAPSHOT Versions
+
+SNAPSHOT versions of the plugin are published to the Sonatype snapshots repository. Add it to `pluginManagement` in your `settings.gradle.kts`:
+
+```gradle
+// settings.gradle.kts
+pluginManagement {
+    repositories {
+        maven {
+            url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+        }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+```
+
+You also need the same repository in your project's `repositories` block so the plugin can resolve HKJ library dependencies:
+
+```gradle
+// build.gradle.kts
+repositories {
+    mavenCentral()
+    maven {
+        url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+    }
+}
+```
+
+~~~admonish note
+Release versions are published to both Maven Central and the [Gradle Plugin Portal](https://plugins.gradle.org), so no extra repository configuration is needed for releases.
+~~~
+
+---
+
+## Extension DSL Reference
+
+The plugin creates an `hkj` extension block with these options:
+
+```gradle
+hkj {
+    version = "LATEST_VERSION"       // HKJ library version (default: plugin version)
+    preview = true           // add --enable-preview flags (default: true)
+    spring = false           // add the starter and the @HkjHttpClient processor (default: false)
+    skills = false           // install Claude Code skills (default: false)
+    checks {
+        pathTypeMismatch = true   // enable compile-time Path type checking (default: true)
+    }
+}
+```
+
+### Defaults
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `version` | Plugin version | Version of HKJ libraries to use |
+| `preview` | `true` | Adds `--enable-preview` to compile, test, exec, and javadoc tasks |
+| `spring` | `false` | Adds `hkj-spring-boot-starter` to `implementation`, and the `@HkjHttpClient` processor to every annotation processor configuration |
+| `skills` | `false` | Installs Claude Code skills into `.claude/skills/` during build |
+| `checks.pathTypeMismatch` | `true` | Enables compile-time Path type mismatch detection |
+
+With default settings, the plugin adds:
+
+- `hkj-core` to `implementation`
+- `hkj-processor-plugins` to `annotationProcessor`
+- `hkj-checker` to `annotationProcessor`
+- `--enable-preview` to `JavaCompile`, `Test`, `JavaExec`, and `Javadoc` tasks
+- `-parameters` to every `JavaCompile` task (unconditional)
+- `-Xplugin:HKJChecker` to compiler arguments
+
+---
+
+## Spring Boot Mode
+
+Enable Spring Boot integration to add the HKJ Spring Boot starter:
+
+```gradle
+hkj {
+    spring = true
+}
+```
+
+This adds `hkj-spring-boot-starter` to the `implementation` configuration, which provides auto-configuration for using HKJ types with Spring's dependency injection and web layer. It also adds `hkj-spring-boot-client-processor` to every annotation processor configuration, which generates the [`@HkjHttpClient`](../spring/declarative_http_clients.md) clients: a dependency never adds to the processor path, so the starter alone would not.
+
+~~~admonish tip title="See Also"
+- [Spring Boot Integration](../spring/spring_boot_integration.md) - Full guide to using HKJ with Spring Boot
+~~~
+
+---
+
+## Claude Code Skills
+
+Install eight Claude Code skills that provide contextual, in-editor guidance for HKJ:
+
+```gradle
+hkj {
+    skills = true
+}
+```
+
+This runs the `hkjInstallSkills` task during every build, copying skill files into `.claude/skills/`. You can also run the task manually:
+
+```bash
+./gradlew hkjInstallSkills
+```
+
+With the Maven plugin, `<skills>true</skills>` installs them during every build too.
+
+~~~admonish tip title="See Also"
+- [Claude Code Skills](claude_code_skills.md) - Full reference for the eight bundled skills
+~~~
+
+---
+
+## Version Management
+
+By default, the plugin uses its own published version for HKJ dependencies. Override this to pin a different version:
+
+```gradle
+hkj {
+    version = "0.2.2"    // use an older version
+}
+```
+
+All HKJ dependencies (`hkj-core`, `hkj-processor-plugins`, `hkj-checker`, `hkj-spring-boot-starter`, `hkj-spring-boot-client-processor`) use the same version.
+
+---
+
+## Disabling Features
+
+### Disable Preview Features
+
+If your project manages preview flags separately:
+
+```gradle
+hkj {
+    preview = false
+}
+```
+
+~~~admonish warning
+Higher-Kinded-J requires `--enable-preview` on Java 25. Disabling this means you must configure the flags yourself, or compilation will fail.
+~~~
+
+### Disable Compile-Time Checks
+
+To skip Path type mismatch detection:
+
+```gradle
+hkj {
+    checks {
+        pathTypeMismatch = false
+    }
+}
+```
+
+This removes `hkj-checker` from the annotation processor path and omits the `-Xplugin:HKJChecker` compiler argument.
+
+---
+
+## Maven Users
+
+### With the HKJ Maven Plugin
+
+The HKJ Maven plugin provides similar automation to the Gradle plugin. Add it with `<extensions>true</extensions>` so it can configure dependencies and compiler settings automatically:
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.higher-kinded-j</groupId>
+            <artifactId>hkj-bom</artifactId>
+            <version>LATEST_VERSION</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<build>
+    <plugins>
+        <plugin>
+            <groupId>io.github.higher-kinded-j</groupId>
+            <artifactId>hkj-maven-plugin</artifactId>
+            <version>LATEST_VERSION</version>
+            <extensions>true</extensions>
+        </plugin>
+    </plugins>
+</build>
+```
+
+The plugin automatically adds `hkj-core`, annotation processors, compile-time checks, and preview feature flags. Configure options in the `<configuration>` block:
+
+```xml
+<configuration>
+    <version>LATEST_VERSION</version>   <!-- HKJ library version (default: plugin version) -->
+    <preview>true</preview>              <!-- add --enable-preview flags (default: true) -->
+    <spring>false</spring>               <!-- add hkj-spring-boot-starter and the @HkjHttpClient processor (default: false) -->
+    <skills>false</skills>               <!-- install Claude Code skills (default: false) -->
+    <pathTypeMismatch>true</pathTypeMismatch>  <!-- enable compile-time checks (default: true) -->
+</configuration>
+```
+
+The plugin writes `<annotationProcessorPaths>` into every compiler execution, which replaces javac's processor discovery, so list any other processor, such as Lombok, there too. A build that names its processors in `<annotationProcessors>` gets HKJ's added to that list while `<version>` is unset or names the plugin's own release, and no HKJ processor on the path is pinned to another. Otherwise list them yourself: they are the names in that release's `hkj-processor` jar, under `META-INF/services/javax.annotation.processing.Processor`. Run diagnostics with `mvn hkj:diagnostics` or install skills with `mvn hkj:install-skills`.
+
+### Manual Maven Setup
+
+Projects that cannot apply the Maven plugin should see [Manual Gradle and Maven Setup](manual_setup.md) for the full `pom.xml`, including the BOM, annotation processors, the `HKJChecker` compiler plugin, and the preview flags for surefire and exec plugins.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **One line** (Gradle) or a short plugin block (Maven) replaces extensive build configuration
+* **Sensible defaults** enable preview features and compile-time checks out of the box
+* **Claude Code skills** bring contextual HKJ guidance directly into your editor
+* **Everything is optional** and can be disabled or overridden through DSL/configuration
+* **The BOM** manages versions across all HKJ modules for both Gradle and Maven
+~~~
+
+---
+
+**Previous:** [Tooling](ch_intro.md)
+**Next:** [Manual Gradle and Maven Setup](manual_setup.md)
+
+<!-- Source: tooling/manual_setup.md -->
+
+# Manual Gradle and Maven Setup
+
+~~~admonish info title="What You'll Learn"
+- Full manual `build.gradle.kts` configuration for Higher-Kinded-J
+- Full manual `pom.xml` configuration for Higher-Kinded-J
+- Snapshot repository configuration for both build tools
+~~~
+
+Most projects should use the [HKJ build plugin](gradle_plugin.md): a single line replaces all the boilerplate below. This page documents the full manual configuration for the projects that cannot use the plugin (constrained environments, in-house build frameworks, or plugins that conflict with the HKJ plugin). If the plugin is an option for you, start there instead.
+
+Both configurations below pin the release to **25** and enable preview features, which go together: `javac` accepts `--enable-preview` only for the release it is running on, so the toolchain has to be Java 25 as well. [Prerequisites](../quickstart.md#prerequisites) explains what the flag is for, and where it is genuinely needed.
+
+The Spring Boot starter, and the processor that generates `@HkjHttpClient` clients, are not covered here: [Declarative HTTP Clients](../spring/declarative_http_clients.md#step-1-add-the-starter) shows both, for Gradle and Maven.
+
+---
+
+## Gradle Manual Setup
+
+```gradle
+// build.gradle.kts
+plugins { java }
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }
+}
+
+dependencies {
+    implementation("io.github.higher-kinded-j:hkj-core:LATEST_VERSION")
+
+    // Optional: generates Focus paths and Effect paths for your records
+    annotationProcessor("io.github.higher-kinded-j:hkj-processor-plugins:LATEST_VERSION")
+}
+
+// Required: enable Java preview features
+tasks.withType<JavaCompile>().configureEach {
+    options.compilerArgs.add("--enable-preview")
+}
+
+tasks.withType<Test>().configureEach {
+    jvmArgs("--enable-preview")
+}
+
+tasks.withType<JavaExec>().configureEach {
+    jvmArgs("--enable-preview")
+}
+```
+
+### Gradle SNAPSHOT Configuration
+
+For SNAPSHOT versions of HKJ, add the Sonatype snapshots repository:
+
+```gradle
+repositories {
+    mavenCentral()
+    maven {
+        url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+    }
+}
+```
+
+---
+
+## Maven Manual Setup
+
+```xml
+<properties>
+    <maven.compiler.release>25</maven.compiler.release>
+    <maven.compiler.enablePreview>true</maven.compiler.enablePreview>
+</properties>
+
+<dependencies>
+    <dependency>
+        <groupId>io.github.higher-kinded-j</groupId>
+        <artifactId>hkj-core</artifactId>
+        <version>LATEST_VERSION</version>
+    </dependency>
+</dependencies>
+
+<build>
+    <plugins>
+        <!-- Optional: generates Focus paths and Effect paths for your records -->
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <version>3.14.1</version>
+            <configuration>
+                <annotationProcessorPaths>
+                    <path>
+                        <groupId>io.github.higher-kinded-j</groupId>
+                        <artifactId>hkj-processor-plugins</artifactId>
+                        <version>LATEST_VERSION</version>
+                    </path>
+                </annotationProcessorPaths>
+            </configuration>
+        </plugin>
+        <!-- Required: enable preview features for tests -->
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+                <argLine>--enable-preview</argLine>
+            </configuration>
+        </plugin>
+        <!-- Required: enable preview features for application execution -->
+        <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <configuration>
+                <executable>java</executable>
+                <arguments>
+                    <argument>--enable-preview</argument>
+                </arguments>
+            </configuration>
+        </plugin>
+    </plugins>
+</build>
+```
+
+### Maven SNAPSHOT Configuration
+
+For SNAPSHOT versions, add the Sonatype snapshots repository to your `pom.xml`:
+
+```xml
+<repositories>
+    <repository>
+        <id>central-snapshots</id>
+        <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+        <snapshots>
+            <enabled>true</enabled>
+        </snapshots>
+    </repository>
+</repositories>
+```
+
+---
+
+~~~admonish tip title="Prefer the Plugin"
+The [HKJ build plugin](gradle_plugin.md) handles all of the above (dependencies, preview flags, annotation processors, and compile-time Path type checking) with a single `plugins { }` block. Unless you have a specific reason to avoid it, the plugin is the recommended path.
+~~~
+
+---
+
+## Incremental compilation
+
+The HKJ annotation processors register with Gradle's incremental annotation processing: the processors that generate code as aggregating, since cross-spec features such as nested mapping resolution may read any annotated element in the compilation and the mapping processors also read the classpath index described below; and `CompanionAnnotationProcessor`, which generates nothing and claims hkj's annotations so that `-Xlint:processing` does not report them, as isolating. A source set using them keeps incremental compilation; no configuration is needed. Unregistered third-party processors on the same processor path disable incrementality for the whole source set, so if compile times regress, audit the other entries on the path first.
+
+## Multi-module builds
+
+A `@GenerateMapping` spec compiled in one module is found by the specs of another through an index the processor writes beside each generated `Impl` ([Across modules](../mapping/structure.md#across-modules) explains the resolution). The index travels in the jar as an empty class in the package `org.higherkindedj.mapping.index`, and four things follow for the build:
+
+- **Every module that declares specs needs `hkj-processor` on its processor path**, not only the one that nests them. A module compiled without it has no `Impl` and no index entry, and a downstream spec reports its pair as having no usable source.
+- **A spec newly added to a dependency may need a clean downstream build.** Gradle recompiles a source set when its classpath changes, but chooses which sources to recompile from what they reference, and no downstream source references an index entry. Until the downstream module is rebuilt from clean, or one of its sources changes, the new spec can go unseen.
+- **The index is classpath-only.** A module with a `module-info` neither writes nor reads it, not supported yet, since the index is one package that two modules cannot share; for the same reason two spec-carrying jars cannot serve as automatic modules side by side. Across such a boundary, delegate with a leaf calling the other `Impl`'s `asValidatedPrism()`.
+- **The index can be turned off.** The processor option `-Ahkj.mapping.index=false` (in Gradle, `options.compilerArgs.add("-Ahkj.mapping.index=false")` on the compile task) makes a compilation write no entries and read none, which is what a library bound for a module path beside other spec-carrying jars wants. A downstream spec that then cannot find a pair says the index is off.
+
+A [shared vocabulary](../mapping/codecs.md#shared-vocabulary-mix-in-interfaces) is the exception to all four, because it is a plain interface rather than a spec and is found by ordinary inheritance rather than through the index. The module publishing one needs **no processor at all**, only the library its members name (`hkj-core` for a `ValidatedPrism` leaf, `hkj-api` for a `Getter`), and none of the caveats above apply to it: no index entry to go unseen, and a `module-info` or a disabled index does not stop a downstream spec extending it. So the module that owns an API's house vocabulary need not be a mapping module at all. What it does need is to be on the compile classpath wherever a spec extending it is used. A dependency's spec is read from its class file against the consumer's compile classpath, so a vocabulary the dependency declares with `implementation` leaves that spec unreadable downstream: a use site nesting it fails, naming the missing interface. Either the consumer declares the vocabulary's module itself, or the dependency exposes it with `api` rather than `implementation`, which needs the `java-library` plugin applied alongside HKJ's.
+
+Navigators across modules use no index either. A [navigator](../optics/focus_navigation.md#which-fields-get-a-navigator) into a record declared in a dependency composes the `Focus` class that dependency generated, so **a module whose `@GenerateFocus` records are navigated from elsewhere needs the processor too**; without it, a consumer keeps the plain path for those fields and says so in a note. A consumer composes only what the dependency published, so the two need not share a processor version or generator plugins to compile. What a consumer does need is to see the types a field names: a field whose type comes from one of the dependency's own dependencies is left out of the consumer's navigator, with a note, unless that type is on the consumer's compile classpath. Either the consumer declares that module itself, or the dependency exposes it with `api` rather than `implementation`, which needs the `java-library` plugin applied alongside HKJ's, since HKJ's applies plain `java`. As with specs, a dependency newly given the processor may need a clean downstream build before its records become navigable: no downstream source references the new `Focus` classes, so Gradle has nothing to recompile.
+
+## Lombok {#lombok}
+
+Lombok and the HKJ processors run in the same javac invocation, and the pairing is covered by a test in the HKJ build: a `@Data` class works as a bean-shaped `@GenerateMapping` wire, with the generated getters and setters visible to the bean analyser. **Order matters: list Lombok before `hkj-processor`** (within a javac round, processors run in listed order, and the bean analyser needs the accessors already materialised; the reverse order fails with a clear diagnostic). No binding artefact is needed beyond that:
+
+```gradle
+dependencies {
+    annotationProcessor("org.projectlombok:lombok:LOMBOK_VERSION")
+    annotationProcessor("io.github.higher-kinded-j:hkj-processor:LATEST_VERSION")
+    compileOnly("org.projectlombok:lombok:LOMBOK_VERSION")
+}
+```
+
+## Mapping over types other processors generate {#mapping-over-types-other-processors-generate}
+
+A mapping may name a type another annotation processor writes in the same compilation: a wire class generated from a schema, say, or a value type another library generates. Such a type does not exist until the processing round after the one that writes it, so the mapping processors wait for it. A `@GenerateMapping` or `@GenerateMerge` spec whose domain or wire type, or anything read from them (a record component, a bean property, a builder, a mix-in method), names a type not written yet is generated once that type exists, and so is any spec that nests it. It maps exactly as it would were the type written by hand, and nothing needs configuring.
+
+If the type never appears, for example because the processor that writes it is missing from the processor path, the spec generates nothing. javac's own error names the missing type, and code that uses the spec's `Impl` reports that `Impl` missing too; supply the type and both errors go.
+
+---
+
+**Previous:** [Build Plugins](gradle_plugin.md)
+**Next:** [Compile-Time Checks](compile_checks.md)
+
+<!-- Source: tooling/compile_checks.md -->
+
+# Compile-Time Checks: the HKJ Checker
+
+~~~admonish info title="What You'll Learn"
+- Every check the HKJ compile-time checker performs, and what each catches
+- How to configure (disable / change severity) individual checks
+- The javac-plugin-only boundary, and the no-false-positives policy
+~~~
+
+The HKJ checker is a `javac` compiler plugin (`hkj-checker`) that catches
+Higher-Kinded-J mistakes during compilation instead of at runtime (or,
+for the silent ones, instead of never). It is the **authoritative
+reference** for what is detected; the per-feature *Common Compiler
+Errors* chapters cross-link here.
+
+---
+
+## Why a checker
+
+Many HKJ mistakes are *silent*: the code type-checks (generics erasure
+hides the problem) and only fails at runtime (or, worse, carries the
+wrong value silently). A representative example:
+
+```java
+MaybePath<Integer> r = Path.just(1).via(n -> Path.io(() -> n + 1)); // IOPath, not MaybePath
+```
+
+This compiles, then throws `IllegalArgumentException` at runtime. The
+checker turns this class of bug into a compile-time diagnostic.
+
+~~~admonish warning title="javac-plugin-only boundary"
+The checker runs inside `javac`, driven by the HKJ Gradle/Maven plugin
+(or a manual `-Xplugin:HKJChecker`). **IDEs and non-`javac` compilers
+do not run it**. There you still see only the raw compiler message (or
+nothing, for the silent cases). The *Common Compiler Errors* chapters
+remain the reference for that audience; this page is the reference for
+what the checker adds on top in a plugin-driven build/CI.
+~~~
+
+---
+
+## What the checker detects
+
+Each check has an id (used for configuration). **Default** is the
+severity when nothing is configured; *warn-default* checks are the
+"sole signal over javac-accepted code" ones, kept at warning during
+soak.
+
+| Check id | Detects | Default | Companion to a javac error? |
+|---|---|---|---|
+| `path-type-mismatch` | Different Path types mixed in `via`/`then`/`zipWith`/`zipWith3`/`recoverWith`/`orElse` | error | No: sole signal (else runtime `IllegalArgumentException`) |
+| `effect-composition` | `Interpreters.combine()` called with an unsupported arity | error | Companion |
+| `transformer-missing-monad` | Zero-arg construction of `EitherT`/`OptionalT`/`MaybeT`/`ReaderT`/`StateT`/`WriterTMonad` (the outer `Monad<F>`, and `Monoid<W>` for WriterT, is required) | error | Companion |
+| `free-switch-exhaustive` | A `switch` over `Free` matching `Pure`/`Suspend`/`FlatMapped` but missing `HandleError`/`Ap` | error | Companion |
+| `discarded-effect` | A **deferred** path (`IOPath`/`VTaskPath`/`LazyPath`/`FreePath` — the `Deferred` capability) built then dropped as a bare statement, a silent no-op. Eager paths are out of scope: their work has already happened | error | No: sole signal |
+| `state-t-mapt-arity` | `StateT.mapT(f)` missing the leading `Monad<G>` (only `StateT.mapT` takes it) | error | Companion |
+| `error-type-mismatch` | An Either chain step whose error type `E` differs from the chain's and is silently erased through `Chainable<B>` (latent `ClassCastException`) | **warn** | No: sole signal |
+| `kind-value-narrow` | `.value()` on a bare `Kind` (it is on the concrete transformer; narrow first) | error | Companion |
+| `witness-arity` | A higher-kinded witness (type parameter or class) not `WitnessArity`-bounded, used as `Kind`/`Kind2`/`Monad`/`Functor`/`Applicative` | error | Companion |
+| `via-non-path` | `via`/`flatMap`/`then` given a function that returns a plain value instead of a Path (use `map`) | error | Companion |
+| `map-nests-effect` | `map` given a function that returns the **same** Path type: silently nests the effect; you meant `via` | **warn** | No: sole signal |
+| `migration-nudge` | `Free.liftF`/`Free.suspend` (→ FreePath/`*Ops`) and `InjectInstances.injectLeft/injectRight/injectRightThen` (→ `@ComposeEffects`): valid code, an ergonomics nudge | **warn** | No: advisory |
+| `raw-kind` | A raw `Kind`/`Kind2` used as a type (variable, parameter, field or cast): drops the witness type argument, the one compile-silent route to a wrong-witness `narrow()` and a runtime `KindUnwrapException` | **warn** | No: sole signal |
+
+"Companion" checks add an actionable HKJ message beside `javac`'s own
+cryptic error. "Sole signal" / "advisory" checks are the only
+compile-time signal (the code otherwise compiles), which is why the
+heuristic and advisory ones default to *warn*.
+
+~~~admonish tip title="Eager and deferred paths"
+`discarded-effect` fires only on the `Deferred` capability, because only
+there is a dropped statement a no-op:
+
+```java
+Path.just(1).peek(log);      // MaybePath: eager — log() has already run
+Path.io(() -> 1).peek(log);  // IOPath: deferred — log() never runs
+```
+
+Both discard their result; only the second did nothing. `Deferred` is a
+sealed capability over `IOPath`, `VTaskPath`, `VResultPath`,
+`ReaderPath`, `WithStatePath`, `LazyPath`, `StreamPath`, `VStreamPath`,
+`TrampolinePath` and `FreePath`. `CompletableFuturePath` is excluded —
+its future is already in flight — and so is `GenericPath`, whose
+laziness depends on the `F` it wraps.
+~~~
+
+~~~admonish info title="Generated sources are not checked"
+Every check is advice you are expected to act on, and nobody edits
+annotation-processor output — so the checker skips any type annotated
+`org.higherkindedj.optics.annotations.Generated`, wherever it sits in
+its file, along with everything nested inside it.
+
+Without that gate, `@EffectAlgebra`'s generated `*Ops` class would carry
+a `migration-nudge` telling you to use the generated `*Ops` smart
+constructors — from inside the very class that provides them. Your own
+call sites are checked as normal.
+
+Only HKJ's own marker gates this. `javax.annotation.processing.Generated`
+and its `jakarta` counterpart are *not* honoured: JaCoCo excludes any
+type carrying an annotation named `Generated`, so those markers are
+routinely hand-applied to hand-written code — as HKJ does itself with
+`org.higherkindedj.annotation.Generated`. Honouring them would let a
+coverage marker silently switch off every check on a file.
+~~~
+
+---
+
+## Configuration
+
+Checks are configured through the plugin argument string. `javac`
+splits `-Xplugin` on whitespace into the plugin name and its arguments:
+
+```
+-Xplugin:HKJChecker disable=<id>[,<id>...] severity=error|warn severity:<id>=error|warn
+```
+
+- `disable=<id>[,<id>...]`: turn the listed checks off entirely (e.g.
+  `disable=map-nests-effect,discarded-effect`).
+- `severity=error|warn`: the global default for the error-default
+  checks (default `error`). It does **not** silently promote the
+  warn-default checks (`error-type-mismatch`, `map-nests-effect`,
+  `migration-nudge`, `raw-kind`). Those stay `warn` unless promoted
+  explicitly.
+- `severity:<id>=error|warn`: override one check. Wins over the global
+  default and over a check's built-in default, so a team can promote a
+  warn-default check, e.g. `severity:error-type-mismatch=error`, or
+  downgrade a single error-default check.
+
+Resolution order for a check: an explicit `severity:<id>=…` override;
+else the warn-default checks stay `warn`; else the global `severity`.
+
+Unknown ids and unparseable values are ignored rather than failing the
+build. A typo in a compiler argument must never break compilation.
+
+### Opting out one declaration
+
+`disable=` is project-wide. To accept a single deliberate call site,
+name the check id in `@SuppressWarnings` on the enclosing class, method
+or variable — `hkj-checker` covers every check at once:
+
+```java
+@SuppressWarnings("migration-nudge") // the ergonomic layer the nudge points at
+public final class StateOps {
+    public static <S, A> Free<StateOpKind.Witness<S>, A> view(Getter<S, A> optic) {
+        // ...
+        return Free.liftF(StateOpKindHelper.STATE_OP.widen(op), functor());
+    }
+}
+```
+
+A local variable takes the token too, which is the narrowest scope
+available:
+
+<!-- verify -->
+```java
+@SuppressWarnings("path-type-mismatch") // deliberate: converted downstream
+var mixed = Path.just(1).via(_ -> Path.io(() -> 2));
+```
+
+Suppression is per check and accumulates outward-in: a token on a class
+reaches everything inside it, other checks on the same statement keep
+running, and a sibling declaration is unaffected. HKJ's own smart-
+constructor layer (`StateOps`, `ErrorOps`, `OpticPrograms`) and the
+`FreePath`/`FreeFactory` fluent API use exactly this — they are the
+layer `migration-nudge` steers callers towards, so they must build the
+`Free` primitives directly.
+
+Two deliberate limits. The tokens reach the *error*-default checks as
+well as the advisory ones, so `@SuppressWarnings("path-type-mismatch")`
+will silence a build-failing diagnostic — scope it narrowly. And javac's
+blanket `"all"` is **not** honoured: it is too common on legacy and
+generated code for a silent switch-off to be safe, so an HKJ opt-out is
+always spelled explicitly.
+
+### Manual setup
+
+~~~admonish note title="HKJ compiles under its own checker"
+Every module in this repository compiles with `-Xplugin:HKJChecker`
+(`hkj-checker` itself excepted — it cannot run itself while being built,
+and its fixtures violate the checks on purpose). The repo sits at zero
+findings, and the `-Werror` ratchet makes a regression a build failure.
+
+That is not ceremony: the library is the checks' most demanding user, and
+two false positives — a `requireNonNull` guard read as a discarded
+effect, and eager paths judged by the deferred rule — survived precisely
+because the checker had never been pointed at this codebase. Deliberate
+exceptions are spelled `@SuppressWarnings("<check-id>")` on the narrowest
+enclosing declaration; the test suites carry them wherever a violation is
+the behaviour under test.
+~~~
+
+The HKJ Gradle/Maven plugin enables the checker by default and passes
+the `-Xplugin` argument through; see
+[Build Plugins](gradle_plugin.md). Without the build plugin:
+
+**Gradle**
+
+```gradle
+dependencies {
+    annotationProcessor("io.github.higher-kinded-j:hkj-checker:<version>")
+}
+tasks.withType<JavaCompile>().configureEach {
+    options.compilerArgs.add("-Xplugin:HKJChecker disable=effect-composition")
+}
+```
+
+**Maven**
+
+```xml
+<annotationProcessorPaths>
+  <path>
+    <groupId>io.github.higher-kinded-j</groupId>
+    <artifactId>hkj-checker</artifactId>
+    <version>${hkj.version}</version>
+  </path>
+</annotationProcessorPaths>
+<compilerArgs>
+  <arg>-Xplugin:HKJChecker severity=warn</arg>
+</compilerArgs>
+```
+
+---
+
+## How it works
+
+A standard `com.sun.source.util.Plugin` hooks the `ANALYZE` phase (after
+type attribution). For each compilation unit a tree scanner runs the
+enabled checks, resolving types via the public `javax.lang.model`
+utilities (or, for the original mismatch check, javac's attributed
+types) and emitting diagnostics at the exact source location. It is
+part of normal compilation, with no separate build step.
+
+---
+
+## No false positives
+
+The checker follows a strict **no-false-positives policy**: it is
+better to miss a real mistake than to report a false one. When a type
+cannot be resolved (type variables, wildcards, method references,
+indirect construction, runtime polymorphism) the check is **skipped
+silently**. The library's runtime checks remain the safety net for
+anything the compiler cannot see.
+
+~~~admonish info title="Key Takeaways"
+* The checker catches 13 classes of HKJ mistake at compile time,
+  including several that are otherwise entirely silent.
+* Configure via `-Xplugin:HKJChecker disable=<id> severity=...`.
+* javac-plugin-only: IDEs/non-javac builds still rely on the
+  *Common Compiler Errors* chapters.
+* No false positives: unresolved cases are skipped, not guessed.
+~~~
+
+~~~admonish tip title="See Also"
+- [Build Plugins](gradle_plugin.md) - plugin setup and configuration
+- [Effect Compiler Errors](../effect/compiler_errors.md),
+  [Transformer Compiler Errors](../transformers/common_errors.md),
+  [Optics Compiler Errors](../optics/compiler_errors.md) - the
+  per-feature references (and the IDE/non-plugin audience)
+~~~
+
+---
+
+**Previous:** [Manual Gradle and Maven Setup](manual_setup.md)
+**Next:** [Migration Recipes](openrewrite.md)
+
+<!-- Source: tooling/openrewrite.md -->
+
+# Migration Recipes: hkj-openrewrite
+
+~~~admonish info title="What You'll Learn"
+- Every OpenRewrite recipe Higher-Kinded-J ships, and what each one does
+- How to run the recipes from Gradle or Maven (preview and apply)
+- Which recipes rewrite source automatically and which are detection-only, and why
+~~~
+
+The `hkj-openrewrite` module ships [OpenRewrite](https://docs.openrewrite.org/) recipes that automate migrations across Higher-Kinded-J releases and surface code that should adopt newer, safer APIs. Use them to upgrade between versions without hand-editing every call site.
+
+This page is the authoritative catalogue. The same recipe set is also referenced by the [`migration-nudge`](compile_checks.md) check in the `hkj-checker` compile-time plugin, which surfaces the detection-only recipes as compile-time nudges for projects that prefer feedback in the editor.
+
+---
+
+## Quick Start
+
+### Gradle
+
+```kotlin
+plugins {
+    id("org.openrewrite.rewrite") version "7.28.1"
+}
+
+dependencies {
+    rewrite("io.github.higher-kinded-j:hkj-openrewrite:LATEST_VERSION")
+}
+
+rewrite {
+    activeRecipe("org.higherkindedj.openrewrite.AddArityBounds")
+}
+```
+
+```bash
+./gradlew rewriteDryRun   # preview changes
+./gradlew rewriteRun      # apply changes
+```
+
+### Maven
+
+```xml
+<build>
+  <plugins>
+    <plugin>
+      <groupId>org.openrewrite.maven</groupId>
+      <artifactId>rewrite-maven-plugin</artifactId>
+      <!-- Use the latest 5.x release; it pairs with the rewrite 8.x core. -->
+      <version>LATEST</version>
+      <configuration>
+        <activeRecipes>
+          <recipe>org.higherkindedj.openrewrite.AddArityBounds</recipe>
+        </activeRecipes>
+      </configuration>
+      <dependencies>
+        <dependency>
+          <groupId>io.github.higher-kinded-j</groupId>
+          <artifactId>hkj-openrewrite</artifactId>
+          <version>LATEST_VERSION</version>
+        </dependency>
+      </dependencies>
+    </plugin>
+  </plugins>
+</build>
+```
+
+```bash
+mvn rewrite:dryRun   # preview changes
+mvn rewrite:run      # apply changes
+```
+
+`hkj-openrewrite` is published from 0.4.11. Each release keeps every recipe before it, so the latest version carries them all. A recipe for an API deprecated after 0.4.11 arrives with the release that deprecates it.
+
+---
+
+## Recipe Catalogue
+
+Three recipe groups are shipped; each one has a composite that runs every recipe in the group, plus individual recipes you can activate on their own.
+
+| Group | Composite | Mode |
+|-------|-----------|------|
+| Arity migration (0.2.x to 0.3.0) | `org.higherkindedj.openrewrite.AddArityBounds` | rewrites source |
+| Effect algebra helpers | `org.higherkindedj.openrewrite.EffectAlgebraMigration` | detection only |
+| 0.5.0 deprecations | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | rewrites source |
+
+### Arity migration (0.2.x to 0.3.0)
+
+Version 0.3.0 introduced an embedded kind system. `Kind`, the type classes, and witness types now carry compile-time arity information via `WitnessArity<A extends TypeArity>` and `TypeArity` (`Unary` for `* -> *`, `Binary` for `* -> * -> *`). These recipes add the required bounds and `implements` clauses so older code compiles against the newer API.
+
+| Recipe | Description |
+|--------|-------------|
+| `org.higherkindedj.openrewrite.AddArityBounds` | Composite; runs both arity recipes below |
+| `org.higherkindedj.openrewrite.AddWitnessArityToWitness` | Adds `implements WitnessArity<TypeArity.Unary>` or `WitnessArity<TypeArity.Binary>` to witness classes |
+| `org.higherkindedj.openrewrite.AddArityBoundsToTypeParameters` | Adds `extends WitnessArity<TypeArity.Unary>` or `WitnessArity<TypeArity.Binary>` bounds to type parameters used as a witness with `Kind`, `Kind2`, type classes, or transformers; covers method parameters, return types, fields, local variables, the class hierarchy, nested generics, and wildcard bounds; appended as an intersection bound when a bound already exists |
+
+The required `WitnessArity` and `TypeArity` imports are added automatically by both recipes.
+
+#### What changes
+
+| Component | Before (0.2.x) | After (0.3.0) |
+|-----------|----------------|---------------|
+| `Kind<F, A>` | no bounds | `Kind<F extends WitnessArity<?>, A>` |
+| `Kind2<F, A, B>` | no bounds | `Kind2<F extends WitnessArity<TypeArity.Binary>, A, B>` |
+| Type classes | `Functor<F>` | `Functor<F extends WitnessArity<TypeArity.Unary>>` |
+| Witness classes | `final class Witness {}` | `final class Witness implements WitnessArity<TypeArity.Unary> {}` |
+
+#### Common compilation errors after upgrading
+
+| Compiler error | Cause | Fix |
+|----------------|-------|-----|
+| `type argument F is not within bounds` | `F` used with `Kind<F, A>` without bounds | Add `<F extends WitnessArity<TypeArity.Unary>>` |
+| `Witness is not a valid substitute for F` | Witness class missing `WitnessArity` | Add the `implements WitnessArity<...>` clause |
+| `cannot find symbol: WitnessArity` | Missing import | Import `org.higherkindedj.hkt.WitnessArity` and `TypeArity` |
+
+The `witness-arity` check in [`hkj-checker`](compile_checks.md) catches the same class of mistake at compile time for projects that have already migrated.
+
+### Effect algebra helpers
+
+These recipes assist migration toward `@EffectAlgebra` and `@ComposeEffects` generated infrastructure. Each one tags matching code with an OpenRewrite search-result marker so it appears in the dry-run report and in OpenRewrite data tables; they do not rewrite your source.
+
+| Recipe | Detects |
+|--------|---------|
+| `org.higherkindedj.openrewrite.EffectAlgebraMigration` | Composite; runs all three below |
+| `org.higherkindedj.openrewrite.AddHandleErrorCaseRecipe` | `Free` switch statements and switch expressions that match `Pure`, `Suspend`, or `FlatMapped` but are missing a `HandleError` or `Ap` case |
+| `org.higherkindedj.openrewrite.ConvertRawFreeToFreePathRecipe` | Direct `Free.liftF()` and `Free.suspend()` calls that could use generated `*Ops` or the `FreePath` API |
+| `org.higherkindedj.openrewrite.DetectInjectBoilerplateRecipe` | Manual `InjectInstances.injectLeft`, `injectRight`, and `injectRightThen` calls that `@ComposeEffects` would generate |
+
+~~~admonish note title="Why detection-only?"
+The replacement is user-specific generated code. The `*Ops` constructors and the `@ComposeEffects` `Support` class are named after each user's effect algebra and composition, so a correct replacement cannot be synthesised generically. Converting `Free.suspend` to `FreePath.from` also changes the static type and would not compile without migrating the surrounding composition. Flagging the call sites for a human keeps the recipes safe; the [`migration-nudge`](compile_checks.md) checker is the equivalent at compile time.
+~~~
+
+Review the matches with `./gradlew rewriteDryRun` (Gradle) or `mvn rewrite:dryRun` (Maven).
+
+### 0.5.0 deprecation migration
+
+Rewrites call sites of APIs deprecated for removal in 0.5.0 to their replacements, removes a deprecated annotation that has no effect, and replaces two deprecated `@PathSource` capabilities with the levels they generate. These recipes do rewrite source.
+
+| Recipe | Change |
+|--------|--------|
+| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | Composite; runs all five recipes below |
+| `org.higherkindedj.openrewrite.RenameStateTKindNarrowK` | `StateTKind.narrowK(..)` becomes `StateTKind.narrow(..)`; the wildcard `Kind` overload bypassed witness type safety |
+| `org.higherkindedj.openrewrite.RenameKindValidatorNarrowWithPattern` | `KindValidator.narrowWithPattern(..)` becomes `KindValidator.narrowHolder(..)` |
+| `org.higherkindedj.openrewrite.SwapTryFoldToFoldFailureFirstRecipe` | `Try.fold(successMapper, failureMapper)` and `TryPath.fold(...)` become `foldFailureFirst(failureMapper, successMapper)`, swapping the two arguments as well as renaming the method |
+| `org.higherkindedj.openrewrite.RemovePathConfig` | Removes `@PathConfig` from a `package-info.java`; no processor reads it, so nothing generated changes |
+| `org.higherkindedj.openrewrite.ReplaceDeprecatedPathSourceCapabilitiesRecipe` | `@PathSource`'s `EFFECTFUL` becomes `CHAINABLE` and `ACCUMULATING` becomes `RECOVERABLE`; each generates the same class as its replacement |
+
+```kotlin
+rewrite {
+    activeRecipe("org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0")
+}
+```
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **Three groups, three modes.** Arity migration and 0.5.0 deprecations rewrite source; the effect algebra helpers only flag call sites because their targets are user-specific generated code.
+* **Always dry-run first.** `rewriteDryRun` (Gradle) or `mvn rewrite:dryRun` (Maven) shows the diff; `rewriteRun` applies it.
+* **Use the composite recipe.** Activating one of the three composites runs the whole group and avoids ordering mistakes; the individual recipes are there when you need finer control.
+* **Recipe coverage tracks the library.** The same migrations also surface as compile-time checks in `hkj-checker`; pick whichever feedback loop fits the team.
+~~~
+
+---
+
+~~~admonish tip title="See Also"
+- [Compile-Time Checks](compile_checks.md) - The `migration-nudge`, `free-switch-exhaustive`, and `witness-arity` checks are the compile-time equivalents of the recipes above
+- [Build Plugins](gradle_plugin.md) - The Gradle and Maven plugins that set up the rest of the tooling; add `hkj-openrewrite` to the rewrite plugin as the [Quick Start](#quick-start) shows
+- [Release History](../release-history.md) - Per-version notes; recipe groups are documented in the release that introduces them
+- [Removals in 0.5.0](../release-history/upgrading.md#removals-in-050) - Every API deprecated for removal, the release that deprecated it, and the recipe that migrates it
+~~~
+
+---
+
+**Previous:** [Compile-Time Checks](compile_checks.md)
+**Next:** [Diagnostics](diagnostics.md)
+
+<!-- Source: tooling/diagnostics.md -->
+
+# Diagnostics: Understanding Your HKJ Configuration
+
+~~~admonish info title="What You'll Learn"
+- How to run the `hkjDiagnostics` task to inspect your configuration
+- How to read the diagnostics output
+- Common configuration issues and their fixes
+~~~
+
+---
+
+## Running the Diagnostics Task
+
+### Gradle
+
+The HKJ Gradle plugin registers an `hkjDiagnostics` task in the `help` group. Run it from the command line:
+
+```bash
+./gradlew hkjDiagnostics
+```
+
+### Maven
+
+The HKJ Maven plugin provides a `diagnostics` goal. Run it from the command line:
+
+```bash
+mvn hkj:diagnostics
+```
+
+---
+
+## Reading the Output
+
+With default configuration, the task prints:
+
+```
+HKJ Configuration:
+  Version:            0.3.7-SNAPSHOT
+  Preview features:   enabled
+  Spring integration: disabled
+  Compile-time checks:
+    Path type mismatch: enabled
+  Dependencies added:
+    implementation:          io.github.higher-kinded-j:hkj-core:0.3.7-SNAPSHOT
+    annotationProcessor:     io.github.higher-kinded-j:hkj-processor-plugins:0.3.7-SNAPSHOT
+    annotationProcessor:     io.github.higher-kinded-j:hkj-checker:0.3.7-SNAPSHOT
+  Compiler args added:
+    --enable-preview
+    -Xplugin:HKJChecker
+```
+
+### Sections Explained
+
+| Section | What It Shows |
+|---------|--------------|
+| **Version** | The HKJ library version used for all dependencies |
+| **Preview features** | Whether `--enable-preview` is added to compile, test, exec, and javadoc tasks |
+| **Spring integration** | Whether `hkj-spring-boot-starter` and the `@HkjHttpClient` processor are included |
+| **Compile-time checks** | Which compile-time checks are active |
+| **Dependencies added** | The exact Maven coordinates added to each configuration |
+| **Compiler args added** | Additional arguments passed to `javac` |
+
+---
+
+## Common Issues and Fixes
+
+### Dependencies Not Resolving
+
+**Symptom:** Build fails with "Could not resolve" errors for HKJ dependencies.
+
+**Check:** Run `hkjDiagnostics` to verify the version is correct, then ensure Maven Central (or the Sonatype snapshots repository for SNAPSHOTs) is configured:
+
+```gradle
+repositories {
+    mavenCentral()
+}
+```
+
+### Preview Features Not Working
+
+**Symptom:** Compilation fails with errors about preview features.
+
+**Check:** Run `hkjDiagnostics` and verify "Preview features: enabled" appears. If you have set `preview = false`, you must configure preview flags manually.
+
+### Checker Not Running
+
+**Symptom:** Path type mismatches are not caught at compile time.
+
+**Check:** Run `hkjDiagnostics` and verify:
+- "Path type mismatch: enabled" appears under Compile-time checks
+- `hkj-checker` appears in the Dependencies section
+- `-Xplugin:HKJChecker` appears in the Compiler args section
+
+If any of these are missing, check your `hkj { }` block for `checks { pathTypeMismatch = false }`.
+
+If the plugin *is* running, two gates silence checks by design: the code sits inside a type annotated with `org.higherkindedj.optics.annotations.Generated`, or an enclosing class, method or variable carries `@SuppressWarnings` naming the check id (or `hkj-checker`). See [Opting out one declaration](compile_checks.md#opting-out-one-declaration).
+
+### Version Mismatch Between Modules
+
+**Symptom:** Runtime errors from incompatible HKJ module versions.
+
+**Check:** Run `hkjDiagnostics` and confirm all dependencies show the same version. The plugin always uses a single version for all modules. If you have manual dependency declarations elsewhere in your build file, they may override the plugin's version.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **`hkjDiagnostics` (Gradle) or `mvn hkj:diagnostics` (Maven)** provides a single view of your entire HKJ configuration
+* **Check it first** when troubleshooting build or compilation issues
+* **All dependencies** use the same version, eliminating version mismatch problems
+~~~
+
+---
+
+**Previous:** [Migration Recipes](openrewrite.md)
+**Next:** [Traversal Generator Plugins](generator_plugins.md)
+
+<!-- Source: tooling/generator_plugins.md -->
+
+# Traversal Generator Plugins
+
+~~~admonish info title="What You'll Learn"
+- Which container types `@GenerateTraversals` supports out of the box
+- How to enable third-party collection support (Eclipse Collections, Guava, Vavr, Apache Commons, PCollections)
+- How the plugin discovery mechanism works
+- How to write your own generator for a custom container type
+~~~
+
+---
+
+## What Are Generator Plugins?
+
+When you annotate a record with `@GenerateTraversals`, the annotation processor needs to know *how* to traverse each field's container type. A `List<String>` field requires different generated code than an `Optional<String>` or an `Either<Error, String>`.
+
+Each container type is handled by a **generator plugin**: a small class that implements the `TraversableGenerator` SPI (Service Provider Interface). The processor discovers these plugins at compile time via Java's `ServiceLoader` and delegates code generation to whichever plugin claims support for the field's type.
+
+Higher-Kinded-J ships 31 generator plugins covering JDK types, HKJ core types, and five popular third-party collection libraries.
+
+---
+
+## Supported Types at a Glance
+
+### JDK Standard Library (Always Available)
+
+These generators are always active. No additional dependencies are required.
+
+| Type | Focus | Behaviour |
+|------|-------|-----------|
+| `List<A>` | Each element | Traverses all elements via `Traversals.traverseList()` |
+| `Set<A>` | Each element | Converts to list, traverses, converts back |
+| `Collection<A>` | Each element | Rebuilds a set source as a set and any other source as a list, via `Traversals.traverseCollection()` |
+| `Optional<A>` | 0 or 1 element | Applies function if present; returns unchanged if empty |
+| `Map<K, V>` | Each value | Traverses values whilst preserving keys |
+| `A[]` | Each element | Converts to list, traverses, converts back to array |
+
+### HKJ Core Types (Always Available)
+
+These types are part of `hkj-core`, which is always on your classpath.
+
+| Type | Focus | Behaviour |
+|------|-------|-----------|
+| `Maybe<A>` | 0 or 1 element | Applies function to `Just`; passes through `Nothing` |
+| `Either<L, R>` | Right value | Applies function to `Right`; passes through `Left` |
+| `Try<A>` | Success value | Applies function to `Success`; passes through `Failure` |
+| `Validated<E, A>` | Valid value | Applies function to `Valid`; passes through `Invalid` |
+
+### Third-Party Libraries (Add to Your Dependencies)
+
+Generator plugins for third-party libraries activate automatically when the library is on the annotation processor's classpath. Simply add the library as a dependency; no further configuration is needed.
+
+#### Eclipse Collections
+
+```kotlin
+dependencies {
+    implementation("org.eclipse.collections:eclipse-collections:13.0.0")
+}
+```
+
+| Type | Notes |
+|------|-------|
+| `ImmutableList<A>` | |
+| `ImmutableSet<A>` | |
+| `ImmutableBag<A>` | |
+| `ImmutableSortedSet<A>` | Preserves natural ordering |
+| `MutableList<A>` | |
+| `MutableSet<A>` | |
+| `MutableBag<A>` | |
+| `MutableSortedSet<A>` | Preserves natural ordering |
+
+#### Google Guava
+
+```kotlin
+dependencies {
+    implementation("com.google.guava:guava:33.5.0-jre")
+}
+```
+
+| Type | Notes |
+|------|-------|
+| `ImmutableList<A>` | Uses `ImmutableList.copyOf()` for reconstruction |
+| `ImmutableSet<A>` | Uses `ImmutableSet.copyOf()` for reconstruction |
+
+#### Vavr
+
+```kotlin
+dependencies {
+    implementation("io.vavr:vavr:1.0.1")
+}
+```
+
+| Type | Notes |
+|------|-------|
+| `io.vavr.collection.List<A>` | |
+| `io.vavr.collection.Set<A>` | |
+
+#### Apache Commons Collections
+
+```kotlin
+dependencies {
+    implementation("org.apache.commons:commons-collections4:4.5.0")
+}
+```
+
+| Type | Notes |
+|------|-------|
+| `HashBag<A>` | |
+| `UnmodifiableList<A>` | |
+
+#### PCollections
+
+```kotlin
+dependencies {
+    implementation("org.pcollections:pcollections:5.0.0")
+}
+```
+
+| Type | Notes |
+|------|-------|
+| `org.pcollections.PVector<A>` | Reconstructed via `TreePVector.from(Collection)` |
+| `org.pcollections.PStack<A>` | Reconstructed via `ConsPStack.from(Collection)` |
+| `org.pcollections.PSet<A>` | Reconstructed via `HashTreePSet.from(Collection)` |
+| `org.pcollections.PSortedSet<A>` | Natural ordering only; custom comparators are not preserved |
+| `org.pcollections.PBag<A>` | Reconstructed via `HashTreePBag.from(Collection)` |
+| `org.pcollections.PMap<K, V>` | Value-focused; reconstructed via `HashTreePMap.from(Map)` |
+| `org.pcollections.PSortedMap<K, V>` | Value-focused; natural key ordering only |
+
+---
+
+## Using Third-Party Types with @GenerateTraversals
+
+Once the library is on your classpath, usage is identical to JDK types:
+
+<!-- verify -->
+```java
+import org.eclipse.collections.api.list.ImmutableList;
+import org.higherkindedj.optics.annotations.GenerateTraversals;
+
+@GenerateTraversals
+public record Warehouse(
+    String name,
+    ImmutableList<String> products
+) {}
+
+// The processor generates a traversal for the 'products' field automatically.
+// Use it exactly like a List traversal:
+Warehouse warehouse = new Warehouse("Depot", Lists.immutable.of("bolt", "nut"));
+Warehouse updated = Traversals.modify(
+    WarehouseTraversals.products(),
+    String::toUpperCase,
+    warehouse
+);
+```
+
+---
+
+## How Plugin Discovery Works
+
+The processor uses a three-layer mechanism to discover generators:
+
+1. **SPI Interface**: `TraversableGenerator` in `hkj-processor` defines the contract. Any class implementing this interface can be discovered.
+
+2. **ServiceLoader**: At compile time, the processors discover every registered implementation through `ServiceLoader.load(TraversableGenerator.class)`; `@GenerateTraversals` and `@GenerateFocus` load directly, and `@ImportOptics` loads through the shared registry.
+
+3. **Avaje SPI**: Each generator class is annotated with `@ServiceProvider(TraversableGenerator.class)`. The [Avaje SPI](https://avaje.io/spi/) annotation processor automatically generates the `META-INF/services` files and validates that the `module-info.java` `provides` clause is complete. A missing entry causes a compile error with a copy-pasteable fix.
+
+```text
+Annotation processors
+    │
+    ▼
+ServiceLoader.load(TraversableGenerator.class)
+    │
+    ├── ListGenerator         (supports List<A>)
+    ├── CollectionGenerator   (supports Collection<A>)
+    ├── OptionalGenerator     (supports Optional<A>)
+    ├── EitherGenerator       (supports Either<L, R>)
+    ├── GuavaImmutableListGenerator  (supports ImmutableList<A>)
+    └── ... 26 more generators
+```
+
+For each record component, the processor asks every loaded generator `supports(TypeMirror)`, and the highest-priority generator that answers `true` handles code generation for that field, wherever its registration entry lands. Generators rank themselves through `priority()`: `PRIORITY_OVERRIDE` (100) beats `PRIORITY_DEFAULT` (0) beats `PRIORITY_FALLBACK` (-100). Two generators claiming the same type at the same priority draw a compile-time warning naming both, and the first registered wins. The same resolution serves `@GenerateTraversals`, the Focus DSL's widening and `@ImportOptics`, so the three annotations always agree about which generator claims a type.
+
+A component that holds elements but reaches no generator is not passed over silently. A `java.util.Collection` or `java.util.Map` subtype that no loaded generator supports — a `Deque`, a `SortedMap`, a Guava, Apache Commons or PCollections type whose plugin is not on the processor path — draws a compile-time **note** on the component, naming the unsupported type and the remedy: declare the component as a supported container, or put a `TraversableGenerator` for it on the annotation processor path. A container that is not a `java.util.Collection` or `Map` at all — Vavr's collections and Eclipse Collections' `Immutable*` types are `Iterable` only — is passed over silently, as is a `String` or an `int`, for the same reason a bare `Iterable` is not the bar: `java.nio.file.Path` implements it.
+
+---
+
+## Writing a Custom Generator
+
+If your project uses a container type that is not covered by the built-in plugins, you can write your own generator and register it as a service provider.
+
+### The TraversableGenerator Interface
+
+```java
+public interface TraversableGenerator {
+
+    /** Return true if this generator handles the given type. */
+    boolean supports(TypeMirror type);
+
+    /**
+     * Declares the cardinality of elements in this container type, which decides
+     * the path tier the Focus DSL gives the field:
+     *   ZERO_OR_ONE  → AffinePath, always  (Optional, Either, Try, Validated)
+     *   ZERO_OR_MORE → TraversalPath under widenCollections, or when the element
+     *                  is itself a navigable record
+     *
+     * Default is ZERO_OR_MORE, which is correct for collection-like types.
+     */
+    default Cardinality getCardinality() {
+        return Cardinality.ZERO_OR_MORE;
+    }
+
+    /**
+     * Which type argument to focus on (0-indexed).
+     * Default is 0. Override to 1 for types like Either<L, R>
+     * where the traversal focuses on the second argument.
+     */
+    default int getFocusTypeArgumentIndex() {
+        return 0;
+    }
+
+    /**
+     * Rank among generators claiming the same type: the highest priority wins.
+     * PRIORITY_OVERRIDE (100) replaces a built-in generator; PRIORITY_FALLBACK
+     * (-100) yields to any default. Default is PRIORITY_DEFAULT (0).
+     */
+    default int priority() {
+        return PRIORITY_DEFAULT;
+    }
+
+    /**
+     * Generate the body of the modifyF method.
+     * Returns a Palantir JavaPoet CodeBlock.
+     */
+    CodeBlock generateModifyF(
+        RecordComponentElement component,
+        ClassName recordClassName,
+        List<? extends RecordComponentElement> allComponents);
+
+    /**
+     * The same, for a body written into targetPackage. Override this one when the
+     * body names a component's type; the default calls the form above.
+     */
+    default CodeBlock generateModifyF(
+        RecordComponentElement component,
+        ClassName recordClassName,
+        List<? extends RecordComponentElement> allComponents,
+        String targetPackage) {
+        return generateModifyF(component, recordClassName, allComponents);
+    }
+}
+```
+
+~~~admonish note title="Naming a type in the body"
+A body that writes out a component's type, such as a local it declares, is not always written into that type's package: a companion generated under a `targetPackage`, or the optics generated for a type reached with `@ImportOptics`, land elsewhere. Name such a type with `ProcessorUtils.typeNameOf(type, targetPackage)` from the four-argument `generateModifyF`, and a type-use annotation that package cannot name, one package-private to the component's own package, is left off rather than copied into a file that could not compile with it. `BaseTraversableGenerator.getTypeArgumentName(component, index, targetPackage)` does the same for a type argument. A generator that names no type of its own needs neither.
+~~~
+
+~~~admonish note title="Cardinality and Navigator Generation"
+The `getCardinality()` method influences both `@GenerateTraversals` and `@GenerateFocus(generateNavigators = true)`. When the Focus processor generates navigator classes, it consults each SPI generator's cardinality to determine whether a field should produce an `AffinePath` (zero or one element) or a `TraversalPath` (zero or more elements). Without this, SPI-registered types would default to `FocusPath`, losing the correct widening semantics.
+~~~
+
+~~~admonish tip title="Replacing a Built-in Generator"
+To take over a type a built-in generator already claims, implement `supports()` for that type and return `PRIORITY_OVERRIDE` from `priority()`. Registration order does not matter: the higher priority wins on every route that chooses a generator, so no fork of the built-in plugin is needed.
+~~~
+
+### Step-by-Step Example
+
+Suppose you want to add traversal support for a custom `NonEmptyList<A>` type.
+
+**1. Create the generator class:**
+
+```java
+package com.example.generator;
+
+import com.palantir.javapoet.ClassName;
+import com.palantir.javapoet.CodeBlock;
+import io.avaje.spi.ServiceProvider;
+import java.util.List;
+import javax.lang.model.element.RecordComponentElement;
+import javax.lang.model.type.DeclaredType;
+import javax.lang.model.type.TypeMirror;
+import org.higherkindedj.optics.processing.generator.BaseTraversableGenerator;
+import org.higherkindedj.optics.processing.spi.TraversableGenerator;
+import org.higherkindedj.optics.util.Traversals;
+
+@ServiceProvider(TraversableGenerator.class)
+public class NonEmptyListGenerator extends BaseTraversableGenerator {
+
+    private static final String FQN = "com.example.NonEmptyList";
+
+    @Override
+    public boolean supports(final TypeMirror type) {
+        if (!(type instanceof DeclaredType declaredType)) return false;
+        return declaredType.asElement().toString().equals(FQN);
+    }
+
+    @Override
+    public CodeBlock generateModifyF(
+            final RecordComponentElement component,
+            final ClassName recordClassName,
+            final List<? extends RecordComponentElement> allComponents) {
+
+        final String componentName = component.getSimpleName().toString();
+        final String constructorArgs =
+            generateConstructorArgs(componentName, "newNonEmptyList", allComponents);
+
+        return CodeBlock.builder()
+            // Convert to java.util.List, traverse, convert back
+            .addStatement(
+                "final var javaList = source.$L().toList()", componentName)
+            .addStatement(
+                "final var effectOfList = $T.traverseList(javaList, f, applicative)",
+                Traversals.class)
+            .addStatement(
+                "final var effectOfNonEmptyList = applicative.map(list -> com.example.NonEmptyList.of(list), effectOfList)")
+            .addStatement(
+                "return applicative.map(newNonEmptyList -> new $T($L), effectOfNonEmptyList)",
+                recordTypeName(component, recordClassName), constructorArgs)
+            .build();
+    }
+}
+```
+
+**2. Add the module-info.java provides clause:**
+
+```java
+module com.example.generators {
+    requires org.higherkindedj.processor;
+    requires com.palantir.javapoet;
+    requires java.compiler;
+    requires static io.avaje.spi;
+
+    provides org.higherkindedj.optics.processing.spi.TraversableGenerator
+        with com.example.generator.NonEmptyListGenerator;
+}
+```
+
+**3. Add Avaje SPI to your build:**
+
+```kotlin
+dependencies {
+    implementation("io.github.higher-kinded-j:hkj-processor:LATEST-VERSION")
+    implementation("com.palantir.javaformat:palantir-java-format:2.50.0")
+    compileOnly("io.avaje:avaje-spi-core:2.8")
+    annotationProcessor("io.avaje:avaje-spi-core:2.8")
+}
+```
+
+**4. Add your generator module to the annotation processor path in projects that use it:**
+
+```kotlin
+dependencies {
+    annotationProcessor("com.example:my-generators:1.0.0")
+}
+```
+
+The `TraversalProcessor` will now discover your `NonEmptyListGenerator` via `ServiceLoader` and generate traversals for any `NonEmptyList<A>` field.
+
+### Implementation Tips
+
+- **Extend `BaseTraversableGenerator`** to inherit `getGenericTypeName()`, `getTypeArgumentName(component, index)` and `generateConstructorArgs()` helper methods. Read every type argument through one of the first two: they resolve a wildcard to the type it stands for, and a wildcard written into generated source does not compile.
+- **Construct the record through `recordTypeName(component, recordClassName)`**, not the class name you were handed: a generic record's traversal is generated in a method carrying its type variables, and naming the record without them constructs a raw instance.
+- **Name the effect through `effectVariable(component)`** wherever the body you emit writes a `Kind<F, …>`: a record is free to declare a type parameter called `F`, and the generated method then declares the effect under another name.
+- **Map over what `f` returns as it is.** The body is written against `source`, `f` and `applicative`, and `f` is a `Function<A, Kind<F, A>>` at the focus type, so its result needs no cast. A cast to `Kind<F, A>` names the type it already has, and javac reports it under `-Xlint:cast` in every build that compiles your generated source.
+- **Use fully qualified names** in `supports()` to avoid false matches with similarly named types.
+- **Reuse `Traversals.traverseList()`** when your type can be converted to a `java.util.List`. Most third-party generators follow this pattern: convert to list, traverse, convert back. A map-shaped type hands itself to `Traversals.traverseMapValues()` instead, which keeps the keys and gives back a JDK `Map` to rebuild from.
+- **Override `getFocusTypeArgumentIndex()`** if your type's traversal target is not the first type parameter (e.g. `Either<L, R>` focuses on index 1).
+- **Override `getCardinality()`** to return `Cardinality.ZERO_OR_ONE` for optional-like types (e.g. `Either`, `Try`, `Validated`). The default `ZERO_OR_MORE` is correct for collection-like types and does not need overriding.
+- **Write integration tests** using Google's compile-testing library to verify generated code compiles and contains the expected statements. Compiling it with `-Xlint:cast,unchecked,rawtypes -Werror` and asserting `succeededWithoutWarnings()` catches a warning your users' builds would otherwise report in a file they cannot edit.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **31 built-in generators** cover JDK types, HKJ core types, Eclipse Collections, Guava, Vavr, Apache Commons, and PCollections
+* **Third-party support activates automatically** when the library is on the classpath; no configuration required
+* **The SPI is extensible**: implement `TraversableGenerator`, register it with `@ServiceProvider`, and the processor discovers it at compile time
+* **Most generators follow a common pattern**: convert to `java.util.List`, traverse with `Traversals.traverseList()`, convert back to the original type; map-shaped ones traverse with `Traversals.traverseMapValues()` and rebuild from the JDK `Map` it returns
+* **Cardinality drives widening**: `ZERO_OR_ONE` produces an `AffinePath`, always; `ZERO_OR_MORE` produces a `TraversalPath` under `widenCollections = true`, or when the container's element is itself a navigable record. Static Focus methods and navigator methods read the same answer
+~~~
+
+~~~admonish tip title="See Also"
+- [Traversals](../optics/traversals.md) - Using generated traversals in practice
+- [Common Data Structures](../optics/common_data_structure_traversals.md) - Traversals for Optional, Map, and Tuple types
+- [Build Plugins](gradle_plugin.md) - The build plugin adds `hkj-processor-plugins` to your annotation processor path automatically
+~~~
+
+---
+
+**Previous:** [Diagnostics](diagnostics.md)
+**Next:** [PCollections Integration](pcollections_integration.md)
+
+<!-- Source: tooling/pcollections_integration.md -->
+
+# PCollections Integration
+
+~~~admonish info title="What You'll Learn"
+- How PCollections persistent collections plug into Higher-Kinded-J via the existing `ListKind`
+- The performance characteristics of `PVector` versus `ArrayList` through the HKT pipeline
+- Which operations amortise PCollections' iteration cost and which expose it
+- How to add PCollections to your own project as an opt-in dependency
+~~~
+
+[PCollections](https://github.com/hrldcpr/pcollections) is a small, lightweight library of persistent immutable
+data structures whose types implement the standard `java.util` interfaces. `PVector` implements
+`List`, `PStack` implements `List`, `PSet` implements `Set`, and so on. That `java.util`
+compatibility makes PCollections a particularly easy fit for Higher-Kinded-J: any `PVector` or
+`PStack` can be widened directly into the existing `ListKind` and processed through `ListMonad`,
+`ListTraverse`, and `ListSelective` with no production code changes.
+
+This page describes the core integration: a purely additive set of tests, benchmarks, and
+documentation that validate the compatibility hypothesis. No new HKT types or instances are
+introduced. Optics support goes further, with [generator plugins](pcollections_optics.md) for
+`PVector`, `PStack`, `PSet`, `PBag`, and `PMap`. One caveat remains, covered below: transformations
+do not preserve the persistent type through the entire HKT pipeline, because there are no dedicated
+`Kind`/`Witness` types for it.
+
+---
+
+## What's Included
+
+| Artefact | Location |
+|----------|----------|
+| Version pin | `gradle/libs.versions.toml` (`pcollections = "5.0.0"`) |
+| Integration test | `hkj-core/src/test/.../list/pcollections/PCollectionsListIntegrationTest.java` |
+| jQwik property test | `hkj-core/src/test/.../list/pcollections/PCollectionsListPropertyTest.java` |
+| JMH benchmarks | `hkj-benchmarks/src/jmh/.../PCollectionsHktBenchmark.java` |
+| Runnable example | `hkj-examples/.../basic/pcollections/PCollectionsExample.java` |
+
+---
+
+## Adding PCollections to a Project That Already Uses Higher-Kinded-J
+
+PCollections is not a transitive dependency of `hkj-core`. It is wired in only as a
+`testImplementation`. Application code that wants to use the integration must add it explicitly:
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("org.pcollections:pcollections:5.0.0")
+    implementation("io.github.higher-kinded-j:hkj-core:<version>")
+}
+```
+
+If you also use the Java module system, add `requires org.pcollections;` to your `module-info.java`.
+
+---
+
+## Using PCollections Through `ListKind`
+
+Because `PVector` and `PStack` are `java.util.List` instances, the existing `ListKindHelper.LIST`
+helper widens them with no special API:
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
+
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.list.ListKind;
+import org.higherkindedj.hkt.list.ListMonad;
+import org.pcollections.PVector;
+import org.pcollections.TreePVector;
+
+PVector<Integer> source = TreePVector.from(List.of(1, 2, 3));
+Kind<ListKind.Witness, Integer> kind = LIST.widen(source);
+
+Kind<ListKind.Witness, Integer> doubled = Instances.monadZero(list()).map(x -> x * 2, kind);
+List<Integer> result = LIST.narrow(doubled); // java.util.List, not PVector
+```
+
+The same code accepts a `PStack`, an `ArrayList`, or any other `List` implementation. The
+widen/narrow boundary is structural rather than nominal.
+
+---
+
+## Caveat: Persistent Type Is Not Preserved End-to-End
+
+`ListMonad.of` and the standard `map`/`flatMap` implementations produce `java.util.List`
+instances internally, typically `Collections.singletonList` or a fresh `ArrayList`. That means a
+pipeline of the form:
+
+<!-- verify -->
+```java
+PVector<Integer> in = TreePVector.from(List.of(1, 2, 3));
+Kind<ListKind.Witness, Integer> out = Instances.monadZero(list()).map(x -> x + 1, LIST.widen(in));
+List<Integer> narrowed = LIST.narrow(out); // not a PVector anymore
+```
+
+returns a JDK list, not a `PVector`. Round-tripping a `PVector` without any operation preserves
+the underlying instance (`narrowed == in`); only transformations widen back to `java.util.List`.
+Preserving the persistent type through the entire HKT pipeline would require dedicated
+`Kind`/`Witness` types, which the integration does not currently provide.
+
+---
+
+## Performance Characteristics
+
+The headline finding from `PCollectionsHktBenchmark` is that **the widen/narrow boundary is free
+for both libraries**, and PCollections pays a structural iteration tax that **shrinks as the
+operation does more per-element work**.
+
+Throughput at size 1000, in operations per microsecond (higher is better):
+
+| Operation | `ArrayList` | `PVector` | `PVector / ArrayList` |
+|-----------|------------|-----------|-----------------------|
+| `widen` + `narrow` | 2.57 K | 2.57 K | 1.00 |
+| `traverse` (Optional applicative) | 0.10 | 0.07 | 0.70 |
+| `map` | 0.34 | 0.13 | 0.38 |
+| `foldMap` (sum monoid) | 0.44 | 0.14 | 0.32 |
+| `flatMap` | 0.07 | 0.02 | 0.29 |
+
+Two observations are worth flagging:
+
+- **The boundary is genuinely free.** Both `widen + narrow` benchmarks hit the same throughput
+  ceiling regardless of whether the underlying list is an `ArrayList` or a `TreePVector`,
+  confirming that `ListHolder` does not defensive-copy.
+- **`traverse` is the narrowest gap, not the widest.** Counterintuitively, the more "monadic" the
+  operation, the smaller the PCollections overhead becomes. `traverse` dominates the per-element
+  cost with applicative `map2` and `Kind` boxing, so the underlying iteration delta becomes a
+  small fraction of total time. This is good news: the operation shapes Higher-Kinded-J users
+  reach for most often are precisely the ones where PCollections costs least.
+
+`flatMap` shows the widest gap because each call also allocates a fresh `TreePVector` inside the
+lambda. That reconstruction cost is part of the measurement, not pure iteration overhead.
+
+To reproduce:
+
+```sh
+./gradlew :hkj-benchmarks:jmh -Pincludes=".*PCollectionsHktBenchmark.*"
+./gradlew :hkj-benchmarks:benchmarkReport
+```
+
+The fast-feedback configuration (one fork, one warmup, one measurement iteration) leaves error
+bars as `NaN`. For numbers worth citing externally, use `-Pjmh.warmupIterations=2
+-Pjmh.iterations=3`.
+
+---
+
+## What the Tests Cover
+
+`PCollectionsListIntegrationTest` exercises:
+
+- `widen`/`narrow` round-trips for `PVector` and `PStack`, including instance preservation
+- Functor `map` over `PVector` and `PStack`
+- Monad `flatMap` and `ap`, mixing `PVector` and `PStack` inputs
+- `Traverse` with the `Optional` applicative, covering both success and short-circuit cases
+- `Foldable.foldMap` with the sum and string monoids
+- `Selective.select` over a `PVector` of `Choice` values
+- `Alternative` (`empty`, `orElse`) composing PCollections lists with each other
+
+`PCollectionsListPropertyTest` uses jQwik to verify, across randomised inputs, that the standard
+laws hold for `PVector` widened through `ListKind`:
+
+- Functor identity and composition
+- Monad left identity, right identity, and associativity
+- Foldable: `foldMap` matches `stream().sum()`, and is a monoid homomorphism over concatenation
+
+---
+
+~~~admonish example title="See Example Code"
+[PCollectionsExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/pcollections/PCollectionsExample.java)
+~~~
+
+~~~admonish info title="Key Takeaways"
+* **`PVector` and `PStack` work through `ListKind` with no production code changes**, because they implement `java.util.List`
+* **The widen/narrow boundary is free**, with no defensive copying in either direction
+* **PCollections pays a 2 to 3 times iteration tax** on `map`, `flatMap`, and `foldMap` compared to `ArrayList`
+* **The tax shrinks for richer operations**: `traverse` is only 30% slower because per-element applicative work dominates
+* **Operations return `java.util.List`**, not the original persistent type; preserving it end-to-end is not currently supported
+~~~
+
+~~~admonish tip title="See Also"
+- [Benchmarks and Performance](../benchmarks.md) - The full benchmark suite and how to read its output
+- [Traversal Generator Plugins](generator_plugins.md) - PCollections support for `@GenerateTraversals`
+- [List Type Class Instances](../monads/list_monad.md) - The instances PCollections piggy-backs on
+~~~
+
+---
+
+**Previous:** [Traversal Generator Plugins](generator_plugins.md)
+**Next:** [PCollections Optics](pcollections_optics.md)
+
+<!-- Source: tooling/pcollections_optics.md -->
+
+# PCollections Optics
+
+~~~admonish info title="What You'll Learn"
+- Which PCollections types `@GenerateTraversals` recognises automatically
+- How generated traversals reconstruct persistent collections after a focus change
+- The Focus DSL navigation patterns for PCollections fields
+- Where natural-ordering caveats apply for sorted variants
+~~~
+
+[PCollections](https://github.com/hrldcpr/pcollections) persistent collections are first-class citizens of the optics generator system. Annotating a record whose components are `PVector`, `PStack`, `PSet`, `PSortedSet`, `PBag`, `PMap`, or `PSortedMap` produces traversal code that round-trips through the persistent type, with no production-code changes required.
+
+This page documents the seven PCollections generator plugins. For the underlying compatibility hypothesis and benchmark numbers, see [PCollections Integration](pcollections_integration.md).
+
+---
+
+## Supported Types
+
+| Field type | Generator | Reconstruction | Cardinality |
+|-----------|-----------|----------------|-------------|
+| `PVector<A>` | `PVectorGenerator` | `TreePVector.from(Collection)` | ZERO_OR_MORE |
+| `PStack<A>` | `PStackGenerator` | `ConsPStack.from(Collection)` | ZERO_OR_MORE |
+| `PSet<A>` | `PSetGenerator` | `HashTreePSet.from(Collection)` | ZERO_OR_MORE |
+| `PSortedSet<A>` | `PSortedSetGenerator` | `TreePSet.from(Collection)` | ZERO_OR_MORE |
+| `PBag<A>` | `PBagGenerator` | `HashTreePBag.from(Collection)` | ZERO_OR_MORE |
+| `PMap<K, V>` | `PMapValueGenerator` | `HashTreePMap.from(Map)` (value focus) | ZERO_OR_MORE |
+| `PSortedMap<K, V>` | `PSortedMapValueGenerator` | `TreePMap.from(Map)` (value focus) | ZERO_OR_MORE |
+
+Map generators focus on the value type (index 1). Keys are passed through unchanged.
+
+All seven generators run at the default priority and activate automatically once `org.pcollections:pcollections` is on your annotation processor's classpath.
+
+> All seven generators participate in `@GenerateFocus` navigator generation. The five collection-like generators (`PVector` / `PStack` / `PSet` / `PSortedSet` / `PBag`) widen through [`EachInstances.fromIterableCollecting`](../optics/common_data_structure_traversals.md); the two map-value generators widen through [`EachInstances.mapValuesEachCollecting`](../optics/common_data_structure_traversals.md), the map-shaped companion to `fromIterableCollecting`. So `@GenerateFocus` on a record with a `PMap` or `PSortedMap` field produces a navigator returning a `TraversalPath` over the values.
+
+---
+
+## Worked Example
+
+Annotate a record whose components include PCollections types:
+
+<!-- verify -->
+```java
+import org.higherkindedj.optics.annotations.GenerateFocus;
+import org.higherkindedj.optics.annotations.GenerateTraversals;
+import org.pcollections.PVector;
+import org.pcollections.PMap;
+
+@GenerateFocus
+@GenerateTraversals
+public record Portfolio(
+    String owner,
+    PVector<Position> positions,
+    PMap<String, Double> exposureByCurrency) {}
+```
+
+The processor emits a `PortfolioTraversals` companion class with two traversals:
+
+- `Portfolio_positions()` traverses each `Position` in the `PVector`. After a focus change, `TreePVector.from(...)` rebuilds the persistent vector around the new elements.
+- `Portfolio_exposureByCurrency()` traverses each `Double` value in the `PMap`. Keys are preserved, values are replaced; `HashTreePMap.from(...)` rebuilds the persistent map.
+
+The Focus DSL composes these into navigators with the correct path types automatically:
+
+```java
+import static com.example.PortfolioFocus.portfolio;
+
+TraversalPath<Portfolio, Position> allPositions = portfolio().positions();
+TraversalPath<Portfolio, Double> allExposures = portfolio().exposureByCurrency();
+```
+
+`TraversalPath` is selected because each generator declares `Cardinality.ZERO_OR_MORE` and these fields are widened — either by `widenCollections = true` on the record, or because the element is itself a navigable record. Left un-widened, a `ZERO_OR_MORE` container keeps the container itself in focus, and `.each(...)` widens it at the call site.
+
+---
+
+## Reconstruction Cost
+
+Generated traversals copy the persistent collection into a JDK `ArrayList` for traversal, then hand the resulting list back to the persistent factory. That gives O(n) iteration plus the construction cost of the persistent type, which for `TreePVector` is O(n) and for tree-backed sets and maps is O(n log n). For most domain models this is invisible alongside the work the focus function does.
+
+If you are operating on a hot path and the persistent type matters more than the optic structure, prefer hand-written code that uses PCollections' native `with`/`plus` operations rather than going through `@GenerateTraversals`. The generated traversal is correct, not minimal.
+
+---
+
+## Sorted Variants and Comparators
+
+`PSortedSet` and `PSortedMap` are reconstructed using `TreePSet.from(Collection)` and `TreePMap.from(Map)`, which apply natural ordering. **Custom comparators are not preserved** through a generated traversal.
+
+Two practical implications:
+
+- If your `PSortedSet<MyType>` relies on a custom `Comparator<MyType>`, write the optic by hand rather than relying on the generator
+- The natural-ordering reconstruction will throw at runtime if your element type is not `Comparable`. Generators do not detect this statically; a missing `Comparable` bound will surface as a `ClassCastException` the first time the traversal runs
+
+For the common case where elements implement `Comparable` and the natural ordering is the desired one, the generator is the right tool.
+
+---
+
+## Hand-Written Optics
+
+If you need an optic outside `@GenerateTraversals` (for instance, on a third-party type you cannot annotate), the same building blocks are available:
+
+<!-- verify -->
+```java
+import org.higherkindedj.optics.each.EachInstances;
+import org.higherkindedj.optics.Each;
+import org.pcollections.PVector;
+import org.pcollections.TreePVector;
+import org.pcollections.PMap;
+import org.pcollections.HashTreePMap;
+
+Each<PVector<String>, String> pvectorEach =
+    EachInstances.fromIterableCollecting(TreePVector::from);
+
+// Persistent maps use the map-shaped companion helper.
+Each<PMap<String, Integer>, Integer> pmapValues =
+    EachInstances.mapValuesEachCollecting(HashTreePMap::from);
+```
+
+`fromIterableCollecting` accepts any function that builds a persistent collection from a `List`; `mapValuesEachCollecting` does the same for any `java.util.Map` subtype, rebuilding the persistent map from a JDK `Map`. The same forms cover all the PCollections types. There is no library-specific factory class; the generic helpers are the public API.
+
+---
+
+## When PCollections Is the Right Choice
+
+PCollections excels when you want persistent immutable collections through the standard `java.util` interfaces, with no custom typeclass machinery. The optics generators slot it into Higher-Kinded-J's traversal pipeline so domain records using `PVector`, `PMap`, and friends compose with the rest of the optics ecosystem without any glue code.
+
+For projects already on Eclipse Collections or Vavr, those existing generators remain the better fit. PCollections is most attractive for greenfield projects that want a small dependency footprint and `java.util` compatibility.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **Seven generator plugins** cover every PCollections collection and map type
+* **Activation is automatic** once PCollections is on the annotation processor classpath
+* **Reconstruction goes through `from(Collection)` / `from(Map)`**, so traversals round-trip cleanly through the persistent type
+* **Sorted variants assume natural ordering**; custom comparators are not preserved by generated code
+* **Use `EachInstances.fromIterableCollecting(TreePVector::from)`** (collections) or **`EachInstances.mapValuesEachCollecting(HashTreePMap::from)`** (maps) for hand-written optics outside `@GenerateTraversals`
+~~~
+
+~~~admonish tip title="See Also"
+- [Traversal Generator Plugins](generator_plugins.md) - The full SPI catalogue and architecture
+- [PCollections Integration](pcollections_integration.md) - compatibility tests, benchmarks, and the underlying `ListKind` story
+- [Focus DSL](../optics/focus_dsl.md) - Composing generated traversals into navigators
+~~~
+
+---
+
+**Previous:** [PCollections Integration](pcollections_integration.md)
+**Next:** [Claude Code Skills](claude_code_skills.md)
+
+<!-- Source: tooling/claude_code_skills.md -->
+
+# Claude Code Skills: In-Editor Guidance for HKJ
+
+~~~admonish info title="What You'll Learn"
+- What Claude Code skills are and how they help with HKJ development
+- How to install skills into your project with one command
+- What each of the eight HKJ skills covers
+- How skills trigger automatically and how to invoke them directly
+~~~
+
+---
+
+## What Is Claude Code?
+
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) is an AI coding assistant from Anthropic that runs in your terminal, IDE (VS Code, JetBrains), or browser. You describe what you want to do in natural language, and Claude reads your code, suggests changes, runs commands, and answers questions about your codebase.
+
+**Skills** are project-specific knowledge files that teach Claude about the libraries and patterns used in your project. Without skills, Claude relies on general knowledge. With HKJ skills installed, Claude understands the Effect Path API, Focus DSL, effect handlers, and the library's idioms well enough to give accurate, library-specific guidance.
+
+---
+
+## What It Looks Like
+
+With HKJ skills installed, you can ask Claude questions in natural language and get answers grounded in the library's actual API:
+
+```
+You: I have a method that returns null when a user isn't found,
+     and throws an exception when validation fails. How should
+     I model this with HKJ?
+
+Claude: Use EitherPath with a sealed error hierarchy:
+
+        sealed interface UserError {
+            record NotFound(String id) implements UserError {}
+            record ValidationFailed(List<String> errors) implements UserError {}
+        }
+
+        public EitherPath<UserError, User> findUser(String id) {
+            return Path.maybe(repository.findById(id))
+                .toEitherPath(new UserError.NotFound(id))
+                .via(user -> validateUser(user)
+                    .mapError(UserError.ValidationFailed::new));
+        }
+```
+
+The `hkj-guide` skill triggers automatically because the question mentions error handling patterns that match its description keywords. Claude knows the `Path` factory methods, the `toEitherPath` conversion, and the `via`/`mapError` chaining patterns because the skill provides that reference material.
+
+Other examples of questions the skills handle:
+
+- *"Generate lenses for my Order record"* triggers `hkj-optics`
+- *"Map my Customer record to a CustomerDto"* triggers `hkj-mapping`
+- *"How do I write a test interpreter for my effect algebra?"* triggers `hkj-effects`
+- *"How do I return Either from a Spring controller?"* triggers `hkj-spring`
+- *"Where should I call unsafeRun?"* triggers `hkj-arch`
+
+---
+
+## Prerequisites
+
+You need Claude Code installed in your development environment. Choose one:
+
+- **Terminal**: Install the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
+- **VS Code**: Install the Claude Code extension from the marketplace
+- **JetBrains**: Install the Claude Code plugin from the JetBrains marketplace
+
+Skills are project-level files that live in your repository's `.claude/skills/` directory. Once installed, they are available to anyone on the team who uses Claude Code with the project.
+
+---
+
+## Installing Skills
+
+### Gradle
+
+The HKJ Gradle plugin bundles all eight skills. Install them with a single task:
+
+```bash
+./gradlew hkjInstallSkills
+```
+
+This copies skill files from the plugin's classpath resources into your project's `.claude/skills/` directory.
+
+To install automatically during every build, enable the `skills` property in the extension DSL:
+
+```gradle
+hkj {
+    skills = true
+}
+```
+
+When `skills` is `true`, the `hkjInstallSkills` task runs as part of the `classes` lifecycle, ensuring skills stay up to date when you upgrade the plugin.
+
+### Maven
+
+The HKJ Maven plugin provides an equivalent goal:
+
+```bash
+mvn hkj:install-skills
+```
+
+To install them during every build instead, set `skills` in the plugin's `<configuration>`. A multi-module build installs them once: into the reactor's root when the root sets `skills`, and otherwise into the first project that does.
+
+```xml
+<configuration>
+    <skills>true</skills>
+</configuration>
+```
+
+### Manual Installation
+
+If you are not using either build plugin, copy skills directly from the repository:
+
+```bash
+# Pin to your release: `main` tracks the unreleased snapshot, whose skills describe
+# APIs your version does not have. The build plugins always install the matching set.
+git clone --depth 1 --branch v0.4.10 https://github.com/higher-kinded-j/higher-kinded-j.git /tmp/hkj-skills
+cp -r /tmp/hkj-skills/.claude/skills/hkj-* .claude/skills/
+rm -rf /tmp/hkj-skills
+```
+
+### Verifying Installation
+
+```bash
+ls .claude/skills/hkj-*/SKILL.md
+```
+
+This should list eight `SKILL.md` files. You can also run the diagnostics task (`./gradlew hkjDiagnostics` or `mvn hkj:diagnostics`) which reports skills status.
+
+---
+
+## The Eight Skills
+
+| Skill | What It Helps With | Invoke Directly |
+|-------|--------------------|-----------------|
+| `hkj-guide` | Choosing Path types, project setup, migrating imperative code, fixing compiler errors | `/hkj-guide` |
+| `hkj-optics` | `@GenerateLenses`, `@GenerateFocus`, Focus DSL, deep immutable updates, external type import, `Edits`, `ValidatedPrism` | `/hkj-optics` |
+| `hkj-mapping` | `@GenerateMapping` (record <-> DTO), `@GenerateMerge`, `@GenerateAssembly`, `@GenerateErrorEnvelope` | `/hkj-mapping` |
+| `hkj-effects` | `@EffectAlgebra`, Free monad programs, interpreters, `EffectBoundary`, mock-free testing | `/hkj-effects` |
+| `hkj-bridge` | Combining effects with optics: `.focus()` on paths, `toEitherPath()`, unified pipelines | `/hkj-bridge` |
+| `hkj-spring` | Spring Boot starter, `Either`/`Validated` responses, `@EnableEffectBoundary`, `@Interpreter` beans | `/hkj-spring` |
+| `hkj-arch` | Functional core / imperative shell design, boundary placement, domain modelling with Java 25 | `/hkj-arch` |
+| `hkj-test` | AssertJ assertion helpers for HKJ types (including VTaskPath / VStreamPath / VTaskContext and Kind-narrowing wrappers for List / OptionalKind / Stream / Id), transformer assertion unwrappers, JEP 511 module imports | `/hkj-test` |
+
+### How Skills Trigger
+
+Skills trigger in two ways:
+
+1. **Automatically**: Claude matches your question against each skill's keyword description and loads the most relevant one. For example, asking about `@GenerateLenses` triggers `hkj-optics` because those keywords appear in its description.
+
+2. **Directly**: Type `/hkj-guide` (or any skill name) at the Claude prompt to load a specific skill. This is useful when you know which domain you need help with.
+
+The `hkj-guide` skill serves as a navigator. If you are unsure which skill you need, start with `/hkj-guide` and it will suggest the appropriate domain skill.
+
+---
+
+## What Each Skill Contains
+
+Each skill provides condensed reference material optimised for Claude to use when answering your questions:
+
+**hkj-guide** provides a Path type decision tree, creation/extraction cheatsheet for all Path types (including `VResultPath` and `EitherOrBothPath`), operator quick reference (`map`, `via`, `recover`, `mapError`, `focus`), type conversion matrix, ForPath comprehension entry points, `NonEmptyList`, the open-arity accumulating assembly (`fields()` / `accumulate()`), and Gradle/Maven setup instructions. Supporting files cover migration recipes (try/catch to TryPath, Optional to MaybePath, etc.), service layer patterns, and resilience patterns, now led by the path-native combinators (`withRetry`, `withTimeout`, `withCircuitBreaker`, `withBulkhead`) and the railway-aware semantics of `VResultPath`, where a typed `Left` is never retried and never trips the breaker.
+
+**hkj-optics** provides an annotation reference table, step-by-step Focus DSL walkthrough, FocusPath/AffinePath/TraversalPath hierarchy, optic-path labelling (`segments()` / `pathString()`), collection navigation methods (`.each()`, `.at()`, `.some()`, `.nullable()`), the `Edits` multi-edit builder with `Update<S>`, `ValidatedPrism` for parse-don't-validate boundaries, and external type import with `@ImportOptics` and `@OpticsSpec`. Supporting files cover the full optic composition matrix, a cookbook of recipes, container type support (23 types across JDK, Eclipse Collections, Guava, Vavr, Apache Commons), and indexed optics.
+
+**hkj-mapping** covers the compile-time data-assembly generators: `@GenerateMapping` for bidirectional record <-> DTO mapping (spec interfaces, `@MapField` renames, `ValidatedPrism` leaves, derived wire fields, `@OptionalBridge` for a nullable wire component, elementwise lifting through `List`, `Set`, reference arrays, `Optional` and `Map`, nested and recursive records), `@GenerateMerge` for building one target from N sources, `@GenerateAssembly` for staged validated construction, and `@GenerateErrorEnvelope` for sealed error hierarchies with a typed context record. The unifying rule it teaches: `build` is total, `parse` is fallible and accumulates every `FieldError`. A supporting file walks through a complete DTO boundary, including law-checking the round-trip with `MappingLaws`.
+
+**hkj-effects** provides the `@EffectAlgebra` pattern (sealed interface + CPS records), what the annotation processor generates, `@ComposeEffects` wiring, interpreter implementation guide, `EffectBoundary` and `TestBoundary` usage, and program analysis. Supporting files walk through the payment processing example, interpreter patterns (production, test, audit), and Free monad basics.
+
+**hkj-bridge** covers both bridging directions (optics to effects via `toXxxPath()`, effects to optics via `.focus()`), a behaviour table showing what happens for each effect type when an AffinePath focus is absent, and four practical pipeline patterns. A supporting file provides the full capstone example (before/after comparison).
+
+**hkj-spring** covers the starter setup, controller return types (`Either`, `Validated`, `CompletableFuturePath`, `VTaskPath`, `VStreamPath`, `FreePath`), HTTP status code mapping, the `EffectBoundary` adoption ladder (Levels 0-5), `@Interpreter` beans with profile switching, `@EnableEffectBoundary` auto-wiring, and `@EffectTest` test slices. A supporting file walks through the example application.
+
+**hkj-arch** covers the functional core / imperative shell pattern, how Java 25 features (records, sealed interfaces, pattern matching, virtual threads) enable it, mapping HKJ types to core vs shell, boundary design (where to call `.run()` and `.unsafeRun()`), `EffectBoundary` as the named boundary, testing without mocks, and common anti-patterns. Supporting files provide before/after architecture examples and domain modelling patterns.
+
+**hkj-test** covers picking the right assertion class for a given HKJ subject (a 26-row decision table from `Either` through to `Free`, `EitherF`, the Path/context wrappers `VTaskPath` / `VStreamPath` / `VTaskContext`, and the Kind-narrowing wrappers `ListAssert` / `OptionalKindAssert` / `StreamAssert` / `IdAssert`), idioms grouped by type-shape (discriminated unions, `Lazy`, Reader/Writer/State, IO/VTask/VStream, transformers), the transformer-unwrapper pattern, the Java 25 `import module org.higherkindedj.test;` shortcut, and common mistakes (forgetting `whenExecuted()` / `whenRun()`, reusing a stateful assertion, omitting the unwrap function). A supporting file describes the `AssertContract<S, A>` pattern for users writing their own AssertJ extensions.
+
+---
+
+## Updating Skills
+
+Skills are versioned with the build plugin. When you upgrade the HKJ plugin version, re-run the install task to get updated skills:
+
+```bash
+# Gradle
+./gradlew hkjInstallSkills
+
+# Maven
+mvn hkj:install-skills
+```
+
+With `skills = true` in the Gradle extension, or `<skills>true</skills>` in the Maven plugin's configuration, skills update automatically on the next build.
+
+---
+
+## Version Control
+
+The `.claude/skills/` directory should be committed to your repository. This ensures every team member gets the same skill set when they use Claude Code with the project, without needing to run the install task individually.
+
+Add to `.gitignore` only if your team prefers not to commit generated files. In that case, each developer runs the install task after cloning.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **Skills are project-level knowledge files** that teach Claude Code about HKJ's API and patterns
+* **Eight skills** cover the library's major domains, from basic Path selection to architecture guidance
+* **One command** installs all skills: `./gradlew hkjInstallSkills` or `mvn hkj:install-skills`
+* **Skills trigger automatically** when your question matches a skill's domain keywords
+* **Direct invocation** via `/hkj-guide` etc. is available when you know which domain you need
+* **Skills update with the plugin** version, keeping guidance in sync with the library
+~~~
+
+~~~admonish tip title="See Also"
+- [Build Plugins](gradle_plugin.md) - Full Gradle and Maven plugin configuration reference
+- [Diagnostics](diagnostics.md) - Checking your HKJ configuration, including skills status
+~~~
+
+~~~admonish tip title="Further Reading"
+- **Anthropic**: [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code) - Installation, features, and configuration
+- **Anthropic**: [Extend Claude with skills](https://docs.anthropic.com/en/docs/claude-code/skills) - How Claude Code skills work, writing custom skills
+~~~
+
+---
+
+**Previous:** [PCollections Optics](pcollections_optics.md)
+**Next:** [Integration Guides](../spring/ch_intro.md)
+
+<!-- Source: tooling/test_assertions.md -->
+
+# Testing With hkj-test: Fluent Assertions for HKJ Types
+
+~~~admonish info title="What You'll Learn"
+- How to add `hkj-test` to a project as a test-scope dependency
+- The shape of the assertion API for the simple types, the effect types, and the monad transformers
+- How to assert on chained, lazy, or stateful HKJ values without unwrapping by hand
+- How to drop into Java 25's `import module` syntax to bring every helper into scope in one line
+~~~
+
+`hkj-test` is a small, focused companion to `hkj-core`: an AssertJ-flavoured assertion module covering every HKJ type a test is likely to touch. It is independent of `hkj-checker` and the Gradle/Maven plugins; you can adopt it without changing anything else in your build.
+
+---
+
+## Adding the Dependency
+
+`hkj-test` is published alongside the rest of Higher-Kinded-J on Maven Central.
+
+### Gradle
+
+```kotlin
+dependencies {
+    testImplementation("io.github.higher-kinded-j:hkj-test:LATEST_VERSION")
+}
+```
+
+### Maven
+
+```xml
+<dependency>
+    <groupId>io.github.higher-kinded-j</groupId>
+    <artifactId>hkj-test</artifactId>
+    <version>LATEST_VERSION</version>
+    <scope>test</scope>
+</dependency>
+```
+
+The artifact pulls AssertJ in transitively via `requires transitive`, so consumers do not need to add it again. It also `requires transitive org.higherkindedj.core`, which means a single dependency declaration is enough whether you intend to test against `Either`, `IO`, or any of the transformers.
+
+---
+
+## What Is Covered
+
+Every public HKJ type a user is likely to assert on has a dedicated assertion class. All assertions live in `org.higherkindedj.hkt.assertions`.
+
+| Category | Helpers |
+|----------|---------|
+| Discriminated unions | `EitherAssert`, `MaybeAssert`, `TryAssert`, `ValidatedAssert`, `LazyAssert` |
+| Reader / Writer / State | `ReaderAssert` (with `ReaderResultAssert`), `WriterAssert`, `StateAssert` |
+| Effect types | `IOAssert`, `VTaskAssert`, `VStreamAssert` |
+| Effect paths | `VTaskPathAssert`, `VStreamPathAssert`, `VResultPathAssert`, `VTaskContextAssert` |
+| Monad transformers | `EitherTAssert`, `MaybeTAssert`, `OptionalTAssert`, `ReaderTAssert`, `StateTAssert`, `WriterTAssert` |
+| Free algebra | `FreeAssert`, `EitherFAssert` |
+| Error envelopes | `ErrorEnvelopeAssert` |
+
+Each entry point follows the AssertJ convention `assertThatXxx(actual)`:
+
+<!-- verify -->
+```java
+assertThatEither(result);
+assertThatMaybe(value);
+assertThatTry(computation);
+```
+
+---
+
+## Assertions for the Simple Types
+
+The discriminated-union and value-bearing types share a common shape: a state predicate, a value-equality check, a value-satisfies-consumer escape hatch, and the usual null variants.
+
+### `EitherAssert`
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.assertions.EitherAssert.assertThatEither;
+
+Either<DomainError, Order> result = orderService.process(request);
+
+assertThatEither(result)
+    .isRight()
+    .hasRight(expectedOrder);
+
+assertThatEither(failure)
+    .isLeft()
+    .hasLeftSatisfying(error ->
+        assertThat(error).isInstanceOf(DomainError.ValidationFailure.class));
+```
+
+### `MaybeAssert` and `ValidatedAssert`
+
+<!-- verify -->
+```java
+assertThatMaybe(lookup).isJust().hasValue("alice");
+assertThatMaybe(lookup).isNothing();
+
+assertThatValidated(form)
+    .isInvalid()
+    .hasErrorSatisfying(errors -> errors.size() == 2, "two errors collected");
+```
+
+When the error channel is the located one - `NonEmptyList<FieldError>`, what every codec parse,
+mapping `parse`/`patch`, fallible merge and assembly companion returns - `hasFieldErrors` asserts
+the whole accumulation as rendered `"path: message"` lines, in declaration order:
+
+<!-- verify -->
+```java
+assertThatValidated(parsed)
+    .isInvalid()
+    .hasFieldErrors(
+        "id: not a UUID (expected e.g. 123e4567-e89b-12d3-a456-426614174000)",
+        "placedOn: not an ISO-8601 date (expected e.g. 2026-07-28)");
+```
+
+Order is asserted because declaration order *is* the accumulation contract. A reworded message
+fails as a one-line diff against the full rendered list.
+
+### `LazyAssert`
+
+`Lazy` carries its own evaluation lifecycle, so the assertions track it explicitly:
+
+<!-- verify -->
+```java
+Lazy<Integer> deferred = Lazy.defer(() -> compute());
+
+assertThatLazy(deferred).isNotEvaluated();
+assertThatLazy(deferred).whenForcedHasValue(42).isEvaluated();
+assertThatLazy(failing).whenForcedThrows(IllegalStateException.class);
+```
+
+### `WriterAssert` and `StateAssert`
+
+These cover both halves of the wrapped pair:
+
+<!-- verify -->
+```java
+assertThatWriter(writer)
+    .hasValue(42)
+    .hasLog("computed: ");
+
+assertThatStateTuple(tuple)
+    .hasValue("processed")
+    .hasState(5);
+```
+
+---
+
+## Assertions for the Effect Types
+
+Effect types are lazy, so the assertions take care of running them. `IOAssert` and `VTaskAssert` follow a `whenExecuted()` / `whenRun()` chain; `VStreamAssert` materialises the stream once and lets you make repeated claims about it.
+
+### `IOAssert`
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.assertions.IOAssert.assertThatIO;
+
+IO<Integer> effect = IO.delay(() -> 1 + 1);
+
+assertThatIO(effect).whenExecuted().hasValue(2);
+assertThatIO(effect).isNotExecutedYet();
+assertThatIO(effect).isRepeatable();
+
+IO<String> failing = IO.delay(() -> { throw new IllegalStateException("kaboom"); });
+
+assertThatIO(failing)
+    .throwsException(IllegalStateException.class)
+    .withMessageContaining("kaboom");
+```
+
+### `VTaskAssert`
+
+<!-- verify -->
+```java
+VTask<Integer> task = VTask.delay(() -> heavyComputation());
+
+assertThatVTask(task)
+    .whenRun()
+    .succeeds()
+    .hasValue(expected)
+    .completesWithin(Duration.ofSeconds(1));
+```
+
+### `VResultPathAssert`
+
+A `VResultPath<E, A>` run has three possible outcomes, and the assertion covers all of them: a typed success (`Right`), a typed domain error (`Left`), or a defect (an exception outside the typed channel). The path is executed once and the outcome cached for the rest of the chain:
+
+<!-- verify -->
+```java
+VResultPath<DomainError, Order> path = Path.vresultDefer(() -> service.load(orderId));
+
+assertThatVResultPath(path).isRight().hasRight(expectedOrder);
+
+assertThatVResultPath(failingPath)
+    .isLeft()
+    .hasLeftSatisfying(error ->
+        assertThat(error).isInstanceOf(DomainError.NotFound.class));
+
+assertThatVResultPath(defective)
+    .hasDefect()
+    .withDefectType(IllegalStateException.class);
+```
+
+### `VStreamAssert`
+
+<!-- verify -->
+```java
+VStream<Integer> stream = VStream.fromList(List.of(1, 2, 3));
+
+assertThatVStream(stream).producesElements(1, 2, 3);
+assertThatVStream(stream).hasCount(3);
+assertThatVStream(stream).isEmpty();          // for empty streams
+
+assertThatVStream(failingStream)
+    .failsWithExceptionType(IllegalStateException.class);
+```
+
+---
+
+## Assertions for the Error Envelope
+
+`ErrorEnvelopeAssert` covers the generated `ErrorEnvelope<C>` (see [`@GenerateErrorEnvelope`](../mapping/merge_envelopes.md#generating-error-envelopes-generateerrorenvelope)). Because envelope timestamps come from a `TimeSource`, a frozen clock makes the whole envelope, the timestamp included, exactly assertable:
+
+```java
+import static org.higherkindedj.hkt.assertions.ErrorEnvelopeAssert.assertThatErrorEnvelope;
+
+Instant frozen = Instant.parse("2026-07-07T09:30:00Z");
+TimeSource time = TimeSource.of(SteppableClock.startingAt(frozen));
+
+OrderError error = OrderErrors.outOfStock(time, products)
+    .editContext(ctx -> ctx.orderId(orderId));
+
+assertThatErrorEnvelope(error.envelope())
+    .hasCode("OUT_OF_STOCK")
+    .hasMessageContaining("stock")
+    .hasTimestamp(frozen)
+    .hasContextSatisfying(ctx -> assertThat(ctx.orderId()).isEqualTo(orderId));
+```
+
+`hasCode` / `hasMessage` / `hasMessageContaining` / `hasTimestamp` / `hasContext` / `hasContextSatisfying` cover the four fields; the context escape hatch keeps the assertion typed against your context record.
+
+---
+
+## Assertions for Monad Transformers
+
+Transformer assertions take an extra argument: an `unwrapper` function that pulls the transformer's outer monad back into a plain `Optional` so the assertion can introspect it. The pattern mirrors how transformer code typically composes outer and inner monads.
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.assertions.EitherTAssert.assertThatEitherT;
+import static org.higherkindedj.hkt.either_t.EitherTKindHelper.EITHER_T;
+import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL;
+
+MonadError<OptionalKind.Witness, Unit> outerMonad = Instances.monadError(optional());
+
+private <E, A> Optional<Either<E, A>> unwrap(Kind<OptionalKind.Witness, Either<E, A>> kind) {
+    return OPTIONAL.narrow(kind);
+}
+
+Kind<EitherTKind.Witness<OptionalKind.Witness, String>, Integer> kind =
+    EITHER_T.widen(EitherT.right(outerMonad, 42));
+
+assertThatEitherT(kind, this::unwrap)
+    .isPresentRight()
+    .hasRightValue(42);
+```
+
+The same shape applies to `MaybeTAssert`, `OptionalTAssert`, `ReaderTAssert`, `StateTAssert`, and `WriterTAssert`. The `Reader`, `State`, and `Writer` variants additionally provide `whenRunWith(env)` / `whenRunWith(initialState)` to drive the underlying computation before asserting.
+
+---
+
+## Test Fixtures
+
+### `SteppableClock`
+
+A clock that only moves when told to; pair it with `TimeSource.of(clock)` and time-dependent code is exercised by stepping the clock, not sleeping:
+
+``` java
+import org.higherkindedj.hkt.assertions.SteppableClock;
+import org.higherkindedj.hkt.time.TimeSource;
+
+SteppableClock clock = SteppableClock.startingAt(Instant.parse("2026-07-07T00:00:00Z"));
+var service = new InMemoryInventoryService(TimeSource.of(clock));
+
+service.reserve(order);                    // hold expires 15 minutes from "now"
+clock.advance(Duration.ofMinutes(16));     // time passes - instantly
+service.reserve(other);                    // the expired hold is reclaimed
+```
+
+Stepping is atomic (safe to advance from the test thread while virtual threads read), and `withZone` honours the `java.time.Clock` contract: the zoned view shares the same steppable timeline.
+
+---
+
+## Java 25: One-line Module Import
+
+`hkj-test` is published as a proper JPMS module named `org.higherkindedj.test`. On Java 25 with `--enable-preview` (already enabled across the HKJ project), JEP 511's module-import syntax reduces the per-class import boilerplate to a single line:
+
+```java
+import module org.higherkindedj.test;
+import module org.higherkindedj.core;   // brings in Either, Maybe, Try, IO, ...
+
+class UserServiceTest {
+    @Test
+    void returns_user() {
+        Either<DomainError, User> result = userService.findById("u1");
+        EitherAssert.assertThatEither(result).isRight();
+    }
+}
+```
+
+Both modules are now in scope; no further imports are required.
+
+---
+
+## Coverage Guarantees
+
+Every public assertion method on every assertion class is covered by a dedicated `*AssertContractTest` in `hkj-test/src/test/java`. Each contract spec enumerates rows of `(label, passingInput, failingInput, chain)` and the framework dispatches each row as two dynamic tests: one verifying the chain succeeds on the passing input, another verifying it throws `AssertionError` on the failing input.
+
+Coverage is enforced at 100% line and 100% instruction on the `hkj-test` bundle. Adding a new assertion method without a corresponding contract row will fail the project's `check` task, so the test surface stays exhaustive over time.
+
+---
+
+## Optic Laws
+
+`org.higherkindedj.optics.laws` publishes law-verification helpers for every optic family (the properties that *define* a lawful `Iso`, `Lens`, `Prism`, `Affine`, or `Traversal`) in the same flat `assert…` style as the `hkt.laws` type-class helpers:
+
+<!-- verify -->
+``` java
+import org.higherkindedj.optics.laws.LensLaws;
+import org.higherkindedj.optics.laws.PrismLaws;
+
+@Test
+void nameLensIsLawful() {
+    LensLaws.assertLensLaws(UserLenses.name(), new User("Ada", 36), "Grace", "Alan");
+    // get-set, set-get (both values) and set-set, with counterexample-bearing messages
+}
+
+@Test
+void statusPrismIsLawful() {
+    PrismLaws.assertPrismLaws(ShapePrisms.circle(), new Circle(1.0), new Square(2.0));
+}
+```
+
+`ValidatedPrismLaws` joins the family for the validated-boundary optic (parse-build and the section law build-parse). Each family also exposes the individual laws (`assertGetSet`, `assertBuildMatch`, `assertSetNoOpWhenAbsent`, …) for targeted checks, and failures name the violated law with the offending values: `"Lens set-get: get(set(Grace, …)) == the value set; got Ada"`. Guard rails reject vacuous fixtures (equal set-set values, non-matching prism sources). Drive broader coverage with `@ParameterizedTest` or property fixtures at the call site.
+
+`MappingLaws` completes the family for [`@GenerateMapping`](../mapping/ch_intro.md) Impls, law-checking a mapping through its exposed surface. There is one `assertMappingLaws` overload per emission tier:
+
+- **Lossless:** pass `asIso()` plus `asValidatedPrism()`; delegates to `IsoLaws` and adds the coherence checks between the two surfaces.
+- **Projection:** pass `asLens()`; delegates to `LensLaws`.
+- **Fallible:** pass `asValidatedPrism()` with a parsing and a non-parsing wire value; delegates to `ValidatedPrismLaws`.
+- **Total-parse** (a mapping whose parse cannot fail on a well-formed wire the domain accepts): pass a domain sample. Derived wire fields and leaves that never fail qualify. Only the non-derived components round-trip, and the overload asserts exactly that.
+- **Validated patch** (a projection that validates, on a record or a bean wire): pass the `patch` and `build` method references, a domain sample, and a parsing and a non-parsing wire; checks projection identity, idempotence and located validation.
+- **Sparse update** (an `UpdateSpec`): pass the `updateFrom` method reference, a domain sample, and an all-absent, a valid and an invalid wire; checks identity, idempotence and located validation. Make the all-absent wire a freshly constructed bean, as a binder makes of an empty body, and the domain sample unlike any default, so a default the bean gives itself, which would defeat absence, fails the identity law. The invalid wire must fail on a field: a domain constructor's refusal is unlabelled, so a domain with no leaf checks `assertSparseIdentity` and `assertSparseIdempotent` on their own.
+- **Parse-only** (a bean that is only read): pass `asValidatedParse()` with a parsing and a non-parsing wire; checks that the first parses and the second fails with every error located.
+- **Build-only** (a bean that is only written): pass `asValidatedBuild()` with a domain sample; checks that `build` renders it without failing.
+- **Two halves** (a `@ReadOnly` property, its own or nested): check each half alone.
+
+The laws compare by `equals`. A same-typed array crosses as a clone, and a record compares an array component by reference, so a record with an array component needs an `equals` of its own that uses `Arrays.equals` before these laws apply to it; otherwise assert its round trip elementwise.
+
+``` java
+import org.higherkindedj.optics.laws.MappingLaws;
+
+@Test
+void personMappingIsLawful() {
+    // Fallible tier: a wire that parses, and one that must not
+    MappingLaws.assertMappingLaws(
+        PersonMappingImpl.INSTANCE.asValidatedPrism(),
+        new PersonDto("Ada", "ada@corp.example"),
+        new PersonDto("Ada", "not-an-email"));
+}
+```
+
+Three samples need care. The lossless overload's coherence check needs a wire whose reference components are non-null, and whose values the domain accepts. A mapping with a derived field *and* a fallible leaf takes the fallible overload, which keeps the rejection check: give it a parseable wire whose derived components match what `build` produces. For the patch and parse-only overloads, the non-parsing wire must fail on a field, since a refusal by the domain's constructor alone is unlabelled at the top level.
+
+A pair of records with no components has one value on each side, so the lossless overload's guard, which asks for a wire sample independent of the domain sample, can never be met. Check each law the overload combines on its own instead: `IsoLaws.assertIsoLaws`, `MappingLaws.assertBuildAgreesWithIso` and `assertParseAgreesWithIso`, and `ValidatedPrismLaws.assertParseBuild` and `assertBuildParse`.
+
+For asserting on the located failures themselves, `assertThatValidated(...).hasFieldErrors(...)` takes the whole accumulation as rendered lines; `assertThatFieldError` takes one error apart, matching its path (`hasPath("address.zip")`) and message (`hasMessage`, `hasMessageContaining`).
+
+~~~admonish tip title="See Also"
+- [Manual Gradle and Maven Setup](manual_setup.md) - Adding hkj-test to projects that do not use the HKJ build plugin
+- [Build Plugins](gradle_plugin.md) - Other test-time tooling
+- [What Are Optics?](../optics/optics_intro.md) - The optic families these laws define
+~~~
+
+---
+
+**Previous:** [Claude Code Skills](claude_code_skills.md)

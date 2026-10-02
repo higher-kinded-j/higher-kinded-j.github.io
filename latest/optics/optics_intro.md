@@ -1,0 +1,300 @@
+# What Are Optics?
+
+![Diagram showing optics as composable lenses focusing on nested data structures](../images/optics.jpg)
+
+~~~admonish info title="Hands-On Learning"
+Ready to master optics through practice? The **[Optics Tutorial Track](../tutorials/optics/ch_intro.md)** (202 exercises) offers six interactive journeys covering Lenses, Prisms, Traversals, the Fluent and Free DSLs, the Focus DSL, batching, and the generated DTO boundary.
+~~~
+
+~~~admonish info title="What You'll Learn"
+- What optics are and how they solve the nested immutable data update problem in Java
+- The six core optic types: Lens, Iso, Prism, Affine, Traversal, and Fold, and when to use each
+- How to compose optics to navigate and modify deeply nested structures
+- Using annotation-driven code generation to create type-safe optics automatically
+- Performing effectful modifications with Higher-Kinded Types using `modifyF` and Applicatives
+~~~
+
+As Java developers, we appreciate the safety and predictability of immutable objects, especially with the introduction of records. However, this safety comes at a cost: updating nested immutable data can be a verbose and error-prone nightmare.
+
+Consider a simple nested record structure:
+
+<!-- verify -->
+```java
+record Street(String name, int number) {}
+record Address(Street street, String city) {}
+record User(String name, Address address) {}
+```
+
+How do you update the user's street name? In standard Java, you're forced into a "copy-and-update" cascade:
+
+<!-- verify -->
+```java
+// What most Java developers actually write
+public User updateStreetName(User user, String newStreetName) {
+    var address = user.address();
+    var street = address.street();
+    var newStreet = new Street(newStreetName, street.number());
+    var newAddress = new Address(newStreet, address.city());
+    return new User(user.name(), newAddress);
+}
+```
+
+This is tedious, hard to read, and gets exponentially worse with deeper nesting. What if there was a way to "zoom in" on the data you want to change, update it, and get a new copy of the top-level object back, all in one clean operation?
+
+This is the problem that **Optics** solve.
+
+## The Core Idea
+
+At their core, optics are simply **composable, functional getters and setters** for immutable data structures.
+
+Think of an optic as a *zoom lens* for your data. It's a first-class object that represents a path from a whole structure (like `User`) to a specific part (like the street `name`). Because it's an object, you can pass it around, compose it with other optics, and use it to perform functional updates.
+
+## Think of Optics Like...
+
+* **Lens**: A magnifying glass that focuses on one specific part
+* **Prism**: A tool that splits light, but only works with certain types of light
+* **Affine**: A magnifying glass for a slot that may be empty
+* **Iso**: A universal translator between equivalent languages
+* **Traversal**: A spotlight that can illuminate many targets at once
+* **Fold**: A read-only query tool that extracts and aggregates data
+
+Every optic provides two basic capabilities:
+
+1. **`get`**: Focus on a structure `S` and retrieve a part `A`.
+2. **`set`**: Focus on a structure `S`, provide a new part `A`, and receive a new `S` with the part updated. This is always an immutable operation: a new copy of `S` is returned.
+
+The read-only `Fold` is the deliberate exception: it queries but never writes.
+
+The real power comes from their **composability**. You can chain optics together to peer deeply into nested structures and perform targeted updates with ease.
+
+## The Optics Family in Higher-Kinded-J
+
+The `higher-kinded-j` library provides the foundation for a rich optics library built around six core types. Each is designed to solve a specific kind of data access problem.
+
+### 1. Lens: For "Has-A" Relationships
+
+A **Lens** is the most common optic. It focuses on a single, required piece of data within a larger "product type" (a `record` or class with fields). It's for data that is guaranteed to exist.
+
+* **Problem it solves**: Getting and setting a field within an object, especially a deeply nested one.
+* **Generated Code**: Annotating a record with `@GenerateLenses` produces a companion class (e.g., `UserLenses`) that contains:
+
+  1. A **lens** for each field (e.g., `UserLenses.address()`).
+  2. Convenient **`with*` helper methods** for easy updates (e.g., `UserLenses.withAddress(...)`).
+* **Example (Deep Update with Lenses)**:
+
+  * To solve our initial problem of updating the user's street name (the same path the chapter opened with), we compose lenses:
+
+<!-- verify -->
+```java
+    // Compose lenses to create a direct path to the nested data
+    var userToStreetName = UserLenses.address()
+        .andThen(AddressLenses.street())
+        .andThen(StreetLenses.name());
+  
+    // Perform the deep update in a single, readable line
+    User updatedUser = userToStreetName.set("New Street", user);
+```
+
+* **Example (Shallow Update with `with*` Helpers)**:
+
+  * For simple, top-level updates, the `with*` methods are more direct and discoverable.
+
+<!-- verify -->
+```java
+// Before: Using the lens directly
+User userWithNewName = UserLenses.name().set("Bob", user);
+
+// After: Using the generated helper method
+User renamedUser = UserLenses.withName(user, "Bob");
+```
+
+### 2. Iso: For "Is-Equivalent-To" Relationships
+
+An **Iso** (Isomorphism) is a special, reversible optic. It represents a lossless, two-way conversion between two types that hold the exact same information. Think of it as a type-safe, composable adapter.
+
+* **Problem it solves**: Swapping between different representations of the same data, such as a wrapper class and its raw value, or between two structurally different but informationally equivalent records.
+* **Example**: Suppose you have a `Point` record and a `Tuple2<Integer, Integer>`, which are structurally different but hold the same data.
+
+<!-- verify -->
+  ```java
+  public record Point(int x, int y) {}
+  ```
+
+  You can define an `Iso` to convert between them:
+
+<!-- verify -->
+  ```java
+  @GenerateIsos
+  public static Iso<Point, Tuple2<Integer, Integer>> pointToTuple() {
+    return Iso.of(
+        point -> Tuple.of(point.x(), point.y()), // get
+        tuple -> new Point(tuple._1(), tuple._2())  // reverseGet
+    );
+  }
+  ```
+
+  This `Iso` can now be composed with other optics to, for example, create a `Lens` that goes from a `Point` directly to its first element inside a `Tuple` representation.
+
+### 3. Prism: For "Is-A" Relationships
+
+A **Prism** is like a Lens, but for "sum types" (`sealed interface` or `enum`). It focuses on a single, *possible case* of a type. A Prism's `get` operation can fail (it returns an `Optional`), because the data might not be the case you're looking for. Think of it as a type-safe, functional `instanceof` and cast.
+
+* **Problem it solves**: Safely operating on one variant of a sealed interface.
+* **Example**: Instead of using an `if-instanceof` chain to handle a specific `DomainError`:
+
+<!-- verify -->
+```java
+// Using a generated Prism for a sealed interface
+DomainErrorPrisms.shippingError()
+   .getOptional(error) // Safely gets a ShippingError if it matches
+   .filter(ShippingError::isRecoverable)
+   .ifPresent(this::handleRecovery); // Perform action only if it's the right type
+```
+
+### 4. Affine: For "Might-Be-There" Relationships
+
+An **Affine** focuses on **zero or one** value: an optional field, a nullable property, or any path where the target may be absent but can never occur twice. It behaves like a Lens whose focus is not guaranteed, and it is exactly what you get when you compose a Lens with a Prism.
+
+* **Problem it solves**: Safely reading and updating a value inside an `Optional` field without unwrapping it by hand.
+* **Example**: To reach a phone number stored as `Optional<String>`:
+
+<!-- verify -->
+```java
+@GenerateLenses
+record ContactInfo(String email, Optional<String> phone) {}
+
+ContactInfo contact = new ContactInfo("ada@example.com", Optional.of("020 7946 0958"));
+
+// Lens into the Optional field, then Affines.some() into its content
+Affine<ContactInfo, String> contactToPhone =
+    ContactInfoLenses.phone().andThen(Affines.some());
+
+Optional<String> phone = contactToPhone.getOptional(contact);       // empty when absent
+ContactInfo updated = contactToPhone.modify(String::trim, contact); // no-op when absent
+```
+
+### 5. Traversal: For "Has-Many" Relationships
+
+A **Traversal** is an optic that can focus on multiple targets at once, typically all the items within a collection inside a larger structure.
+
+* **Problem it solves**: Applying an operation to every element in a `List`, `Set`, or other collection that is a field within an object.
+* **Example**: To validate a list of promo codes in an order with `Validated`:
+
+  ```java
+  @GenerateTraversals
+  public record OrderData(..., List<String> promoCodes) {}
+  var codesTraversal = OrderDataTraversals.promoCodes();
+  // returns Validated<AppError, Code>
+  var validationFunction = (String code) -> validate(code); 
+
+  // Use the traversal to apply the function to every code.
+  // The Applicative for Validated handles the error accumulation automatically.
+  Validated<AppError, OrderData> result = codesTraversal.modifyF(
+      validationFunction, orderData, validatedApplicative
+  );
+  ```
+
+### 6. Fold: For "Has-Many" Queries
+
+A **Fold** is a read-only optic designed specifically for querying and extracting data without modification. Think of it as a `Traversal` that has given up the ability to modify in exchange for a clearer expression of intent and additional query-focused operations.
+
+* **Problem it solves**: Extracting information from complex data structures: finding items, checking conditions, aggregating values, or collecting data without modifying the original structure.
+* **Generated Code**: Annotating a record with `@GenerateFolds` produces a companion class (e.g., `OrderFolds`) with a `Fold` for each field.
+* **Example (Querying Product Catalogue)**:
+
+  * To find all products in an order that cost more than £50:
+
+<!-- verify -->
+```java
+    // Get the generated fold
+    Fold<Order, Product> orderToProducts = OrderFolds.items();
+
+    // Find all matching products
+    List<Product> expensiveItems = orderToProducts.getAll(order).stream()
+        .filter(product -> product.price() > 50.00)
+        .collect(toList());
+
+    // Or check if any exist
+    boolean hasExpensiveItems = orderToProducts.exists(
+        product -> product.price() > 50.00,
+        order
+    );
+```
+
+* **Key Operations**:
+  * `getAll(source)`: Extract all focused values into a `List`
+  * `preview(source)`: Get the first value as an `Optional`
+  * `find(predicate, source)`: Find first matching value
+  * `exists(predicate, source)`: Check if any value matches
+  * `all(predicate, source)`: Check if all values match
+  * `isEmpty(source)`: Check if there are zero focused values
+  * `length(source)`: Count the number of focused values
+
+**Why Fold is Important**: While `Traversal` can do everything `Fold` can do, using `Fold` makes your code's intent crystal clear: "I'm only reading this data, not modifying it." This is valuable for code reviewers, for preventing accidental mutations, and for expressing domain logic where queries should be separated from commands ([CQRS pattern](https://martinfowler.com/bliki/CQRS.html)).
+
+## Advanced Capabilities: Profunctor Adaptations
+
+Every optic is fundamentally an `Optic<S, T, A, B>`, and that interface carries the **profunctor** operations `contramap`, `map`, and `dimap`, which adapt the types an optic works between: where it reads from, and what an update produces.
+
+In practice most adaptation is done by composing (when the new source contains the old) or by bridging through an [Iso](iso.md) (when two shapes hold the same information), both of which keep the full optic API. The raw profunctor operations return an `Optic`, and come into their own in effectful `modifyF` pipelines. The [Profunctor Optics Guide](profunctor_optics.md) works through which route fits which job.
+
+## How `higher-kinded-j` Provides Optics
+
+This brings us to the unique advantages `higher-kinded-j` offers for optics in Java.
+
+1. **An Annotation-Driven Workflow**: Manually writing optics is boilerplate. The `higher-kinded-j` approach automates this. By simply adding an annotation (`@GenerateLenses`, `@GeneratePrisms`, etc.) to your data classes, you get fully-functional, type-safe optics for free. This is a massive productivity boost and eliminates a major barrier to using optics in Java.
+2. **Higher-Kinded Types for Effectful Updates**: This is the most powerful feature. Because `higher-kinded-j` provides an HKT abstraction (`Kind<F, A>`) and type classes like `Functor` and `Applicative`, the optics can perform *effectful* modifications. The `modifyF` method is generic over an `Applicative` effect `F`. This means you can perform an update within the context of any data type that has an `Applicative` instance:
+   * Want to perform an update that might fail? Use `Optional` or `Either` as your `F`.
+   * Want to perform an asynchronous update? Use `CompletableFuture` as your `F`.
+   * Want to accumulate validation errors? Use `Validated` as your `F`.
+3. **Profunctor Adaptability**: Every optic is fundamentally a profunctor, meaning it can be adapted to work with different data types and structures. This provides incredible flexibility for integrating with external systems, handling legacy data formats, and working with strongly-typed wrappers.
+
+## Common Patterns
+
+### When to Use `with*` Helpers vs Manual Lenses
+
+* **Use `with*` helpers** for simple, top-level field updates
+* **Use composed lenses** for deep updates or when you need to reuse the path
+* **Use manual lens creation** for computed properties or complex transformations
+
+### Decision Guide
+
+The [decision flow at the chapter opening](ch1_intro.md#which-optic-do-you-need) routes the core choices; two further tools complete the family:
+
+* **Need to query or extract data without modification?** → **Fold**
+* **Need to adapt existing optics to other types?** → **Profunctor operations**
+
+## Common Pitfalls
+
+**Don't do this:**
+
+<!-- verify -->
+```java
+// Get-then-set traverses the path twice
+var street = userToStreetName.get(user);
+var updatedUser = userToStreetName.set(street.toUpperCase(), user);
+```
+
+**Do this instead:**
+
+<!-- verify -->
+```java
+// Use modify() for transformations
+var updatedUser = userToStreetName.modify(String::toUpperCase, user);
+```
+
+~~~admonish info title="Key Takeaways"
+* **Optics are composable, reusable paths**: first-class getter/setter objects you chain with `andThen` to reach any depth, replacing the copy-and-update cascade
+* **Six core types, one decision**: Lens (always there), Prism (might match), Affine (might be there), Iso (same information, different shape), Traversal (many targets), Fold (read-only queries)
+* **The annotations write the boilerplate**: `@GenerateLenses`, `@GeneratePrisms`, `@GenerateIsos`, `@GenerateTraversals`, and `@GenerateFolds` keep the optics in sync with your records
+* **`modifyF` makes any settable path effect-ready**: failable, accumulating, or asynchronous updates through the same optic; [Lenses](lenses.md) shows it in action
+~~~
+
+~~~admonish tip title="See Also"
+- [Java-Friendly APIs](ch4_intro.md): Three Java-native ways to use optics: the Focus DSL for path-based navigation, the Fluent API for validation-aware updates, and the Free Monad DSL for programs-as-data.
+~~~
+
+---
+
+**Previous:** [Fundamentals](ch1_intro.md)
+**Next:** [Lenses: Working with Product Types](lenses.md)

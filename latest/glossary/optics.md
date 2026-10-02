@@ -1,0 +1,665 @@
+# Glossary: Optics, Validation & Mapping
+
+~~~admonish info title="What This Page Covers"
+- Lenses, prisms, traversals, the Focus DSL, and record mapping.
+- Part of the [Glossary](../glossary.md); see it for the other categories.
+~~~
+
+## Affine
+
+**Definition:** An optic that focuses on zero or one values within a structure. Affine sits between Lens (exactly one) and Prism (zero or one for sum types) in the optic hierarchy. It combines the "might not be there" aspect of Prism with the "focus on part of a product" aspect of Lens.
+
+**Core Operations:**
+- `preview(S source)` - Try to extract the value (returns Optional)
+- `set(A value, S source)` - Set the value if the focus exists
+
+**Example:**
+<!-- verify -->
+```java
+// Affine for the first element of a list (might be empty)
+Affine<List<String>, String> firstElement = Affine.of(
+    list -> list.isEmpty() ? Optional.empty() : Optional.of(list.getFirst()),
+    (list, newFirst) -> list.isEmpty() ? list :
+        Stream.concat(Stream.of(newFirst), list.stream().skip(1)).toList()
+);
+
+List<String> items = List.of("a", "b", "c");
+Optional<String> first = firstElement.preview(items);  // Optional["a"]
+List<String> updated = firstElement.set("X", items);   // ["X", "b", "c"]
+
+List<String> empty = List.of();
+Optional<String> noFirst = firstElement.preview(empty);  // Optional.empty()
+List<String> stillEmpty = firstElement.set("X", empty);  // [] (unchanged)
+```
+
+**When To Use:**
+- Accessing elements that may not exist (first element, element at index)
+- Optional fields in product types
+- Composing Lens with Prism (result is Affine)
+
+**Hierarchy Position:** `Iso → Lens → Affine → Traversal`
+                        `Iso → Prism → Affine → Traversal`
+
+**Related:** [Lens](#lens), [Prism](#prism), [Affine Documentation](../optics/affine.md)
+
+---
+
+## At
+
+**Definition:** A type class for structures that support indexed access with insertion and deletion semantics. Provides a `Lens<S, Optional<A>>` where setting to `Optional.empty()` deletes the entry and setting to `Optional.of(value)` inserts or updates it.
+
+**Core Operations:**
+- `at(I index)` - Returns `Lens<S, Optional<A>>` for the index
+- `get(I index, S source)` - Read value at index (returns Optional)
+- `insertOrUpdate(I index, A value, S source)` - Insert or update entry
+- `remove(I index, S source)` - Delete entry at index
+- `modify(I index, Function<A,A> f, S source)` - Update value if present
+
+**Example:**
+<!-- verify -->
+```java
+At<Map<String, Integer>, String, Integer> mapAt = AtInstances.mapAt();
+
+Map<String, Integer> scores = new HashMap<>(Map.of("alice", 100));
+
+// Insert new entry
+Map<String, Integer> withBob = mapAt.insertOrUpdate("bob", 85, scores);
+// Result: {alice=100, bob=85}
+
+// Remove entry
+Map<String, Integer> noAlice = mapAt.remove("alice", withBob);
+// Result: {bob=85}
+
+// Compose with Lens for deep access
+Lens<UserProfile, Optional<Integer>> themeLens =
+    settingsLens.andThen(SettingsLenses.preferences()).andThen(mapAt.at("theme"));
+```
+
+**When To Use:** CRUD operations on maps or lists where you need to insert new entries or delete existing ones whilst maintaining immutability and optics composability.
+
+**Related:** [Indexed Access: At and Ixed Type Classes](../optics/indexed_access.md)
+
+---
+
+## Edits
+
+**Definition:** A sparse, accumulating multi-edit over optics. `Edits.combine(...)` folds several pure edits (`set`, `modify`) into one reusable [Update](type-classes.md#update) at compile time; a fallible edit is rejected there, so a validation failure can never be silently dropped. `Edits.accumulate(...)` adds the validated REST-`PATCH` shape: it mixes pure and fallible edits, reports every bad field at once (each located as a [FieldError](#fielderror)), and applies the writes only if all validated. The `…IfPresent` factories treat `null` as absent, which is what makes a patch sparse.
+
+**Example:**
+<!-- verify -->
+```java
+import static org.higherkindedj.optics.edit.Edit.*;
+
+// Pure fold: several edits into one reusable Update<Order>
+Update<Order> normalise = Edits.combine(
+    modify(EMAIL, String::toLowerCase),
+    modify(SKU,   String::trim));
+
+// Validated PATCH: every bad field reported at once, only present fields written
+Validated<NonEmptyList<FieldError>, Order> patched =
+    Edits.accumulate(
+            setIfPresent(ORDER_NUMBER, req.orderNumber()),
+            parseIfPresent(CONTACT, req.email(), Email::parse),
+            modifyIfPresent(QUANTITY, req.qtyDelta(), (delta, qty) -> qty + delta))
+        .apply(order);
+```
+
+**Related:** [Multi-Edit and Sparse Updates](../optics/multi_edit.md), [Update](type-classes.md#update), [FieldError](#fielderror), [ValidatedPrism](#validatedprism)
+
+---
+
+## ErrorEnvelope
+
+**Definition:** The record that carries an error's envelope as one value: `ErrorEnvelope<C>(String code, String message, Instant timestamp, C context)`, where `C` is a typed context record rather than a `Map<String, Object>`. A sealed error hierarchy declares one `ErrorEnvelope<C>` component per variant, and [@GenerateErrorEnvelope](#generateerrorenvelope) generates the factories and builders around it. Two verbs keep enrichment honest: `withContext(D)` is the record wither that *replaces* the context (and may change its type), while the generated `editContext` *transforms* the existing one.
+
+**Example:**
+```java
+record OutOfStock(List<ProductId> products, ErrorEnvelope<OrderErrorContext> envelope)
+    implements OrderError {}
+
+ErrorEnvelope<OrderErrorContext> envelope =
+    ErrorEnvelope.of(timeSource, "OUT_OF_STOCK", "Out of stock", context);
+```
+
+**Related:** [@GenerateErrorEnvelope](#generateerrorenvelope), [Merge and Error Envelopes](../mapping/merge_envelopes.md#generating-error-envelopes-generateerrorenvelope), [TimeSource](data-effects.md#timesource)
+
+---
+
+## FieldError
+
+**Definition:** A single validation failure carrying a composable path to the offending field plus a message. It is a small record (path segments plus a message) with a `pathString()` such as `"address.zip"`. Accumulating validation collects `FieldError`s into a [NonEmptyList](data-effects.md#nonemptylist) in declaration order, so a failed parse reports *which* fields were wrong and *where* they sit in a nested structure, not merely that validation failed.
+
+**Example:**
+<!-- verify -->
+```java
+FieldError bare    = FieldError.of("not a postcode");   // unlocated leaf
+FieldError located = bare.at("zip").at("address");      // pathString() == "address.zip"
+```
+
+**Located automatically:** `Validated.fields()` and the `parseIfPresent` edits prepend the field label onto each error's path, so a leaf validator creates unlocated `FieldError.of(...)`s and the assembly attaches the location. `hkj-test` asserts the whole accumulation with `assertThatValidated(result).hasFieldErrors(...)`, and a single error's path with `assertThatFieldError`.
+
+**Related:** [Open-Arity Assembly](../monads/validated_assembly.md), [NonEmptyList](data-effects.md#nonemptylist), [Validated Assembly](#validated-assembly), [ValidatedPrism](#validatedprism)
+
+---
+
+## Focus DSL
+
+**Definition:** A domain-specific language for fluent, type-safe navigation and manipulation of immutable data structures. The Focus DSL provides a composable way to build paths through nested records without manual lens composition.
+
+**Core Concept:** Instead of composing optics manually, the Focus DSL lets you chain `.then(...)` hops off a generated navigator, with the optic types inferred automatically.
+
+**Example:**
+<!-- verify -->
+```java
+// Without Focus DSL: manual lens composition
+Lens<Employee, String> streetLens =
+    EmployeeLenses.company()
+        .andThen(CompanyLenses.address())
+        .andThen(AddressLenses.street());
+String composedStreet = streetLens.get(employee);
+
+// With Focus DSL: the generated paths compose, and the source is named once, at the end
+String street = EmployeeFocus.company()
+    .then(CompanyFocus.address())
+    .then(AddressFocus.street())
+    .get(employee);
+
+// Modification is equally fluent
+Employee updated = EmployeeFocus.company()
+    .then(CompanyFocus.address())
+    .then(AddressFocus.city())
+    .modify(String::toUpperCase, employee);
+
+// Mix with Effect Paths for effectful navigation
+EitherPath<AppError, String> effectfulCity = employeeService.findById(id)
+    .focus(EmployeeFocus.company())
+    .focus(CompanyFocus.address())
+    .focus(AddressFocus.city());
+```
+
+**Key Features:**
+- Type-safe: Compiler catches invalid paths
+- Composable: Chain any optic types together
+- Generated: `@GenerateFocus` creates Focus helpers automatically
+- Effect integration: Seamlessly works with Effect Paths
+
+**Related:** [FocusPath](#focuspath), [Lens](#lens), [Effect-Optics Bridge](effect-paths.md#effect-optics-bridge), [Focus DSL Documentation](../optics/focus_dsl.md)
+
+---
+
+## FocusPath
+
+**Definition:** A generated helper class that provides pre-composed optic paths for navigating into record types. The annotation processor creates FocusPath classes for each annotated record, offering a fluent API for accessing fields and nested structures.
+
+**Generation:** Add `@GenerateFocus` to your record to generate the corresponding Focus class.
+
+**Example:**
+<!-- verify -->
+```java
+@GenerateFocus
+public record User(String name, Address address, List<Order> orders) {}
+
+@GenerateFocus
+public record Address(String street, String city, String postcode) {}
+
+// Generated: UserFocus class with methods:
+// - UserFocus.name()     → FocusPath<User, String>
+// - UserFocus.address()  → FocusPath<User, Address>
+// - UserFocus.orders()   → TraversalPath<User, Order>
+
+// Use in Focus DSL
+String city = UserFocus.address()
+    .then(AddressFocus.city())
+    .get(user);
+
+// Compose for reusable paths
+FocusPath<User, String> userCity = UserFocus.address()
+    .then(AddressFocus.city());
+
+// Use with Effect Paths
+EitherPath<AppError, String> cityPath = loadUser(id)
+    .focus(UserFocus.address())
+    .focus(AddressFocus.city());
+```
+
+**Naming Convention:**
+- Record `Foo` generates `FooFocus` class
+- Each field `bar` generates static method `FooFocus.bar()`
+
+**Related:** [Focus DSL](#focus-dsl), [Lens](#lens), [Code Generation](../optics/annotations_at_a_glance.md)
+
+---
+
+## Fold
+
+**Definition:** A read-only optic that extracts zero or more values from a structure. Folds are like Traversals but without the ability to modify. They generalise the concept of "folding" or "reducing" over a structure.
+
+**Core Operations:**
+- `foldMap(Monoid<M> monoid, Function<A, M> f, S source)` - Map and combine all values
+- `toList(S source)` - Extract all focused values as a list
+- `headOption(S source)` - Get the first value if any
+- `exists(Predicate<A> p, S source)` - Check if any value satisfies predicate
+- `all(Predicate<A> p, S source)` - Check if all values satisfy predicate
+
+**Example:**
+<!-- verify -->
+```java
+// Fold over all players in a league
+Fold<League, Player> allPlayers = LeagueFolds.teams()
+    .andThen(TeamFolds.players());
+
+// Extract all players
+List<Player> players = allPlayers.getAll(league);
+
+// Sum all scores using a Monoid
+Integer totalScore = allPlayers.foldMap(
+    Monoids.integerAddition(),
+    Player::score,
+    league
+);
+
+// Check conditions across all values
+boolean anyInactive = allPlayers.exists(p -> !p.isActive(), league);
+boolean allQualified = allPlayers.all(p -> p.score() >= 100, league);
+```
+
+**When To Use:**
+- Extracting multiple values without modification
+- Aggregating data from nested structures
+- Querying collections within complex types
+- When you need read-only access to multiple elements
+
+**Related:** [Traversal](#traversal), [Getter (Fold of one)](#lens)
+
+---
+
+## @GenerateAssembly
+
+**Definition:** The codegen companion for [Validated Assembly](#validated-assembly). Annotate a record and the processor emits a same-package `…Assembly` companion with one order-enforcing method per component, so assembly is discovered by autocomplete and the canonical constructor is baked in. A component typed as another annotated record accepts its sub-companion's result directly.
+
+**Example:**
+<!-- verify -->
+```java
+@GenerateAssembly
+public record User(Name name, Email email) {}
+
+Validated<NonEmptyList<FieldError>, User> user =
+    UserAssembly.fields()
+        .name(parseName(dto.name()))
+        .email(parseEmail(dto.email()))
+        .assemble();      // canonical constructor baked in
+```
+
+**Related:** [Open-Arity Assembly](../monads/validated_assembly.md), [Validated Assembly](#validated-assembly), [FieldError](#fielderror)
+
+---
+
+## @GenerateErrorEnvelope
+
+**Definition:** The third record-mapping processor, targeting the typed domain error a fallible mapping produces. A sealed error hierarchy usually re-declares the same envelope (`code`, `message`, `timestamp`, `context`) on every variant, with `context` an untyped `Map<String, Object>`. `@GenerateErrorEnvelope` supplies the envelope and **types** the context: each variant declares only its domain fields plus one `ErrorEnvelope<C>` component, and the processor generates the `…s` companion (per-variant factories, a typed `context()` builder, and an `editContext` wither). Context is records-as-schema (`context.orderId()`, not `map.get(...)`); timestamps read from a [TimeSource](data-effects.md#timesource) for deterministic tests.
+
+**Example:**
+<!-- verify -->
+```java
+record OrderErrorContext(@Nullable OrderId orderId, @Nullable TraceId traceId) {}
+
+@GenerateErrorEnvelope
+public sealed interface OrderError {
+  ErrorEnvelope<OrderErrorContext> envelope();                  // declared once
+
+  default OrderError editContext(UnaryOperator<OrderErrors.ContextBuilder> edit) {
+    return OrderErrors.editContext(this, edit);                 // the companion does the work
+  }
+
+  record OutOfStock(List<ProductId> products,
+                    ErrorEnvelope<OrderErrorContext> envelope) implements OrderError {}
+}
+
+OrderError error = OrderErrors.outOfStock(products)
+    .editContext(ctx -> ctx.orderId(orderId).traceId(traceId));  // typed context, not map.put
+```
+
+**Related:** [Record Mapping](../mapping/merge_envelopes.md#generating-error-envelopes-generateerrorenvelope), [TimeSource](data-effects.md#timesource), [@GenerateMapping](#generatemapping)
+
+---
+
+## @GenerateMapping
+
+**Definition:** An annotation processor for the record-to-DTO boundary. Annotate an interface extending `MappingSpec<Domain, Wire>` and the processor generates, reflection-free at compile time, a total `build` (domain to wire) plus an accumulating `parse` (wire to domain) returning `Validated<NonEmptyList<FieldError>, Domain>`, so a bad DTO reports every bad field at once. Components match by name and type; `@MapField` declares renames, `@Flatten` spreads a nested record across a flat wire, and `List`, `Set`, array, `Optional` and `Map` containers lift automatically - a map's keys too, with `@MapKey`. The annotation sits on *your* spec interface, so third-party records map without being annotatable.
+
+**Example:**
+<!-- verify -->
+```java
+@GenerateMapping
+public interface PersonMapping extends MappingSpec<Person, PersonDto> {}
+
+PersonMappingImpl personMapping = PersonMappingImpl.INSTANCE;     // bind once, reuse
+PersonDto dto = personMapping.build(person);                      // total
+Validated<NonEmptyList<FieldError>, Person> back =
+    personMapping.parse(dto);                                     // accumulating, located
+```
+
+**Truthful emission tiers:** the generated mapper offers only what the shape supports: `asIso` when lossless, `asLens` when total one way, and the accumulating `parse` otherwise. A spec extending [UpdateSpec](#updatespec) instead opts into the sparse PATCH tier (only `updateFrom`). Every tier is law-checked against the published `hkj-test` harness.
+
+**Related:** [Record Mapping](../mapping/ch_intro.md), [ValidatedPrism](#validatedprism), [FieldError](#fielderror), [@GenerateMerge](#generatemerge), [UpdateSpec](#updatespec)
+
+---
+
+## @GenerateMerge
+
+**Definition:** The forward-only sibling of [@GenerateMapping](#generatemapping): assemble one target record from **several** sources, declared entirely by the spec method's signature, with no class literals and no inverse. Each target component fills from the one source with a same-named component: identity when the types match, through a [ValidatedPrism](#validatedprism) leaf when they differ, or through a sibling `@GenerateMapping` spec (failures locating as dotted paths). Ambiguous or unfilled components are what/why/fix compile errors, and the return type must tell the truth: a fallible fill demands a `Validated` return.
+
+**Example:**
+<!-- verify -->
+```java
+@GenerateMerge
+public interface DashboardAssembly {
+  Dashboard assemble(User user, Account account, Settings settings);
+}
+
+Dashboard dashboard =
+    DashboardAssemblyImpl.INSTANCE.assemble(user, account, settings);
+```
+
+**Related:** [Record Mapping](../mapping/ch_intro.md), [@GenerateMapping](#generatemapping), [ValidatedPrism](#validatedprism)
+
+---
+
+## Iso (Isomorphism)
+
+**Definition:** An optic representing a lossless, bidirectional conversion between two types. If you can convert `A` to `B` and back to `A` without losing information, you have an isomorphism.
+
+**Core Operations:**
+- `get(S source)` - Convert from S to A
+- `reverseGet(A value)` - Convert from A to S
+
+**Example:**
+<!-- verify -->
+```java
+// String and List<Character> are isomorphic
+Iso<String, List<Character>> stringToChars = Iso.of(
+    s -> s.chars().mapToObj(c -> (char) c).collect(Collectors.toList()),
+    chars -> chars.stream().map(String::valueOf).collect(Collectors.joining())
+);
+
+List<Character> chars = stringToChars.get("Hello");  // ['H', 'e', 'l', 'l', 'o']
+String back = stringToChars.reverseGet(chars);       // "Hello"
+```
+
+**When To Use:** Converting between equivalent representations (e.g., Celsius/Fahrenheit, String/ByteArray, domain models and DTOs with no information loss).
+
+**Related:** [Iso Documentation](../optics/iso.md)
+
+---
+
+## Lens
+
+**Definition:** An optic for working with product types (records with fields). Provides a composable way to get and set fields in immutable data structures.
+
+**Core Operations:**
+- `get(S source)` - Extract a field value
+- `set(A newValue, S source)` - Create a new copy with updated field
+- `modify(Function<A,A> f, S source)` - Update field using a function
+
+**Example:**
+<!-- verify -->
+```java
+@GenerateLenses
+public record Address(String street, String city) {}
+
+@GenerateLenses
+public record Company(String name, Address address) {}
+
+@GenerateLenses
+public record Employee(String name, Company company) {}
+
+// Compose lenses for deep updates
+Lens<Employee, String> employeeToStreet =
+    EmployeeLenses.company()
+        .andThen(CompanyLenses.address())
+        .andThen(AddressLenses.street());
+
+// Update nested field in one line
+Employee updated = employeeToStreet.set("456 New St", originalEmployee);
+```
+
+**Related:** [Lenses Documentation](../optics/lenses.md)
+
+---
+
+## MappingLaws
+
+**Definition:** The `hkj-test` law harness for generated mappings. One `assertMappingLaws` call per [@GenerateMapping](#generatemapping) Impl verifies the laws of its emission tier: the iso laws plus parse-iso coherence for a lossless mapping, the lens laws for a projection, the round-trip and no-parse laws for a fallible mapping, the patch laws (projection identity, idempotence, located validation) for a validated `patch`, and the identity/idempotence/validation laws for a sparse [UpdateSpec](#updatespec) `updateFrom`. The same harness law-checks every golden Impl in the library's own build.
+
+**Example:**
+<!-- verify -->
+```java
+import org.higherkindedj.optics.laws.MappingLaws;
+
+MappingLaws.assertMappingLaws(
+    PersonMappingImpl.INSTANCE.asValidatedPrism(), validDto, invalidDto);
+```
+
+**Related:** [Record Mapping](../mapping/tiers.md#law-checked-in-the-repo-and-in-your-tests), [Testing With hkj-test](../tooling/test_assertions.md#optic-laws), [@GenerateMapping](#generatemapping)
+
+---
+
+## MappingSpec
+
+**Definition:** The marker interface a mapping spec extends to name its pair: `interface UserMapping extends MappingSpec<Domain, Wire> {}`. The interface deliberately declares nothing callable (the generated `UserMappingImpl` carries the surface); the spec's members are the *declaration vocabulary*: `default` `ValidatedPrism` methods are leaves, `@MapField` methods are renames (an abstract marker, or the component's leaf when it also converts), `default` `Getter` methods are derived wire fields, `@OptionalBridge` marks a component whose `null` means absent, `@MapKey` names the `Map` component whose keys a leaf converts, `@Flatten` marks a nested record component spread across the wire's flat components. Its sparse sibling is [UpdateSpec](#updatespec), which swaps the whole generated surface for a single `updateFrom`.
+
+**Example:**
+<!-- verify -->
+```java
+@GenerateMapping
+public interface UserMapping extends MappingSpec<User, UserDto> {}
+```
+
+**Related:** [@GenerateMapping](#generatemapping), [Record Mapping Basics](../mapping/basics.md), [UpdateSpec](#updatespec)
+
+---
+
+## Parse, Don't Validate
+
+**Definition:** The principle that a boundary should turn unstructured input into a typed value **once**, at the edge, and keep that guarantee in the type thereafter, rather than re-checking the same data repeatedly downstream. Higher-Kinded-J expresses it with types whose *parse* is fallible and accumulating and whose *build* is total: [ValidatedPrism](#validatedprism) for a single value, [Validated Assembly](#validated-assembly) for a whole record, and [@GenerateMapping](#generatemapping) for a record-to-DTO boundary. Failures are [FieldError](#fielderror)s, so a rejected input reports every bad field at once, each located.
+
+**Related:** [Record Mapping](../mapping/ch_intro.md), [ValidatedPrism](#validatedprism), [Validated](data-effects.md#validated)
+
+---
+
+## Prism
+
+**Definition:** An optic for working with sum types (sealed interfaces, Optional, Either). Provides safe access to specific variants within a discriminated union.
+
+**Core Operations:**
+- `preview(S source)` - Try to extract a variant (returns Optional)
+- `review(A value)` - Construct the sum type from a variant
+- `modify(Function<A,A> f, S source)` - Update if variant matches
+
+**Example:**
+<!-- verify -->
+```java
+@GeneratePrisms
+public sealed interface PaymentMethod {
+    record CreditCard(String number) implements PaymentMethod {}
+    record BankTransfer(String iban) implements PaymentMethod {}
+}
+
+Prism<PaymentMethod, PaymentMethod.CreditCard> creditCardPrism =
+    PaymentMethodPrisms.creditCard();
+
+// Safe extraction
+Optional<String> cardNumber =
+    creditCardPrism.preview(payment).map(PaymentMethod.CreditCard::number);
+
+// Conditional update: only a CreditCard is touched
+PaymentMethod masked = creditCardPrism.modify(
+    card -> new PaymentMethod.CreditCard("****" + card.number()), payment);
+```
+
+**Related:** [Prisms Documentation](../optics/prisms.md), [ValidatedPrism](#validatedprism)
+
+---
+
+## Setter
+
+**Definition:** A write-only optic that can modify zero or more values within a structure. Setters are the dual of Folds: where Folds can only read, Setters can only write. They cannot extract values, only transform them.
+
+**Core Operations:**
+- `modify(Function<A, A> f, S source)` - Apply function to all focused values
+- `set(A value, S source)` - Set all focused values to same value
+
+**Example:**
+<!-- verify -->
+```java
+// A setter for an order's line items, and one for an item's price
+Setter<Order, List<LineItem>> allItems = OrderSetters.items();
+Setter<LineItem, BigDecimal> itemPrice = LineItemSetters.price();
+
+// Apply a discount to every price: the outer setter rewrites the list, the inner each element
+Order discounted = allItems.modify(
+    items -> items.stream()
+        .map(item -> itemPrice.modify(price -> price.multiply(new BigDecimal("0.9")), item))
+        .toList(),
+    order
+);
+
+// Set one price to zero (for testing)
+LineItem zeroed = itemPrice.set(BigDecimal.ZERO, lineItem);
+
+// Compose with other setters, one component at a time
+Setter<Employee, String> employeeCompanyName =
+    EmployeeSetters.company().andThen(CompanySetters.name());
+
+Employee normalised = employeeCompanyName.modify(String::toLowerCase, employee);
+```
+
+**When To Use:**
+- Bulk modifications without needing to read values
+- Applying transformations across nested structures
+- When modification logic doesn't depend on current values
+- Composing write-only operations
+
+**Related:** [Traversal](#traversal), [Fold](#fold)
+
+---
+
+## StandardCodecs
+
+**Definition:** The stock [ValidatedPrism](#validatedprism) vocabulary for the common wire-to-domain conversion families: one static factory per family (`uuid()`, `uri()`, `localDate()`, `instant()`, `offsetDateTime()`, `enumByName(Class)`, `bigDecimal()`, `intFromString()`, `booleanStrict()`, `currency()`, `locale()`, and friends). Each codec is lawful by construction (built on `ValidatedPrism.canonical`, accepting exactly the canonical form it renders). Every failure is a [FieldError](#fielderror) whose message names the spelling expected. A codec's own failure carries no path: the generated `parse` locates it at the component the codec converts. Codecs are ordinary leaves: a spec declares them as `default` methods, and nothing is ever applied implicitly.
+
+**Example:**
+<!-- verify -->
+```java
+public record Shipment(UUID id, LocalDate placed) {}
+
+public record ShipmentDto(String id, String placed) {}
+
+@GenerateMapping
+public interface ShipmentMapping extends MappingSpec<Shipment, ShipmentDto> {
+  default ValidatedPrism<String, UUID> id() { return StandardCodecs.uuid(); }
+  default ValidatedPrism<String, LocalDate> placed() { return StandardCodecs.localDate(); }
+}
+```
+
+**Related:** [Standard codecs](../mapping/codecs.md#standard-codecs), [ValidatedPrism](#validatedprism), [@GenerateMapping](#generatemapping)
+
+---
+
+## Traversal
+
+**Definition:** An optic for working with multiple values within a structure (lists, sets, trees). Allows bulk operations on all elements.
+
+**Core Operations:**
+- `modifyF(Applicative<F> app, Function<A, Kind<F,A>> f, S source)` - Effectful modification of all elements
+- `toList(S source)` - Extract all focused values as a list
+
+**Example:**
+<!-- verify -->
+```java
+@GenerateTraversals
+public record Basket(String id, List<LineItem> items) {}
+
+Traversal<Basket, LineItem> basketItems = BasketTraversals.items();
+
+// Apply bulk update
+Basket discounted = Traversals.modify(
+    basketItems,
+    item -> new LineItem(item.sku(), item.price().multiply(new BigDecimal("0.9"))),
+    basket
+);
+```
+
+**Related:** [Traversals Documentation](../optics/traversals.md)
+
+---
+
+## UpdateSpec
+
+**Definition:** The sparse-PATCH sibling of [MappingSpec](#mappingspec). Annotate an interface extending `UpdateSpec<Domain, Wire>` (with `@GenerateMapping`) to opt into the null-as-absent contract: a null bean property means *not provided, leave unchanged* rather than broken data. The processor generates a single method, `updateFrom(Wire) : Edits.Accumulated<Domain>` (no `build`, `parse`, or `as*` tier), folding the present (non-null) properties into an [Update](#edits) and skipping the absent ones. One spec names one tier, so an interface extending `UpdateSpec` must not also extend `MappingSpec`. Over a protobuf-java message it generates `updateFrom(Wire, FieldMask)` instead, which edits the fields the mask names, each parsed as `parse` would read it. Otherwise the wire must be bean-shaped, and a primitive property is rejected (it can never be absent); every property's getter must answer `null` (or `undefined()`, for a `JsonNullable`) until set, which is not checked, since a default the bean gives itself (a field initialiser, a constructor assignment, a getter that creates its value) reads as sent; a domain `Optional` without a whole-component leaf is patchable from an `Optional`-typed property whose field defaults to `null` (a present empty Optional encodes "set to empty"), or from a `JsonNullable` one (a sent `null` encodes it). A present container parses through the element leaf lifted over it (the same vocabulary the dense tiers lift, each failing element located: `phones.1`), with a whole-container leaf winning as the more specific declaration. Present-but-invalid fields still fail, located and accumulating.
+
+**Example:**
+<!-- verify -->
+```java
+// The wire is a bean, not a record: null means "not provided"
+public class UserPatchDto {
+  private String name;
+
+  public String getName() { return name; }
+
+  public void setName(String name) { this.name = name; }
+}
+
+@GenerateMapping
+public interface UserPatchMapping extends UpdateSpec<PatchableUser, UserPatchDto> {}
+
+Edits.Accumulated<PatchableUser> patch = UserPatchMappingImpl.INSTANCE.updateFrom(patchDto);
+Validated<NonEmptyList<FieldError>, PatchableUser> updated =
+    patch.apply(current);                                    // absent fields survive
+```
+
+**Related:** [Record Mapping](../mapping/beans_patch.md#sparse-patch-write-back-updatespec), [@GenerateMapping](#generatemapping), [Edits](#edits)
+
+---
+
+## Validated Assembly
+
+**Definition:** Open-arity assembly of a record from N independently validated fields, with every error collected and no `Semigroup` argument, no arity wall, and no `Kind` ceremony. `Validated.fields()` opens a labelled assembly over `NonEmptyList<FieldError>`; each `field(label, value)` adds one validated field, and `apply(...)` completes it with a constructor reference of exactly the accumulated arity, or `construct(...)` when that constructor may refuse the fields, reporting its exception as a `FieldError`. The same shape exists across three carriers: `Validated` (strict), `ValidationPath` (railway, via `Path.fields()`), and `EitherOrBoth` (tolerant).
+
+**Example:**
+<!-- verify -->
+```java
+record Profile(Name name, Email email) {}
+
+Validated<NonEmptyList<FieldError>, Profile> profile =
+    Validated.fields()
+        .field("name",  parseName(dto.name()))
+        .field("email", parseEmail(dto.email()))
+        .apply(Profile::new);
+// Invalid(NonEmptyList[email: not an email address]), or Valid(user)
+```
+
+**Related:** [Open-Arity Assembly](../monads/validated_assembly.md), [@GenerateAssembly](#generateassembly), [FieldError](#fielderror), [Validated](data-effects.md#validated), [EitherOrBoth](data-effects.md#eitherorboth)
+
+---
+
+## ValidatedPrism
+
+**Definition:** The smart-constructor optic for *parse, don't validate* boundaries. Its `parse` returns `Validated<NonEmptyList<FieldError>, A>`, so every failure is located rather than only the first, whilst `build` is total and always succeeds. It is the accumulating counterpart to a [Prism](#prism), whose `preview` reports only presence or absence.
+
+**Example:**
+<!-- verify -->
+```java
+ValidatedPrism<String, EmailAddress> email = ValidatedPrism.of(
+    raw -> parseEmailAddress(raw), // String -> Validated<NonEmptyList<FieldError>, EmailAddress>
+    EmailAddress::toString);       // total build
+
+Validated<NonEmptyList<FieldError>, EmailAddress> parsed = email.parse("  NOPE ");
+String rendered = email.build(addr);   // always succeeds
+```
+
+**Composition:** nested composition short-circuits whilst sibling fields accumulate, so a whole record parses in one pass with every bad field reported. `ValidatedPrism.canonical(message, parse, render)` wraps a throwing parser with the section law guarded per value: the render defines the canonical form and every spelling it cannot reproduce is a located rejection (an injective render stays your obligation); `ValidatedPrism.fromIso(iso)` is a parse that never fails; `ValidatedPrism.fromPrism(prism, reason)` lifts a plain prism by supplying the reason its empty case cannot express. Both round-trip laws ship as `ValidatedPrismLaws` in `hkj-test`.
+
+**Halves:** each direction is also a type of its own, `ValidatedParse` (`parse` and its bulk forms) and `ValidatedBuild` (`build` and its bulk forms). Every prism is both, so it serves wherever either is asked for, and a boundary crossed one way only, such as a one-directional bean mapping, exposes just the half it has.
+
+**Related:** [ValidatedPrism](../optics/validated_prism.md), [Prism](#prism), [FieldError](#fielderror), [Validated](data-effects.md#validated)

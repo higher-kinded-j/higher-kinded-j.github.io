@@ -1,0 +1,521 @@
+# Prisms: A Practical Guide
+
+## _Working with Sum Types_
+
+<img src="../images/prism.jpeg" alt="Visual representation of a prism safely extracting one variant from a sum type" style="width: 100%;" />
+
+~~~admonish info title="What You'll Learn"
+- How to safely work with sum types and sealed interfaces
+- Using `@GeneratePrisms` to create type-safe variant accessors
+- The difference between `getOptional` and `build` operations
+- Composing prisms with other optics for deep conditional access
+- Handling optional data extraction without `instanceof` chains
+- When to use prisms vs pattern matching vs traditional type checking
+~~~
+
+~~~admonish example title="See Example Code"
+[PrismUsageExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PrismUsageExample.java)
+[PrismConvenienceMethodsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PrismConvenienceMethodsExample.java)
+[PrismsUtilityExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PrismsUtilityExample.java)
+~~~
+
+The previous guide demonstrated how a **`Lens`** gives us a powerful, composable way to work with "has-a" relationships: a field that is guaranteed to exist within a record.
+
+But what happens when the data doesn't have a guaranteed structure? What if a value can be one of *several different types*? This is the domain of "is-a" relationships, or **sum types**, commonly modelled in Java using `sealed interface` or `enum`.
+
+For this, we need a different kind of optic: the **Prism**.
+
+---
+
+## The Scenario: Working with JSON-like Data
+
+A `Lens` is like a sniper rifle, targeting a single, known field. A **`Prism`** is like a safe-cracker's tool; it attempts to open a specific "lock" (a particular type) and only succeeds if it has the right key.
+
+Consider a common scenario: modelling a JSON structure. A value can be a string, a number, a boolean, or a nested object.
+
+**The Data Model:** We can represent this with a `sealed interface`.
+
+<!-- verify -->
+```java
+import org.higherkindedj.optics.annotations.GeneratePrisms;
+import org.higherkindedj.optics.annotations.GenerateLenses;
+import java.util.Map;
+
+@GeneratePrisms // Generates Prisms for each case of the sealed interface
+public sealed interface JsonValue {}
+
+public record JsonString(String value) implements JsonValue {}
+public record JsonNumber(double value) implements JsonValue {}
+public record JsonBoolean(boolean value) implements JsonValue {}
+
+@GenerateLenses // We can still use Lenses on the product types within the sum type
+public record JsonObject(Map<String, JsonValue> fields) implements JsonValue {}
+```
+
+**Our Goal:** We need to safely access and update the `value` of a `JsonString` that is deeply nested within another `JsonObject`. An `instanceof` and casting approach would be unsafe and verbose. A `Lens` won't work because a `JsonValue` might be a `JsonNumber`, not the `JsonObject` we expect.
+
+---
+
+## Think of Prisms Like...
+
+- **A type-safe filter**: Only "lets through" values that match a specific shape
+- **A safe cast**: Like `instanceof` + cast, but functional and composable
+- **A conditional lens**: Works like a lens, but might return empty if the type doesn't match
+- **A pattern matcher**: Focuses on one specific case of a sum type
+
+---
+
+## A Step-by-Step Walkthrough
+
+### Step 1: Generating the Prisms
+
+Just as with lenses, we annotate our `sealed interface` with **`@GeneratePrisms`**. This automatically creates a companion class (e.g., `JsonValuePrisms`) with a `Prism` for each permitted subtype.
+
+<!-- verify -->
+```java
+// Generated automatically:
+// JsonValuePrisms.jsonString() -> Prism<JsonValue, JsonString>
+// JsonValuePrisms.jsonNumber() -> Prism<JsonValue, JsonNumber>
+// JsonValuePrisms.jsonBoolean() -> Prism<JsonValue, JsonBoolean>
+// JsonValuePrisms.jsonObject() -> Prism<JsonValue, JsonObject>
+```
+
+#### Customising the Generated Package
+
+By default, generated classes are placed in the same package as the annotated type. You can specify a different package using the `targetPackage` attribute:
+
+```java
+// Generated class will be placed in org.example.generated.optics
+@GeneratePrisms(targetPackage = "org.example.generated.optics")
+public sealed interface JsonValue {}
+```
+
+This is useful when you need to avoid name collisions or organise generated code separately.
+
+### Step 2: The Core Prism Operations
+
+A `Prism` is defined by two unique, failable operations:
+
+* **`getOptional(source)`**: Attempts to focus on the target. It returns an `Optional` which is non-empty only if the `source` matches the Prism's specific case. This is the safe alternative to an `instanceof` check and cast.
+* **`build(value)`**: Constructs the top-level type from a part. This is the reverse operation, used to wrap a value back into its specific case (e.g., taking a `String` and building a `JsonString`).
+
+<!-- verify -->
+```java
+Prism<JsonValue, JsonString> jsonStringPrism = JsonValuePrisms.jsonString();
+
+// --- Using getOptional (the safe "cast") ---
+Optional<JsonString> result1 = jsonStringPrism.getOptional(new JsonString("hello")); 
+// -> Optional.of(JsonString("hello"))
+
+Optional<JsonString> result2 = jsonStringPrism.getOptional(new JsonNumber(123));   
+// -> Optional.empty()
+
+// --- Using build (construct the sum type from a part) ---
+JsonValue result3 = jsonStringPrism.build(new JsonString("world")); 
+// -> JsonString("world") (as JsonValue)
+```
+
+### Step 3: Composing Prisms for Deep Access
+
+The true power is composing `Prism`s with other optics. When a composition might fail (any time a `Prism` is involved), the result is an `Affine` (or `Traversal` when combining with traversals).
+
+~~~admonish tip title="Direct Composition Methods"
+higher-kinded-j provides direct composition methods that automatically return the correct type:
+- `Lens.andThen(Prism)` returns `Affine`
+- `Prism.andThen(Lens)` returns `Affine`
+- `Prism.andThen(Prism)` returns `Prism`
+- `Affine.andThen(Affine)` returns `Affine`
+
+See [Composition Rules](composition_rules.md) for the complete reference.
+~~~
+
+<!-- verify -->
+```java
+// Create all the optics we need
+Prism<JsonValue, JsonObject> jsonObjectPrism = JsonValuePrisms.jsonObject();
+Prism<JsonValue, JsonString> jsonStringPrism = JsonValuePrisms.jsonString();
+Lens<JsonObject, Map<String, JsonValue>> fieldsLens = JsonObjectLenses.fields();
+Lens<JsonString, String> valueLens = JsonStringLenses.value();
+
+// Direct composition: Prism >>> Lens = Affine
+Affine<JsonValue, String> jsonStringValue =
+    jsonStringPrism.andThen(valueLens);
+
+// The composed optic: safely navigate from JsonObject -> userLogin field -> name field -> string value
+Traversal<JsonObject, String> userNameTraversal =
+    fieldsLens.asTraversal()                      // JsonObject -> Map<String, JsonValue>
+        .andThen(Traversals.forMap("userLogin"))  // -> JsonValue (if "userLogin" key exists)
+        .andThen(jsonObjectPrism.asTraversal())   // -> JsonObject (if it's an object)
+        .andThen(fieldsLens.asTraversal())        // -> Map<String, JsonValue>
+        .andThen(Traversals.forMap("name"))       // -> JsonValue (if "name" key exists)
+        .andThen(jsonStringValue.asTraversal());  // -> String (if it's a string)
+```
+
+This composed `Traversal` now represents a safe, deep path that will only succeed if every step in the chain matches.
+
+---
+
+## When to Use Prisms vs Other Approaches
+
+### Use Prisms When:
+
+* **Type-safe variant handling** - Working with `sealed interface` or `enum` cases
+* **Optional data extraction** - You need to safely "try" to get a specific type
+* **Composable type checking** - Building reusable type-safe paths
+* **Functional pattern matching** - Avoiding `instanceof` chains
+
+<!-- verify -->
+```java
+// Perfect for safe type extraction
+Optional<String> errorMessage = DomainErrorPrisms.validationError()
+    .andThen(ValidationErrorLenses.message())
+    .getOptional(someError);
+```
+
+### Use Traditional instanceof When:
+
+* **One-off type checks** - Not building reusable logic
+* **Imperative control flow** - You need if/else branching
+* **Performance critical paths** - Minimal abstraction overhead needed
+
+<!-- verify -->
+```java
+// Sometimes instanceof is clearer for simple cases
+String shout(JsonValue jsonValue) {
+    if (jsonValue instanceof JsonString jsonStr) {
+        return jsonStr.value().toUpperCase();
+    }
+    return "";
+}
+```
+
+### Use Pattern Matching When:
+
+* **Exhaustive case handling** - You need to handle all variants
+* **Complex extraction logic** - Multiple levels of pattern matching
+* **Modern codebases** - Using recent Java features
+
+<!-- verify -->
+```java
+// Pattern matching for comprehensive handling
+String describe(JsonValue jsonValue) {
+    return switch (jsonValue) {
+        case JsonString(var str) -> str.toUpperCase();
+        case JsonNumber(var num) -> String.valueOf(num);
+        case JsonBoolean(var bool) -> String.valueOf(bool);
+        case JsonObject(var fields) -> "Object with " + fields.size() + " fields";
+    };
+}
+```
+
+---
+
+## Common Pitfalls
+
+### Don't Do This:
+
+
+<!-- verify -->
+```java
+// Unsafe: Assuming the cast will succeed
+JsonString jsonStr = (JsonString) jsonValue; // Can throw ClassCastException!
+
+// Verbose: Repeated instanceof checks
+String nested(JsonValue jsonValue) {
+    if (jsonValue instanceof JsonObject obj1) {
+        var userValue = obj1.fields().get("userLogin");
+        if (userValue instanceof JsonObject obj2) {
+            var nameValue = obj2.fields().get("name");
+            if (nameValue instanceof JsonString str) {
+                return str.value().toUpperCase();
+            }
+        }
+    }
+    return "";
+}
+
+// Inefficient: Creating prisms repeatedly
+var name1 = JsonValuePrisms.jsonString().getOptional(value1);
+var name2 = JsonValuePrisms.jsonString().getOptional(value2);
+var name3 = JsonValuePrisms.jsonString().getOptional(value3);
+```
+
+### Do This Instead:
+
+
+<!-- verify -->
+```java
+// Safe: Use prism's getOptional
+Optional<JsonString> maybeJsonStr = JsonValuePrisms.jsonString().getOptional(jsonValue);
+
+// Composable: Build reusable safe paths, one step at a time
+var userNamePath = JsonValuePrisms.jsonObject()
+    .andThen(JsonObjectLenses.fields())
+    .asTraversal()
+    .andThen(Traversals.forMap("userLogin"))
+    .andThen(JsonValuePrisms.jsonObject().asTraversal());
+    // ... and on through "name" to the string value
+
+// Efficient: Reuse prisms and composed paths
+var stringPrism = JsonValuePrisms.jsonString();
+var name1 = stringPrism.getOptional(value1);
+var name2 = stringPrism.getOptional(value2);
+var name3 = stringPrism.getOptional(value3);
+```
+
+---
+
+## Performance Notes
+
+Prisms are optimised for type safety and composability:
+
+* **Fast type checking**: Prisms use `instanceof` under the hood, which is optimised by the JVM
+* **Lazy evaluation**: Composed prisms only perform checks when needed
+* **Memory efficient**: No boxing or wrapper allocation for failed matches
+* **Composable**: Complex type-safe paths can be built once and reused
+
+**Best Practice**: For frequently used prism combinations, create them once and store as constants:
+
+
+<!-- verify -->
+```java
+public class JsonOptics {
+    private static final Lens<JsonObject, Map<String, JsonValue>> fieldsLens =
+        JsonObjectLenses.fields();
+
+    public static final Prism<JsonValue, JsonString> STRING = 
+        JsonValuePrisms.jsonString();
+  
+    public static final Affine<JsonValue, String> STRING_VALUE =
+        STRING.andThen(JsonStringLenses.value());
+  
+    public static final Traversal<JsonObject, String> USER_NAME = 
+        fieldsLens.asTraversal()
+            .andThen(Traversals.forMap("userLogin"))
+            .andThen(JsonValuePrisms.jsonObject().asTraversal())
+            .andThen(fieldsLens.asTraversal())
+            .andThen(Traversals.forMap("name"))
+            .andThen(STRING.asTraversal())
+            .andThen(JsonStringLenses.value().asTraversal());
+}
+```
+
+## Real-World Example: API Response Handling
+
+Here's a practical example of using prisms to handle different API response types safely:
+
+
+<!-- verify -->
+```java
+@GeneratePrisms
+public sealed interface ApiResponse {}
+public record SuccessResponse(String data, int statusCode) implements ApiResponse {}
+public record ErrorResponse(String message, String errorCode) implements ApiResponse {}
+public record TimeoutResponse(long timeoutMs) implements ApiResponse {}
+
+public class ApiHandler {
+    // Reusable prisms for different response types
+    private static final Prism<ApiResponse, SuccessResponse> SUCCESS = 
+        ApiResponsePrisms.successResponse();
+    private static final Prism<ApiResponse, ErrorResponse> ERROR = 
+        ApiResponsePrisms.errorResponse();
+    private static final Prism<ApiResponse, TimeoutResponse> TIMEOUT = 
+        ApiResponsePrisms.timeoutResponse();
+  
+    public String handleResponse(ApiResponse response) {
+        // Type-safe extraction and handling
+        return SUCCESS.getOptional(response)
+            .map(success -> "Success: " + success.data())
+            .or(() -> ERROR.getOptional(response)
+                .map(error -> "AppError " + error.errorCode() + ": " + error.message()))
+            .or(() -> TIMEOUT.getOptional(response)
+                .map(timeout -> "Request timed out after " + timeout.timeoutMs() + "ms"))
+            .orElse("Unknown response type");
+    }
+  
+    // Use prisms for conditional processing
+    public boolean isRetryable(ApiResponse response) {
+        return ERROR.getOptional(response)
+            .map(error -> "RATE_LIMIT".equals(error.errorCode()) || "TEMPORARY".equals(error.errorCode()))
+            .or(() -> TIMEOUT.getOptional(response).map(t -> true))
+            .orElse(false);
+    }
+}
+```
+
+## Complete, Runnable Example
+
+This example puts it all together, showing how to use the composed `Traversal` to perform a safe update.
+
+```java
+package org.higherkindedj.example.prism;
+
+import org.higherkindedj.optics.Lens;
+import org.higherkindedj.optics.Prism;
+import org.higherkindedj.optics.Traversal;
+import org.higherkindedj.optics.annotations.GenerateLenses;
+import org.higherkindedj.optics.annotations.GeneratePrisms;
+import org.higherkindedj.optics.util.Traversals;
+import java.util.*;
+
+public class PrismUsageExample {
+
+    // 1. Define the nested data model with sum types.
+    @GeneratePrisms
+    public sealed interface JsonValue {}
+    public record JsonString(String value) implements JsonValue {}
+    public record JsonNumber(double value) implements JsonValue {}
+    public record JsonBoolean(boolean value) implements JsonValue {}
+
+    @GenerateLenses
+    public record JsonObject(Map<String, JsonValue> fields) implements JsonValue {}
+
+
+    public static void main(String[] args) {
+        // 2. Create the initial nested structure.
+        Map<String, JsonValue> userData = Map.of(
+            "userLogin", new JsonObject(Map.of(
+                "name", new JsonString("Alice"),
+                "age", new JsonNumber(30),
+                "active", new JsonBoolean(true)
+            )),
+            "metadata", new JsonObject(Map.of(
+                "version", new JsonString("1.0")
+            ))
+        );
+        var data = new JsonObject(userData);
+    
+        System.out.println("Original Data: " + data);
+        System.out.println("------------------------------------------");
+
+
+        // 3. Get the generated and manually created optics.
+        Prism<JsonValue, JsonObject> jsonObjectPrism = JsonValuePrisms.jsonObject();
+        Prism<JsonValue, JsonString> jsonStringPrism = JsonValuePrisms.jsonString();
+        Lens<JsonObject, Map<String, JsonValue>> fieldsLens = JsonObjectLenses.fields();
+        Lens<JsonString, String> jsonStringValueLens = Lens.of(JsonString::value, (js, s) -> new JsonString(s));
+    
+        // 4. Demonstrate individual prism operations
+        System.out.println("--- Individual Prism Operations ---");
+    
+        // Safe type extraction
+        JsonValue userValue = data.fields().get("userLogin");
+        Optional<JsonObject> userObject = jsonObjectPrism.getOptional(userValue);
+        System.out.println("User object: " + userObject);
+    
+        // Attempting to extract wrong type
+        JsonValue nameValue = ((JsonObject) userValue).fields().get("name");
+        Optional<JsonNumber> nameAsNumber = JsonValuePrisms.jsonNumber().getOptional(nameValue);
+        System.out.println("Name as number (should be empty): " + nameAsNumber);
+    
+        // Building new values
+        JsonValue newString = jsonStringPrism.build(new JsonString("Bob"));
+        System.out.println("Built new string: " + newString);
+        System.out.println("------------------------------------------");
+    
+        // 5. Compose the full traversal.
+        Traversal<JsonObject, String> userToJsonName =
+            fieldsLens.asTraversal()
+                .andThen(Traversals.forMap("userLogin")) 
+                .andThen(jsonObjectPrism.asTraversal())
+                .andThen(fieldsLens.asTraversal())
+                .andThen(Traversals.forMap("name"))
+                .andThen(jsonStringPrism.asTraversal())
+                .andThen(jsonStringValueLens.asTraversal());
+
+        // 6. Use the composed traversal to perform safe updates
+        System.out.println("--- Composed Traversal Operations ---");
+        JsonObject updatedData = Traversals.modify(userToJsonName, String::toUpperCase, data);
+        System.out.println("After safe `modify`:  " + updatedData);
+    
+        // 7. Demonstrate that the traversal safely handles missing paths
+        var dataWithoutUser = new JsonObject(Map.of("metadata", new JsonString("test")));
+        JsonObject safeUpdate = Traversals.modify(userToJsonName, String::toUpperCase, dataWithoutUser);
+        System.out.println("Safe update on missing path: " + safeUpdate);
+    
+        System.out.println("Original is unchanged: " + data);
+        System.out.println("------------------------------------------");
+    
+        // 8. Demonstrate error-resistant operations
+        System.out.println("--- AppError-Resistant Operations ---");
+    
+        // Get all string values safely
+        List<String> allStrings = List.of(
+            new JsonString("hello"),
+            new JsonNumber(42),
+            new JsonString("world"),
+            new JsonBoolean(true)
+        ).stream()
+        .map(jsonStringPrism::getOptional)
+        .filter(Optional::isPresent)
+        .map(Optional::get)
+        .map(JsonString::value)
+        .toList();
+    
+        System.out.println("Extracted strings only: " + allStrings);
+    }
+}
+```
+
+**Expected Output:**
+
+```
+Original Data: JsonObject[fields={userLogin=JsonObject[fields={name=JsonString[value=Alice], age=JsonNumber[value=30.0], active=JsonBoolean[value=true]}], metadata=JsonObject[fields={version=JsonString[value=1.0]}]}]
+------------------------------------------
+--- Individual Prism Operations ---
+User object: Optional[JsonObject[fields={name=JsonString[value=Alice], age=JsonNumber[value=30.0], active=JsonBoolean[value=true]}]]
+Name as number (should be empty): Optional.empty
+Built new string: JsonString[value=Bob]
+------------------------------------------
+--- Composed Traversal Operations ---
+After safe `modify`:  JsonObject[fields={userLogin=JsonObject[fields={name=JsonString[value=ALICE], age=JsonNumber[value=30.0], active=JsonBoolean[value=true]}], metadata=JsonObject[fields={version=JsonString[value=1.0]}]}]
+Safe update on missing path: JsonObject[fields={metadata=JsonString[value=test]}]
+Original is unchanged: JsonObject[fields={userLogin=JsonObject[fields={name=JsonString[value=Alice], age=JsonNumber[value=30.0], active=JsonBoolean[value=true]}], metadata=JsonObject[fields={version=JsonString[value=1.0]}]}]
+------------------------------------------
+--- Error-Resistant Operations ---
+Extracted strings only: [hello, world]
+```
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **A prism is a failable focus on one variant**: `getOptional` is the safe cast, `build` the constructor back into the sum type
+* **`Lens` handles the "what", `Prism` the "what if"**: a prism is the type-safe `instanceof` plus cast, composable and reusable
+* **Composition tells the truth**: a prism in the chain makes the result an `Affine` or `Traversal`, so the possibility of no match is visible in the type
+* **Reuse beats repetition**: build prisms and composed paths once and store them as constants; changes to the data model surface as compile errors at the optic, never as runtime surprises
+~~~
+
+~~~admonish tip title="See Also"
+- [Prism Toolkit](prism_toolkit.md): the full convenience-method catalogue and the `Prisms` utility factory methods for `Optional`, `Either`, `Maybe`, `Try`, and list decomposition
+- [Validated Prisms](validated_prism.md): when the *no* needs to carry located, accumulated reasons (a validated boundary)
+~~~
+
+~~~admonish tip title="Ready for More?"
+Once you're comfortable with these prism fundamentals, explore [Advanced Prism Patterns](advanced_prism_patterns.md) for production-ready patterns including:
+- Configuration management with layered prism composition
+- API response handling with type-safe error recovery
+- Data validation pipelines and event processing systems
+- State machine implementations and plugin architectures
+- Performance optimisation and testing strategies
+~~~
+
+~~~admonish tip title="For Comprehension Integration"
+Prisms integrate with For comprehensions via the `match()` operation, which provides prism-based pattern matching with short-circuit semantics. When the prism match fails, the computation short-circuits using the monad's zero value (empty list, Nothing, etc.). See [For Comprehensions: Pattern Matching with match()](../functional/for_optics.md#filtering-with-pattern-matching-via-match).
+~~~
+
+~~~admonish info title="Hands-On Learning"
+Practise prism basics in [Tutorial 03: Prism Basics](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial03_PrismBasics.java) (9 exercises).
+~~~
+
+---
+
+~~~admonish tip title="Further Reading"
+- **Monocle**: [Scala Optics Library](https://www.optics.dev/Monocle/) - Production-ready Scala optics with extensive examples
+- **Haskell Lens**: [Canonical Reference](https://hackage.haskell.org/package/lens) - The original comprehensive optics library
+- **Lens Tutorial**: [A Little Lens Starter Tutorial](https://www.schoolofhaskell.com/school/to-infinity-and-beyond/pick-of-the-week/a-little-lens-starter-tutorial) - Beginner-friendly introduction
+~~~
+
+---
+
+**Previous:** [Lenses: Working with Product Types](lenses.md)
+**Next:** [Prism Toolkit](prism_toolkit.md)
