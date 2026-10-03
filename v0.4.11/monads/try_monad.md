@@ -1,0 +1,306 @@
+# The TryMonad:
+## _Typed Error Handling_
+
+~~~admonish info title="What You'll Learn"
+- How to handle exceptions functionally with Success and Failure cases
+- Converting exception-throwing code into composable, safe operations
+- Using `recover` and `recoverWith` for graceful error recovery
+- Building robust parsing and processing pipelines
+- When to choose Try vs Either for error handling
+~~~
+
+~~~ admonish example title="See Example Code:"
+[TryExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java)
+~~~
+
+## Purpose
+
+The `Try<T>` type in the `Higher-Kinded-J` library represents a computation that might result in a value of type `T` (a `Success`) or fail with a `Throwable` (a `Failure`). It serves as a functional alternative to traditional `try-catch` blocks for handling exceptions, particularly checked exceptions, within a computation chain.  We can think of it as an `Either` where the `Left` is an `Exception`, but also using try-catch blocks behind the scene, so that we don’t have to.
+
+```java
+public sealed interface Try<T> permits Try.Success, Try.Failure { ... }
+
+record Success<T>(T value)        implements Try<T> { ... }
+record Failure<T>(Throwable cause) implements Try<T> { ... }
+```
+
+Two cases, one carrying a value and one carrying the `Throwable` that the JVM would otherwise have flung at us.
+
+Key benefits include:
+
+* **Explicit Error Handling:** Makes it clear from the return type (`Try<T>`) that a computation might fail.
+* **Composability:** Allows chaining operations using methods like `map` and `flatMap`, where failures are automatically propagated without interrupting the flow with exceptions.
+* **Integration with HKT:** Provides HKT simulation (`TryKind`) and type class instances (`TryMonad`) to work seamlessly with generic functional abstractions operating over `Kind<F, A>`.
+* **Error Recovery:** Offers methods like `recover` and `recoverWith` to handle failures gracefully within the computation chain.
+
+It implements `MonadError<TryKind<?>, Throwable>`, signifying its monadic nature and its ability to handle errors of type `Throwable`.
+
+Now that we understand the structure and benefits of `Try`, let's explore how to create and work with `Try` instances in practice.
+
+## How to Use `Try<T>`
+
+
+~~~admonish title="Creating Instance"
+
+- [TryExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java)
+
+You can create `Try` instances in several ways:
+
+1. **`Try.of(Supplier)`:** Executes a `Supplier` and wraps the result in `Success`, or catches any `Exception` thrown by the supplier and wraps it in `Failure`. In practice this means `RuntimeException`: a standard `Supplier<T>` cannot declare checked exceptions in its lambda body. `Error` and other non-`Exception` `Throwable`s are **not** caught; they propagate out of `Try.of`. Use `Try.of` when your lambda either produces a pure value or may throw a runtime exception; use `Try.attempt` (below) when interoperating with Java APIs that declare checked exceptions.
+
+   <!-- verify -->
+   ```java
+   import org.higherkindedj.hkt.trymonad.Try;
+
+   // Success case
+   Try<String> successResult = Try.of(() -> "This will succeed"); // Success("This will succeed")
+
+   // Failure case (runtime exception)
+   Try<Integer> divisionResult = Try.of(() -> 10 / 0); // Failure(ArithmeticException)
+   ```
+
+2. **`Try.attempt(CheckedSupplier)`:** The preferred entry point when working with Java APIs that throw checked exceptions (`Files.readString`, `Class.forName`, JDBC, reflection, and similar). `CheckedSupplier<T, X extends Exception>` is a `Supplier`-like functional interface whose `get()` declares `throws X`, so the lambda body can throw checked exceptions directly. Any thrown `Exception` (checked or unchecked) is caught and wrapped in `Failure`; `Error`s propagate.
+
+   <!-- verify -->
+   ```java
+   import org.higherkindedj.hkt.trymonad.Try;
+   import java.nio.file.Files;
+   import java.nio.file.Paths;
+
+   // Interop with a checked-throwing API - no manual wrapping needed
+   // (Paths.get, not Path.of: `Path` here would be the effect Path this chapter uses.)
+   Try<String> contents = Try.attempt(() -> Files.readString(Paths.get("data.txt")));
+   // Success("...contents...") or Failure(NoSuchFileException)
+
+   // Interop with reflection (also checked)
+   Try<Class<?>> loaded = Try.attempt(() -> Class.forName("com.example.Missing"));
+   // Failure(ClassNotFoundException)
+   ```
+
+3. **`Try.success(value)`:** Directly creates a `Success` instance holding the given value (which can be null).
+
+   <!-- verify -->
+   ```java
+   Try<String> directSuccess = Try.success("Known value");
+   Try<String> successNull = Try.success(null);
+   ```
+4. **`Try.failure(throwable)`:** Directly creates a `Failure` instance holding the given non-null `Throwable`.
+
+   <!-- verify -->
+   ```java
+   Try<String> directFailure = Try.failure(new RuntimeException("Something went wrong"));
+   ```
+~~~
+~~~admonish title="Checking the State"
+
+- [TryExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java)
+
+
+* `isSuccess()`: Returns `true` if it's a `Success`.
+* `isFailure()`: Returns `true` if it's a `Failure`.
+
+### Getting the Value (Use with Caution)
+
+* `get()`: Returns the value if `Success`, otherwise throws the contained `Throwable`. **Avoid using this directly; prefer `fold`, `map`, `flatMap`, or recovery methods.**
+~~~
+
+
+~~~admonish title="Transforming Values (_map_)"
+
+- [TryExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java)
+
+Applies a function to the value inside a `Success`. If the function throws an exception, the result becomes a `Failure`. If the original `Try` was a `Failure`, `map` does nothing and returns the original `Failure`.
+
+<!-- verify -->
+```java
+Try<Integer> initialSuccess = Try.success(5);
+Try<String> mappedSuccess = initialSuccess.map(value -> "Value: " + value); // Success("Value: 5")
+
+Try<Integer> initialFailure = Try.failure(new RuntimeException("Fail"));
+Try<String> mappedFailure = initialFailure.map(value -> "Value: " + value); // Failure(RuntimeException)
+
+Try<Integer> mapThrows = initialSuccess.map(value -> { throw new NullPointerException(); }); // Failure(NullPointerException)
+```
+~~~
+
+~~~admonish title="Chaining Operations (_flatMap_)"
+
+- [TryExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java)
+
+Applies a function that returns another `Try` to the value inside a `Success`. This is used to sequence operations where each step might fail. Failures are propagated.
+
+<!-- verify -->
+```java
+Function<Integer, Try<Double>> safeDivide =
+value -> (value == 0) ? Try.failure(new ArithmeticException("Div by zero")) : Try.success(10.0 / value);
+
+Try<Integer> inputSuccess = Try.success(2);
+Try<Double> result1 = inputSuccess.flatMap(safeDivide); // Success(5.0)
+
+Try<Integer> inputZero = Try.success(0);
+Try<Double> result2 = inputZero.flatMap(safeDivide); // Failure(ArithmeticException)
+
+Try<Integer> inputFailure = Try.failure(new RuntimeException("Initial fail"));
+Try<Double> result3 = inputFailure.flatMap(safeDivide); // Failure(RuntimeException) - initial failure propagates
+```
+~~~
+
+----
+### Handling Failures (`foldFailureFirst`, `recover`, `recoverWith`)
+
+~~~admonish title="_foldFailureFirst(failureFunc, successFunc)_"
+
+- [TryExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java)
+
+Safely handles both cases by applying one of two functions. The failure mapper is supplied first, matching the error-first ordering of `Either.fold`, `Validated.fold`, and `EitherF.fold`.
+
+<!-- verify -->
+```java
+String message = result2.foldFailureFirst(
+    failureThrowable -> "Failed with " + failureThrowable.getMessage(),
+    successValue -> "Succeeded with " + successValue
+); // "Failed with Div by zero"
+
+```
+~~~
+
+~~~admonish warning title="`fold` is deprecated for removal in 0.5.0"
+
+The legacy `Try.fold(successMapper, failureMapper)` and `TryPath.fold(successMapper, failureMapper)` are success-first, which is inconsistent with the error-first ordering used by `Either`, `Validated`, `EitherF`, `EitherPath`, and `ValidationPath`. Both are `@Deprecated(forRemoval = true)` since 0.4.6 and are removed in 0.5.0. Use `foldFailureFirst(failureMapper, successMapper)` instead; the rename is intentional so that no call site can silently flip behaviour after an argument swap. The canonical name `fold` is planned to be reintroduced with the error-first argument order in 0.6.0.
+~~~
+
+~~~admonish title="_recover(recoveryFunc)_"
+
+- [TryExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java)
+
+If `Failure`, applies a function `Throwable -> T` to produce a new `Success` value. If the recovery function throws, the result is a `Failure` containing that new exception.
+
+<!-- verify -->
+```java
+Function<Throwable, Double> recoverHandler = throwable -> -1.0;
+Try<Double> recovered1 = result2.recover(recoverHandler); // Success(-1.0)
+Try<Double> recovered2 = result1.recover(recoverHandler); // Stays Success(5.0)
+```
+~~~
+
+~~~admonish title="_recoverWith(recoveryFunc)_"
+
+- [TryExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java)
+
+Similar to `recover`, but the recovery function `Throwable -> Try<T>` must return a `Try`. This allows recovery to potentially result in another `Failure`.
+
+<!-- verify -->
+```java
+Function<Throwable, Try<Double>> recoverWithHandler = throwable ->
+    (throwable instanceof ArithmeticException) ? Try.success(Double.POSITIVE_INFINITY) : Try.failure(throwable);
+
+Try<Double> recoveredWith1 = result2.recoverWith(recoverWithHandler); // Success(Infinity)
+Try<Double> recoveredWith2 = result3.recoverWith(recoverWithHandler); // Failure(RuntimeException) - re-raised
+```
+~~~
+
+----
+
+~~~admonish example title="Example: Using _TryMonad_"
+
+- [TryExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/trymonad/TryExample.java)
+
+To use `Try` with generic code expecting `Kind<F, A>`:
+
+1. **Get Instance:**`TryMonad tryMonad = Instances.monadError(try_());`
+2. **Wrap(Widen):** Use `TRY.widen(myTry)` or factories like `TRY.tryOf(() -> ...)`.
+3. **Operate:** Use `tryMonad.map(...)`, `tryMonad.flatMap(...)`, `tryMonad.handleErrorWith(...)` etc.
+4. **Unwrap(Narrow):** Use `TRY.narrow(tryKind)` to get the `Try<T>` back.
+
+<!-- verify -->
+```java
+
+MonadError<TryKind.Witness, Throwable> tryMonad = Instances.monadError(try_());
+
+Kind<TryKind.Witness, Integer> tryKind1 = TRY.tryOf(() -> 10 / 2); // Success(5) Kind
+Kind<TryKind.Witness, Integer> tryKind2 = TRY.tryOf(() -> 10 / 0); // Failure(...) Kind
+
+// Map using Monad instance
+Kind<TryKind.Witness, String> mappedKind = tryMonad.map(Object::toString, tryKind1); // Success("5") Kind
+
+// FlatMap using Monad instance
+Function<Integer, Kind<TryKind.Witness, Double>> safeDivideKind =
+        i -> TRY.tryOf(() -> 10.0 / i);
+Kind<TryKind.Witness, Double> flatMappedKind = tryMonad.flatMap(safeDivideKind, tryKind1); // Success(2.0) Kind
+
+// Handle error using MonadError instance
+Kind<TryKind.Witness, Integer> handledKind = tryMonad.handleErrorWith(
+        tryKind2, // The Failure Kind
+        error -> TRY.success(-1) // Recover to Success(-1) Kind
+);
+
+// Unwrap
+Try<String> mappedTry = TRY.narrow(mappedKind); // Success("5")
+Try<Double> flatMappedTry = TRY.narrow(flatMappedKind); // Success(2.0)
+Try<Integer> handledTry = TRY.narrow(handledKind); // Success(-1)
+
+System.out.println(mappedTry);
+System.out.println(flatMappedTry);
+System.out.println(handledTry);
+```
+~~~
+
+---
+
+## Back to the One-Liner
+
+`Try` does not appear by name in the Foundations one-liner, but it sits one short hop away. The same skeleton works for any operation that throws:
+
+```java
+TRY.of(() -> riskyParse(input))
+    .toEitherPath()
+    .focus().attributes().at(key)
+    .modify(spec::validateAndCoerce)
+    .flatMap(repo::save);
+```
+
+`Try` captures the exception as a `Failure` value; `.toEitherPath()` then converts that value into a typed `Left` carrying whatever error type the rest of the chain expects. From there, the same `Functor`, `Monad`, and optic machinery as the original line takes over. Everywhere we would have used `Either<Throwable, A>`, `Try` is the cleaner spelling for the cases where a Java API made the choice for us.
+
+See [One Line, Six Layers](../hkts/one_line_six_layers.md) for the wider picture and [Natural Transformation](../functional/natural_transformation.md) for what `.toEitherPath()` is doing under the hood.
+
+---
+
+~~~admonish tip title="Effect Path Alternative"
+For most use cases, prefer **[TryPath](../effect/path_try.md)** which wraps `Try` and provides:
+
+- Fluent composition with `map`, `via`, `recover`
+- Seamless integration with the [Focus DSL](../optics/focus_dsl.md) for structural navigation
+- A consistent API shared across all effect types
+
+<!-- verify -->
+```java
+// Instead of manual Try chaining:
+Try<Config> config = Try.of(() -> loadConfig());
+Try<String> value = config.flatMap(c -> Try.of(() -> c.getValue("key")));
+
+// Use TryPath for cleaner composition:
+TryPath<String> path = Path.tryOf(() -> loadConfig())
+    .via(c -> Path.tryOf(() -> c.getValue("key")));
+```
+
+See [Effect Path Overview](../effect/effect_path_overview.md) for the complete guide.
+~~~
+
+~~~admonish example title="Benchmarks"
+Try has dedicated JMH benchmarks measuring instance reuse, short-circuit efficiency, and recovery operations. Key expectations:
+
+- **`failureMap`** reuses the same Failure instance with zero allocation (like Either.Left)
+- **`failureLongChain`** is significantly faster than `successLongChain`: sustained reuse benefit over deep chains
+- **`recover` / `recoverWith`** add minimal overhead; pattern matching on the exception type is the dominant cost
+- If Failure operations allocate memory, instance reuse is broken
+
+```bash
+./gradlew :hkj-benchmarks:jmh --includes=".*TryBenchmark.*"
+```
+See [Benchmarks & Performance](../benchmarks.md) for full details, expected ratios, and how to interpret results.
+~~~
+
+---
+
+**Previous:** [Coyoneda](coyoneda.md)
+**Next:** [Validated](validated_monad.md)

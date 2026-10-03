@@ -1,0 +1,181 @@
+# Bulkhead: Containing the Blast Radius
+
+~~~admonish info title="What You'll Learn"
+- How a bulkhead isolates resource usage to prevent cascading failures
+- How to configure concurrency limits, wait queues, and fairness
+- The distinction between Bulkhead and VStreamPar
+- How to protect VTask operations with concurrency limiting
+- How to chain `withBulkhead` on Path carriers, with typed rejections on the railway
+~~~
+
+---
+
+A ship's bulkhead divides the hull into compartments. If one compartment floods, the others stay dry. Without bulkheads, a single breach sinks the entire vessel.
+
+Software systems face the same risk. If your application calls three external services and one becomes very slow, every thread that calls that service blocks indefinitely. Eventually those threads are exhausted and the other two services, both perfectly healthy, become unreachable because there are no threads left to call them. One slow service has sunk the ship.
+
+A `Bulkhead` prevents this by limiting how many concurrent callers can access a shared resource. If the limit is reached, additional callers either wait briefly or are turned away immediately.
+
+## How It Works
+
+```
+    Incoming requests
+    ─────┬──────┬──────┬──────┬──────┬──────┬──────
+         │      │      │      │      │      │
+         ▼      ▼      ▼      ▼      ▼      ▼
+    ┌─────────────────────────────────────────────┐
+    │              Bulkhead (max=3)               │
+    │                                             │
+    │   ┌─────┐  ┌─────┐  ┌─────┐                 │
+    │   │ R1  │  │ R2  │  │ R3  │  ← executing    │
+    │   └─────┘  └─────┘  └─────┘                 │
+    │                                             │
+    │   ┌─────┐  ┌─────┐                          │
+    │   │ R4  │  │ R5  │  ← waiting for permit    │
+    │   └─────┘  └─────┘                          │
+    │                                             │
+    │   R6 → BulkheadFullException                │
+    │         (wait queue full or timeout)        │
+    └─────────────────────────────────────────────┘
+```
+
+## Creating a Bulkhead
+
+<!-- verify -->
+```java
+// Simple: just a concurrency limit
+Bulkhead dbBulkhead = Bulkhead.withMaxConcurrent(10);
+
+// Full configuration
+Bulkhead apiBulkhead = Bulkhead.create(BulkheadConfig.builder()
+    .maxConcurrent(5)                         // 5 concurrent callers
+    .maxWait(10)                              // Up to 10 callers can wait
+    .waitTimeout(Duration.ofSeconds(2))       // Wait up to 2 seconds for a permit
+    .fairness(true)                           // FIFO ordering for waiting callers
+    .build());
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `maxConcurrent` | 10 | Maximum simultaneous executions |
+| `maxWait` | 0 | Maximum callers in the wait queue (0 = no limit) |
+| `waitTimeout` | 5s | How long to wait for a permit before giving up |
+| `fairness` | false | Whether to serve waiting callers in FIFO order |
+
+## Protecting VTask Operations
+
+<!-- verify -->
+```java
+Bulkhead dbBulkhead = Bulkhead.withMaxConcurrent(10);
+
+VTask<Result> protectedQuery = dbBulkhead.protect(
+    VTask.of(() -> database.query(sql)));
+
+// When the permit is acquired, the task runs normally.
+// When the bulkhead is full, BulkheadFullException is thrown.
+Result result = protectedQuery.run();
+```
+
+Like `CircuitBreaker.protect()`, the method is generic: one bulkhead can protect calls returning different types.
+
+## Handling Rejection
+
+When the bulkhead cannot accept a caller, it throws `BulkheadFullException`:
+
+<!-- verify -->
+```java
+VTask<Result> resilient = dbBulkhead.protect(
+        VTask.of(() -> database.query(sql)))
+    .recover(ex -> {
+        if (ex instanceof BulkheadFullException) {
+            log.warn("Database connection pool exhausted");
+            return Result.fromCache(sql);
+        }
+        throw (ex instanceof RuntimeException re) ? re : new RuntimeException(ex);
+    });
+```
+
+## Path-Native Bulkheads
+
+The lazy Path carriers chain bulkhead protection directly:
+
+<!-- verify -->
+```java
+IOPath<Result> guarded = Path.io(() -> database.query(sql))
+    .withBulkhead(dbBulkhead);
+
+VTaskPath<Result> guardedAsync = Path.vtask(() -> database.query(sql))
+    .withBulkhead(dbBulkhead);
+```
+
+On the typed-error carriers, the typed overload keeps a rejected execution on the typed channel: `BulkheadFullException` becomes a `Left` instead of a thrown exception or defect.
+
+<!-- verify -->
+```java
+// VResultPath: instance combinator, rejection lands as a Left
+VResultPath<OrderError, Reservation> guarded =
+    reserveInventoryAsync(order)
+        .withBulkhead(
+            inventoryBulkhead,
+            full -> OrderError.SystemError.fromException("Inventory service busy", full));
+
+// EitherPath is eager, so the combinator is static and takes the step as a Supplier
+EitherPath<OrderError, Reservation> reserved = EitherPath.withBulkhead(
+    () -> reserveInventory(order),
+    inventoryBulkhead,
+    full -> OrderError.SystemError.fromException("Inventory service busy", full));
+```
+
+Without the `onFull` argument, `BulkheadFullException` propagates as-is.
+
+## Bulkhead vs VStreamPar
+
+Both limit concurrency, but at different scopes (`VStreamPar` is the stream `parEvalMap` family):
+
+| | Bulkhead | VStreamPar |
+|---|----------|------------|
+| **Scope** | Per-service (shared across callers) | Per-stream (within a pipeline) |
+| **Use case** | "This database allows 10 connections" | "Process this stream with 4 in-flight" |
+| **Shared** | One instance across the application | Per-stream instance |
+| **Semantics** | Acquire/release permit | Bounded parallel map |
+
+They compose naturally. A stream can use VStreamPar for pipeline parallelism and have each element's processing protected by a shared bulkhead:
+
+<!-- verify -->
+```java
+Bulkhead serviceBulkhead = Bulkhead.withMaxConcurrent(10);
+
+Path.vstreamFromList(userIds)
+    .parEvalMap(4, id ->
+        serviceBulkhead.protect(
+            VTask.of(() -> userService.fetch(id))))
+    .toList()
+    .unsafeRun();
+```
+
+Here, `parEvalMap(4, ...)` limits the stream to 4 in-flight elements, whilst `serviceBulkhead` ensures that across all streams in the application, no more than 10 concurrent calls reach the user service.
+
+## Inspecting State
+
+<!-- verify -->
+```java
+int available = dbBulkhead.availablePermits();  // How many more callers can enter
+int active = dbBulkhead.activeCount();           // How many callers are currently executing
+```
+
+~~~admonish info title="Key Takeaways"
+* **A bulkhead protects everyone else**: capping concurrent access to one slow dependency keeps the shared capacity available to healthy ones; waiting for a permit is itself bounded by `waitTimeout`, and `maxWait` bounds the queue
+* **One instance per resource**: like a breaker, a bulkhead is shared application-wide; `protect()` is generic across return types
+* **Rejection is explicit**: a full bulkhead throws `BulkheadFullException`, or lands as a typed `Left` via the `onFull` overload on the railway carriers
+* **Different scope from `parEvalMap`**: VStreamPar bounds one pipeline's parallelism; a bulkhead bounds a shared resource across the whole application, and the two compose
+~~~
+
+~~~admonish tip title="See Also"
+- [Circuit Breaker](circuit_breaker.md) - detecting and responding to service failures
+- [Combined Patterns](combined.md) - using bulkhead with retry and circuit breaker
+~~~
+
+---
+
+**Previous:** [Circuit Breaker](circuit_breaker.md)
+**Next:** [Saga](saga.md)

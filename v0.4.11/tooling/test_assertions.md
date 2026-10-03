@@ -1,0 +1,385 @@
+# Testing With hkj-test: Fluent Assertions for HKJ Types
+
+~~~admonish info title="What You'll Learn"
+- How to add `hkj-test` to a project as a test-scope dependency
+- The shape of the assertion API for the simple types, the effect types, and the monad transformers
+- How to assert on chained, lazy, or stateful HKJ values without unwrapping by hand
+- How to drop into Java 25's `import module` syntax to bring every helper into scope in one line
+~~~
+
+`hkj-test` is a small, focused companion to `hkj-core`: an AssertJ-flavoured assertion module covering every HKJ type a test is likely to touch. It is independent of `hkj-checker` and the Gradle/Maven plugins; you can adopt it without changing anything else in your build.
+
+---
+
+## Adding the Dependency
+
+`hkj-test` is published alongside the rest of Higher-Kinded-J on Maven Central.
+
+### Gradle
+
+```kotlin
+dependencies {
+    testImplementation("io.github.higher-kinded-j:hkj-test:LATEST_VERSION")
+}
+```
+
+### Maven
+
+```xml
+<dependency>
+    <groupId>io.github.higher-kinded-j</groupId>
+    <artifactId>hkj-test</artifactId>
+    <version>LATEST_VERSION</version>
+    <scope>test</scope>
+</dependency>
+```
+
+The artifact pulls AssertJ in transitively via `requires transitive`, so consumers do not need to add it again. It also `requires transitive org.higherkindedj.core`, which means a single dependency declaration is enough whether you intend to test against `Either`, `IO`, or any of the transformers.
+
+---
+
+## What Is Covered
+
+Every public HKJ type a user is likely to assert on has a dedicated assertion class. All assertions live in `org.higherkindedj.hkt.assertions`.
+
+| Category | Helpers |
+|----------|---------|
+| Discriminated unions | `EitherAssert`, `MaybeAssert`, `TryAssert`, `ValidatedAssert`, `LazyAssert` |
+| Reader / Writer / State | `ReaderAssert` (with `ReaderResultAssert`), `WriterAssert`, `StateAssert` |
+| Effect types | `IOAssert`, `VTaskAssert`, `VStreamAssert` |
+| Effect paths | `VTaskPathAssert`, `VStreamPathAssert`, `VResultPathAssert`, `VTaskContextAssert` |
+| Monad transformers | `EitherTAssert`, `MaybeTAssert`, `OptionalTAssert`, `ReaderTAssert`, `StateTAssert`, `WriterTAssert` |
+| Free algebra | `FreeAssert`, `EitherFAssert` |
+| Error envelopes | `ErrorEnvelopeAssert` |
+
+Each entry point follows the AssertJ convention `assertThatXxx(actual)`:
+
+<!-- verify -->
+```java
+assertThatEither(result);
+assertThatMaybe(value);
+assertThatTry(computation);
+```
+
+---
+
+## Assertions for the Simple Types
+
+The discriminated-union and value-bearing types share a common shape: a state predicate, a value-equality check, a value-satisfies-consumer escape hatch, and the usual null variants.
+
+### `EitherAssert`
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.assertions.EitherAssert.assertThatEither;
+
+Either<DomainError, Order> result = orderService.process(request);
+
+assertThatEither(result)
+    .isRight()
+    .hasRight(expectedOrder);
+
+assertThatEither(failure)
+    .isLeft()
+    .hasLeftSatisfying(error ->
+        assertThat(error).isInstanceOf(DomainError.ValidationFailure.class));
+```
+
+### `MaybeAssert` and `ValidatedAssert`
+
+<!-- verify -->
+```java
+assertThatMaybe(lookup).isJust().hasValue("alice");
+assertThatMaybe(lookup).isNothing();
+
+assertThatValidated(form)
+    .isInvalid()
+    .hasErrorSatisfying(errors -> errors.size() == 2, "two errors collected");
+```
+
+When the error channel is the located one - `NonEmptyList<FieldError>`, what every codec parse,
+mapping `parse`/`patch`, fallible merge and assembly companion returns - `hasFieldErrors` asserts
+the whole accumulation as rendered `"path: message"` lines, in declaration order:
+
+<!-- verify -->
+```java
+assertThatValidated(parsed)
+    .isInvalid()
+    .hasFieldErrors(
+        "id: not a UUID (expected e.g. 123e4567-e89b-12d3-a456-426614174000)",
+        "placedOn: not an ISO-8601 date (expected e.g. 2026-07-28)");
+```
+
+Order is asserted because declaration order *is* the accumulation contract. A reworded message
+fails as a one-line diff against the full rendered list.
+
+### `LazyAssert`
+
+`Lazy` carries its own evaluation lifecycle, so the assertions track it explicitly:
+
+<!-- verify -->
+```java
+Lazy<Integer> deferred = Lazy.defer(() -> compute());
+
+assertThatLazy(deferred).isNotEvaluated();
+assertThatLazy(deferred).whenForcedHasValue(42).isEvaluated();
+assertThatLazy(failing).whenForcedThrows(IllegalStateException.class);
+```
+
+### `WriterAssert` and `StateAssert`
+
+These cover both halves of the wrapped pair:
+
+<!-- verify -->
+```java
+assertThatWriter(writer)
+    .hasValue(42)
+    .hasLog("computed: ");
+
+assertThatStateTuple(tuple)
+    .hasValue("processed")
+    .hasState(5);
+```
+
+---
+
+## Assertions for the Effect Types
+
+Effect types are lazy, so the assertions take care of running them. `IOAssert` and `VTaskAssert` follow a `whenExecuted()` / `whenRun()` chain; `VStreamAssert` materialises the stream once and lets you make repeated claims about it.
+
+### `IOAssert`
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.assertions.IOAssert.assertThatIO;
+
+IO<Integer> effect = IO.delay(() -> 1 + 1);
+
+assertThatIO(effect).whenExecuted().hasValue(2);
+assertThatIO(effect).isNotExecutedYet();
+assertThatIO(effect).isRepeatable();
+
+IO<String> failing = IO.delay(() -> { throw new IllegalStateException("kaboom"); });
+
+assertThatIO(failing)
+    .throwsException(IllegalStateException.class)
+    .withMessageContaining("kaboom");
+```
+
+### `VTaskAssert`
+
+<!-- verify -->
+```java
+VTask<Integer> task = VTask.delay(() -> heavyComputation());
+
+assertThatVTask(task)
+    .whenRun()
+    .succeeds()
+    .hasValue(expected)
+    .completesWithin(Duration.ofSeconds(1));
+```
+
+### `VResultPathAssert`
+
+A `VResultPath<E, A>` run has three possible outcomes, and the assertion covers all of them: a typed success (`Right`), a typed domain error (`Left`), or a defect (an exception outside the typed channel). The path is executed once and the outcome cached for the rest of the chain:
+
+<!-- verify -->
+```java
+VResultPath<DomainError, Order> path = Path.vresultDefer(() -> service.load(orderId));
+
+assertThatVResultPath(path).isRight().hasRight(expectedOrder);
+
+assertThatVResultPath(failingPath)
+    .isLeft()
+    .hasLeftSatisfying(error ->
+        assertThat(error).isInstanceOf(DomainError.NotFound.class));
+
+assertThatVResultPath(defective)
+    .hasDefect()
+    .withDefectType(IllegalStateException.class);
+```
+
+### `VStreamAssert`
+
+<!-- verify -->
+```java
+VStream<Integer> stream = VStream.fromList(List.of(1, 2, 3));
+
+assertThatVStream(stream).producesElements(1, 2, 3);
+assertThatVStream(stream).hasCount(3);
+assertThatVStream(stream).isEmpty();          // for empty streams
+
+assertThatVStream(failingStream)
+    .failsWithExceptionType(IllegalStateException.class);
+```
+
+---
+
+## Assertions for the Error Envelope
+
+`ErrorEnvelopeAssert` covers the generated `ErrorEnvelope<C>` (see [`@GenerateErrorEnvelope`](../mapping/merge_envelopes.md#generating-error-envelopes-generateerrorenvelope)). Because envelope timestamps come from a `TimeSource`, a frozen clock makes the whole envelope, the timestamp included, exactly assertable:
+
+```java
+import static org.higherkindedj.hkt.assertions.ErrorEnvelopeAssert.assertThatErrorEnvelope;
+
+Instant frozen = Instant.parse("2026-07-07T09:30:00Z");
+TimeSource time = TimeSource.of(SteppableClock.startingAt(frozen));
+
+OrderError error = OrderErrors.outOfStock(time, products)
+    .editContext(ctx -> ctx.orderId(orderId));
+
+assertThatErrorEnvelope(error.envelope())
+    .hasCode("OUT_OF_STOCK")
+    .hasMessageContaining("stock")
+    .hasTimestamp(frozen)
+    .hasContextSatisfying(ctx -> assertThat(ctx.orderId()).isEqualTo(orderId));
+```
+
+`hasCode` / `hasMessage` / `hasMessageContaining` / `hasTimestamp` / `hasContext` / `hasContextSatisfying` cover the four fields; the context escape hatch keeps the assertion typed against your context record.
+
+---
+
+## Assertions for Monad Transformers
+
+Transformer assertions take an extra argument: an `unwrapper` function that pulls the transformer's outer monad back into a plain `Optional` so the assertion can introspect it. The pattern mirrors how transformer code typically composes outer and inner monads.
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.assertions.EitherTAssert.assertThatEitherT;
+import static org.higherkindedj.hkt.either_t.EitherTKindHelper.EITHER_T;
+import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL;
+
+MonadError<OptionalKind.Witness, Unit> outerMonad = Instances.monadError(optional());
+
+private <E, A> Optional<Either<E, A>> unwrap(Kind<OptionalKind.Witness, Either<E, A>> kind) {
+    return OPTIONAL.narrow(kind);
+}
+
+Kind<EitherTKind.Witness<OptionalKind.Witness, String>, Integer> kind =
+    EITHER_T.widen(EitherT.right(outerMonad, 42));
+
+assertThatEitherT(kind, this::unwrap)
+    .isPresentRight()
+    .hasRightValue(42);
+```
+
+The same shape applies to `MaybeTAssert`, `OptionalTAssert`, `ReaderTAssert`, `StateTAssert`, and `WriterTAssert`. The `Reader`, `State`, and `Writer` variants additionally provide `whenRunWith(env)` / `whenRunWith(initialState)` to drive the underlying computation before asserting.
+
+---
+
+## Test Fixtures
+
+### `SteppableClock`
+
+A clock that only moves when told to; pair it with `TimeSource.of(clock)` and time-dependent code is exercised by stepping the clock, not sleeping:
+
+``` java
+import org.higherkindedj.hkt.assertions.SteppableClock;
+import org.higherkindedj.hkt.time.TimeSource;
+
+SteppableClock clock = SteppableClock.startingAt(Instant.parse("2026-07-07T00:00:00Z"));
+var service = new InMemoryInventoryService(TimeSource.of(clock));
+
+service.reserve(order);                    // hold expires 15 minutes from "now"
+clock.advance(Duration.ofMinutes(16));     // time passes - instantly
+service.reserve(other);                    // the expired hold is reclaimed
+```
+
+Stepping is atomic (safe to advance from the test thread while virtual threads read), and `withZone` honours the `java.time.Clock` contract: the zoned view shares the same steppable timeline.
+
+---
+
+## Java 25: One-line Module Import
+
+`hkj-test` is published as a proper JPMS module named `org.higherkindedj.test`. On Java 25 with `--enable-preview` (already enabled across the HKJ project), JEP 511's module-import syntax reduces the per-class import boilerplate to a single line:
+
+```java
+import module org.higherkindedj.test;
+import module org.higherkindedj.core;   // brings in Either, Maybe, Try, IO, ...
+
+class UserServiceTest {
+    @Test
+    void returns_user() {
+        Either<DomainError, User> result = userService.findById("u1");
+        EitherAssert.assertThatEither(result).isRight();
+    }
+}
+```
+
+Both modules are now in scope; no further imports are required.
+
+---
+
+## Coverage Guarantees
+
+Every public assertion method on every assertion class is covered by a dedicated `*AssertContractTest` in `hkj-test/src/test/java`. Each contract spec enumerates rows of `(label, passingInput, failingInput, chain)` and the framework dispatches each row as two dynamic tests: one verifying the chain succeeds on the passing input, another verifying it throws `AssertionError` on the failing input.
+
+Coverage is enforced at 100% line and 100% instruction on the `hkj-test` bundle. Adding a new assertion method without a corresponding contract row will fail the project's `check` task, so the test surface stays exhaustive over time.
+
+---
+
+## Optic Laws
+
+`org.higherkindedj.optics.laws` publishes law-verification helpers for every optic family (the properties that *define* a lawful `Iso`, `Lens`, `Prism`, `Affine`, or `Traversal`) in the same flat `assert…` style as the `hkt.laws` type-class helpers:
+
+<!-- verify -->
+``` java
+import org.higherkindedj.optics.laws.LensLaws;
+import org.higherkindedj.optics.laws.PrismLaws;
+
+@Test
+void nameLensIsLawful() {
+    LensLaws.assertLensLaws(UserLenses.name(), new User("Ada", 36), "Grace", "Alan");
+    // get-set, set-get (both values) and set-set, with counterexample-bearing messages
+}
+
+@Test
+void statusPrismIsLawful() {
+    PrismLaws.assertPrismLaws(ShapePrisms.circle(), new Circle(1.0), new Square(2.0));
+}
+```
+
+`ValidatedPrismLaws` joins the family for the validated-boundary optic (parse-build and the section law build-parse). Each family also exposes the individual laws (`assertGetSet`, `assertBuildMatch`, `assertSetNoOpWhenAbsent`, …) for targeted checks, and failures name the violated law with the offending values: `"Lens set-get: get(set(Grace, …)) == the value set; got Ada"`. Guard rails reject vacuous fixtures (equal set-set values, non-matching prism sources). Drive broader coverage with `@ParameterizedTest` or property fixtures at the call site.
+
+`MappingLaws` completes the family for [`@GenerateMapping`](../mapping/ch_intro.md) Impls, law-checking a mapping through its exposed surface. There is one `assertMappingLaws` overload per emission tier:
+
+- **Lossless:** pass `asIso()` plus `asValidatedPrism()`; delegates to `IsoLaws` and adds the coherence checks between the two surfaces.
+- **Projection:** pass `asLens()`; delegates to `LensLaws`.
+- **Fallible:** pass `asValidatedPrism()` with a parsing and a non-parsing wire value; delegates to `ValidatedPrismLaws`.
+- **Total-parse** (a mapping whose parse cannot fail on a well-formed wire the domain accepts): pass a domain sample. Derived wire fields and leaves that never fail qualify. Only the non-derived components round-trip, and the overload asserts exactly that.
+- **Validated patch** (a projection that validates, on a record or a bean wire): pass the `patch` and `build` method references, a domain sample, and a parsing and a non-parsing wire; checks projection identity, idempotence and located validation.
+- **Sparse update** (an `UpdateSpec`): pass the `updateFrom` method reference, a domain sample, and an all-absent, a valid and an invalid wire; checks identity, idempotence and located validation. Make the all-absent wire a freshly constructed bean, as a binder makes of an empty body, and the domain sample unlike any default, so a default the bean gives itself, which would defeat absence, fails the identity law. The invalid wire must fail on a field: a domain constructor's refusal is unlabelled, so a domain with no leaf checks `assertSparseIdentity` and `assertSparseIdempotent` on their own.
+- **Parse-only** (a bean that is only read): pass `asValidatedParse()` with a parsing and a non-parsing wire; checks that the first parses and the second fails with every error located.
+- **Build-only** (a bean that is only written): pass `asValidatedBuild()` with a domain sample; checks that `build` renders it without failing.
+- **Two halves** (a `@ReadOnly` property, its own or nested): check each half alone.
+
+The laws compare by `equals`. A same-typed array crosses as a clone, and a record compares an array component by reference, so a record with an array component needs an `equals` of its own that uses `Arrays.equals` before these laws apply to it; otherwise assert its round trip elementwise.
+
+``` java
+import org.higherkindedj.optics.laws.MappingLaws;
+
+@Test
+void personMappingIsLawful() {
+    // Fallible tier: a wire that parses, and one that must not
+    MappingLaws.assertMappingLaws(
+        PersonMappingImpl.INSTANCE.asValidatedPrism(),
+        new PersonDto("Ada", "ada@corp.example"),
+        new PersonDto("Ada", "not-an-email"));
+}
+```
+
+Three samples need care. The lossless overload's coherence check needs a wire whose reference components are non-null, and whose values the domain accepts. A mapping with a derived field *and* a fallible leaf takes the fallible overload, which keeps the rejection check: give it a parseable wire whose derived components match what `build` produces. For the patch and parse-only overloads, the non-parsing wire must fail on a field, since a refusal by the domain's constructor alone is unlabelled at the top level.
+
+A pair of records with no components has one value on each side, so the lossless overload's guard, which asks for a wire sample independent of the domain sample, can never be met. Check each law the overload combines on its own instead: `IsoLaws.assertIsoLaws`, `MappingLaws.assertBuildAgreesWithIso` and `assertParseAgreesWithIso`, and `ValidatedPrismLaws.assertParseBuild` and `assertBuildParse`.
+
+For asserting on the located failures themselves, `assertThatValidated(...).hasFieldErrors(...)` takes the whole accumulation as rendered lines; `assertThatFieldError` takes one error apart, matching its path (`hasPath("address.zip")`) and message (`hasMessage`, `hasMessageContaining`).
+
+~~~admonish tip title="See Also"
+- [Manual Gradle and Maven Setup](manual_setup.md) - Adding hkj-test to projects that do not use the HKJ build plugin
+- [Build Plugins](gradle_plugin.md) - Other test-time tooling
+- [What Are Optics?](../optics/optics_intro.md) - The optic families these laws define
+~~~
+
+---
+
+**Previous:** [Claude Code Skills](claude_code_skills.md)

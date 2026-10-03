@@ -1,0 +1,78 @@
+# Contributing to Higher-Kinded-J
+
+First off, thank you for considering contributing! This project explores modern functional Java, and contributions are welcome.
+
+This document provides guidelines for contributing to this project.
+
+## Code of Conduct
+
+This project and everyone participating in it is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behaviour to simulation.hkt@gmail.com.
+
+## How Can I Contribute?
+
+### Reporting Bugs
+
+* Ensure the bug was not already reported by searching on GitHub under [Issues](https://github.com/higher-kinded-j/higher-kinded-j/issues).
+* If you're unable to find an open issue addressing the problem, [open a new one](https://github.com/higher-kinded-j/higher-kinded-j/issues/new). Be sure to include a **title and clear description**, as much relevant information as possible, and a **code sample or an executable test case** demonstrating the expected behaviour that is not occurring.
+* Use the "Bug Report" issue template if available.
+
+### Suggesting Enhancements
+
+* Open a new issue to discuss your enhancement suggestion. Please provide details about the motivation and potential implementation.
+* Use the "Feature Request" issue template if available.
+
+### Your First Code Contribution
+
+Unsure where to begin contributing? You can start by looking through `good first issue` or `help wanted` issues (you can add these labels yourself to issues you think fit).
+
+### Pull Requests
+
+1.  **Fork the repository** on GitHub.
+2.  **Clone your fork** locally: `git clone git@github.com:higher-kinded-j/higher-kinded-j.git`
+3.  **Create a new branch** for your changes: `git checkout -b name-of-your-feature-or-fix`
+4.  **Make your changes.** Ensure you adhere to standard Java coding conventions.
+5.  **Add tests** for your changes. This is important!
+6.  **Run the tests:** Make sure the full test suite passes using `./gradlew test`. If you changed the book, or a rule the book documents, see [Documentation](#documentation) too.
+7.  **Build the project:** Ensure the project builds without errors using `./gradlew build`.
+8.  **Commit your changes:** Use clear and descriptive commit messages. `git commit -am 'Add some feature'`
+9.  **Push to your fork:** `git push origin name-of-your-feature-or-fix`
+10. **Open a Pull Request** against the `main` branch of the original repository.
+11. **Describe your changes** in the Pull Request description. Link to any relevant issues (e.g., "Closes #123").
+12. Ensure the **GitHub Actions CI checks pass**.
+
+## Development Setup
+
+* You need a Java Development Kit (JDK), version **25**. The build uses preview features, which tie it to that release.
+* This project uses Gradle. You can use the included Gradle Wrapper (`gradlew`) to build and test.
+    * Build the project: `./gradlew build`
+    * Run tests: `./gradlew test`
+    * Generate JaCoCo coverage reports: `./gradlew test jacocoTestReport` (HTML report at `build/reports/jacoco/test/html/index.html`)
+
+## Project Modules
+
+The project is organised into several modules:
+
+* **hkj-core** -- Core library with HKT simulation, Effect Path API, and Optics
+* **hkj-api** -- Public API interfaces
+* **hkj-annotations** -- Annotations for code generation
+* **hkj-processor / hkj-processor-plugins** -- Annotation processor and extensible plugins
+* **hkj-checker** -- Javac compiler plugin for compile-time Path type mismatch detection
+* **plugins/hkj-gradle-plugin** -- Gradle plugin for one-line project setup
+* **plugins/hkj-maven-plugin** -- Maven plugin for automated build configuration
+* **hkj-spring** -- Spring Boot integration (autoconfigure, starter, example)
+* **hkj-openrewrite** -- OpenRewrite recipes for automated migrations
+* **hkj-examples** -- Example projects
+* **hkj-benchmarks** -- JMH performance benchmarks
+* **hkj-book** -- Documentation (mdbook)
+
+## Coding Style
+
+Please follow the [**Google Java Style Guide**](https://google.github.io/styleguide/javaguide.html). Keep code simple, readable, and well-tested. Consistent formatting is encouraged.
+
+## Documentation
+
+Changes to the book in `hkj-book/src` follow the [Style Guide](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/docs/STYLE-GUIDE.md). Some chapters add rules of their own, listed in its [Chapter Guides](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/docs/STYLE-GUIDE.md#chapter-guides) table. The [Mapping Chapter Guide](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/docs/MAPPING-CHAPTER-GUIDE.md) is one: it says where a new mapping rule or refusal belongs, so a feature that adds one updates those pages in the same pull request. [BOOK-SNIPPETS.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/BOOK-SNIPPETS.md) explains how the build compiles the book's Java.
+
+Before opening the pull request, run `./gradlew :hkj-examples:test :hkj-examples:bookVerify` and `hkj-book/check.sh`. The checks need Node.js with npm, and their first run downloads the pinned mermaid library with `curl`. The Mapping chapter's [Compiler Messages generator](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-book/tools/compiler-messages/README.md) also needs Python 3.
+
+Thank you for contributing!

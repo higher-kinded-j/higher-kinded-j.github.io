@@ -1,0 +1,3576 @@
+# Higher-Kinded-J: Spring Integration
+
+> The "Spring Integration" chapter of the Higher-Kinded-J documentation, in reading
+> order, with its code examples inlined. llms.txt indexes the whole book, and
+> llms-full.txt holds all of it.
+
+<!-- Source: spring/ch_intro.md -->
+
+<!-- description: Return Either, Validated and Effect Paths from Spring Boot controllers, map typed errors to HTTP statuses, and call other services through typed HTTP clients. -->
+
+# Spring Integration
+
+> *"If thought corrupts language, language can also corrupt thought."*
+>
+> – George Orwell, *Politics and the English Language*
+
+---
+
+Exception-based error handling corrupts thought. When a method signature says `User getUser(String id)`, it lies by omission. The user might not exist. The database might be down. The ID might be malformed. None of this appears in the signature. The exceptions, when they come, arrive as surprises, handled in catch blocks scattered across the codebase, their semantics unclear, their taxonomy baroque.
+
+Functional error handling clarifies thought. When a method returns `Either<DomainError, User>`, the signature tells the truth. Failure is possible. The error type is explicit. Callers must acknowledge this reality; the compiler ensures it. The code becomes honest.
+
+This chapter bridges functional programming and enterprise Java. The `hkj-spring-boot-starter` allows Spring controllers to return `Either`, `Validated`, `CompletableFuturePath`, `VTaskPath`, and `VStreamPath` directly. The framework handles the translation to HTTP responses: `Right` becomes 200 OK; `Left` becomes the appropriate error status. Validation errors accumulate properly. Async operations compose cleanly. Virtual thread operations run without thread pool configuration, and SSE streaming works without WebFlux or Reactor.
+
+The starter also closes the other half of the loop. Once a service speaks typed errors over HTTP, the services that call it should understand them. `@HkjHttpClient`, with `hkj-spring-boot-client-processor`, generates a declarative client whose methods return the same Effect Paths, decoding the response back into a typed error so the error channel survives the network hop. The server encodes; the client decodes; the typed error never collapses into a bare status code.
+
+For applications that compose multiple effects, `EffectBoundary` bridges Free monad programs into the existing handler ecosystem. `@EnableEffectBoundary` auto-discovers `@Interpreter` beans, combines them, and registers an `EffectBoundary` that interprets programs and returns `IOPath` or `FreePath`, which the existing handlers convert to HTTP responses.
+
+The integration is non-invasive. Existing exception-based endpoints continue to work. Migration can proceed incrementally. But as more of your codebase adopts functional error handling, a subtle shift occurs. Errors become data. Control flow becomes explicit. The language of your code begins to clarify your thought rather than corrupt it.
+
+~~~admonish note title="New to the vocabulary?"
+This chapter uses `Either`, the Effect Paths (`EitherPath`, `VTaskPath`, …), and the "railway"
+model of success and failure tracks. If those are unfamiliar, [The Effect Path
+API](../effect/effect_path_overview.md) introduces them; the pages here then show how they meet
+Spring.
+~~~
+
+---
+
+## The Transformation
+
+```
+    ┌─────────────────────────────────────────────────────────────┐
+    │  EXCEPTION-BASED (Traditional)                              │
+    │                                                             │
+    │    User getUser(String id)    ← What can go wrong?          │
+    │                                                             │
+    │    @ExceptionHandler(UserNotFoundException.class)           │
+    │    @ExceptionHandler(ValidationException.class)             │
+    │    @ExceptionHandler(DatabaseException.class)               │
+    │    ...scattered across the codebase                         │
+    └─────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │  FUNCTIONAL (With hkj-spring)                               │
+    │                                                             │
+    │    Either<DomainError, User> getUser(String id)             │
+    │           ↑                                                 │
+    │    Errors visible in the type signature                     │
+    │                                                             │
+    │    → Right(user) automatically becomes HTTP 200             │
+    │    → Left(NotFoundError) automatically becomes HTTP 404     │
+    │    → Left(ValidationError) automatically becomes HTTP 400   │
+    └─────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │  AND BACK AGAIN (With @HkjHttpClient)                       │
+    │                                                             │
+    │    EitherPath<DomainError, User> getUser(String id)         │
+    │           ↑                                                 │
+    │    A client call that keeps the typed error                 │
+    │                                                             │
+    │    → HTTP 200 decodes to Right(user)                        │
+    │    → HTTP 404 decodes to Left(NotFoundError)                │
+    │    → HTTP 400 decodes to Left(ValidationError)              │
+    └─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## What the Starter Provides
+
+| Feature | Benefit |
+|---------|---------|
+| `Either` return types | Typed errors in controller signatures |
+| `Validated` return types | Accumulate all validation errors |
+| `CompletableFuturePath` return types | Async operations with typed errors |
+| `VTaskPath` return types | Virtual thread async via DeferredResult, no thread pool needed |
+| `VStreamPath` return types | SSE streaming on virtual threads, no WebFlux/Reactor needed |
+| `FreePath` return types | Composable effect programs interpreted at the boundary |
+| `EffectBoundary` | Auto-wired interpret-and-execute for Free monad programs |
+| `@Interpreter` beans | Spring-managed interpreters with DI and profile switching |
+| `@HkjHttpClient` interfaces | Declarative clients that keep the typed error when calling other services (generated by `hkj-spring-boot-client-processor`) |
+| Automatic status mapping | Error types to HTTP status codes (inbound) and back to typed errors (outbound) |
+| JSON serialisation | Configurable output formats |
+| Actuator integration | Metrics for functional operations |
+| Security integration | Functional authentication patterns |
+
+~~~admonish note title="ReaderPath vs @Autowired"
+If you use Spring's dependency injection and wonder how `ReaderPath` compares, see [ReaderPath vs Spring Dependency Injection](../effect/advanced_effects.md#readerpath-vs-spring-dependency-injection) in the Advanced Effects chapter. The short version: Spring DI is best for application-scoped singletons; `ReaderPath` shines for per-request context that varies at runtime.
+~~~
+
+---
+
+## What You'll Learn
+
+~~~admonish info title="In This Chapter"
+- **Spring Boot Integration** – Configure Spring to accept Either, Validated, CompletableFuturePath, VTaskPath, and VStreamPath as controller return types. The framework automatically maps Right to 200 OK and Left to appropriate error statuses. VTaskPath provides virtual thread async, VStreamPath provides SSE streaming.
+- **Declarative HTTP Clients** – The outbound inverse of the controller handlers. `@HkjHttpClient` generates a client whose methods return Effect Paths and decodes the response back into a typed error, so the error channel survives a service-to-service call. Wiring is configuration; you autowire your own interface.
+- **Migration Guide** – A practical path from exception-based error handling to functional types. Start with one endpoint, prove the pattern, then expand incrementally.
+- **EffectBoundary Integration** – Compose multiple effect algebras into a single program and interpret them at a clean boundary. `@EnableEffectBoundary` auto-discovers `@Interpreter` beans, combines them, and bridges Free monads into the existing *Path handler ecosystem. Progressive adoption from a single `@Bean` to full auto-wiring.
+~~~
+
+---
+
+## Chapter Contents
+
+1. [Spring Boot Integration](spring_boot_integration.md) - Using Either, Validated, and *Path types in controllers
+2. [Declarative HTTP Clients](declarative_http_clients.md) - Calling other services and keeping the typed error
+3. [Migrating to Functional Errors](migrating_to_functional_errors.md) - Moving from exceptions to functional error handling
+4. [EffectBoundary Integration](effect_boundary_integration.md) - Composable effects with auto-wired interpreters
+
+---
+
+**Next:** [Spring Boot Integration](spring_boot_integration.md)
+
+<!-- Source: spring/spring_boot_integration.md -->
+
+# Spring Boot Integration: Functional Patterns for Enterprise Applications
+## _Bringing Type-Safe Error Handling to Your REST APIs_
+
+~~~admonish info title="What You'll Learn"
+- How to use Either, Validated, Maybe, Try, IO, CompletableFuture, VTask, VStream, EitherOrBoth, and Free as Spring controller return types (via their Path wrappers)
+- Zero-configuration setup with the hkj-spring-boot-starter
+- Virtual thread integration with VTaskPath (async) and VStreamPath (SSE streaming)
+- Automatic JSON serialisation with customisable formats
+- Success HTTP status control via `@ResponseStatus` on handler methods
+- Monitoring functional operations with Spring Boot Actuator
+- Securing endpoints with functional error handling patterns
+- Building production-ready applications with explicit, typed errors
+- Testing functional controllers with MockMvc, both full context and `@WebMvcTest` slices
+~~~
+
+~~~admonish example title="Example Application"
+A complete working example is available in the [hkj-spring example module](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-spring/example). Run it with:
+```bash
+./gradlew :hkj-spring:example:bootRun
+```
+~~~
+
+## Overview
+
+Building REST APIs with Spring Boot is straightforward, but error handling often becomes a source of complexity and inconsistency. Traditional exception-based approaches scatter error handling logic across `@ExceptionHandler` methods, lose type safety, and make it difficult to reason about what errors a given endpoint can produce.
+
+The **hkj-spring-boot-starter** solves these problems by bringing functional programming patterns seamlessly into Spring applications. Return `Either<Error, Data>`, `Validated<Errors, Data>`, or `CompletableFuturePath` from your controllers, and the framework automatically handles the rest: converting functional types to appropriate HTTP responses whilst preserving type safety and composability.
+
+**The key insight:** Errors become explicit in your method signatures, not hidden in implementation details or exception hierarchies.
+
+---
+
+## Quickstart {#quickstart}
+
+### Step 1: Add the Dependency
+
+Add the starter to your Spring Boot project:
+
+```gradle
+// build.gradle.kts
+dependencies {
+    implementation("io.github.higher-kinded-j:hkj-spring-boot-starter:LATEST_VERSION")
+}
+```
+
+Or with Maven:
+
+```xml
+<dependency>
+    <groupId>io.github.higher-kinded-j</groupId>
+    <artifactId>hkj-spring-boot-starter</artifactId>
+    <version>LATEST_VERSION</version>
+</dependency>
+```
+
+#### Recommended: align versions with the BOM
+
+A Spring project usually pulls in more than the starter alone, typically
+`hkj-core` for the Path types your services return, and `hkj-test` for the
+AssertJ helpers in your slice tests. Importing the `hkj-bom` platform pins
+all HKJ modules to one consistent version, so you declare the version once
+and leave it off every individual dependency.
+
+```gradle
+// build.gradle.kts
+dependencies {
+    implementation(platform("io.github.higher-kinded-j:hkj-bom:LATEST_VERSION"))
+
+    implementation("io.github.higher-kinded-j:hkj-spring-boot-starter")
+    implementation("io.github.higher-kinded-j:hkj-core")
+    testImplementation("io.github.higher-kinded-j:hkj-test")
+}
+```
+
+Or with Maven:
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.higher-kinded-j</groupId>
+            <artifactId>hkj-bom</artifactId>
+            <version>LATEST_VERSION</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <dependency>
+        <groupId>io.github.higher-kinded-j</groupId>
+        <artifactId>hkj-spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.github.higher-kinded-j</groupId>
+        <artifactId>hkj-core</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.github.higher-kinded-j</groupId>
+        <artifactId>hkj-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+```
+
+~~~admonish tip title="Already using the HKJ build plugin?"
+The [HKJ Gradle and Maven plugins](../tooling/gradle_plugin.md) add
+`hkj-core`, and with Spring integration enabled the starter and the
+`@HkjHttpClient` processor, all at the plugin's version. They do not add
+`hkj-test`: give it a version, or import the BOM for it. This BOM snippet is for Spring
+projects that wire HKJ in by hand.
+~~~
+
+### Step 2: Return Functional Types from Controllers
+
+<!-- verify -->
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    @GetMapping("/{id}")
+    public Either<DomainError, User> getUser(@PathVariable String id) {
+        return userService.findById(id);
+        // Right(user) → HTTP 200 with JSON body
+        // Left(UserNotFoundError) → HTTP 404 with error details
+    }
+
+    @PostMapping
+    public Validated<List<ValidationError>, User> createUser(@RequestBody UserRequest request) {
+        return userService.validateAndCreate(request);
+        // Valid(user) → HTTP 200 with user JSON
+        // Invalid(errors) → HTTP 400 with all validation errors accumulated
+    }
+}
+```
+
+### Step 3: Run Your Application
+
+That's it! The starter auto-configures everything:
+- EitherPath to HTTP response conversion with automatic status code mapping
+- ValidationPath to HTTP response with error accumulation (located `FieldError` payloads render as one 422 listing every bad field by path)
+- MaybePath, TryPath, and IOPath handlers for optional, exception-capturing, and deferred computations
+- CompletableFuturePath support for async operations
+- VTaskPath support for virtual thread async via DeferredResult
+- VStreamPath support for SSE streaming on virtual threads
+- EitherOrBothPath support for success-with-warnings responses (warnings in the `X-Hkj-Warnings` header)
+- FreePath support for Free-monad programs interpreted through `EffectBoundary`
+- `@ResponseStatus` honoured on handler methods to override the default success status
+- JSON serialisation for functional types
+- Customisable error type to HTTP status code mapping
+
+---
+
+## Why Use Functional Error Handling?
+
+### The Problem with Exceptions
+
+Traditional Spring Boot error handling relies on exceptions and `@ExceptionHandler` methods:
+
+<!-- verify -->
+```java
+@GetMapping("/{id}")
+public User getUser(@PathVariable String id) {
+    return throwingUserService.findById(id);  // What errors can this throw?
+}
+
+@ExceptionHandler(UserNotFoundException.class)
+public ResponseEntity<ErrorResponse> handleNotFound(UserNotFoundException ex) {
+    return ResponseEntity.status(404).body(new ErrorResponse(ex.getMessage()));
+}
+
+@ExceptionHandler(ValidationException.class)
+public ResponseEntity<ErrorResponse> handleValidation(ValidationException ex) {
+    return ResponseEntity.status(400).body(new ErrorResponse(ex.getMessage()));
+}
+```
+
+**Problems:**
+- Errors are invisible in the method signature
+- No compile-time guarantee that all errors are handled
+- Exception handlers become a catch-all for unrelated errors
+- Difficult to compose operations whilst maintaining error information
+- Testing requires catching exceptions or using `@ExceptionHandler` integration
+
+### The Functional Solution
+
+With functional error handling, errors become explicit and composable:
+
+<!-- verify -->
+```java
+@GetMapping("/{id}")
+public Either<DomainError, User> getUser(@PathVariable String id) {
+    return userService.findById(id);  // Clear: returns User or DomainError
+}
+
+@GetMapping("/{id}/orders")
+public Either<DomainError, List<Order>> getUserOrders(@PathVariable String id) {
+    return userService.findById(id)
+        .flatMap(orderService::getOrdersForUser);  // Compose operations naturally
+}
+```
+
+**Benefits:**
+- Errors are explicit in the type signature
+- Compiler ensures error handling at call sites
+- Functional composition with `map`, `flatMap`, `fold`
+- Automatic HTTP response conversion
+- Easy to test, no exception catching required
+
+---
+
+## Core Features
+
+### 1. Either: Success or Typed Error
+
+`Either<L, R>` represents a computation that can succeed with a `Right(value)` or fail with a `Left(error)`.
+
+#### Basic Usage
+
+<!-- verify -->
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    private final UserService userService;
+
+    UserController(UserService userService) {
+        this.userService = userService;
+    }
+
+    @GetMapping("/{id}")
+    public Either<DomainError, User> getUser(@PathVariable String id) {
+        return userService.findById(id);
+    }
+}
+```
+
+**Response Mapping:**
+- `Right(user)` → HTTP 200 with the value unwrapped as JSON: `{"id": "1", "email": "alice@example.com", ...}`
+- `Left(UserNotFoundError)` → HTTP 404 with the error wrapped in an envelope: `{"success": false, "error": {"userId": "999", ...}}`
+
+The error object inside the envelope is the error record serialised as-is; there is no automatic `type` discriminator. If your clients need one, add it to the error type with Jackson's `@JsonTypeInfo(use = Id.NAME, ...)` on the sealed interface.
+
+#### Error Type to HTTP Status Mapping {#error-type-http-status-mapping}
+
+The framework resolves the status for a `Left` error in this order:
+
+1. Explicit mapping by simple (or fully-qualified) class name from `hkj.web.error-status-mappings`.
+2. Token heuristic on the simple class name (CamelCase split, lower-cased, whole-token match).
+3. Configured default (`hkj.web.either.default-error-status`, alias `hkj.web.default-error-status`).
+
+Heuristic table:
+
+| Token(s) present in the simple class name | HTTP status |
+|-------------------------------------------|-------------|
+| `not` adjacent to `found`                 | 404 |
+| `validation` or `invalid`                 | 400 |
+| `authorization` or `forbidden`            | 403 |
+| `authentication` or `unauthorized`        | 401 |
+| (no match)                                | configured default |
+
+<!-- verify -->
+```java
+public sealed interface DomainError permits
+    UserNotFoundError,      // -> 404 via heuristic
+    ValidationError,        // -> 400 via heuristic
+    AuthorizationError,     // -> 403 via heuristic
+    AuthenticationError,    // -> 401 via heuristic
+    PatchValidationError,   // -> 400: `Validation` is a token the heuristic reads
+    MfaThrottledError {}    // -> 429 or 503, from the custom strategy below
+```
+
+For status codes outside the heuristic table (409 Conflict, 422 Unprocessable Content, 429 Too Many Requests, 503 Service Unavailable), add explicit entries to `hkj.web.error-status-mappings`:
+
+```yaml
+hkj:
+  web:
+    error-status-mappings:
+      MfaAlreadyEnrolledError: 409
+      PaymentDeclinedError: 422
+      MfaThrottledError: 429
+      ScheduledMaintenanceError: 503
+```
+
+When the status depends on the error's field values (for example, `MfaThrottledError.retryAfter() > 60` should produce `503` rather than `429`), register an `ErrorStatusCodeStrategy` bean. See the [HTTP Status Codes](#http-status-codes) section below for details and the canonical end-to-end fixture.
+
+#### Composing Operations
+
+<!-- verify -->
+```java
+@GetMapping("/{userId}/orders/{orderId}")
+public Either<DomainError, Order> getUserOrder(
+        @PathVariable String userId,
+        @PathVariable String orderId) {
+
+    return userService.findById(userId)
+        .flatMap(user -> orderService.findById(orderId))
+        .flatMap(order -> orderService.verifyOwnership(order, userId));
+
+    // Short-circuits on first Left
+}
+```
+
+See the [Either Monad documentation](../monads/either_monad.md) for comprehensive usage patterns.
+
+---
+
+### 2. Validated: Accumulating Multiple Errors {#validated-accumulating-multiple-errors}
+
+`Validated<E, A>` is designed for validation scenarios where you want to accumulate **all** errors, not just the first one.
+
+#### Basic Usage
+
+<!-- verify -->
+```java
+@PostMapping
+public Validated<List<ValidationError>, User> createUser(@RequestBody UserRequest request) {
+    return userService.validateAndCreate(request);
+}
+```
+
+**Response Mapping:**
+- `Valid(user)` → HTTP 200 with the value unwrapped as JSON: `{"id": "1", "email": "alice@example.com", ...}`
+- `Invalid(errors)` → HTTP 400 with JSON: `{"valid": false, "errors": [{"field": "email", "message": "Invalid format"}, ...], "errorCount": 2}`
+- `Invalid(errors)` where every error is a located `FieldError` → HTTP 422 with each error rendered by path ([the 422 leg](#the-422-leg) below)
+
+#### Validation Example
+
+Individual field checks each return a `Validated`; the applicative for `Validated` (with a list semigroup for the error channel) combines them so that **every** failing check is reported:
+
+<!-- verify -->
+```java
+@Service
+public class UserService {
+
+    public Validated<List<ValidationError>, User> validateAndCreate(UserRequest request) {
+        Applicative<ValidatedKind.Witness<List<ValidationError>>> applicative =
+            ValidatedMonad.instance(Semigroups.list());
+
+        var result = applicative.map3(
+            VALIDATED.widen(validateEmail(request.email())),
+            VALIDATED.widen(validateName("firstName", request.firstName())),
+            VALIDATED.widen(validateName("lastName", request.lastName())),
+            (email, firstName, lastName) ->
+                new User(UUID.randomUUID().toString(), email, firstName, lastName));
+
+        return VALIDATED.narrow(result);
+    }
+
+    private Validated<List<ValidationError>, String> validateEmail(String email) {
+        if (email == null || !email.contains("@")) {
+            return Validated.invalid(List.of(new ValidationError("email", "Invalid email format")));
+        }
+        return Validated.valid(email);
+    }
+
+    private Validated<List<ValidationError>, String> validateName(String field, String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return Validated.invalid(List.of(new ValidationError(field, "Name cannot be empty")));
+        }
+        return Validated.valid(name);
+    }
+}
+```
+
+This mirrors `UserService.validateAndCreate` in the example module. (`VALIDATED` is the `ValidatedKindHelper.VALIDATED` widening/narrowing helper.)
+
+~~~admonish tip title="Prefer the Path builders for new code"
+The `ValidationPath` accumulating builders avoid the widen/narrow ceremony entirely: controllers can return `ValidationPath` directly and the same handler applies. Each field validator returns `ValidationPath<NonEmptyList<ValidationError>, String>` (built with `Path.validNel` / `Path.invalidNel`):
+
+<!-- verify -->
+```java
+public ValidationPath<NonEmptyList<ValidationError>, User> validateAndCreate(UserRequest request) {
+    return Path.accumulate()
+        .and(validateEmail(request.email()))
+        .and(validateName("firstName", request.firstName()))
+        .and(validateName("lastName", request.lastName()))
+        .apply((email, firstName, lastName) ->
+            new User(UUID.randomUUID().toString(), email, firstName, lastName));
+}
+```
+
+See the [Effect Path API](../effect/path_types.md) for `Path.accumulate()` and its labelled sibling `Path.fields()`. Note that `Path.fields()` fixes the error channel to `NonEmptyList<FieldError>`, so its invalid responses take [the 422 leg](#the-422-leg) below.
+~~~
+
+#### The 422 leg: located field errors, one response {#the-422-leg}
+
+A *leg* is one of the routes a value returned from a controller can travel to become an HTTP response: a segment of the [railway](../glossary/effect-paths.md#railway-oriented-programming) journey, as in a leg of a relay. A `Left(DomainError)` travels the **Either leg** to its mapped error status; a generic `Invalid` travels the standard **validation leg** to 400. This section describes a third: the leg an all-`FieldError` payload takes to a 422, chosen (like a railway switch) by the shape of the value itself.
+
+A [`@GenerateMapping`](../mapping/ch_intro.md) spec's `parse` returns `Validated<NonEmptyList<FieldError>, Domain>`: every bad field reported at once, each located by a structured path. (`FieldError` here is HKJ's `org.higherkindedj.hkt.validated.FieldError`, not Spring's `org.springframework.validation.FieldError`.) A controller returns it directly, with no service call and no error wrapping. The mapping is injected once as `userCodec`, a `ValidatedParse<UserDto, User>`, since the controller only parses. `UserMappingImpl`'s `ValidatedPrism` surface, [registered as a bean](../mapping/testing.md#injecting-and-testing-generated-mappings), satisfies it, and is reused on every request:
+
+<!-- verify -->
+```java
+@PostMapping("/parse")
+public Validated<NonEmptyList<FieldError>, User> parseUser(@RequestBody UserDto dto) {
+    return userCodec.parse(dto);
+}
+```
+
+When an `Invalid` payload consists **entirely** of located `FieldError`s, the handler switches to `hkj.web.validation-field-error-status` (default **422 Unprocessable Content**, formerly named "Unprocessable Entity") and renders each error by path:
+
+```json
+{
+  "valid": false,
+  "errors": [
+    { "path": "email",       "segments": ["email"],          "message": "not a valid email address" },
+    { "path": "address.zip", "segments": ["address", "zip"], "message": "must be 5 digits" }
+  ],
+  "errorCount": 2
+}
+```
+
+The whole leg, end to end. The switching happens in `ValidationPathReturnValueHandler` (registered by `HkjWebMvcAutoConfiguration`), and the controller never sees it:
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant C@{ "type": "control" } as UserController
+    participant M@{ "type": "boundary" } as UserMappingImpl
+    participant H@{ "type": "control" } as ValidationPathReturnValueHandler
+
+    Client->>C: POST /api/users/parse<br/>(Jackson binds UserDto: strings and nulls)
+    C->>M: parse(dto)
+    M-->>C: Validated#lt;NonEmptyList#lt;FieldError#gt;, User#gt;
+    C->>H: returned as-is
+    alt Valid(user)
+        H-->>Client: 200 OK: the User
+    else Invalid: every error a located FieldError
+        H-->>Client: 422: each error rendered by path
+    else Invalid: mixed or non-FieldError errors
+        H-->>Client: 400: the generic validation leg
+    end
+```
+
+To substitute a fake for `userCodec` in a `@WebMvcTest` slice, see [Injecting and testing generated mappings](../mapping/testing.md#injecting-and-testing-generated-mappings); the example app's `MappingConfiguration`, `UserController` and `UserParseFakeCodecSliceTest` demonstrate the pattern end to end. Returning `UserMappingImpl.INSTANCE.parse(dto)` instead works just as well: injection buys substitution in tests, not a different result.
+
+`path` is the dot-joined display key (`FieldError.pathString()`); `segments` is the exact structured location. Paths use **domain** component names: under a `@MapField(to = "fullName")` rename the client that sent `fullName` receives its error at `name`, so a client mapping errors onto its own payload keys must apply the rename in reverse. The distinction matters: a map key containing a dot is indistinguishable from nesting in the rendered `path` (`attributes."a.b".email` vs deeper nesting), so structured consumers should read `segments`, which stays exact. An unlabelled error renders `"path": ""` and `"segments": []`; treat it as object-level.
+
+The leg is selected purely by payload shape, so **any** all-`FieldError` payload takes it: `Path.fields()` assemblies, `@GenerateAssembly` results and hand-built `NonEmptyList<FieldError>`s included, not just a mapper `parse`. A pre-existing `Path.fields()` endpoint therefore moves from 400 to 422 on upgrade; set `hkj.web.validation-field-error-status: 400` to restore the old status.
+
+Mixed, empty or non-`FieldError` payloads keep the generic rendering and `hkj.web.validation-invalid-status` (default 400): nothing to enable, nothing else affected.
+
+The example module's `POST /api/users/parse` endpoint shows the full leg; its PATCH sibling deliberately travels a different one, [below](#sparse-patch).
+
+**Key Difference from Either:**
+- `Either` short-circuits on first error (fail-fast)
+- `Validated` accumulates all errors (fail-slow)
+
+See the [Validated Monad documentation](../monads/validated_monad.md) for detailed usage.
+
+#### Sparse PATCH: absent means "leave unchanged" {#sparse-patch}
+
+A PATCH body is the parse boundary's mirror image. The client sends only the fields it wants to change; every property it omits arrives `null` from the binder, or `undefined()` in a `JsonNullable` (as long as the bean gives it no default: no field initialiser, no constructor assignment, no getter that creates a value), meaning *not provided, leave unchanged* (`UpdateSpec` rejects primitive properties at compile time, precisely so that every property can carry that signal), and a present-but-invalid field must still fail with located errors. A spec extending [`UpdateSpec`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) opts into exactly that contract: the generated `updateFrom(wire)` folds the present fields (validated through their leaves) into an `Edits.Accumulated<Domain>`, leaving absent fields and unmapped domain components untouched.
+
+A PATCH endpoint has two failure kinds, though, not one: the resource may not exist, *and* a present field may be invalid. The example app folds both into one `Either<DomainError, User>` channel (this mirrors `UserController.patchUser` and `UserService.patch` in the example module, which calls `UserPatchMappingImpl.INSTANCE` directly rather than injecting it; either works):
+
+<!-- verify -->
+```java
+@PatchMapping("/{id}")
+public Either<DomainError, User> patchUser(
+        @PathVariable String id, @RequestBody UserPatchRequest request) {
+    // updateFrom validates and folds the present fields once; the service then
+    // applies the accumulated update to the current user atomically.
+    return userService.patch(id, UserPatchMappingImpl.INSTANCE.updateFrom(request));
+}
+```
+
+<!-- verify -->
+```java
+// In the service: apply the pre-validated patch to the stored value
+patch.apply(current)                 // Validated<NonEmptyList<FieldError>, User>
+    .toEither()
+    .mapLeft(PatchValidationError::new);
+```
+
+The three outcomes travel the Either leg:
+
+| Outcome | Result | Status |
+|---|---|---|
+| unknown id | `Left(UserNotFoundError)` | 404 |
+| any present field invalid | `Left(PatchValidationError)` carrying **every** located `FieldError`; nothing is written | 400 |
+| all present fields valid | `Right(patched)` | 200 |
+
+Staying on the Either leg is deliberate: [the 422 leg](#the-422-leg) is selected by an all-`FieldError` `Validated` payload, and a PATCH that mixes not-found with validation needs one error channel for both. Wrapping the accumulated errors in a domain error (here a record whose name carries `Validation` as a CamelCase token, so the status heuristic maps it to 400) keeps the status decision with the error type; map it elsewhere with `hkj.web.error-status-mappings` or an `ErrorStatusCodeStrategy` if your API prefers 422 for PATCH validation failures.
+
+A PATCH boundary *without* a not-found case (the current value is already in hand) can instead return `patch.applyPath(current)`: the `ValidationPath` flavour of the same fold, whose all-`FieldError` invalid takes the 422 leg like any other, under `hkj.web.validation-field-error-status`.
+
+The example app demonstrates the whole shape end to end: `PATCH /api/users/{id}` (`UserController`, `UserPatchMapping`, `UserPatchRequest`), with `UserPatchWebMvcSliceTest` asserting all three outcomes. The sparse tier's rules (wrapper-typed properties, `Optional` bridging, container element leaves, wholesale replacement) are in [the rules in brief](../mapping/beans_patch.md#patch-rules-in-brief) on the Sparse PATCH page.
+
+---
+
+### 3. CompletableFuturePath: Async Operations with Typed Errors {#completablefuturepath-async-operations-with-typed-errors}
+
+`CompletableFuturePath<A>` wraps asynchronous computation in the Effect Path API, allowing you to compose async operations with `map`, `via`, and `recover`.
+
+#### Basic Usage
+
+<!-- verify -->
+```java
+@GetMapping("/{id}/async")
+public CompletableFuturePath<User> getUserAsync(@PathVariable String id) {
+    return asyncUserService.findByIdAsync(id);
+    // Automatically handles async to sync HTTP response conversion
+}
+```
+
+#### Async Composition
+
+<!-- verify -->
+```java
+@Service
+public class AsyncOrderService {
+
+    private final AsyncUserService asyncUserService;
+    private final AsyncInventoryService asyncInventoryService;
+    private final AsyncPaymentService asyncPaymentService;
+
+    AsyncOrderService(
+            AsyncUserService asyncUserService,
+            AsyncInventoryService asyncInventoryService,
+            AsyncPaymentService asyncPaymentService) {
+        this.asyncUserService = asyncUserService;
+        this.asyncInventoryService = asyncInventoryService;
+        this.asyncPaymentService = asyncPaymentService;
+    }
+
+    public CompletableFuturePath<OrderSummary> processOrderAsync(
+            String userId, OrderRequest request) {
+
+        return asyncUserService.findByIdAsync(userId)
+            .via(user -> asyncInventoryService.checkAvailability(request.items()))
+            .via(availability -> asyncPaymentService.processPayment(request.payment()))
+            .map(payment -> new OrderSummary(userId, request, payment));
+
+        // Each step runs asynchronously
+        // Composes naturally with other Path types
+    }
+}
+```
+
+**Response Handling:**
+The framework uses Spring's async request processing:
+1. Controller returns `CompletableFuturePath`
+2. Framework extracts the underlying `CompletableFuture`
+3. Spring's async mechanism handles the future
+4. When complete, result is converted to HTTP response
+
+See the [Effect Path API documentation](../effect/path_types.md) for comprehensive examples.
+
+---
+
+### 4. VTaskPath: Virtual Thread Async Operations {#vtaskpath-virtual-thread-async}
+
+`VTaskPath<A>` runs deferred computations on virtual threads, providing async responses without thread pool configuration.
+
+#### Basic Usage
+
+<!-- verify -->
+```java
+@GetMapping("/users/{id}")
+public VTaskPath<User> getUser(@PathVariable String id) {
+    return vtUserService.findById(id);
+    // Executes on a virtual thread via DeferredResult
+    // No thread pool configuration needed
+}
+```
+
+**Response Handling:**
+The framework uses Spring's `DeferredResult`:
+1. Controller returns `VTaskPath`
+2. Framework calls `VTask.runAsync()` on a virtual thread
+3. Result is wrapped in `DeferredResult` with configurable timeout
+4. When complete, result is converted to HTTP 200 with JSON body
+5. On failure, returns configured error status (default: 500)
+
+#### Structured Concurrency
+
+Use `Scope` for parallel fan-out with automatic cancellation:
+
+<!-- verify -->
+```java
+@GetMapping("/users/{id}/enriched")
+public VTaskPath<EnrichedUser> getEnrichedUser(@PathVariable String id) {
+    VTask<User> userTask = VTask.of(() -> findUser(id));
+    VTask<Profile> profileTask = VTask.of(() -> fetchProfile(id));
+    VTask<OrderSummary> ordersTask = VTask.of(() -> fetchOrders(id));
+
+    return Path.vtaskPath(
+        Scope.<Object>allSucceed()
+            .fork(userTask)
+            .fork(profileTask)
+            .fork(ordersTask)
+            .join())
+        .map(results -> new EnrichedUser(
+            (User) results.get(0),
+            (Profile) results.get(1),
+            (OrderSummary) results.get(2)
+        ));
+}
+```
+
+**Key advantages over CompletableFuturePath:**
+- No thread pool sizing or tuning: virtual threads scale automatically with the JVM
+- Structured concurrency via `Scope` replaces `CompletableFuture.allOf()` with cancellation awareness
+- Simpler imperative code style: blocking is free on virtual threads
+
+---
+
+### 5. VStreamPath: SSE Streaming on Virtual Threads {#vstreampath-sse-streaming}
+
+`VStreamPath<A>` enables Server-Sent Events (SSE) streaming backed by virtual threads. No WebFlux or Reactor dependency required.
+
+#### Basic Usage
+
+<!-- verify -->
+```java
+@GetMapping(value = "/users/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public VStreamPath<User> streamUsers() {
+    return vtUserService.streamAllUsers();
+    // Each element emitted as an SSE data: event with JSON payload
+}
+```
+
+**Response Handling:**
+1. Controller returns `VStreamPath`
+2. Framework starts a virtual thread to consume the stream
+3. Each element is written as an SSE `data:` event with JSON payload
+4. A completion event is sent when the stream ends
+5. On error, an SSE error event is sent
+
+#### Parameterised Streams
+
+<!-- verify -->
+```java
+@GetMapping(value = "/ticks", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public VStreamPath<TickEvent> streamTicks(@RequestParam(defaultValue = "10") int count) {
+    return vtUserService.streamTicks(count);
+    // Infinite stream limited by take(count)
+}
+```
+
+**Key advantages:**
+- No WebFlux, no Reactor, no Flux: just imperative code that streams
+- Pull-based with natural backpressure via virtual thread blocking
+- Configurable stream timeout via `hkj.virtual-threads.stream-timeout-ms`
+
+---
+
+### 6. EitherOrBoth: Success with Warnings {#eitherorboth-success-with-warnings}
+
+`EitherOrBoth<W, A>` is the inclusive-or: a computation that fails with warnings (`Left`), succeeds cleanly (`Right`), or **succeeds while also carrying non-fatal warnings** (`Both`). Controllers can return either the raw `EitherOrBoth` or its Path wrapper `EitherOrBothPath`; both are handled by `EitherOrBothPathReturnValueHandler`.
+
+#### Basic Usage
+
+<!-- verify -->
+```java
+@PostMapping("/imports")
+public EitherOrBothPath<NonEmptyList<ImportWarning>, ImportSummary> importBatch(
+        @RequestBody ImportRequest request) {
+    return importService.importBatch(request);
+}
+```
+
+**Response Mapping (three branches, not two):**
+
+| Result | Status | Body | Extra |
+|--------|--------|------|-------|
+| `Right(value)` | success status (200, or `@ResponseStatus` on the handler) | the value, unwrapped | (none) |
+| `Both(warnings, value)` | the **same** success status | the value, unwrapped | warnings JSON-encoded into the `X-Hkj-Warnings` response header |
+| `Left(warnings)` | resolved by `ErrorStatusCodeStrategy` (same as `EitherPath`) | `{"success": false, "error": <warnings>}` | `HttpHeaderCarrier` headers applied if implemented |
+
+The `Both` branch is the point: warnings are never silently dropped, but the success body stays the bare value, so clients that ignore the header see exactly the same response as a clean success. Clients that care read `X-Hkj-Warnings` and parse the JSON array.
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Hkj-Warnings: [{"row":17,"message":"duplicate SKU skipped"}]
+
+{"imported": 240, "skipped": 1}
+```
+
+Disable the handler with `hkj.web.either-or-both-path-enabled: false` (default: `true`).
+
+See [EitherOrBoth](../monads/either_or_both_monad.md) for the type itself, including `zipWithAccum` for combining independent checks whilst accumulating warnings.
+
+---
+
+## HTTP Status Codes {#http-status-codes}
+
+Every Effect Path return-value handler resolves the success and error status codes independently, so the same controller method can map typed successes and typed failures to different HTTP responses.
+
+### Success Status with `@ResponseStatus`
+
+Handlers delegate to `SuccessStatusResolver` to pick the success status, in this order:
+
+1. `@ResponseStatus` on the handler method
+2. `@ResponseStatus` on the controller class
+3. Meta-annotations (e.g. custom `@Created`, `@NoContent`)
+4. The handler's default (typically `200`)
+
+<!-- verify -->
+```java
+@RestController
+@RequestMapping("/api/orders")
+public class OrderController {
+
+    private final OrderService orderService;
+
+    OrderController(OrderService orderService) {
+        this.orderService = orderService;
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public EitherPath<DomainError, Order> create(@RequestBody OrderRequest req) {
+        return orderService.create(req);
+        // Right(order)           → HTTP 201 Created
+        // Left(ValidationError)  → HTTP 400 (via ErrorStatusCodeMapper)
+    }
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public MaybePath<Void> cancel(@PathVariable String id) {
+        return orderService.cancel(id);
+        // Just(_)   → HTTP 204 No Content (body suppressed)
+        // Nothing() → HTTP 404
+    }
+}
+```
+
+All ten Effect Path handlers honour `@ResponseStatus` consistently.
+
+### Error Status Mapping
+
+Every `Left` value emitted by an `EitherPath` (or raw `Either`) handler is run through an `ErrorStatusCodeStrategy` bean. The auto-configuration registers a default strategy that combines the property-table mappings with the built-in token heuristics; adopters can replace it with their own bean for field-aware decisions.
+
+~~~admonish tip title="The other side of this mapping"
+This encodes a typed error into a status code. A service that calls this endpoint can decode it straight back into a typed error with [`@HkjHttpClient`](declarative_http_clients.md), which mirrors this mapping (including a client-side `hkj.client.status-error-mappings` analogue of the table below).
+~~~
+
+#### Property-driven mappings
+
+Add entries to `hkj.web.error-status-mappings` keyed by simple class name (or fully-qualified class name when two error types share a simple name across packages). These mappings take precedence over the heuristics:
+
+```yaml
+hkj:
+  web:
+    either:
+      default-error-status: 500          # Fallback for unmapped Left values
+    error-status-mappings:
+      MfaAlreadyEnrolledError: 409       # Conflict
+      PaymentDeclinedError: 422          # Unprocessable Content
+      MfaThrottledError: 429             # Too Many Requests
+      ScheduledMaintenanceError: 503     # Service Unavailable
+```
+
+#### Custom strategy bean
+
+When the status depends on the error's field values, register an `ErrorStatusCodeStrategy` bean. The default is annotated `@ConditionalOnMissingBean`, so a user-defined bean replaces it without further wiring:
+
+<!-- verify -->
+```java
+@Bean
+ErrorStatusCodeStrategy errorStatusCodeStrategy() {
+    return (error, defaultStatus) -> switch (error) {
+        case MfaThrottledError t when t.retryAfterSeconds() > 60 -> 503;
+        case MfaThrottledError ignored                   -> 429;
+        // Fall through to property mappings + heuristics for everything else
+        default -> ErrorStatusCodeMapper.determineStatusCode(error, defaultStatus);
+    };
+}
+```
+
+The strategy runs once per error response on the request thread (or the async completion thread for `CompletableFuturePath` and `VTaskPath`), so implementations should be thread-safe and side-effect-free.
+
+#### Response header injection
+
+Error payloads can surface response headers (`Retry-After`, `WWW-Authenticate`, and similar) by implementing `HttpHeaderCarrier`:
+
+<!-- verify -->
+```java
+public record MfaThrottledError(int retryAfterSeconds)
+        implements DomainError, HttpHeaderCarrier {
+
+    @Override
+    public Map<String, String> headers() {
+        return Map.of("Retry-After", Integer.toString(retryAfterSeconds));
+    }
+}
+```
+
+The headers are applied by the `EitherPath`, `EitherOrBothPath`, `TryPath`, `ValidationPath`, `IOPath`, `CompletableFuturePath`, `VTaskPath`, and `FreePath` return-value handlers before the JSON body is written. Internally the headers are added (not set), so multi-valued headers such as `WWW-Authenticate`, `Set-Cookie`, and `Link` accumulate as separate header lines, matching the HTTP grammar; upstream headers set by filters or interceptors are also preserved. For collection-typed payloads (such as `ValidationPath` `Invalid` values), every element that implements `HttpHeaderCarrier` contributes; values accumulate. For single-valued headers like `Retry-After`, the carrier should ensure the value appears at most once across all payload elements.
+
+`VStreamPath` does not honour `HttpHeaderCarrier`, because the response status and headers are committed before the first SSE event. Set required headers via a servlet filter or controller advice before the stream begins.
+
+~~~admonish example title="Canonical fixture"
+The example module contains a [`ErrorStatusFixtureController`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/example/src/main/java/org/higherkindedj/spring/example/controller/ErrorStatusFixtureController.java) and matching [`ErrorStatusFixtureSliceTest`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/example/src/test/java/org/higherkindedj/spring/example/ErrorStatusFixtureSliceTest.java) that exercise every heuristic, every override, and the `Retry-After` header end-to-end. Copy them as a starting point when adding new error variants.
+~~~
+
+~~~admonish note title="Known limits"
+- The strategy bean is process-wide. For per-request behaviour, inspect the request context inside the implementation.
+- `MaybePath` `Nothing` carries no payload, so it cannot implement `HttpHeaderCarrier`. Wrap the result in `EitherPath<DomainError, T>` if you need headers or per-class status.
+- `@ResponseStatus` on the handler method governs success values only; error status always comes from the strategy.
+~~~
+
+---
+
+## JSON Serialisation {#json-serialisation}
+
+Two different mechanisms produce JSON for functional types, and it matters which one applies:
+
+### Top-level return values (the handlers)
+
+When a controller returns a functional type directly, the return-value handler shapes the response:
+
+- **Success values are unwrapped.** `Right(user)`, `Valid(user)`, a completed `CompletableFuturePath<User>`, etc. all produce the bare value as the body: `{"id": "1", "email": "alice@example.com"}`, with no envelope.
+- **Either errors** produce `{"success": false, "error": <error record serialised as-is>}`.
+- **Validated errors** produce `{"valid": false, "errors": [...], "errorCount": n}`.
+- **EitherOrBoth `Both`** produces the unwrapped value plus the `X-Hkj-Warnings` header (see [above](#eitherorboth-success-with-warnings)).
+
+### Nested values (the Jackson module)
+
+When an `Either`, `Validated`, `EitherOrBoth`, or `NonEmptyList` appears **inside** a DTO (for example a batch result containing `List<Either<DomainError, User>>`), the `HkjJacksonModule` serialises it with a tagged shape:
+
+```json
+// Nested Either.right(user)
+{"isRight": true, "right": {"id": "1", "email": "alice@example.com"}}
+
+// Nested Either.left(error)
+{"isRight": false, "left": {"userId": "999"}}
+
+// Nested Validated
+{"valid": true, "value": ...}
+{"valid": false, "errors": [...]}
+
+// Nested EitherOrBoth
+{"kind": "right", "right": ...}
+{"kind": "both", "left": [...warnings...], "right": ...}
+```
+
+These shapes are fixed: there is no format-toggle property. The only Jackson-related switch is:
+
+```yaml
+hkj:
+  json:
+    custom-serializers-enabled: true  # Register HkjJacksonModule (default: true)
+```
+
+~~~admonish warning title="No Maybe or Try Jackson support"
+The Jackson module covers `Either`, `Validated`, `EitherOrBoth`, and `NonEmptyList`. `Maybe` and `Try` have **no** nested-serialisation support; return them at the top level (where the handlers apply) or convert them to a supported type before embedding them in a DTO.
+~~~
+
+For complete serialisation details, see [hkj-spring/JACKSON_SERIALIZATION.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/JACKSON_SERIALIZATION.md).
+
+---
+
+## Configuration
+
+### Web Configuration
+
+```yaml
+hkj:
+  web:
+    either-path-enabled: true               # Enable EitherPath handler (default: true)
+    validation-path-enabled: true           # Enable ValidationPath handler (default: true)
+    maybe-path-enabled: true                # Enable MaybePath handler (default: true)
+    try-path-enabled: true                  # Enable TryPath handler (default: true)
+    io-path-enabled: true                   # Enable IOPath handler (default: true)
+    completable-future-path-enabled: true   # Enable CompletableFuturePath handler (default: true)
+    vtask-path-enabled: true                # Enable VTaskPath handler (default: true)
+    vstream-path-enabled: true              # Enable VStreamPath handler (default: true)
+    either-or-both-path-enabled: true       # Enable EitherOrBothPath handler (default: true)
+    free-path-enabled: true                 # Enable FreePath handler (default: true)
+    validation-invalid-status: 400          # Status for generic validation errors (default: 400)
+    validation-field-error-status: 422      # Status for FieldError-shaped validation errors (default: 422)
+    either:
+      default-error-status: 400             # Default HTTP status for unmapped Left errors
+```
+
+The canonical key for the EitherPath default error status is `hkj.web.either.default-error-status`. The legacy flat path `hkj.web.default-error-status` is preserved as a backward-compatible alias and binds to the same value.
+
+### Async Executor Configuration
+
+The starter does **not** create or configure a thread pool for `CompletableFuturePath` operations; your application defines its own executor bean and passes it to `CompletableFuture.supplyAsync(...)` in the service layer. The example module's `AsyncConfig` shows the pattern:
+
+<!-- verify -->
+```java
+@Configuration
+@EnableAsync
+public class AsyncConfig {
+
+    @Bean(name = "hkjAsyncExecutor")
+    public Executor hkjAsyncExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(20);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("hkj-async-");
+        executor.initialize();
+        return executor;
+    }
+}
+```
+
+Naming the bean `hkjAsyncExecutor` also lights up the optional async-executor health indicator (see [Monitoring](#monitoring-with-spring-boot-actuator)). The one async property the starter does read is `hkj.async.default-timeout-ms` (default: 30000), the response timeout for `CompletableFuturePath` requests.
+
+### Virtual Thread Configuration
+
+For VTaskPath and VStreamPath operations (no pool sizing needed):
+
+```yaml
+hkj:
+  virtual-threads:
+    default-timeout-ms: 30000          # VTask timeout (default: 30s)
+    stream-timeout-ms: 60000           # VStream timeout (default: 60s, 0 = no timeout)
+```
+
+For complete configuration options, see [hkj-spring/CONFIGURATION.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/CONFIGURATION.md).
+
+---
+
+## Real-World Examples
+
+### Example 1: User Management API
+
+A typical CRUD API with validation and error handling:
+
+<!-- verify -->
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    // Get all users (always succeeds)
+    @GetMapping
+    public List<User> getAllUsers() {
+        return userService.findAll();
+    }
+
+    // Get single user (may not exist)
+    @GetMapping("/{id}")
+    public Either<DomainError, User> getUser(@PathVariable String id) {
+        return userService.findById(id);
+        // Right(user) → 200 OK
+        // Left(UserNotFoundError) → 404 Not Found
+    }
+
+    // Create user (validate all fields)
+    @PostMapping
+    public Validated<List<ValidationError>, User> createUser(@RequestBody UserRequest request) {
+        return userService.validateAndCreate(request);
+        // Valid(user) → 200 OK
+        // Invalid([errors...]) → 400 Bad Request with all validation errors
+    }
+
+    // Update user (may not exist + validation)
+    @PutMapping("/{id}")
+    public Either<DomainError, User> updateUser(
+            @PathVariable String id,
+            @RequestBody UserRequest request) {
+
+        return userService.findById(id)
+            .flatMap(existingUser ->
+                userService.validateUpdate(request)
+                    .toEither()  // Convert Validated to Either
+                    .map(validRequest -> userService.update(id, validRequest)));
+
+        // Combines existence check + validation
+    }
+
+    // Delete user (may not exist)
+    @DeleteMapping("/{id}")
+    public Either<DomainError, Void> deleteUser(@PathVariable String id) {
+        return userService.delete(id);
+        // Right(null) → 200 OK
+        // Left(UserNotFoundError) → 404 Not Found
+    }
+
+    // Get user's email (composition example)
+    @GetMapping("/{id}/email")
+    public Either<DomainError, String> getUserEmail(@PathVariable String id) {
+        return userService.findById(id)
+            .map(User::email);
+
+        // Automatic error propagation
+    }
+}
+```
+
+### Example 2: Async Order Processing
+
+Processing orders asynchronously with multiple external services:
+
+<!-- verify -->
+```java
+@RestController
+@RequestMapping("/api/orders")
+public class OrderController {
+
+    @Autowired
+    private AsyncOrderService orderService;
+
+    @PostMapping
+    public CompletableFuturePath<Order> createOrder(@RequestBody OrderRequest request) {
+        return orderService.processOrder(request);
+        // Each step runs asynchronously:
+        // 1. Validate user
+        // 2. Check inventory
+        // 3. Process payment
+        // 4. Create order record
+
+        // Composes naturally with other Path types
+        // Returns 200 on success, appropriate error code on failure
+    }
+
+    @GetMapping("/{id}")
+    public CompletableFuturePath<Order> getOrder(@PathVariable String id) {
+        return orderService.findByIdAsync(id);
+    }
+}
+
+@Service
+public class AsyncOrderService {
+
+    @Autowired
+    private AsyncUserService userService;
+    @Autowired
+    private AsyncInventoryService inventoryService;
+    @Autowired
+    private AsyncPaymentService paymentService;
+    @Autowired
+    private OrderRepository orderRepository;
+
+    public CompletableFuturePath<Order> findByIdAsync(String id) {
+        return Path.futureCompleted(new Order(id, "C001"));
+    }
+
+    private Order createOrderRecord(OrderRequest request, Payment payment) {
+        return orderRepository.save(new Order(payment.id(), request.userId()));
+    }
+
+    public CompletableFuturePath<Order> processOrder(OrderRequest request) {
+        return userService.findByIdAsync(request.userId())
+            .via(user -> inventoryService.checkAvailabilityAsync(request.items()))
+            .via(availability -> {
+                if (!availability.allAvailable()) {
+                    return Path.futureFailed(
+                        new OutOfStockException(availability.unavailableItems())
+                    );
+                }
+                return Path.futureCompleted(availability);
+            })
+            .via(availability -> paymentService.processPaymentAsync(request.payment()))
+            .map(payment -> createOrderRecord(request, payment));
+    }
+}
+```
+
+For complete working examples, see the [hkj-spring example module](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-spring/example).
+
+---
+
+## Spring Security Integration {#spring-security-integration}
+
+The hkj-spring-boot-starter provides optional Spring Security integration with functional error handling patterns.
+
+### Enabling Security Integration
+
+```yaml
+hkj:
+  security:
+    enabled: true                       # Enable functional security (default: false)
+    either-authentication: true         # Use Either for authentication
+    either-authorization: true          # Use Either for authorisation
+    # Opt-in (default: false). Only enable when you will register accounts: once it is the sole
+    # UserDetailsService bean, Spring Security adopts it as the application-wide user store, and it
+    # starts EMPTY, so enabling it without adding users fails every form/basic login.
+    # validated-user-details: true
+```
+
+### Functional User Details Service
+
+`ValidatedUserDetailsService` validates the username with `Validated`, accumulating **all** format errors (too short *and* illegal characters, not just the first) before looking the user up. It starts **empty**; register accounts explicitly:
+
+<!-- verify -->
+```java
+@Bean
+public UserDetailsService userDetailsService(PasswordEncoder encoder) {
+    var service = new ValidatedUserDetailsService();
+    // Spring Security's own User, qualified because this chapter's User is the domain record.
+    service.addUser(org.springframework.security.core.userdetails.User.builder()
+        .username("alice")
+        .password(encoder.encode(secret))
+        .roles("USER")
+        .build());
+    return service;
+}
+```
+
+~~~admonish warning title="Sample users are opt-in, demos only"
+`ValidatedUserDetailsService.withSampleUsers()` returns an instance pre-populated with well-known accounts (`admin`/`admin123`, `user`/`user123`, `disabled`/`disabled123`) using plaintext `{noop}` passwords. It exists for demos and tests; never use it in production. The no-argument constructor registers **no** users.
+~~~
+
+### Functional Authentication
+
+`EitherAuthenticationConverter` converts JWTs to `Authentication` using `Either` internally. A **malformed** authorities claim (wrong type, or a collection with a non-string element) always folds the `Left` into a thrown `BadCredentialsException`, so such a token is **rejected** (HTTP 401); it never produces an authenticated token. A **missing** claim is rejected the same way only while `hkj.security.reject-missing-authorities-claim` stays `true` (the default); set it to `false` to allow legitimately role-less tokens (e.g. client-credentials) to authenticate with empty authorities:
+
+<!-- verify -->
+```java
+@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http.oauth2ResourceServer(oauth2 -> oauth2
+        .jwt(jwt -> jwt
+            .jwtAuthenticationConverter(new EitherAuthenticationConverter())));
+    return http.build();
+}
+```
+
+For complete security integration details, see [hkj-spring/SECURITY.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/SECURITY.md).
+
+---
+
+## Monitoring with Spring Boot Actuator {#monitoring-with-spring-boot-actuator}
+
+Track functional programming patterns in production with built-in Actuator integration.
+
+### Enabling Actuator Integration
+
+```yaml
+hkj:
+  actuator:
+    metrics-enabled: true               # Enable metrics tracking (default: true)
+
+management:
+  health:
+    hkj-async:
+      enabled: true                     # Async executor health indicator (default: true)
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,hkj
+```
+
+The `hkj-async` health indicator only registers when your application defines an `Executor` bean named `hkjAsyncExecutor` (see [Async Executor Configuration](#async-executor-configuration)); without that bean there is nothing to monitor. Any `Executor` is accepted: a `ThreadPoolTaskExecutor` reports full pool statistics, while other types (e.g. a virtual-thread executor) report `UP` with a `type` detail (or `DOWN` if shut down).
+
+### Available Metrics
+
+The starter automatically tracks:
+
+- **EitherPath metrics:** Success/error counts and rates
+- **ValidationPath metrics:** Valid/invalid counts and error distributions
+- **VTaskPath metrics:** Virtual thread execution durations and success rates
+- **VStreamPath metrics:** Stream completion counts and element distribution
+- **EffectBoundary metrics:** Free-program execution counts and durations (via `ObservableEffectBoundary`)
+- **Thread pool health:** Active threads, queue size, saturation (requires a `hkjAsyncExecutor` bean)
+
+### Custom HKJ Endpoint
+
+Access functional programming metrics via the custom actuator endpoint:
+
+```bash
+curl http://localhost:8080/actuator/hkj
+```
+
+Response (metric keys are `either`, `validated`, `eitherT`, `vtask`, and `vstream`):
+```json
+{
+  "configuration": {
+    "web": {
+      "eitherPathEnabled": true,
+      "maybePathEnabled": true,
+      "tryPathEnabled": true,
+      "validationPathEnabled": true,
+      "ioPathEnabled": true,
+      "completableFuturePathEnabled": true,
+      "vtaskPathEnabled": true,
+      "vstreamPathEnabled": true,
+      "eitherOrBothPathEnabled": true,
+      "freePathEnabled": true,
+      "defaultErrorStatus": 400
+    },
+    "jackson": {
+      "customSerializersEnabled": true
+    }
+  },
+  "metrics": {
+    "either": {
+      "successCount": 1547,
+      "errorCount": 123,
+      "totalCount": 1670,
+      "successRate": 0.926
+    },
+    "validated": {
+      "validCount": 892,
+      "invalidCount": 45,
+      "totalCount": 937,
+      "validRate": 0.952
+    },
+    "eitherT": {
+      "successCount": 234,
+      "errorCount": 12,
+      "totalCount": 246,
+      "successRate": 0.951
+    },
+    "vtask": {
+      "successCount": 340,
+      "errorCount": 15,
+      "totalCount": 355,
+      "successRate": 0.958
+    },
+    "vstream": {
+      "successCount": 120,
+      "errorCount": 5,
+      "totalCount": 125,
+      "successRate": 0.960
+    }
+  }
+}
+```
+
+(The `eitherT` key and its `hkj.either_t.*` Micrometer meters are a legacy async-metrics surface retained for dashboard compatibility; the actively recorded handler metrics are `either`, `validated`, `vtask`, and `vstream`.)
+
+### Prometheus Integration
+
+Export metrics to Prometheus for monitoring and alerting:
+
+```yaml
+management:
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+```
+
+The Micrometer meter names are `hkj.either.invocations`, `hkj.validated.invocations`, `hkj.either_t.invocations`, `hkj.either_t.async.duration`, `hkj.vtask.invocations`, `hkj.vtask.duration`, and `hkj.vstream.invocations` (Prometheus renders the dots as underscores):
+
+```promql
+# EitherPath error rate
+rate(hkj_either_invocations_total{result="error"}[5m])
+
+# VTaskPath p95 latency
+histogram_quantile(0.95,
+  rate(hkj_vtask_duration_seconds_bucket[5m]))
+
+# ValidationPath success rate
+sum(rate(hkj_validated_invocations_total{result="valid"}[5m]))
+  / sum(rate(hkj_validated_invocations_total[5m]))
+```
+
+For complete Actuator integration details, see [hkj-spring/ACTUATOR.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/ACTUATOR.md).
+
+---
+
+## Testing
+
+Testing functional controllers is straightforward with MockMvc.
+
+### Testing Either Responses
+
+<!-- verify -->
+```java
+@SpringBootTest
+@AutoConfigureMockMvc
+class UserControllerTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Test
+    void shouldReturn200ForExistingUser() throws Exception {
+        mockMvc.perform(get("/api/users/1"))
+            .andExpect(status().isOk())
+            // Success bodies are unwrapped: no envelope fields
+            .andExpect(jsonPath("$.id").value("1"))
+            .andExpect(jsonPath("$.email").value("alice@example.com"));
+    }
+
+    @Test
+    void shouldReturn404ForMissingUser() throws Exception {
+        mockMvc.perform(get("/api/users/999"))
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.success").value(false))
+            // The error record is embedded as-is; assert on its own fields
+            .andExpect(jsonPath("$.error.userId").value("999"));
+    }
+}
+```
+
+### Testing Validated Responses
+
+<!-- verify -->
+```java
+@Test
+void shouldAccumulateValidationErrors() throws Exception {
+    String invalidRequest = """
+        {
+          "email": "invalid",
+          "firstName": "",
+          "lastName": "x"
+        }
+        """;
+
+    mockMvc.perform(post("/api/users")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(invalidRequest))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.valid").value(false))
+        .andExpect(jsonPath("$.errors").isArray())
+        .andExpect(jsonPath("$.errorCount").value(3));  // All errors returned
+}
+```
+
+### Testing CompletableFuturePath Async Responses
+
+<!-- verify -->
+```java
+@Test
+void shouldHandleAsyncCompletableFuturePathResponse() throws Exception {
+    MvcResult result = mockMvc.perform(get("/api/users/1/async"))
+        .andExpect(request().asyncStarted())  // Verify async started
+        .andReturn();
+
+    mockMvc.perform(asyncDispatch(result))   // Dispatch async result
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.id").value("1"));
+}
+```
+
+### Slice Testing with `@WebMvcTest`
+
+For fast controller-only tests without the full application context, use Spring's `@WebMvcTest` slice. The slice excludes auto-configurations by default, so the HKJ auto-configurations must be imported explicitly:
+
+<!-- verify -->
+```java
+@WebMvcTest(UserController.class)
+@ImportAutoConfiguration({
+    HkjAutoConfiguration.class,
+    HkjJacksonAutoConfiguration.class,
+    HkjWebMvcAutoConfiguration.class
+})
+class UserControllerWebMvcSliceTest {
+
+    @Autowired private MockMvc mockMvc;
+    @MockitoBean private UserService userService;
+
+    @Test
+    void shouldReturn200ForExistingUser() throws Exception {
+        when(userService.findById("1"))
+            .thenReturn(Either.right(new User("1", "alice@example.com", "Alice", "Smith")));
+
+        mockMvc.perform(get("/api/users/1"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.id").value("1"));
+    }
+
+    @Test
+    void shouldReturn404ForTaggedError() throws Exception {
+        when(userService.findById("999"))
+            .thenReturn(Either.left(new UserNotFoundError("999")));
+
+        mockMvc.perform(get("/api/users/999"))
+            .andExpect(status().isNotFound());
+    }
+}
+```
+
+The three imports activate EitherPath/ValidationPath/Maybe/Try/IO/CompletableFuture/VTask/VStream/EitherOrBoth/Free return-value handling, Jackson modules for functional types, and the error-status mapper; everything a controller slice needs. For integration-style tests covering the full stack, prefer `@SpringBootTest @AutoConfigureMockMvc` as shown above.
+
+### Unit Testing Services
+
+Services returning functional types are easy to test without mocking frameworks:
+
+<!-- verify -->
+```java
+class UserServiceTest {
+
+    private UserService service;
+
+    @Test
+    void shouldReturnRightWhenUserExists() {
+        Either<DomainError, User> result = service.findById("1");
+
+        assertThat(result.isRight()).isTrue();
+        User user = result.getRight();
+        assertThat(user.id()).isEqualTo("1");
+    }
+
+    @Test
+    void shouldReturnLeftWhenUserNotFound() {
+        Either<DomainError, User> result = service.findById("999");
+
+        assertThat(result.isLeft()).isTrue();
+        DomainError error = result.getLeft();
+        assertThat(error).isInstanceOf(UserNotFoundError.class);
+    }
+
+    @Test
+    void shouldAccumulateValidationErrors() {
+        UserRequest invalid = new UserRequest("bad-email", "", "x");
+
+        Validated<List<ValidationError>, User> result =
+            service.validateAndCreate(invalid);
+
+        assertThat(result.isInvalid()).isTrue();
+        List<ValidationError> errors = result.getError();
+        assertThat(errors).hasSize(3);
+    }
+}
+```
+
+For comprehensive testing examples, see [hkj-spring/example/TESTING.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/example/TESTING.md).
+
+---
+
+## Migration Guide
+
+Migrating from exception-based error handling to functional patterns is straightforward and can be done incrementally.
+
+See the [Migration Guide](./migrating_to_functional_errors.md) for a complete step-by-step walkthrough of:
+- Converting exception-throwing methods to Either
+- Replacing `@ExceptionHandler` methods with functional patterns
+- Migrating validation logic to Validated
+- Converting async operations to CompletableFuturePath
+- Maintaining backwards compatibility during migration
+
+---
+
+## Architecture and Design
+
+### Auto-Configuration
+
+The starter uses Spring Boot 4.x auto-configuration:
+
+```java
+@AutoConfiguration
+@ConditionalOnClass({DispatcherServlet.class, Kind.class})
+@ConditionalOnWebApplication(type = SERVLET)
+public class HkjWebMvcAutoConfiguration implements WebMvcConfigurer {
+
+    @Override
+    public void addReturnValueHandlers(List<HandlerMethodReturnValueHandler> handlers) {
+        handlers.add(new EitherPathReturnValueHandler(properties));
+        handlers.add(new ValidationPathReturnValueHandler(properties));
+        handlers.add(new CompletableFuturePathReturnValueHandler(properties));
+    }
+}
+```
+
+Auto-configuration activates when:
+- `hkj-core` is on the classpath
+- Spring Web MVC is present
+- Application is a servlet web app
+
+### Return Value Handlers
+
+Each functional type has a dedicated handler:
+
+1. **EitherPathReturnValueHandler:** Converts `EitherPath<L, R>` (and raw `Either`) to HTTP responses
+2. **ValidationPathReturnValueHandler:** Converts `ValidationPath<E, A>` (and raw `Validated`) to HTTP responses
+3. **MaybePathReturnValueHandler:** Converts `MaybePath<A>`, mapping `Just` to `200` and `Nothing` to `404`
+4. **TryPathReturnValueHandler:** Converts `TryPath<A>`, mapping `Success` to `200` and `Failure` to an error response
+5. **IOPathReturnValueHandler:** Executes `IOPath<A>` and writes the captured result
+6. **CompletableFuturePathReturnValueHandler:** Unwraps `CompletableFuturePath<A>` for async processing
+7. **VTaskPathReturnValueHandler:** Executes `VTaskPath<A>` on virtual threads via `DeferredResult`
+8. **VStreamPathReturnValueHandler:** Streams `VStreamPath<A>` as SSE events on virtual threads
+9. **EitherOrBothPathReturnValueHandler:** Converts `EitherOrBothPath<W, A>` (and raw `EitherOrBoth`), surfacing `Both` warnings in the `X-Hkj-Warnings` header
+10. **FreePathReturnValueHandler:** Interprets `FreePath<F, A>` via the registered `EffectBoundary` bean
+
+Supporting collaborators:
+
+- **`SuccessStatusResolver`:** Reads `@ResponseStatus` on the handler method (with controller-class fallback and meta-annotation support) so each handler can override its default success status.
+- **`ErrorStatusCodeStrategy`:** Functional interface invoked once per error response. The default `DefaultErrorStatusCodeStrategy` consults `hkj.web.error-status-mappings` first, then falls back to `ErrorStatusCodeMapper`'s tokenised heuristics, then to `hkj.web.either.default-error-status`. Replace the bean to inject custom logic (for example, status that depends on an error's field values).
+- **`ErrorStatusCodeMapper`:** Token-aware heuristic resolver used by the default strategy. Exposed as a static helper so custom strategies can delegate to the same logic.
+- **`HttpHeaderCarrier`:** Mix-in interface that lets `Left`-side error payloads add response headers (`Retry-After`, `WWW-Authenticate`, and similar) to the outgoing response. Honoured by every error-bearing handler except `VStreamPath` and `MaybePath` (which has no error payload).
+
+Handlers are registered automatically and integrated seamlessly with Spring's request processing lifecycle.
+
+### Non-Invasive Design
+
+The integration doesn't modify existing Spring Boot behaviour:
+- Standard Spring MVC types work unchanged
+- Exception handling still functions normally
+- Can be disabled via configuration
+- Coexists with traditional `ResponseEntity` endpoints
+
+---
+
+## Frequently Asked Questions
+
+### Can I mix functional and traditional exception handling?
+
+Yes! The integration is non-invasive. You can use `EitherPath`, `ValidationPath`, and `CompletableFuturePath` alongside traditional `ResponseEntity` and exception-based endpoints in the same application.
+
+### Does this work with Spring WebFlux?
+
+Currently, the starter supports Spring Web MVC (servlet-based). For reactive-style streaming, use `VStreamPath` which provides SSE streaming on virtual threads without requiring WebFlux or Reactor dependencies.
+
+### Can I customise the error to HTTP status mapping?
+
+Yes, three layers of customisation are available, each more powerful than the last:
+
+1. **Property-table mappings** in `application.yml` for static, class-keyed overrides (`hkj.web.error-status-mappings.MfaThrottledError: 429`). This covers the majority of cases including the status codes the heuristic table does not produce (409, 422, 429, 503).
+2. **Custom `ErrorStatusCodeStrategy` bean** when the status depends on the error's field values, the request, or any runtime signal. Declare the bean in any `@Configuration` class; the default is annotated `@ConditionalOnMissingBean` and steps aside automatically.
+3. **`HttpHeaderCarrier` mix-in** on the error type itself for surfacing response headers like `Retry-After` alongside the status code.
+
+See [CONFIGURATION.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/CONFIGURATION.md) for the full reference and known limitations.
+
+### How does performance compare to exceptions?
+
+Functional error handling is generally faster than exception-throwing for expected error cases, as it avoids stack trace generation and exception propagation overhead. For success cases, performance is equivalent.
+
+### Can I use this with Spring Data repositories?
+
+Yes. Wrap repository calls in your service layer:
+
+<!-- verify -->
+```java
+@Service
+public class UserService {
+
+    @Autowired
+    private UserRepository repository;
+
+    public Either<DomainError, User> findById(String id) {
+        return repository.findById(id)
+            .map(Either::<DomainError, User>right)
+            .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+    }
+}
+```
+
+### Does this work with validation annotations (`@Valid`)?
+
+The integration focuses on functional validation patterns. For Spring's `@Valid` integration, you can convert `BindingResult` to `Validated` in your controllers.
+
+---
+
+## Related Documentation
+
+- [Either Monad](../monads/either_monad.md) - Comprehensive Either usage
+- [Validated Monad](../monads/validated_monad.md) - Validation patterns
+- [Effect Path API](../effect/path_types.md) - Path types and async composition
+- [Migration Guide](./migrating_to_functional_errors.md) - Step-by-step migration
+- [Configuration Guide](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/CONFIGURATION.md) - Complete configuration options
+- [Jackson Serialisation](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/JACKSON_SERIALIZATION.md) - JSON format details
+- [Security Integration](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/SECURITY.md) - Spring Security patterns
+- [Actuator Monitoring](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/ACTUATOR.md) - Metrics and health checks
+- [Testing Guide](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/example/TESTING.md) - Testing patterns
+
+---
+
+## Summary
+
+The hkj-spring-boot-starter brings functional programming patterns seamlessly into Spring Boot applications:
+
+- **Return functional types from controllers:** EitherPath, ValidationPath, CompletableFuturePath, VTaskPath, VStreamPath
+- **Virtual thread integration:** VTaskPath for async, VStreamPath for SSE streaming (no thread pools or WebFlux needed)
+- **Automatic HTTP response conversion:** No boilerplate required
+- **Explicit, type-safe error handling:** Errors in method signatures
+- **Composable operations:** Functional composition with map/via/flatMap
+- **Zero configuration:** Auto-configuration handles everything
+- **Production-ready:** Actuator metrics, security integration
+- **Easy to test:** No exception mocking required
+
+Get started today by adding the dependency and returning functional types from your controllers. The framework handles the rest!
+
+---
+
+**Previous:** [Introduction](ch_intro.md)
+**Next:** [Declarative HTTP Clients](declarative_http_clients.md)
+
+<!-- Source: spring/declarative_http_clients.md -->
+
+# Declarative HTTP Clients: Typed Errors Across Services
+## _Closing the Loop with `@HkjHttpClient`_
+
+~~~admonish info title="What You'll Learn"
+- Why a typed error collapses into a raw status code at the client boundary, and how `@HkjHttpClient` preserves it
+- How to declare an HTTP client that returns `EitherPath`, `VTaskPath`, or `MaybePath`
+- How to wire a client by configuration (base URL, timeouts) and autowire it by its own interface
+- How a response decodes back into a typed error, and the three ways to override the mapping: `@OnStatus`, `hkj.client.status-error-mappings`, and a custom decoder
+- How the `VTaskPath` variant adds retries, circuit breakers, and a `Retry-After` hook
+- How to consume Server-Sent Events into a `VStreamPath`
+~~~
+
+~~~admonish note title="Before You Start"
+This page builds on the Effect Path API. If `Either`, `EitherPath`, `.run()` / `.fold(...)`, or the
+"railway" model are new, read [The Effect Path API](../effect/effect_path_overview.md) first: the
+rest assumes your code already returns typed-error results. It also uses Spring's declarative HTTP
+client (`@HttpExchange`, `@ImportHttpServices`), which needs **Spring Boot 4.1+ / Spring Framework 7**.
+~~~
+
+~~~admonish example title="See Example Code"
+A complete, runnable client application that calls the server example lives in the [hkj-spring client-example module](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-spring/client-example/src/main/java/org/higherkindedj/spring/clientexample).
+~~~
+
+## Overview
+
+The [Spring Boot Integration](spring_boot_integration.md) chapter is about the **inbound** edge: a controller returns `Either<DomainError, User>` and the framework encodes it as an HTTP response. `@HkjHttpClient` is the **outbound** inverse. When one service calls another, it decodes that response back into the same typed error, so the error channel survives the network hop.
+
+This completes the loop. Both sides of a service-to-service call now speak the same language: errors are data, visible in the type signature, on the wire and back again.
+
+---
+
+## The Problem
+
+You built a service that speaks typed errors. Now a second service calls it. With a plain Spring HTTP client, B's carefully typed `Left(UserNotFoundError)` arrives as an exception, and A is back to reading status codes:
+
+<!-- verify -->
+```java
+// Service A, calling service B with a raw RestClient
+Either<DomainError, UserDto> getUser(String id) {
+    try {
+        UserDto user = restClient.get().uri("/users/{id}", id).retrieve().body(UserDto.class);
+        return Either.right(user);
+    } catch (RestClientResponseException ex) {
+        // The typed error is gone. Reconstruct it from the status code.
+        if (ex.getStatusCode().value() == 404) return Either.left(new UserNotFoundError(id));
+        if (ex.getStatusCode().value() == 409) return Either.left(new ConflictError(id));
+        throw ex; // ...and hope you covered every case
+    }
+}
+```
+
+The typed error channel that the whole library is built around stops at the boundary. Every caller re-derives the same error from the same status code, by hand, forever.
+
+---
+
+## The Solution
+
+Declare a single interface. Annotate it with `@HkjHttpClient` alongside the standard Spring `@HttpExchange` declarative-client annotations, and return an Effect Path:
+
+<!-- verify -->
+```java
+@HttpExchange("/users")
+@HkjHttpClient
+public interface UserClientApi {
+
+  @GetExchange("/{id}")
+  EitherPath<ApiError, UserDto> getUser(@PathVariable String id);
+
+  @PostExchange
+  VTaskPath<Either<ApiError, UserDto>> create(@RequestBody UserDto body);
+}
+```
+
+Here `UserDto` is your own response record and `ApiError` your own error type. The caller then stays on the rails, on the success or failure track rather than a thrown status code:
+
+<!-- verify -->
+```java
+Profile show(String id) {
+    EitherPath<ApiError, UserDto> path = userClientApi.getUser(id);
+
+    // .run() performs the call and yields Either<ApiError, UserDto>;
+    // .fold collapses the two arms into one value: Left -> handleError, Right -> renderUser.
+    return path.run().fold(this::handleError, this::renderUser);
+}
+```
+
+---
+
+## The Railway View
+
+`@HkjHttpClient` is a mirror of the server-side return-value handlers. The server **encodes** a typed error into a status code plus a JSON envelope; the client **decodes** it back:
+
+```
+   SERVER (hkj-spring)                                 CLIENT (@HkjHttpClient)
+
+   EitherPath<ApiError, UserDto>                       EitherPath<ApiError, UserDto>
+        │                                                     ▲
+        │  ErrorStatusCodeStrategy                            │  ResponseErrorDecoder
+        │  + {"success":false,"error":…}                      │  reads the envelope
+        ▼                                                     │
+   404  {"success":false,"error":{…}}  ────── HTTP ─────▶  404  {"success":false,"error":{…}}
+```
+
+---
+
+## Quickstart
+
+### Step 1: Add the Starter
+
+The client runtime lives in `hkj-spring-boot-starter`, and the code generator in `hkj-spring-boot-client-processor`. A dependency never adds to the processor path, so a starter you already have for the server side brings the runtime but not the generator. Add both:
+
+```gradle
+// build.gradle.kts
+dependencies {
+    implementation("io.github.higher-kinded-j:hkj-spring-boot-starter:LATEST_VERSION")
+    annotationProcessor("io.github.higher-kinded-j:hkj-spring-boot-client-processor:LATEST_VERSION")
+}
+```
+
+In Maven, the processor goes on the compiler plugin's processor path. `<annotationProcessorPaths>` is the whole path, so add the `<path>` to the list you already have, beside `hkj-processor-plugins`, rather than as a second list:
+
+```xml
+<!-- maven-compiler-plugin <configuration>: one list, holding every processor -->
+<annotationProcessorPaths>
+    <path>
+        <groupId>io.github.higher-kinded-j</groupId>
+        <artifactId>hkj-processor-plugins</artifactId>
+        <version>LATEST_VERSION</version>
+    </path>
+    <path>
+        <groupId>io.github.higher-kinded-j</groupId>
+        <artifactId>hkj-spring-boot-client-processor</artifactId>
+        <version>LATEST_VERSION</version>
+    </path>
+</annotationProcessorPaths>
+```
+
+With the [HKJ build plugin](../tooling/gradle_plugin.md#spring-boot-mode), `spring = true` (Maven: `<spring>true</spring>`) adds both.
+
+### Step 2: Declare and Configure
+
+Annotate the interface (as above), then set the base URL and timeouts in configuration. The group name defaults to the decapitalised interface name (`userClientApi`), or set it explicitly with `@HkjHttpClient(group = "...")`:
+
+```yaml
+spring:
+  http:
+    serviceclient:
+      userClientApi:
+        base-url: http://users.internal
+        connect-timeout: 2s
+        read-timeout: 2s
+```
+
+That is all the wiring. The generated `…ClientConfiguration` (see [What Gets Generated](#what-gets-generated)) declares the `@ImportHttpServices` group and is component-scanned along with the rest of your application, because it sits in the same package as your interface. Only if your client interfaces live outside your `@SpringBootApplication`'s scanned packages do you add an explicit `@ImportHttpServices(basePackages = "...")`.
+
+### Step 3: Inject by Interface
+
+<!-- verify -->
+```java
+@Service
+public class UserProfiles {
+
+  // The generated UserClientApiClient is the only implementation, so it injects by interface.
+  private final UserClientApi userClientApi;
+
+  UserProfiles(UserClientApi userClientApi) {
+    this.userClientApi = userClientApi;
+  }
+
+  EitherPath<ApiError, UserDto> lookup(String id) {
+    return userClientApi.getUser(id);
+  }
+}
+```
+
+That is the whole happy path: annotate, configure, autowire.
+
+---
+
+## What Gets Generated
+
+For an interface `UserClientApi`, the annotation processor generates three siblings in the same package:
+
+~~~admonish note title="Generated artifacts"
+- **`UserClientApiHttpExchange`** : a native Spring `@HttpExchange` interface with the same methods, the return type unwrapped to `ResponseEntity<T>` (where `T` is the success type of your Path), and every mapping annotation copied through. This is the piece Spring proxies.
+- **`UserClientApiClient`** : implements `UserClientApi`, calling the proxied native interface and folding each outcome into the declared Path (a 2xx body to the success arm, a `RestClientResponseException` to a decoded typed error).
+- **`UserClientApiClientConfiguration`** : a `@Configuration` that registers the native interface as an `@ImportHttpServices` group and exposes the client as a bean.
+~~~
+
+Every supported return type maps to the same native method shape, `ResponseEntity<T>`, where `T` is the Path's success type:
+
+| Your method returns | Generated native method |
+|---|---|
+| `EitherPath<E, T>` | `ResponseEntity<T>` |
+| `VTaskPath<Either<E, T>>` | `ResponseEntity<T>` |
+| `MaybePath<T>` | `ResponseEntity<T>` |
+
+You never reference the generated names. You autowire your own interface.
+
+---
+
+## Choosing a Return Type
+
+Each method picks how the call is run and what shape the result takes. (`Right`/`Left` are the success and typed-error arms of `Either`; `Just`/`Nothing` are present/absent for `Maybe`.)
+
+| Return type | Evaluation | 2xx | non-2xx | Use when |
+|---|---|---|---|---|
+| `EitherPath<E, T>` | Eager, blocks the calling thread | `Right(body)` | `Left(decoded error)` | A straightforward request/response call |
+| `VTaskPath<Either<E, T>>` | Deferred onto a virtual thread | `Right(body)` | `Left(decoded error)` | You want retries, a circuit breaker, a timeout, or a `Retry-After` hook |
+| `MaybePath<T>` | Eager, blocks the calling thread | `Just(body)` | 404 → `Nothing` | Absence is normal and untyped (a lookup that may miss) |
+
+~~~admonish note title="Semantics worth pinning"
+- **Empty 2xx body.** `EitherPath`/`VTaskPath` yield `Right(null)`; `MaybePath` yields `Nothing`. If an endpoint may legitimately return no body, declare `T` accordingly or guard the success value.
+- **`MaybePath` only treats 404 as absence.** Other non-2xx statuses propagate as the original exception. `MaybePath` models "might be missing", not "might fail".
+- **Thread-safety.** The generated client is a stateless singleton, safe for concurrent use; the eager variants block the caller, the deferred `VTaskPath` runs on a virtual thread when the task is run.
+~~~
+
+~~~admonish note title="Exception boundary"
+Only an HTTP **error response** (`RestClientResponseException`) is folded into the typed error arm. Transport failures (connection refused, timeout) and undecodable bodies are not typed domain errors, so they propagate: synchronously from the eager `EitherPath`/`MaybePath` translators, and as a failed task from the deferred `VTaskPath`/`VStreamPath` translators.
+~~~
+
+---
+
+## Decoding Errors
+
+The default decoder reads the server's `{"success":false,"error":…}` envelope and binds the `error` node to your method's declared error type.
+
+A **concrete** error type binds with no extra annotations. A **sealed** `DomainError` hierarchy needs Jackson polymorphic type information so the decoder can pick the subtype:
+
+<!-- verify -->
+```java
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
+@JsonSubTypes({
+    @JsonSubTypes.Type(value = UserNotFoundError.class, name = "not-found"),
+    @JsonSubTypes.Type(value = ConflictError.class, name = "conflict"),
+    @JsonSubTypes.Type(value = ValidationError.class, name = "validation")
+})
+public sealed interface DomainError
+    permits UserNotFoundError, ConflictError, ValidationError { }
+```
+
+~~~admonish warning title="Use a closed discriminator"
+The error body comes from another service, so it is not fully trusted, and the discriminator
+decides which class Jackson instantiates. With `Id.NAME` (above) the discriminator is a **logical
+name** you registered, e.g. `{"type":"not-found"}`: Jackson resolves it against your `@JsonSubTypes`
+list, so a response can only select one of your declared error subtypes. With `Id.CLASS` /
+`Id.MINIMAL_CLASS` (or `ObjectMapper` default typing) the discriminator is instead a **fully
+qualified class name** on the wire, e.g. `{"@class":"com.evil.Gadget"}`, which Jackson loads and
+constructs: a malicious server could then have you instantiate any class on your classpath, the
+classic Jackson deserialisation-gadget vector. Always use `Id.NAME` with explicit `@JsonSubTypes`
+here; never `Id.CLASS`/`Id.MINIMAL_CLASS` or default typing.
+~~~
+
+### Overriding the status → error mapping
+
+There are three ways to override how a status maps to an error type. They apply **in precedence order: a per-method `@OnStatus` beats the global `hkj.client.status-error-mappings`, which beats the method's declared type.**
+
+#### 1. Per method: `@OnStatus`
+
+**The problem:** a single endpoint returns different error subtypes for different statuses.
+
+**The solution:** annotate the method. Each `error()` must be assignable to the method's declared error type (the processor checks this at compile time):
+
+<!-- verify -->
+```java
+@GetExchange("/{id}")
+@OnStatus(value = 404, error = UserNotFoundError.class)
+@OnStatus(value = 409, error = ConflictError.class)
+EitherPath<DomainError, UserDto> getUser(@PathVariable String id);
+```
+
+An `@OnStatus` on a method your client inherits from a base interface applies as well, whether the base is compiled alongside the client or comes from a dependency jar. A problem with an inherited override is reported on your client interface, naming the method and the interface it came from.
+
+#### 2. Global: `hkj.client.status-error-mappings`
+
+**The problem:** the same status maps to the same error type across every client, and repeating `@OnStatus` everywhere is noise.
+
+**The solution:** the client-side analogue of the server's `hkj.web.error-status-mappings`. Map a status to an error type once:
+
+```yaml
+hkj:
+  client:
+    status-error-mappings:
+      404: com.example.UserNotFoundError
+      429: com.example.RateLimitError
+```
+
+For each method, a configured status whose type is **assignable** to that method's declared error type decodes into the subtype; non-assignable and unmapped statuses fall back to the declared type. An unresolvable class name fails fast at startup.
+
+#### 3. Wholesale: a custom decoder bean
+
+**The problem:** you call a non-HKJ server that does not emit the envelope.
+
+**The solution:** supply a `ResponseErrorDecoder` (or replace the `ResponseErrorDecoderFactory` bean) that maps the status and body to your error type however you like. Without one, a foreign or empty body raises `ResponseErrorDecodeException`.
+
+---
+
+## Resilience with `VTaskPath`
+
+Because the `VTaskPath` variant defers the call onto a virtual thread, the standard resilience combinators compose directly on the result:
+
+<!-- verify -->
+```java
+Either<ApiError, UserDto> result =
+    userClientApi.create(body)                 // VTaskPath<Either<ApiError, UserDto>>
+        .withRetry(RetryPolicy.exponentialBackoffWithJitter(3, Duration.ofMillis(100)))
+        .withCircuitBreaker(breaker)
+        .timeout(Duration.ofSeconds(2))
+        .unsafeRun();
+```
+
+`Retry-After` is a **hook**, not automatic: when the server signals back-off (typically an `HttpHeaderCarrier` error on a 429 or 503), a custom decoder reads it via `ClientErrorResponse.retryAfter()` and feeds it into the retry policy.
+
+~~~admonish info title="Hands-On Learning"
+The runnable [end-to-end test](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/client-example/src/test/java/org/higherkindedj/spring/clientexample/UserClientApiEndToEndTest.java) drives the generated client against a `MockRestServiceServer`: a 200 becomes `Right`, a 404 envelope becomes `Left(ApiError)`, and the deferred `create` posts a body and yields `Right` when run.
+~~~
+
+---
+
+## Streaming with `VStreamPath`
+
+A streaming endpoint that the server renders with a `VStreamPath` ([SSE on virtual threads](spring_boot_integration.md#vstreampath-sse-streaming)) is consumed with the runtime translator, which decodes each SSE `data:` frame, ends on `event: complete`, and is deferred and resource-safe:
+
+<!-- verify -->
+```java
+VStreamPath<Tick> ticks =
+    HkjClientExchange.vstream(
+        () -> restClient.get().uri("/ticks").retrieve().body(InputStream.class),
+        Tick.class,
+        jsonMapper);
+```
+
+The streaming case is consumed through this translator rather than through a generated `@HttpExchange` method, so wire the source stream yourself.
+
+---
+
+## Generic Clients
+
+A generic `@HkjHttpClient` interface is supported **codegen-only**: the native interface and facade carry the type parameters, but the `@ImportHttpServices`/`@Bean` wiring is skipped, because a generic client cannot be a singleton bean. You instantiate the facade for a concrete type argument yourself.
+
+~~~admonish warning title="Common Mistakes"
+- **The starter without the processor.** The interface compiles, nothing is generated, and startup fails with `required a bean of type 'com.example.UserClientApi' that could not be found`. Add `hkj-spring-boot-client-processor` to the processor path, as [Step 1](#step-1-add-the-starter) shows.
+- **A sealed error type with no `@JsonTypeInfo`.** Jackson cannot pick the subtype, so decoding fails. Add the type info, or use a concrete error type.
+- **Client interfaces outside the component scan.** If your `@HkjHttpClient` interfaces are not under your `@SpringBootApplication`'s scanned packages, the generated configuration is not picked up and Spring never creates the proxy. Add an explicit `@ImportHttpServices(basePackages = "...")`.
+- **Expecting a transport failure to become a `Left`.** Connection-refused and timeout are not domain errors; they propagate. Use the `VTaskPath` variant and `runSafe()` to capture them as the failure arm of `Try<Either<E, T>>`.
+- **Short-circuiting an SSE stream.** Drain it (`toList()`) or bound it (`take(n).toList()`); a `headOption()`/`find(...)` returns before the stream completes and may leave the HTTP response open.
+- **Inheriting methods from a precompiled base.** A super-interface in a dependency jar must be compiled with `-parameters`, or its `@PathVariable`/`@RequestParam` arguments bind to `arg0`-style names. A jar built against 0.4.10 or earlier also carries none of its `@OnStatus` overrides, which were discarded when it was compiled, so its methods ignore them until it is rebuilt. Interfaces compiled in your own build are fine. Wherever the base is compiled, a module declaring `@OnStatus` should expose `hkj-spring-boot-client` to the modules that use it (Gradle's `api` configuration): its class files name the annotation, and a module compiling against them without it warns under `-Xlint:all`, which fails a `-Werror` build.
+- **An `@OnStatus` error type that is not assignable to the method's declared error type.** This is a compile error, by design.
+~~~
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **`@HkjHttpClient` is the client-side inverse of the server handlers.** Server encodes a typed error to a status plus envelope; client decodes it back, preserving the error channel across services.
+* **Three return types, one annotation.** `EitherPath` for blocking calls, `VTaskPath<Either>` for deferred calls with resilience, `MaybePath` for untyped absence.
+* **Wiring is configuration, not code.** Base URL and timeouts come from `spring.http.serviceclient.<group>.*`; you autowire your own interface.
+* **Three levels of error-mapping override.** Per-method `@OnStatus`, global `hkj.client.status-error-mappings`, or a custom decoder, in that precedence.
+~~~
+
+~~~admonish tip title="See Also"
+- [Spring Boot Integration](spring_boot_integration.md) : the inbound side this mirrors, including the server's `ErrorStatusCodeStrategy` and `hkj.web.error-status-mappings`
+- [The Effect Path API](../effect/effect_path_overview.md) : the railway model, `Either`, and `.run()`/`.fold(...)` that the client results plug into
+- [Resilience Patterns](../resilience/ch_intro.md) : `RetryPolicy`, `CircuitBreaker`, and `Bulkhead` used by the `VTaskPath` variant
+~~~
+
+---
+
+**Previous:** [Spring Boot Integration](spring_boot_integration.md)
+**Next:** [Migrating to Functional Errors](migrating_to_functional_errors.md)
+
+<!-- Source: spring/migrating_to_functional_errors.md -->
+
+# Migrating from Exceptions to Functional Error Handling
+## _A Practical Step-by-Step Guide_
+
+~~~admonish info title="What You'll Learn"
+- How to incrementally migrate exception-based code to functional patterns
+- Converting exception-throwing methods to Either
+- Replacing `@ExceptionHandler` methods with automatic response conversion
+- Migrating validation logic to Validated
+- Converting async operations to CompletableFuturePath and VTaskPath
+- Maintaining backwards compatibility during migration
+- Common migration patterns and pitfalls to avoid
+~~~
+
+## Overview
+
+Migrating from exception-based error handling to functional patterns doesn't have to be all-or-nothing. This guide shows you how to migrate incrementally, maintaining backwards compatibility whilst gradually introducing type-safe error handling.
+
+**Key Principle:** Start with new endpoints or the most problematic areas, then expand as you see the benefits.
+
+---
+
+## Incremental Migration
+
+Start by using functional types for all **new** endpoints. This allows your team to learn the patterns without touching existing code.
+
+**Approach:**
+- Use Either/Validated for new controllers
+- Leave existing exception-based endpoints unchanged
+- Build confidence with the new patterns
+
+
+Identify endpoints with complex error handling or frequent bugs. These are prime candidates for migration:
+- Endpoints with multiple `@ExceptionHandler` methods
+- Validation-heavy endpoints
+- Async operations with complicated error propagation
+
+Gradually migrate remaining endpoints as you touch them for other reasons (features, bug fixes, refactoring).
+
+---
+
+## Pattern 1: Simple Exception to Either
+
+### Before: Exception-Throwing Method
+
+<!-- verify -->
+```java
+@Service
+public class UserService {
+
+    @Autowired
+    private UserRepository repository;
+
+    public User findById(String id) {
+        return repository.findById(id)
+            .orElseThrow(() -> new UserNotFoundException(id));
+    }
+}
+
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    @GetMapping("/{id}")
+    public User getUser(@PathVariable String id) {
+        return userService.findById(id);  // What exceptions can this throw?
+    }
+
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(UserNotFoundException ex) {
+        return ResponseEntity.status(404)
+            .body(new ErrorResponse("USER_NOT_FOUND", ex.getMessage()));
+    }
+}
+```
+
+**Potential Problems:**
+- Error types hidden in implementation
+- Requires reading method bodies to understand possible failures
+- `@ExceptionHandler` catches exceptions from unrelated methods
+- Testing requires exception mocking
+
+### After: Either-Returning Method
+
+<!-- verify -->
+```java
+@Service
+public class UserService {
+
+    @Autowired
+    private UserRepository repository;
+
+    public Either<DomainError, User> findById(String id) {
+        return repository.findById(id)
+            .map(Either::<DomainError, User>right)
+            .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+    }
+}
+
+// Domain error types
+public sealed interface DomainError permits UserNotFoundError, ValidationError {
+}
+
+public record UserNotFoundError(String userId) implements DomainError {
+}
+
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    @GetMapping("/{id}")
+    public Either<DomainError, User> getUser(@PathVariable String id) {
+        return userService.findById(id);  // Clear: returns User or DomainError
+    }
+
+    // No @ExceptionHandler needed! Framework handles Either → HTTP conversion
+}
+```
+
+**Some Benefits:**
+- ✅ Errors explicit in method signature
+- ✅ Compiler enforces error handling at call sites
+- ✅ No `@ExceptionHandler` boilerplate
+- ✅ Easy to test: no exception mocking
+
+### Migration Steps
+
+**Step 1:** Define your error types as a sealed interface hierarchy
+
+<!-- verify -->
+```java
+public sealed interface DomainError permits
+    UserNotFoundError,
+    ValidationError,
+    AuthorizationError {
+}
+
+public record UserNotFoundError(String userId) implements DomainError {
+}
+
+public record AuthorizationError(String action) implements DomainError {
+}
+```
+
+**Step 2:** Convert service methods one at a time
+
+<!-- verify -->
+```java
+// Keep old method temporarily for backwards compatibility
+@Deprecated
+public User findById_OLD(String id) {
+    return repository.findById(id)
+        .orElseThrow(() -> new UserNotFoundException(id));
+}
+
+// New method with functional return type
+public Either<DomainError, User> findById(String id) {
+    return repository.findById(id)
+        .map(Either::<DomainError, User>right)
+        .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+}
+```
+
+**Step 3:** Update controller methods
+
+<!-- verify -->
+```java
+@GetMapping("/{id}")
+public Either<DomainError, User> getUser(@PathVariable String id) {
+    return userService.findById(id);
+}
+```
+
+**Step 4:** Remove `@ExceptionHandler` methods once all callers are migrated
+
+<!-- verify -->
+```java
+// DELETE THIS - no longer needed!
+// @ExceptionHandler(UserNotFoundException.class)
+// public ResponseEntity<ErrorResponse> handleNotFound(...)
+```
+
+---
+
+## Pattern 2: Multiple Exceptions to Either
+
+### Before: Multiple Exception Types
+
+```java
+@Service
+public class OrderService {
+
+    public Order processOrder(OrderRequest request) throws
+            UserNotFoundException,
+            InsufficientStockException,
+            PaymentFailedException {
+
+        User user = userService.findById(request.userId());  // throws UserNotFoundException
+        checkStock(request.items());                          // throws InsufficientStockException
+        processPayment(request.payment());                    // throws PaymentFailedException
+
+        return createOrder(request);
+    }
+}
+
+@RestController
+public class OrderController {
+
+    @PostMapping("/orders")
+    public Order createOrder(@RequestBody OrderRequest request) {
+        return orderService.processOrder(request);
+    }
+
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<?> handleUserNotFound(UserNotFoundException ex) {
+        return ResponseEntity.status(404).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InsufficientStockException.class)
+    public ResponseEntity<?> handleOutOfStock(InsufficientStockException ex) {
+        return ResponseEntity.status(400).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(PaymentFailedException.class)
+    public ResponseEntity<?> handlePaymentFailed(PaymentFailedException ex) {
+        return ResponseEntity.status(402).body(new ErrorResponse(ex.getMessage()));
+    }
+}
+```
+
+### After: Either with Discriminated Errors
+
+<!-- verify -->
+```java
+public sealed interface OrderError permits
+    UserNotFoundError,
+    OutOfStockError,
+    PaymentFailedError {
+}
+
+@Service
+public class OrderService {
+
+    @Autowired
+    private UserService userService;
+    @Autowired
+    private Inventory inventory;
+    @Autowired
+    private Payments payments;
+
+    public Either<OrderError, Order> processOrder(OrderRequest request) {
+        return userService.findById(request.userId())
+            .mapLeft(this::toDomainError)  // Convert DomainError to OrderError
+            .flatMap(user -> checkStock(request.items()))
+            .flatMap(stock -> processPayment(request.payment()))
+            .map(payment -> createOrder(request, payment));
+
+        // Short-circuits on first error
+        // All error types explicit in OrderError sealed interface
+    }
+
+    private Either<OrderError, Stock> checkStock(List<String> items) {
+        Stock stock = inventory.check(items);
+        if (!stock.isAvailable()) {
+            return Either.left(new OutOfStockError(stock.unavailableItems()));
+        }
+        return Either.right(stock);
+    }
+
+    private Either<OrderError, Payment> processPayment(String payment) {
+        Payment taken = payments.take(payment);
+        if (taken == null) {
+            return Either.left(new PaymentFailedError("declined"));
+        }
+        return Either.right(taken);
+    }
+
+    private OrderError toDomainError(DomainError error) {
+        return new PaymentFailedError(error.toString());
+    }
+
+    private Order createOrder(OrderRequest request, Payment payment) {
+        return new Order(payment.id(), request.userId());
+    }
+}
+
+@RestController
+public class OrderController {
+
+    @Autowired
+    private OrderService orderService;
+
+    @PostMapping("/orders")
+    public Either<OrderError, Order> createOrder(@RequestBody OrderRequest request) {
+        return orderService.processOrder(request);
+    }
+
+    // No @ExceptionHandler methods needed!
+    // Framework maps error types to HTTP status:
+    // - UserNotFoundError → 404
+    // - OutOfStockError → 400
+    // - PaymentFailedError → 402
+}
+```
+
+**Key Improvement:** All possible errors are visible in the `OrderError` sealed interface.
+
+---
+
+## Pattern 3: Validation Exceptions to Validated
+
+### Before: Validation with Exceptions
+
+```java
+@PostMapping
+public User createUser(@Valid @RequestBody UserRequest request, BindingResult bindingResult) {
+    if (bindingResult.hasErrors()) {
+        List<String> errors = bindingResult.getAllErrors()
+            .stream()
+            .map(ObjectError::getDefaultMessage)
+            .toList();
+        throw new ValidationException(errors);
+    }
+
+    // Additional custom validation
+    if (!emailService.isValid(request.email())) {
+        throw new ValidationException("Invalid email format");
+    }
+
+    if (userRepository.existsByEmail(request.email())) {
+        throw new ValidationException("Email already exists");
+    }
+
+    return userService.create(request);
+}
+
+@ExceptionHandler(ValidationException.class)
+public ResponseEntity<?> handleValidation(ValidationException ex) {
+    return ResponseEntity.status(400)
+        .body(new ErrorResponse(ex.getErrors()));
+}
+```
+
+**Problem:** Only the first validation error is thrown. To see all errors, user must fix one at a time.
+
+### After: Validated with Error Accumulation
+
+<!-- verify -->
+```java
+public record ValidationError(String field, String message) {
+}
+
+@Service
+public class UserService {
+
+    @Autowired
+    private UserRepository userRepository;
+
+    public ValidationPath<NonEmptyList<ValidationError>, User> validateAndCreate(
+            UserRequest request) {
+        return Path.accumulate()
+            .and(validateEmail(request.email()))
+            .and(validateFirstName(request.firstName()))
+            .and(validateLastName(request.lastName()))
+            .and(validateUniqueEmail(request.email()))
+            .apply((email, firstName, lastName, uniqueEmail) ->
+                createUser(email, firstName, lastName));
+    }
+
+    private User createUser(String email, String firstName, String lastName) {
+        return new User(UUID.randomUUID().toString(), email, firstName + " " + lastName);
+    }
+
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateEmail(String email) {
+        if (email == null || !email.matches("^[A-Za-z0-9+_.-]+@(.+)$")) {
+            return Path.invalidNel(
+                new ValidationError("email", "Invalid email format"));
+        }
+        return Path.validNel(email);
+    }
+
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateFirstName(String name) {
+        if (name == null || name.trim().length() < 2) {
+            return Path.invalidNel(
+                new ValidationError("firstName", "First name must be at least 2 characters"));
+        }
+        return Path.validNel(name);
+    }
+
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateLastName(String name) {
+        if (name == null || name.trim().length() < 2) {
+            return Path.invalidNel(
+                new ValidationError("lastName", "Last name must be at least 2 characters"));
+        }
+        return Path.validNel(name);
+    }
+
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateUniqueEmail(String email) {
+        // accumulate() runs every validator independently, so this one must not query the
+        // repository for a syntactically invalid email: existsByEmail(null) could throw and turn a
+        // bad request into a 500. validateEmail already reports the format error, so skip the
+        // uniqueness check for malformed input.
+        if (email == null || !email.matches("^[A-Za-z0-9+_.-]+@(.+)$")) {
+            return Path.validNel(email);
+        }
+        if (userRepository.existsByEmail(email)) {
+            return Path.invalidNel(
+                new ValidationError("email", "Email already exists"));
+        }
+        return Path.validNel(email);
+    }
+}
+
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    @PostMapping
+    public ValidationPath<NonEmptyList<ValidationError>, User> createUser(
+            @RequestBody UserRequest request) {
+        return userService.validateAndCreate(request);
+    }
+
+    // No @ExceptionHandler needed!
+    // Framework converts:
+    // - Valid(user) → 200 OK with user JSON (unwrapped)
+    // - Invalid(errors) → 400 Bad Request with ALL validation errors:
+    //   {"valid": false, "errors": [...], "errorCount": n}
+}
+```
+
+`Path.accumulate()` opens an open-arity accumulating assembly: each `.and(...)` adds an independently validated field, and `.apply(...)` builds the result only when every field is valid; otherwise **all** errors are collected, in declaration order. Raw `Validated<List<ValidationError>, User>` works as a return type too (the same handler accepts it); the example module's `UserService.validateAndCreate` shows that style using `ValidatedMonad.instance(Semigroups.list())` with `Applicative.map3`.
+
+**Why it helps:**
+- ✅ Returns **all** validation errors at once
+- ✅ Better user experience (fix all issues in one go)
+- ✅ Validation logic is composable and testable
+- ✅ No special exception types needed
+
+### Migration Steps
+
+**Step 1:** Extract validation logic into individual single-field validators
+
+<!-- verify -->
+```java
+ValidationPath<NonEmptyList<ValidationError>, String> validateEmail(String email) {
+    return email != null && email.contains("@")
+        ? Path.validNel(email)
+        : Path.invalidNel(new ValidationError("email", "Invalid email format"));
+}
+```
+
+**Step 2:** Compose validations with `Path.accumulate()`
+
+<!-- verify -->
+```java
+public ValidationPath<NonEmptyList<ValidationError>, User> validateAndCreate(UserRequest request) {
+    return Path.accumulate()
+        .and(validateEmail(request.email()))
+        .and(validateName(request.name()))
+        // ... more fields
+        .apply((email, name) -> createUser(email, name));
+}
+```
+
+**Step 3:** Return the `ValidationPath` from the controller
+
+<!-- verify -->
+```java
+@PostMapping
+public ValidationPath<NonEmptyList<ValidationError>, User> createUser(
+        @RequestBody UserRequest request) {
+    return userService.validateAndCreate(request);
+}
+```
+
+---
+
+## Pattern 4: Async Exceptions to CompletableFuturePath
+
+### Before: CompletableFuture with Exception Handling
+
+```java
+@Service
+public class AsyncOrderService {
+
+    public CompletableFuture<Order> processOrderAsync(OrderRequest request) {
+        return userService.findByIdAsync(request.userId())
+            .thenCompose(user -> {
+                if (user == null) {
+                    throw new CompletionException(new UserNotFoundException(request.userId()));
+                }
+                return inventoryService.checkStockAsync(request.items());
+            })
+            .thenCompose(stock -> {
+                if (!stock.isAvailable()) {
+                    throw new CompletionException(new OutOfStockException());
+                }
+                return paymentService.processPaymentAsync(request.payment());
+            })
+            .handle((payment, ex) -> {
+                if (ex != null) {
+                    // Complex error handling logic
+                    Throwable cause = ex.getCause();
+                    if (cause instanceof UserNotFoundException) {
+                        throw new CompletionException(cause);
+                    } else if (cause instanceof OutOfStockException) {
+                        throw new CompletionException(cause);
+                    }
+                    throw new CompletionException(ex);
+                }
+                return createOrder(request, payment);
+            });
+    }
+}
+
+@RestController
+public class OrderController {
+
+    @GetMapping("/{id}")
+    public CompletableFuture<Order> getOrder(@PathVariable String id) {
+        return asyncOrderService.getOrderAsync(id)
+            .exceptionally(ex -> {
+                // More error handling...
+                throw new CompletionException(ex);
+            });
+    }
+}
+```
+
+**Potential Problems:**
+- Wrapped exceptions in `CompletionException`
+- Error handling scattered across `.handle()` and `.exceptionally()`
+- Type safety lost
+
+### After: CompletableFuturePath Composition
+
+`CompletableFuturePath` wraps the future in the Effect Path API, so the chain reads linearly with `via` (async bind) and `map`, and the return-value handler takes care of Spring's async request processing:
+
+<!-- verify -->
+```java
+@Service
+public class AsyncOrderService {
+
+    @Autowired
+    private AsyncUserService asyncUserService;
+    @Autowired
+    private AsyncInventoryService asyncInventoryService;
+    @Autowired
+    private AsyncPaymentService asyncPaymentService;
+
+    public CompletableFuturePath<Order> processOrderAsync(OrderRequest request) {
+        return asyncUserService.findByIdAsync(request.userId())
+            .via(user -> asyncInventoryService.checkStockAsync(request.items()))
+            .via(stock -> {
+                if (!stock.isAvailable()) {
+                    return Path.future(CompletableFuture.failedFuture(
+                        new OutOfStockException(stock.unavailableItems())));
+                }
+                return asyncPaymentService.processPaymentAsync(request.payment());
+            })
+            .map(payment -> createOrder(request, payment));
+
+        // Linear composition: the failure short-circuits the chain
+    }
+
+    private Order createOrder(OrderRequest request, Payment payment) {
+        return new Order(payment.id(), request.userId());
+    }
+}
+
+@RestController
+public class OrderController {
+
+    @Autowired
+    private AsyncOrderService asyncOrderService;
+
+    @PostMapping("/orders")
+    public CompletableFuturePath<Order> createOrder(@RequestBody OrderRequest request) {
+        return asyncOrderService.processOrderAsync(request);
+        // Framework handles async → HTTP response conversion via DeferredResult
+    }
+}
+```
+
+**Improvements:**
+- ✅ Clean, linear composition with `via`/`map`: no `.handle()` / `.exceptionally()` pyramid
+- ✅ Automatic short-circuiting on failure
+- ✅ Framework handles async processing (non-blocking request thread)
+
+~~~admonish warning title="Failure mapping is coarse-grained"
+`CompletableFuturePath` (and `VTaskPath`) carry failures as **exceptions**, not typed `Left` values. A failed future maps to the configured `hkj.web.async-failure-status` (default 500); the per-error-class `ErrorStatusCodeStrategy` mapping does not apply, because by the time the handler sees the failure it is a `Throwable`. If an endpoint needs `Left(UserNotFoundError)` → 404 semantics, keep the typed `Either` at the boundary (a synchronous `Either` return, possibly computed off-thread inside the service) rather than folding the error into an exception. This mirrors `AsyncUserService` in the example module, where `UserNotFoundException` deliberately surfaces as the configured async failure status.
+~~~
+
+### Migration Steps
+
+**Step 1:** Convert async methods to return `CompletableFuturePath` with `Path.future`
+
+<!-- verify -->
+```java
+public CompletableFuturePath<User> findByIdAsync(String id) {
+    CompletableFuture<User> future = CompletableFuture.supplyAsync(
+        () -> repository.findById(id)
+                  .orElseThrow(() -> new UserNotFoundException(id)),
+        asyncExecutor);
+
+    return Path.future(future);
+}
+```
+
+**Step 2:** Compose operations with `via` and `map`
+
+<!-- verify -->
+```java
+public CompletableFuturePath<Order> processOrderAsync(OrderRequest request) {
+    return findByIdAsync(request.userId())
+        .via(user -> checkStockAsync(request.items()))
+        .via(stock -> processPaymentAsync(request.payment()))
+        .map(payment -> createOrder(request, payment));
+}
+```
+
+**Step 3:** Return `CompletableFuturePath` from the controller
+
+<!-- verify -->
+```java
+@GetMapping("/{id}/async")
+public CompletableFuturePath<Order> getOrder(@PathVariable String id) {
+    return asyncOrderService.getOrderAsync(id);
+}
+```
+
+### Alternative: VTaskPath on Virtual Threads
+
+If you are on virtual threads, `VTaskPath` gives the same handler integration with no executor bean at all; the computation is deferred and runs on a virtual thread when the handler invokes it:
+
+<!-- verify -->
+```java
+public VTaskPath<User> findById(String id) {
+    return Path.vtask(() -> {
+            // Blocking calls are cheap on a virtual thread
+            return repository.findById(id)
+                .orElseThrow(() -> new UserNotFoundException(id));
+        })
+        .timeout(Duration.ofSeconds(5));
+}
+```
+
+The same failure-mapping caveat applies: a thrown exception maps to `hkj.web.vtask-failure-status` (default 500). See [VTaskPath](spring_boot_integration.md#vtaskpath-virtual-thread-async) for structured-concurrency fan-out with `Scope`.
+
+---
+
+## Pattern 5: Chained Operations
+
+### Before: Nested Try-Catch
+
+```java
+@GetMapping("/{userId}/orders/{orderId}/items/{itemId}")
+public OrderItem getOrderItem(
+        @PathVariable String userId,
+        @PathVariable String orderId,
+        @PathVariable String itemId) {
+
+    try {
+        User user = userService.findById(userId);
+
+        try {
+            Order order = orderService.findById(orderId);
+
+            try {
+                orderService.verifyOwnership(order, userId);
+
+                try {
+                    return orderService.findItem(order, itemId);
+                } catch (ItemNotFoundException ex) {
+                    throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found");
+                }
+            } catch (UnauthorizedException ex) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Not your order");
+            }
+        } catch (OrderNotFoundException ex) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found");
+        }
+    } catch (UserNotFoundException ex) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+    }
+}
+```
+
+### After: flatMap Composition
+
+<!-- verify -->
+```java
+@GetMapping("/{userId}/orders/{orderId}/items/{itemId}")
+public Either<DomainError, OrderItem> getOrderItem(
+        @PathVariable String userId,
+        @PathVariable String orderId,
+        @PathVariable String itemId) {
+
+    return userService.findById(userId)
+        .flatMap(user -> orderService.findById(orderId))
+        .flatMap(order -> orderService.verifyOwnership(order, userId).map(_ -> order))
+        .flatMap(order -> orderService.findItem(order, itemId));
+
+    // Clean, linear, composable
+    // Short-circuits on first error
+}
+```
+
+**Major Improvement:** Nested try-catch pyramid eliminated, replaced with clean functional composition.
+
+---
+
+## Pattern 6: Maintaining Backwards Compatibility
+
+During migration, you may need to support both old and new clients. Here are strategies:
+
+### Strategy 1: Dual Endpoints
+
+Expose both old and new versions:
+
+<!-- verify -->
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    // Old endpoint (deprecated)
+    @GetMapping("/{id}")
+    @Deprecated
+    public User getUserLegacy(@PathVariable String id) {
+        Either<DomainError, User> result = userService.findById(id);
+
+        return result.fold(
+            error -> { throw new UserNotFoundException(id); },  // Convert back to exception
+            user -> user
+        );
+    }
+
+    // New endpoint (functional)
+    @GetMapping("/v2/{id}")
+    public Either<DomainError, User> getUser(@PathVariable String id) {
+        return userService.findById(id);
+    }
+}
+```
+
+### Strategy 2: Content Negotiation
+
+Use different response format based on `Accept` header:
+
+<!-- verify -->
+```java
+@GetMapping("/{id}")
+public ResponseEntity<?> getUser(@PathVariable String id,
+                                  @RequestHeader("Accept") String accept) {
+
+    Either<DomainError, User> result = userService.findById(id);
+
+    if (accept.contains("application/vnd.myapp.v2+json")) {
+        // New clients get Either JSON
+        return ResponseEntity.ok(result);
+    } else {
+        // Old clients get traditional format
+        return result.fold(
+            error -> ResponseEntity.status(404).build(),
+            user -> ResponseEntity.ok(user)
+        );
+    }
+}
+```
+
+### Strategy 3: Convert Either to Exception Temporarily
+
+If you must maintain existing exception-based behaviour:
+
+<!-- verify -->
+```java
+@Service
+public class UserService {
+
+    @Autowired
+    private UserRepository repository;
+
+    // New internal method
+    public Either<DomainError, User> findById(String id) {
+        return repository.findById(id)
+            .map(Either::<DomainError, User>right)
+            .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+    }
+
+    // Old public method for legacy callers
+    @Deprecated
+    public User findById_LEGACY(String id) throws UserNotFoundException {
+        return findById(id).fold(
+            error -> {
+                throw new UserNotFoundException(id);  // Convert back to exception
+            },
+            user -> user
+        );
+    }
+}
+```
+
+---
+
+## Potential Pitfalls and Remedies
+
+### Pitfall 1: Forgetting to Handle Both Cases
+
+<!-- verify -->
+```java
+// ❌ BAD: Only handles Right case
+@GetMapping("/{id}/email")
+public String getUserEmail(@PathVariable String id) {
+    return userService.findById(id)
+        .map(User::email)
+        .getRight();  // Throws NoSuchElementException if Left!
+}
+```
+
+<!-- verify -->
+```java
+// ✅ GOOD: Return Either, let framework handle it
+@GetMapping("/{id}/email")
+public Either<DomainError, String> getUserEmail(@PathVariable String id) {
+    return userService.findById(id)
+        .map(User::email);
+}
+```
+
+### Pitfall 2: Mixing Exceptions and Either
+
+<!-- verify -->
+```java
+// ❌ BAD: Throwing exception inside Either
+public Either<DomainError, User> findById(String id) {
+    if (id == null) {
+        throw new IllegalArgumentException("ID cannot be null");  // Don't do this!
+    }
+    return repository.findById(id)
+        .map(Either::<DomainError, User>right)
+        .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+}
+```
+
+<!-- verify -->
+```java
+// ✅ GOOD: Return Left for all errors
+public Either<DomainError, User> findById(String id) {
+    if (id == null) {
+        return Either.left(new ValidationError("id", "ID cannot be null"));
+    }
+    return repository.findById(id)
+        .map(Either::<DomainError, User>right)
+        .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+}
+```
+
+### Pitfall 3: Not Using Validated for Multiple Errors
+
+<!-- verify -->
+```java
+// ❌ BAD: Using Either for validation (only returns first error)
+public Either<ValidationError, User> validateUser(UserRequest request) {
+    return validateEmail(request.email()).run().toEither()
+        .mapLeft(NonEmptyList::head)
+        .flatMap(email -> validateName(request.name()).run().toEither()
+            .mapLeft(NonEmptyList::head))
+        .map(name -> createUser(request.email(), name));
+    // Stops at first error!
+}
+```
+
+<!-- verify -->
+```java
+// ✅ GOOD: Accumulate all errors with Path.accumulate()
+public ValidationPath<NonEmptyList<ValidationError>, User> validateUser(UserRequest request) {
+    return Path.accumulate()
+        .and(validateEmail(request.email()))
+        .and(validateName(request.name()))
+        .and(validateAge(request.age()))
+        .apply((email, name, age) -> createUser(email, name, age));
+    // Returns ALL errors!
+}
+```
+
+---
+
+## Checklist
+
+When migrating an endpoint:
+
+- [ ] Define domain error types as sealed interface
+- [ ] Convert service methods to return Either/Validated/CompletableFuturePath/VTaskPath
+- [ ] Update controller methods to return functional types
+- [ ] Remove corresponding `@ExceptionHandler` methods
+- [ ] Update unit tests (no more exception mocking!)
+- [ ] Update integration tests to verify HTTP responses
+- [ ] Document the new error types in API docs
+- [ ] Consider backwards compatibility strategy if needed
+- [ ] Monitor error rates with Spring Boot Actuator (optional)
+
+---
+
+## Testing
+
+### Before: Testing Exception-Throwing Code
+
+<!-- verify -->
+```java
+@Test
+void shouldThrowWhenUserNotFound() {
+    var _ = assertThrowsExactly(UserNotFoundException.class, () -> {
+        userService.findById("999");
+    });
+}
+```
+
+### After: Testing Either
+
+<!-- verify -->
+```java
+@Test
+void shouldReturnLeftWhenUserNotFound() {
+    Either<DomainError, User> result = userService.findById("999");
+
+    assertThat(result.isLeft()).isTrue();
+    assertThat(result.getLeft()).isInstanceOf(UserNotFoundError.class);
+}
+```
+
+**Much cleaner:** No need to set up exception expectations or catch blocks.
+
+---
+
+## Performance Considerations
+
+Functional error handling is typically **as fast or faster** than exception-throwing:
+
+**Exception Throwing:**
+- Stack trace generation: ~1-10μs
+- Exception propagation: variable overhead
+- Expensive for expected errors
+
+**Either/Validated:**
+- Object allocation: ~10-50ns
+- No stack traces
+- Predictable performance
+
+---
+
+## Summing it all up
+
+When moving to a functional error handling approach:
+
+- ✅ **Start small** - New endpoints or high-value migrations first
+- ✅ **Incremental approach** - No need to migrate everything at once
+- ✅ **Backwards compatible** - Support legacy and functional endpoints simultaneously
+- ✅ **Better type safety** - Errors explicit in signatures
+- ✅ **Easier testing** - No exception mocking required
+- ✅ **Cleaner code** - Functional composition replaces nested try-catch
+- ✅ **Better UX** - Validated accumulates all errors
+
+The migration is straightforward and the benefits are immediate. Start with one endpoint and experience the difference!
+
+---
+
+~~~admonish tip title="See Also"
+- [Spring Boot Integration](./spring_boot_integration.md) - Complete integration guide
+- [Either Monad](../monads/either_monad.md) - Either usage patterns
+- [Validated Monad](../monads/validated_monad.md) - Validation patterns
+- [Effect Path API](../effect/path_types.md) - CompletableFuturePath, VTaskPath, and friends
+~~~
+
+---
+
+**Previous:** [Declarative HTTP Clients](declarative_http_clients.md)
+**Next:** [EffectBoundary Integration](effect_boundary_integration.md)
+
+<!-- Source: spring/effect_boundary_integration.md -->
+
+# EffectBoundary: Composable Effects for Spring Applications
+## _Bridging Free Monads into the Spring Ecosystem_
+
+~~~admonish info title="What You'll Learn"
+- How EffectBoundary bridges Free monad programs into the existing *Path handler ecosystem
+- The progressive adoption ladder, from a single `@Bean` to full `@EnableEffectBoundary` auto-wiring
+- Writing effect algebras as Spring-managed `@Interpreter` beans with dependency injection
+- Returning `FreePath` and `IOPath` from controllers with automatic HTTP response conversion
+- Testing effect programs purely with `TestBoundary` and stub interpreters
+- How this integrates with existing hkj-spring features (actuator, Jackson, error status mapping)
+~~~
+
+~~~admonish example title="Example Application"
+A complete working example is available in the [hkj-spring effect-example module](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-spring/effect-example). Run it with:
+```bash
+./gradlew :hkj-spring:effect-example:bootRun
+```
+~~~
+
+## Overview
+
+The previous pages showed how to return `Either`, `Validated`, and `IOPath` directly from Spring controllers. That approach works well for individual operations, but enterprise applications often need to compose multiple effects: check inventory, place an order, send a notification, all as a single program that can be interpreted differently for production, testing, and auditing.
+
+The **effect handler system** (Free monads, `@EffectAlgebra`, `Interpreters.combine()`) solves the composition problem. But wiring it into Spring has been manual and verbose. `PaymentEffectsWiring.java` in the examples module is 284 lines of ceremony: nested functor composition, `@SuppressWarnings("unchecked")` inject chains, and explicit `boundTo()` calls.
+
+`EffectBoundary` eliminates that ceremony. It encapsulates the interpret-and-execute pattern, and the Spring integration auto-discovers interpreters, combines them, and registers the boundary as a bean. The key insight is that **EffectBoundary does not create new infrastructure; it bridges Free monads into the existing *Path type ecosystem** that hkj-spring already handles.
+
+---
+
+## The Bridge: How Free Connects to Existing Handlers
+
+The existing hkj-spring module has nine return value handlers for *Path types (`FreePath` makes ten). `EffectBoundary.runIO()` returns `IOPath<A>`, which the **existing** `IOPathReturnValueHandler` already handles:
+
+```
+FreePath<F, A>  ──foldMap──▸  GenericPath<IO.Witness, A>  ──narrow──▸  IOPath<A>
+                                                                          │
+                                              existing IOPathReturnValueHandler
+                                                                          │
+                                                                    HTTP 200 JSON
+```
+
+This means you can use `EffectBoundary` on **day one** without any new Spring infrastructure. The existing Jackson serialisation, actuator metrics, and error status mapping all apply automatically.
+
+---
+
+## The Adoption Ladder
+
+Each level uses patterns Spring developers already know. No level requires the previous one.
+
+| Level | What You Write | Spring Analogy | Change Required |
+|-------|---------------|----------------|-----------------|
+| **0** | `Either<E,A>`, `IOPath<A>` from controllers | N/A | None (today) |
+| **1** | `EffectBoundary` bean + `boundary.runIO()` | Any `@Bean` | None (core only) |
+| **2** | Return `FreePath<F,A>` from controller | `CompletableFuture<T>` return | Handler #10 |
+| **3** | `@Interpreter(MyOp.class)` on interpreter classes | `@Repository`, `@Service` | Stereotype |
+| **4** | `@EnableEffectBoundary({...})` on app class | `@EnableCaching` | Auto-config |
+| **5** | `@EffectTest(effects={...})` on test class | `@WebMvcTest` | Test slice |
+| **6** | Metrics appear automatically | Existing actuator | Extends metrics |
+
+---
+
+## Level 1: EffectBoundary as a Bean
+
+The simplest adoption path. Create an `EffectBoundary` bean manually and use it in your service or controller.
+
+### Step 1: Define the Boundary Bean
+
+`EffectBoundary<F>` is parameterised by the effect **witness**, not by the `@ComposeEffects`
+record. `Interpreters.combine` nests `EitherF` to the right, and Java has no type alias, so a
+four-algebra composition spells its witness out. With one algebra it is simply
+`PaymentGatewayOpKind.Witness`.
+
+<!-- verify -->
+```java
+@Configuration
+public class PaymentConfig {
+
+    @Bean
+    public EffectBoundary<EitherFKind.Witness<
+                PaymentGatewayOpKind.Witness,
+                EitherFKind.Witness<
+                    FraudCheckOpKind.Witness,
+                    EitherFKind.Witness<LedgerOpKind.Witness, NotificationOpKind.Witness>>>>
+        paymentBoundary() {
+        return EffectBoundary.of(Interpreters.combine(
+            new ProductionGatewayInterpreter(),
+            new ProductionFraudInterpreter(),
+            new ProductionLedgerInterpreter(),
+            new ProductionNotificationInterpreter()
+        ));
+    }
+}
+```
+
+### Step 2: Use It in a Controller
+
+<!-- verify -->
+```java
+@RestController
+@RequestMapping("/api/payments")
+public class PaymentController {
+
+    private final EffectBoundary<EitherFKind.Witness<
+                PaymentGatewayOpKind.Witness,
+                EitherFKind.Witness<
+                    FraudCheckOpKind.Witness,
+                    EitherFKind.Witness<LedgerOpKind.Witness, NotificationOpKind.Witness>>>> boundary;
+    private final PaymentService<EitherFKind.Witness<
+                PaymentGatewayOpKind.Witness,
+                EitherFKind.Witness<
+                    FraudCheckOpKind.Witness,
+                    EitherFKind.Witness<LedgerOpKind.Witness, NotificationOpKind.Witness>>>> service;
+
+    public PaymentController(
+            EffectBoundary<EitherFKind.Witness<
+                PaymentGatewayOpKind.Witness,
+                EitherFKind.Witness<
+                    FraudCheckOpKind.Witness,
+                    EitherFKind.Witness<LedgerOpKind.Witness, NotificationOpKind.Witness>>>> boundary,
+            PaymentService<EitherFKind.Witness<
+                PaymentGatewayOpKind.Witness,
+                EitherFKind.Witness<
+                    FraudCheckOpKind.Witness,
+                    EitherFKind.Witness<LedgerOpKind.Witness, NotificationOpKind.Witness>>>> service) {
+        this.boundary = boundary;
+        this.service = service;
+    }
+
+    @PostMapping
+    public IOPath<PaymentResult> processPayment(@RequestBody PaymentRequest req) {
+        return boundary.runIO(
+            service.processPayment(req.customer(), req.amount(), req.method()));
+    }
+}
+```
+
+The controller returns `IOPath<PaymentResult>`, which the **existing** `IOPathReturnValueHandler` converts to an HTTP 200 response with a JSON body. No new handler needed.
+
+### What Changed from Manual Wiring
+
+| Aspect | Before (Manual) | After (EffectBoundary) |
+|--------|-----------------|----------------------|
+| Wiring | 284 lines in PaymentEffectsWiring.java | One `@Bean` definition |
+| Execution | `program.foldMap(interp, monad)` then `narrow().unsafeRunSync()` | `boundary.runIO(program)` |
+| Controller return | Manual conversion to HTTP response | Return `IOPath`, handler does the rest |
+| Type signatures | Spelled at every call site of the wiring | Spelled once, on the boundary bean |
+
+---
+
+## Level 2: FreePath as a Controller Return Type
+
+Once the `FreePathReturnValueHandler` is registered (auto-configured by the starter), controllers can return `FreePath` directly:
+
+<!-- verify -->
+```java
+@PostMapping
+public FreePath<EitherFKind.Witness<
+                PaymentGatewayOpKind.Witness,
+                EitherFKind.Witness<
+                    FraudCheckOpKind.Witness,
+                    EitherFKind.Witness<LedgerOpKind.Witness, NotificationOpKind.Witness>>>, PaymentResult>
+    pay(@RequestBody PaymentRequest req) {
+    return Path.free(
+        service.processPayment(req.customer(), req.amount(), req.method()),
+        PaymentEffectsWiring.functor());
+    // The handler interprets the program and serialises the result
+}
+```
+
+The handler detects the `FreePath` return type, looks up the `EffectBoundary` bean from the application context, calls `boundary.run()`, and writes the JSON response.
+
+Configure it like any other handler:
+
+```yaml
+hkj:
+  web:
+    free-path-enabled: true             # default: true
+    free-path-failure-status: 500       # default: 500
+    free-path-include-exception-details: false
+```
+
+---
+
+## Level 3: Interpreters as Spring Beans
+
+Mark interpreter classes with `@Interpreter` to make them Spring-managed beans:
+
+<!-- verify -->
+```java
+@Interpreter(PaymentGatewayOp.class)
+public class StripeGatewayInterpreter
+        extends PaymentGatewayOpInterpreter<IOKind.Witness> {
+
+    private final StripeClient client;
+
+    public StripeGatewayInterpreter(StripeClient client) {
+        this.client = client;  // Spring constructor injection
+    }
+
+    @Override
+    protected <A> Kind<IOKind.Witness, A> handleCharge(PaymentGatewayOp.Charge<A> op) {
+        return IO_OP.widen(IO.delay(() -> op.k().apply(client.charge(op.amount(), op.method()))));
+    }
+
+    @Override
+    protected <A> Kind<IOKind.Witness, A> handleAuthorise(PaymentGatewayOp.Authorise<A> op) {
+        return IO_OP.widen(
+            IO.delay(() -> op.k().apply(client.authorise(op.amount(), op.method()))));
+    }
+
+    @Override
+    protected <A> Kind<IOKind.Witness, A> handleRefund(PaymentGatewayOp.Refund<A> op) {
+        return IO_OP.widen(
+            IO.delay(() -> op.k().apply(client.refund(op.transactionId(), op.amount()))));
+    }
+}
+```
+
+**Profile-based switching** replaces interpreters for different environments:
+
+<!-- verify -->
+```java
+@Interpreter(value = PaymentGatewayOp.class, profile = "test")
+public class StubGatewayInterpreter
+        extends PaymentGatewayOpInterpreter<IOKind.Witness> {
+
+    private static final TransactionId STUB = new TransactionId("STUB-TXN-001");
+
+    @Override
+    protected <A> Kind<IOKind.Witness, A> handleCharge(PaymentGatewayOp.Charge<A> op) {
+        return IO_OP.widen(
+            IO.delay(() -> op.k().apply(ChargeResult.success(STUB, op.amount()))));
+    }
+
+    @Override
+    protected <A> Kind<IOKind.Witness, A> handleAuthorise(PaymentGatewayOp.Authorise<A> op) {
+        return IO_OP.widen(
+            IO.delay(() -> op.k().apply(new AuthorisationToken("STUB-AUTH", op.amount()))));
+    }
+
+    @Override
+    protected <A> Kind<IOKind.Witness, A> handleRefund(PaymentGatewayOp.Refund<A> op) {
+        return IO_OP.widen(
+            IO.delay(() -> op.k().apply(ChargeResult.success(op.transactionId(), op.amount()))));
+    }
+}
+```
+
+An interpreter with a `profile` attribute is only **eligible** when that profile is active (the registrar filters candidates with `Environment.acceptsProfiles`); one with no `profile` is always eligible. A profile-restricted interpreter is more **specific** and shadows an unrestricted one: run with `--spring.profiles.active=test` and the stub is selected for `PaymentGatewayOp` even though the profile-less `StripeGatewayInterpreter` is still eligible. Only two or more interpreters at the *same* specificity (two unrestricted beans, or two active profiled beans) fail startup with a hard error naming the ambiguous algebra.
+
+---
+
+## Level 4: Full Auto-Wiring
+
+One annotation on your application class replaces all manual wiring:
+
+<!-- verify -->
+```java
+@SpringBootApplication
+@EnableEffectBoundary({PaymentGatewayOp.class, FraudCheckOp.class,
+                       LedgerOp.class, NotificationOp.class})
+public class PaymentApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(PaymentApplication.class, args);
+    }
+}
+```
+
+The `@EnableEffectBoundary` registrar:
+1. Reads the effect algebra class list from the annotation
+2. Resolves each to its generated `*Kind.Witness` type
+3. Scans for `@Interpreter`-annotated beans matching each algebra, filtering by active profile
+4. Constructs the `EitherF` nesting order automatically (left-to-right = outer-to-inner)
+5. Calls `Interpreters.combine()` with the discovered interpreters
+6. Registers the single `effectBoundary` bean (`EffectBoundary<ComposedWitness>`) as a singleton
+7. Validates at startup: a missing interpreter (or two equally-specific eligible interpreters for one algebra) produces a clear error naming the offending algebra
+
+The registrar honours the `hkj.effect-boundary.enabled` master switch (default `true`); when set to `false`, no boundary bean is registered.
+
+This replaces `PaymentEffectsWiring.java` (284 lines) with **one annotation**.
+
+---
+
+## Testing with TestBoundary
+
+`TestBoundary` interprets programs using the Id monad: pure, synchronous, deterministic. No IO, no Spring context, no network calls.
+
+### Pure Service Tests
+
+A stub interpreter targets `IdKind.Witness` and records what it was asked to do. This mirrors `OrderServicePureTest` in the effect-example module:
+
+<!-- verify -->
+```java
+@DisplayName("OrderService Pure Tests (No Spring Context)")
+class OrderServicePureTest {
+
+    /** In-memory Id-targeting interpreter for pure testing. */
+    static class StubOrderInterpreter implements Natural<OrderOpKind.Witness, IdKind.Witness> {
+        private int ordersPlaced = 0;
+
+        @Override
+        public <A> Kind<IdKind.Witness, A> apply(Kind<OrderOpKind.Witness, A> fa) {
+            OrderOp<A> op = OrderOpKindHelper.ORDER_OP.narrow(fa);
+            return switch (op) {
+                case OrderOp.PlaceOrder<A> place -> {
+                    ordersPlaced++;
+                    yield Id.of(place.k().apply(OrderResult.confirmed("ORD-TEST-0001")));
+                }
+                case OrderOp.GetStatus<A> get ->
+                    Id.of(get.k().apply(OrderStatus.CONFIRMED));
+            };
+        }
+
+        int ordersPlaced() {
+            return ordersPlaced;
+        }
+    }
+
+    private final StubOrderInterpreter interpreter = new StubOrderInterpreter();
+    private final TestBoundary<OrderOpKind.Witness> boundary = TestBoundary.of(interpreter);
+    private final OrderService service = new OrderService();
+
+    @Test
+    @DisplayName("Should place order and return confirmed result")
+    void shouldPlaceOrder() {
+        OrderResult result = boundary.run(
+            service.placeOrder(new OrderRequest("C001", "ITEM-42", 2)));
+
+        assertThat(result.status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(interpreter.ordersPlaced()).isEqualTo(1);
+    }
+}
+```
+
+These tests run in milliseconds. The same `OrderService` program that runs against real infrastructure in production runs against in-memory stubs here, with no code changes. Composing several algebras works the same way: build the boundary with `TestBoundary.of(Interpreters.combine(orderStub, inventoryStub, notifyStub))`.
+
+### @EffectTest Test Slice
+
+For integration tests that need Spring auto-configuration but not the web layer, `@EffectTest(effects={...})` auto-discovers `@Interpreter` beans, combines them, and registers an `EffectBoundary` in the test context:
+
+<!-- verify -->
+```java
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@EffectTest(effects = {OrderOp.class})
+class OrderServiceSpringTest {
+
+    @Autowired EffectBoundary<OrderOpKind.Witness> boundary;
+    @Autowired OrderService service;
+
+    @Test
+    void shouldPlaceOrder() {
+        OrderResult result = boundary.run(
+            service.placeOrder(new OrderRequest("C001", "ITEM-42", 2)));
+
+        assertThat(result.status()).isEqualTo(OrderStatus.CONFIRMED);
+    }
+}
+```
+
+---
+
+## The Full Stack
+
+```
+@EnableEffectBoundary({Order, Inventory, Notification})
+          │
+          ▼
+    EffectBoundaryRegistrar               (auto-discovers @Interpreter beans)
+          │
+          ▼
+    Interpreters.combine(...)             (auto-composed Natural<F, IO.Witness>)
+          │
+          ▼
+    EffectBoundary<ComposedWitness> bean  (registered as singleton)
+          │
+          ├──▸ OrderService (injected with Bound<> instances)
+          │         │
+          │         ▼
+          │    Free<G, OrderResult>       (pure program description)
+          │         │
+          ▼         ▼
+    boundary.runIO(program)  ──▸  IOPath<OrderResult>
+                                       │
+                          IOPathReturnValueHandler (EXISTING)
+                                       │
+                                  HTTP 200 JSON
+
+    OR:
+
+    controller returns FreePath<G, OrderResult>
+                                       │
+                        FreePathReturnValueHandler (NEW)
+                                       │
+                          boundary.run(program)
+                                       │
+                                  HTTP 200 JSON
+```
+
+---
+
+## Configuration
+
+All configuration is optional. EffectBoundary works with sensible defaults.
+
+```yaml
+hkj:
+  web:
+    # Existing handlers (unchanged)
+    either-path-enabled: true
+    maybe-path-enabled: true
+
+    # FreePath handler
+    free-path-enabled: true
+    free-path-failure-status: 500
+    free-path-include-exception-details: false
+
+  effect-boundary:
+    enabled: true                     # master switch consulted by the registrar (default: true)
+```
+
+Setting `hkj.effect-boundary.enabled: false` prevents the registrar from creating the boundary bean at all. Interpreter validation is always fail-fast: a missing or ambiguous interpreter is a startup error, not a warning; there is no property to relax it. Environment-specific interpreter switching is done with the `@Interpreter(profile = ...)` attribute (see [Level 3](#level-3-interpreters-as-spring-beans)), not with configuration keys.
+
+---
+
+## Transactions
+
+`EffectBoundary.run()` is a synchronous call, so it participates naturally in Spring's transaction lifecycle:
+
+<!-- verify -->
+```java
+@Service
+public class TransactionalOrders {
+
+    private final EffectBoundary<OrderOpKind.Witness> boundary;
+    private final OrderService service;
+
+    TransactionalOrders(EffectBoundary<OrderOpKind.Witness> boundary, OrderService service) {
+        this.boundary = boundary;
+        this.service = service;
+    }
+
+    @Transactional
+    public OrderResult placeOrder(OrderRequest request) {
+        return boundary.run(service.placeOrder(request));
+        // Transaction commits only if all effects succeed
+        // Rolls back on any interpreter failure
+    }
+}
+```
+
+No special integration needed. This works with the basic `EffectBoundary`.
+
+---
+
+## Metrics with ObservableEffectBoundary
+
+`ObservableEffectBoundary` wraps an `EffectBoundary` with Micrometer metrics. When actuator is on the classpath, every boundary execution records success/error counters and execution duration:
+
+<!-- verify -->
+```java
+@Bean
+public ObservableEffectBoundary<OrderOpKind.Witness> observableBoundary(
+        EffectBoundary<OrderOpKind.Witness> boundary,
+        @Nullable HkjMetricsService metricsService) {
+    if (metricsService == null) {
+        return null;
+    }
+    return new ObservableEffectBoundary<>(boundary, metricsService);
+}
+```
+
+The recorded metrics follow the same naming conventions as existing hkj-spring actuator metrics:
+
+| Metric | Description |
+|--------|-------------|
+| `hkj.effect.boundary.invocations{result="success"}` | Successful boundary executions |
+| `hkj.effect.boundary.invocations{result="error"}` | Failed boundary executions |
+| `hkj.effect.boundary.duration` | Execution time per invocation |
+
+These appear automatically in the `/actuator/metrics` endpoint alongside existing hkj metrics for Either, Validated, VTask, and VStream handlers.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **EffectBoundary bridges Free monads into existing infrastructure.** `runIO()` returns `IOPath`, which the existing handler converts to HTTP responses. No parallel universe.
+* **Adoption is progressive.** Start with a single `@Bean`, then add `@Interpreter`, then `@EnableEffectBoundary`. Each level adds value independently.
+* **Interpreters become Spring beans.** They can inject repositories, HTTP clients, and configuration. Profile-based switching replaces manual test/prod wiring.
+* **Testing is pure and fast.** `TestBoundary` with stub interpreters runs programs in milliseconds with no Spring context, no IO, and full observability into what effects were executed.
+* **The same program runs everywhere.** Production interprets into IO with real services. Tests interpret into Id with stubs. Auditing wraps interpreters with logging. The program itself never changes.
+~~~
+
+~~~admonish tip title="See Also"
+- [Spring Boot Integration](spring_boot_integration.md) - Using Either, Validated, and *Path types in controllers
+- [Migrating to Functional Errors](migrating_to_functional_errors.md) - Incremental migration from exceptions
+- [FreePath](../effect/path_free.md) - The Free monad fluent API
+- [Effect Handlers](../effect/effect_handlers.md) - Effect algebra reference
+~~~
+
+---
+
+**Previous:** [Migrating to Functional Errors](migrating_to_functional_errors.md)

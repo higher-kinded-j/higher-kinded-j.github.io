@@ -1,0 +1,990 @@
+# Migrating from Exceptions to Functional Error Handling
+## _A Practical Step-by-Step Guide_
+
+~~~admonish info title="What You'll Learn"
+- How to incrementally migrate exception-based code to functional patterns
+- Converting exception-throwing methods to Either
+- Replacing `@ExceptionHandler` methods with automatic response conversion
+- Migrating validation logic to Validated
+- Converting async operations to CompletableFuturePath and VTaskPath
+- Maintaining backwards compatibility during migration
+- Common migration patterns and pitfalls to avoid
+~~~
+
+## Overview
+
+Migrating from exception-based error handling to functional patterns doesn't have to be all-or-nothing. This guide shows you how to migrate incrementally, maintaining backwards compatibility whilst gradually introducing type-safe error handling.
+
+**Key Principle:** Start with new endpoints or the most problematic areas, then expand as you see the benefits.
+
+---
+
+## Incremental Migration
+
+Start by using functional types for all **new** endpoints. This allows your team to learn the patterns without touching existing code.
+
+**Approach:**
+- Use Either/Validated for new controllers
+- Leave existing exception-based endpoints unchanged
+- Build confidence with the new patterns
+
+
+Identify endpoints with complex error handling or frequent bugs. These are prime candidates for migration:
+- Endpoints with multiple `@ExceptionHandler` methods
+- Validation-heavy endpoints
+- Async operations with complicated error propagation
+
+Gradually migrate remaining endpoints as you touch them for other reasons (features, bug fixes, refactoring).
+
+---
+
+## Pattern 1: Simple Exception to Either
+
+### Before: Exception-Throwing Method
+
+<!-- verify -->
+```java
+@Service
+public class UserService {
+
+    @Autowired
+    private UserRepository repository;
+
+    public User findById(String id) {
+        return repository.findById(id)
+            .orElseThrow(() -> new UserNotFoundException(id));
+    }
+}
+
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    @GetMapping("/{id}")
+    public User getUser(@PathVariable String id) {
+        return userService.findById(id);  // What exceptions can this throw?
+    }
+
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(UserNotFoundException ex) {
+        return ResponseEntity.status(404)
+            .body(new ErrorResponse("USER_NOT_FOUND", ex.getMessage()));
+    }
+}
+```
+
+**Potential Problems:**
+- Error types hidden in implementation
+- Requires reading method bodies to understand possible failures
+- `@ExceptionHandler` catches exceptions from unrelated methods
+- Testing requires exception mocking
+
+### After: Either-Returning Method
+
+<!-- verify -->
+```java
+@Service
+public class UserService {
+
+    @Autowired
+    private UserRepository repository;
+
+    public Either<DomainError, User> findById(String id) {
+        return repository.findById(id)
+            .map(Either::<DomainError, User>right)
+            .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+    }
+}
+
+// Domain error types
+public sealed interface DomainError permits UserNotFoundError, ValidationError {
+}
+
+public record UserNotFoundError(String userId) implements DomainError {
+}
+
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    @GetMapping("/{id}")
+    public Either<DomainError, User> getUser(@PathVariable String id) {
+        return userService.findById(id);  // Clear: returns User or DomainError
+    }
+
+    // No @ExceptionHandler needed! Framework handles Either → HTTP conversion
+}
+```
+
+**Some Benefits:**
+- ✅ Errors explicit in method signature
+- ✅ Compiler enforces error handling at call sites
+- ✅ No `@ExceptionHandler` boilerplate
+- ✅ Easy to test: no exception mocking
+
+### Migration Steps
+
+**Step 1:** Define your error types as a sealed interface hierarchy
+
+<!-- verify -->
+```java
+public sealed interface DomainError permits
+    UserNotFoundError,
+    ValidationError,
+    AuthorizationError {
+}
+
+public record UserNotFoundError(String userId) implements DomainError {
+}
+
+public record AuthorizationError(String action) implements DomainError {
+}
+```
+
+**Step 2:** Convert service methods one at a time
+
+<!-- verify -->
+```java
+// Keep old method temporarily for backwards compatibility
+@Deprecated
+public User findById_OLD(String id) {
+    return repository.findById(id)
+        .orElseThrow(() -> new UserNotFoundException(id));
+}
+
+// New method with functional return type
+public Either<DomainError, User> findById(String id) {
+    return repository.findById(id)
+        .map(Either::<DomainError, User>right)
+        .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+}
+```
+
+**Step 3:** Update controller methods
+
+<!-- verify -->
+```java
+@GetMapping("/{id}")
+public Either<DomainError, User> getUser(@PathVariable String id) {
+    return userService.findById(id);
+}
+```
+
+**Step 4:** Remove `@ExceptionHandler` methods once all callers are migrated
+
+<!-- verify -->
+```java
+// DELETE THIS - no longer needed!
+// @ExceptionHandler(UserNotFoundException.class)
+// public ResponseEntity<ErrorResponse> handleNotFound(...)
+```
+
+---
+
+## Pattern 2: Multiple Exceptions to Either
+
+### Before: Multiple Exception Types
+
+```java
+@Service
+public class OrderService {
+
+    public Order processOrder(OrderRequest request) throws
+            UserNotFoundException,
+            InsufficientStockException,
+            PaymentFailedException {
+
+        User user = userService.findById(request.userId());  // throws UserNotFoundException
+        checkStock(request.items());                          // throws InsufficientStockException
+        processPayment(request.payment());                    // throws PaymentFailedException
+
+        return createOrder(request);
+    }
+}
+
+@RestController
+public class OrderController {
+
+    @PostMapping("/orders")
+    public Order createOrder(@RequestBody OrderRequest request) {
+        return orderService.processOrder(request);
+    }
+
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<?> handleUserNotFound(UserNotFoundException ex) {
+        return ResponseEntity.status(404).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InsufficientStockException.class)
+    public ResponseEntity<?> handleOutOfStock(InsufficientStockException ex) {
+        return ResponseEntity.status(400).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(PaymentFailedException.class)
+    public ResponseEntity<?> handlePaymentFailed(PaymentFailedException ex) {
+        return ResponseEntity.status(402).body(new ErrorResponse(ex.getMessage()));
+    }
+}
+```
+
+### After: Either with Discriminated Errors
+
+<!-- verify -->
+```java
+public sealed interface OrderError permits
+    UserNotFoundError,
+    OutOfStockError,
+    PaymentFailedError {
+}
+
+@Service
+public class OrderService {
+
+    @Autowired
+    private UserService userService;
+    @Autowired
+    private Inventory inventory;
+    @Autowired
+    private Payments payments;
+
+    public Either<OrderError, Order> processOrder(OrderRequest request) {
+        return userService.findById(request.userId())
+            .mapLeft(this::toDomainError)  // Convert DomainError to OrderError
+            .flatMap(user -> checkStock(request.items()))
+            .flatMap(stock -> processPayment(request.payment()))
+            .map(payment -> createOrder(request, payment));
+
+        // Short-circuits on first error
+        // All error types explicit in OrderError sealed interface
+    }
+
+    private Either<OrderError, Stock> checkStock(List<String> items) {
+        Stock stock = inventory.check(items);
+        if (!stock.isAvailable()) {
+            return Either.left(new OutOfStockError(stock.unavailableItems()));
+        }
+        return Either.right(stock);
+    }
+
+    private Either<OrderError, Payment> processPayment(String payment) {
+        Payment taken = payments.take(payment);
+        if (taken == null) {
+            return Either.left(new PaymentFailedError("declined"));
+        }
+        return Either.right(taken);
+    }
+
+    private OrderError toDomainError(DomainError error) {
+        return new PaymentFailedError(error.toString());
+    }
+
+    private Order createOrder(OrderRequest request, Payment payment) {
+        return new Order(payment.id(), request.userId());
+    }
+}
+
+@RestController
+public class OrderController {
+
+    @Autowired
+    private OrderService orderService;
+
+    @PostMapping("/orders")
+    public Either<OrderError, Order> createOrder(@RequestBody OrderRequest request) {
+        return orderService.processOrder(request);
+    }
+
+    // No @ExceptionHandler methods needed!
+    // Framework maps error types to HTTP status:
+    // - UserNotFoundError → 404
+    // - OutOfStockError → 400
+    // - PaymentFailedError → 402
+}
+```
+
+**Key Improvement:** All possible errors are visible in the `OrderError` sealed interface.
+
+---
+
+## Pattern 3: Validation Exceptions to Validated
+
+### Before: Validation with Exceptions
+
+```java
+@PostMapping
+public User createUser(@Valid @RequestBody UserRequest request, BindingResult bindingResult) {
+    if (bindingResult.hasErrors()) {
+        List<String> errors = bindingResult.getAllErrors()
+            .stream()
+            .map(ObjectError::getDefaultMessage)
+            .toList();
+        throw new ValidationException(errors);
+    }
+
+    // Additional custom validation
+    if (!emailService.isValid(request.email())) {
+        throw new ValidationException("Invalid email format");
+    }
+
+    if (userRepository.existsByEmail(request.email())) {
+        throw new ValidationException("Email already exists");
+    }
+
+    return userService.create(request);
+}
+
+@ExceptionHandler(ValidationException.class)
+public ResponseEntity<?> handleValidation(ValidationException ex) {
+    return ResponseEntity.status(400)
+        .body(new ErrorResponse(ex.getErrors()));
+}
+```
+
+**Problem:** Only the first validation error is thrown. To see all errors, user must fix one at a time.
+
+### After: Validated with Error Accumulation
+
+<!-- verify -->
+```java
+public record ValidationError(String field, String message) {
+}
+
+@Service
+public class UserService {
+
+    @Autowired
+    private UserRepository userRepository;
+
+    public ValidationPath<NonEmptyList<ValidationError>, User> validateAndCreate(
+            UserRequest request) {
+        return Path.accumulate()
+            .and(validateEmail(request.email()))
+            .and(validateFirstName(request.firstName()))
+            .and(validateLastName(request.lastName()))
+            .and(validateUniqueEmail(request.email()))
+            .apply((email, firstName, lastName, uniqueEmail) ->
+                createUser(email, firstName, lastName));
+    }
+
+    private User createUser(String email, String firstName, String lastName) {
+        return new User(UUID.randomUUID().toString(), email, firstName + " " + lastName);
+    }
+
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateEmail(String email) {
+        if (email == null || !email.matches("^[A-Za-z0-9+_.-]+@(.+)$")) {
+            return Path.invalidNel(
+                new ValidationError("email", "Invalid email format"));
+        }
+        return Path.validNel(email);
+    }
+
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateFirstName(String name) {
+        if (name == null || name.trim().length() < 2) {
+            return Path.invalidNel(
+                new ValidationError("firstName", "First name must be at least 2 characters"));
+        }
+        return Path.validNel(name);
+    }
+
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateLastName(String name) {
+        if (name == null || name.trim().length() < 2) {
+            return Path.invalidNel(
+                new ValidationError("lastName", "Last name must be at least 2 characters"));
+        }
+        return Path.validNel(name);
+    }
+
+    private ValidationPath<NonEmptyList<ValidationError>, String> validateUniqueEmail(String email) {
+        // accumulate() runs every validator independently, so this one must not query the
+        // repository for a syntactically invalid email: existsByEmail(null) could throw and turn a
+        // bad request into a 500. validateEmail already reports the format error, so skip the
+        // uniqueness check for malformed input.
+        if (email == null || !email.matches("^[A-Za-z0-9+_.-]+@(.+)$")) {
+            return Path.validNel(email);
+        }
+        if (userRepository.existsByEmail(email)) {
+            return Path.invalidNel(
+                new ValidationError("email", "Email already exists"));
+        }
+        return Path.validNel(email);
+    }
+}
+
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    @PostMapping
+    public ValidationPath<NonEmptyList<ValidationError>, User> createUser(
+            @RequestBody UserRequest request) {
+        return userService.validateAndCreate(request);
+    }
+
+    // No @ExceptionHandler needed!
+    // Framework converts:
+    // - Valid(user) → 200 OK with user JSON (unwrapped)
+    // - Invalid(errors) → 400 Bad Request with ALL validation errors:
+    //   {"valid": false, "errors": [...], "errorCount": n}
+}
+```
+
+`Path.accumulate()` opens an open-arity accumulating assembly: each `.and(...)` adds an independently validated field, and `.apply(...)` builds the result only when every field is valid; otherwise **all** errors are collected, in declaration order. Raw `Validated<List<ValidationError>, User>` works as a return type too (the same handler accepts it); the example module's `UserService.validateAndCreate` shows that style using `ValidatedMonad.instance(Semigroups.list())` with `Applicative.map3`.
+
+**Why it helps:**
+- ✅ Returns **all** validation errors at once
+- ✅ Better user experience (fix all issues in one go)
+- ✅ Validation logic is composable and testable
+- ✅ No special exception types needed
+
+### Migration Steps
+
+**Step 1:** Extract validation logic into individual single-field validators
+
+<!-- verify -->
+```java
+ValidationPath<NonEmptyList<ValidationError>, String> validateEmail(String email) {
+    return email != null && email.contains("@")
+        ? Path.validNel(email)
+        : Path.invalidNel(new ValidationError("email", "Invalid email format"));
+}
+```
+
+**Step 2:** Compose validations with `Path.accumulate()`
+
+<!-- verify -->
+```java
+public ValidationPath<NonEmptyList<ValidationError>, User> validateAndCreate(UserRequest request) {
+    return Path.accumulate()
+        .and(validateEmail(request.email()))
+        .and(validateName(request.name()))
+        // ... more fields
+        .apply((email, name) -> createUser(email, name));
+}
+```
+
+**Step 3:** Return the `ValidationPath` from the controller
+
+<!-- verify -->
+```java
+@PostMapping
+public ValidationPath<NonEmptyList<ValidationError>, User> createUser(
+        @RequestBody UserRequest request) {
+    return userService.validateAndCreate(request);
+}
+```
+
+---
+
+## Pattern 4: Async Exceptions to CompletableFuturePath
+
+### Before: CompletableFuture with Exception Handling
+
+```java
+@Service
+public class AsyncOrderService {
+
+    public CompletableFuture<Order> processOrderAsync(OrderRequest request) {
+        return userService.findByIdAsync(request.userId())
+            .thenCompose(user -> {
+                if (user == null) {
+                    throw new CompletionException(new UserNotFoundException(request.userId()));
+                }
+                return inventoryService.checkStockAsync(request.items());
+            })
+            .thenCompose(stock -> {
+                if (!stock.isAvailable()) {
+                    throw new CompletionException(new OutOfStockException());
+                }
+                return paymentService.processPaymentAsync(request.payment());
+            })
+            .handle((payment, ex) -> {
+                if (ex != null) {
+                    // Complex error handling logic
+                    Throwable cause = ex.getCause();
+                    if (cause instanceof UserNotFoundException) {
+                        throw new CompletionException(cause);
+                    } else if (cause instanceof OutOfStockException) {
+                        throw new CompletionException(cause);
+                    }
+                    throw new CompletionException(ex);
+                }
+                return createOrder(request, payment);
+            });
+    }
+}
+
+@RestController
+public class OrderController {
+
+    @GetMapping("/{id}")
+    public CompletableFuture<Order> getOrder(@PathVariable String id) {
+        return asyncOrderService.getOrderAsync(id)
+            .exceptionally(ex -> {
+                // More error handling...
+                throw new CompletionException(ex);
+            });
+    }
+}
+```
+
+**Potential Problems:**
+- Wrapped exceptions in `CompletionException`
+- Error handling scattered across `.handle()` and `.exceptionally()`
+- Type safety lost
+
+### After: CompletableFuturePath Composition
+
+`CompletableFuturePath` wraps the future in the Effect Path API, so the chain reads linearly with `via` (async bind) and `map`, and the return-value handler takes care of Spring's async request processing:
+
+<!-- verify -->
+```java
+@Service
+public class AsyncOrderService {
+
+    @Autowired
+    private AsyncUserService asyncUserService;
+    @Autowired
+    private AsyncInventoryService asyncInventoryService;
+    @Autowired
+    private AsyncPaymentService asyncPaymentService;
+
+    public CompletableFuturePath<Order> processOrderAsync(OrderRequest request) {
+        return asyncUserService.findByIdAsync(request.userId())
+            .via(user -> asyncInventoryService.checkStockAsync(request.items()))
+            .via(stock -> {
+                if (!stock.isAvailable()) {
+                    return Path.future(CompletableFuture.failedFuture(
+                        new OutOfStockException(stock.unavailableItems())));
+                }
+                return asyncPaymentService.processPaymentAsync(request.payment());
+            })
+            .map(payment -> createOrder(request, payment));
+
+        // Linear composition: the failure short-circuits the chain
+    }
+
+    private Order createOrder(OrderRequest request, Payment payment) {
+        return new Order(payment.id(), request.userId());
+    }
+}
+
+@RestController
+public class OrderController {
+
+    @Autowired
+    private AsyncOrderService asyncOrderService;
+
+    @PostMapping("/orders")
+    public CompletableFuturePath<Order> createOrder(@RequestBody OrderRequest request) {
+        return asyncOrderService.processOrderAsync(request);
+        // Framework handles async → HTTP response conversion via DeferredResult
+    }
+}
+```
+
+**Improvements:**
+- ✅ Clean, linear composition with `via`/`map`: no `.handle()` / `.exceptionally()` pyramid
+- ✅ Automatic short-circuiting on failure
+- ✅ Framework handles async processing (non-blocking request thread)
+
+~~~admonish warning title="Failure mapping is coarse-grained"
+`CompletableFuturePath` (and `VTaskPath`) carry failures as **exceptions**, not typed `Left` values. A failed future maps to the configured `hkj.web.async-failure-status` (default 500); the per-error-class `ErrorStatusCodeStrategy` mapping does not apply, because by the time the handler sees the failure it is a `Throwable`. If an endpoint needs `Left(UserNotFoundError)` → 404 semantics, keep the typed `Either` at the boundary (a synchronous `Either` return, possibly computed off-thread inside the service) rather than folding the error into an exception. This mirrors `AsyncUserService` in the example module, where `UserNotFoundException` deliberately surfaces as the configured async failure status.
+~~~
+
+### Migration Steps
+
+**Step 1:** Convert async methods to return `CompletableFuturePath` with `Path.future`
+
+<!-- verify -->
+```java
+public CompletableFuturePath<User> findByIdAsync(String id) {
+    CompletableFuture<User> future = CompletableFuture.supplyAsync(
+        () -> repository.findById(id)
+                  .orElseThrow(() -> new UserNotFoundException(id)),
+        asyncExecutor);
+
+    return Path.future(future);
+}
+```
+
+**Step 2:** Compose operations with `via` and `map`
+
+<!-- verify -->
+```java
+public CompletableFuturePath<Order> processOrderAsync(OrderRequest request) {
+    return findByIdAsync(request.userId())
+        .via(user -> checkStockAsync(request.items()))
+        .via(stock -> processPaymentAsync(request.payment()))
+        .map(payment -> createOrder(request, payment));
+}
+```
+
+**Step 3:** Return `CompletableFuturePath` from the controller
+
+<!-- verify -->
+```java
+@GetMapping("/{id}/async")
+public CompletableFuturePath<Order> getOrder(@PathVariable String id) {
+    return asyncOrderService.getOrderAsync(id);
+}
+```
+
+### Alternative: VTaskPath on Virtual Threads
+
+If you are on virtual threads, `VTaskPath` gives the same handler integration with no executor bean at all; the computation is deferred and runs on a virtual thread when the handler invokes it:
+
+<!-- verify -->
+```java
+public VTaskPath<User> findById(String id) {
+    return Path.vtask(() -> {
+            // Blocking calls are cheap on a virtual thread
+            return repository.findById(id)
+                .orElseThrow(() -> new UserNotFoundException(id));
+        })
+        .timeout(Duration.ofSeconds(5));
+}
+```
+
+The same failure-mapping caveat applies: a thrown exception maps to `hkj.web.vtask-failure-status` (default 500). See [VTaskPath](spring_boot_integration.md#vtaskpath-virtual-thread-async) for structured-concurrency fan-out with `Scope`.
+
+---
+
+## Pattern 5: Chained Operations
+
+### Before: Nested Try-Catch
+
+```java
+@GetMapping("/{userId}/orders/{orderId}/items/{itemId}")
+public OrderItem getOrderItem(
+        @PathVariable String userId,
+        @PathVariable String orderId,
+        @PathVariable String itemId) {
+
+    try {
+        User user = userService.findById(userId);
+
+        try {
+            Order order = orderService.findById(orderId);
+
+            try {
+                orderService.verifyOwnership(order, userId);
+
+                try {
+                    return orderService.findItem(order, itemId);
+                } catch (ItemNotFoundException ex) {
+                    throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found");
+                }
+            } catch (UnauthorizedException ex) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Not your order");
+            }
+        } catch (OrderNotFoundException ex) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found");
+        }
+    } catch (UserNotFoundException ex) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+    }
+}
+```
+
+### After: flatMap Composition
+
+<!-- verify -->
+```java
+@GetMapping("/{userId}/orders/{orderId}/items/{itemId}")
+public Either<DomainError, OrderItem> getOrderItem(
+        @PathVariable String userId,
+        @PathVariable String orderId,
+        @PathVariable String itemId) {
+
+    return userService.findById(userId)
+        .flatMap(user -> orderService.findById(orderId))
+        .flatMap(order -> orderService.verifyOwnership(order, userId).map(_ -> order))
+        .flatMap(order -> orderService.findItem(order, itemId));
+
+    // Clean, linear, composable
+    // Short-circuits on first error
+}
+```
+
+**Major Improvement:** Nested try-catch pyramid eliminated, replaced with clean functional composition.
+
+---
+
+## Pattern 6: Maintaining Backwards Compatibility
+
+During migration, you may need to support both old and new clients. Here are strategies:
+
+### Strategy 1: Dual Endpoints
+
+Expose both old and new versions:
+
+<!-- verify -->
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    // Old endpoint (deprecated)
+    @GetMapping("/{id}")
+    @Deprecated
+    public User getUserLegacy(@PathVariable String id) {
+        Either<DomainError, User> result = userService.findById(id);
+
+        return result.fold(
+            error -> { throw new UserNotFoundException(id); },  // Convert back to exception
+            user -> user
+        );
+    }
+
+    // New endpoint (functional)
+    @GetMapping("/v2/{id}")
+    public Either<DomainError, User> getUser(@PathVariable String id) {
+        return userService.findById(id);
+    }
+}
+```
+
+### Strategy 2: Content Negotiation
+
+Use different response format based on `Accept` header:
+
+<!-- verify -->
+```java
+@GetMapping("/{id}")
+public ResponseEntity<?> getUser(@PathVariable String id,
+                                  @RequestHeader("Accept") String accept) {
+
+    Either<DomainError, User> result = userService.findById(id);
+
+    if (accept.contains("application/vnd.myapp.v2+json")) {
+        // New clients get Either JSON
+        return ResponseEntity.ok(result);
+    } else {
+        // Old clients get traditional format
+        return result.fold(
+            error -> ResponseEntity.status(404).build(),
+            user -> ResponseEntity.ok(user)
+        );
+    }
+}
+```
+
+### Strategy 3: Convert Either to Exception Temporarily
+
+If you must maintain existing exception-based behaviour:
+
+<!-- verify -->
+```java
+@Service
+public class UserService {
+
+    @Autowired
+    private UserRepository repository;
+
+    // New internal method
+    public Either<DomainError, User> findById(String id) {
+        return repository.findById(id)
+            .map(Either::<DomainError, User>right)
+            .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+    }
+
+    // Old public method for legacy callers
+    @Deprecated
+    public User findById_LEGACY(String id) throws UserNotFoundException {
+        return findById(id).fold(
+            error -> {
+                throw new UserNotFoundException(id);  // Convert back to exception
+            },
+            user -> user
+        );
+    }
+}
+```
+
+---
+
+## Potential Pitfalls and Remedies
+
+### Pitfall 1: Forgetting to Handle Both Cases
+
+<!-- verify -->
+```java
+// ❌ BAD: Only handles Right case
+@GetMapping("/{id}/email")
+public String getUserEmail(@PathVariable String id) {
+    return userService.findById(id)
+        .map(User::email)
+        .getRight();  // Throws NoSuchElementException if Left!
+}
+```
+
+<!-- verify -->
+```java
+// ✅ GOOD: Return Either, let framework handle it
+@GetMapping("/{id}/email")
+public Either<DomainError, String> getUserEmail(@PathVariable String id) {
+    return userService.findById(id)
+        .map(User::email);
+}
+```
+
+### Pitfall 2: Mixing Exceptions and Either
+
+<!-- verify -->
+```java
+// ❌ BAD: Throwing exception inside Either
+public Either<DomainError, User> findById(String id) {
+    if (id == null) {
+        throw new IllegalArgumentException("ID cannot be null");  // Don't do this!
+    }
+    return repository.findById(id)
+        .map(Either::<DomainError, User>right)
+        .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+}
+```
+
+<!-- verify -->
+```java
+// ✅ GOOD: Return Left for all errors
+public Either<DomainError, User> findById(String id) {
+    if (id == null) {
+        return Either.left(new ValidationError("id", "ID cannot be null"));
+    }
+    return repository.findById(id)
+        .map(Either::<DomainError, User>right)
+        .orElseGet(() -> Either.left(new UserNotFoundError(id)));
+}
+```
+
+### Pitfall 3: Not Using Validated for Multiple Errors
+
+<!-- verify -->
+```java
+// ❌ BAD: Using Either for validation (only returns first error)
+public Either<ValidationError, User> validateUser(UserRequest request) {
+    return validateEmail(request.email()).run().toEither()
+        .mapLeft(NonEmptyList::head)
+        .flatMap(email -> validateName(request.name()).run().toEither()
+            .mapLeft(NonEmptyList::head))
+        .map(name -> createUser(request.email(), name));
+    // Stops at first error!
+}
+```
+
+<!-- verify -->
+```java
+// ✅ GOOD: Accumulate all errors with Path.accumulate()
+public ValidationPath<NonEmptyList<ValidationError>, User> validateUser(UserRequest request) {
+    return Path.accumulate()
+        .and(validateEmail(request.email()))
+        .and(validateName(request.name()))
+        .and(validateAge(request.age()))
+        .apply((email, name, age) -> createUser(email, name, age));
+    // Returns ALL errors!
+}
+```
+
+---
+
+## Checklist
+
+When migrating an endpoint:
+
+- [ ] Define domain error types as sealed interface
+- [ ] Convert service methods to return Either/Validated/CompletableFuturePath/VTaskPath
+- [ ] Update controller methods to return functional types
+- [ ] Remove corresponding `@ExceptionHandler` methods
+- [ ] Update unit tests (no more exception mocking!)
+- [ ] Update integration tests to verify HTTP responses
+- [ ] Document the new error types in API docs
+- [ ] Consider backwards compatibility strategy if needed
+- [ ] Monitor error rates with Spring Boot Actuator (optional)
+
+---
+
+## Testing
+
+### Before: Testing Exception-Throwing Code
+
+<!-- verify -->
+```java
+@Test
+void shouldThrowWhenUserNotFound() {
+    var _ = assertThrowsExactly(UserNotFoundException.class, () -> {
+        userService.findById("999");
+    });
+}
+```
+
+### After: Testing Either
+
+<!-- verify -->
+```java
+@Test
+void shouldReturnLeftWhenUserNotFound() {
+    Either<DomainError, User> result = userService.findById("999");
+
+    assertThat(result.isLeft()).isTrue();
+    assertThat(result.getLeft()).isInstanceOf(UserNotFoundError.class);
+}
+```
+
+**Much cleaner:** No need to set up exception expectations or catch blocks.
+
+---
+
+## Performance Considerations
+
+Functional error handling is typically **as fast or faster** than exception-throwing:
+
+**Exception Throwing:**
+- Stack trace generation: ~1-10μs
+- Exception propagation: variable overhead
+- Expensive for expected errors
+
+**Either/Validated:**
+- Object allocation: ~10-50ns
+- No stack traces
+- Predictable performance
+
+---
+
+## Summing it all up
+
+When moving to a functional error handling approach:
+
+- ✅ **Start small** - New endpoints or high-value migrations first
+- ✅ **Incremental approach** - No need to migrate everything at once
+- ✅ **Backwards compatible** - Support legacy and functional endpoints simultaneously
+- ✅ **Better type safety** - Errors explicit in signatures
+- ✅ **Easier testing** - No exception mocking required
+- ✅ **Cleaner code** - Functional composition replaces nested try-catch
+- ✅ **Better UX** - Validated accumulates all errors
+
+The migration is straightforward and the benefits are immediate. Start with one endpoint and experience the difference!
+
+---
+
+~~~admonish tip title="See Also"
+- [Spring Boot Integration](./spring_boot_integration.md) - Complete integration guide
+- [Either Monad](../monads/either_monad.md) - Either usage patterns
+- [Validated Monad](../monads/validated_monad.md) - Validation patterns
+- [Effect Path API](../effect/path_types.md) - CompletableFuturePath, VTaskPath, and friends
+~~~
+
+---
+
+**Previous:** [Declarative HTTP Clients](declarative_http_clients.md)
+**Next:** [EffectBoundary Integration](effect_boundary_integration.md)

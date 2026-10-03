@@ -1,0 +1,215 @@
+# Order Processing Workflow
+
+A production-quality example demonstrating how functional patterns solve real business problems.
+
+---
+
+## Overview
+
+The Order Processing Workflow is a comprehensive e-commerce example that processes customer orders through multiple stages: validation, inventory reservation, payment processing, shipment creation, and notification. It showcases how Higher-Kinded-J patterns handle complexity without sacrificing readability.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        ORDER PROCESSING PIPELINE                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Request ──▶ Validate ──▶ Customer ──▶ Inventory ──▶ Discount          │
+│                  │            │            │            │               │
+│                  ▼            ▼            ▼            ▼               │
+│              Address?     Exists?      In Stock?    Valid Code?         │
+│              Postcode?    Eligible?    Reserved?    Loyalty Tier?       │
+│                                                                         │
+│   ──▶ Payment ──▶ Shipment ──▶ Notification ──▶ Result                  │
+│          │           │             │                                    │
+│          ▼           ▼             ▼                                    │
+│       Approved?   Created?     Sent?                                    │
+│       Funds?      Carrier?     (non-critical)                           │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Key Patterns Demonstrated
+
+### Typed Error Hierarchies
+
+Domain errors modelled as a sealed interface hierarchy for exhaustive pattern matching:
+
+<!-- verify -->
+```java
+public sealed interface OrderError {
+    record ValidationError(List<FieldError> fieldErrors, ErrorEnvelope<OrderErrorContext> envelope)
+        implements OrderError {}
+    record CustomerError(String customerId, ErrorEnvelope<OrderErrorContext> envelope)
+        implements OrderError {}
+    record InventoryError(List<String> unavailableProducts,
+        ErrorEnvelope<OrderErrorContext> envelope) implements OrderError {}
+    record DiscountError(Optional<String> promoCode, ErrorEnvelope<OrderErrorContext> envelope)
+        implements OrderError {}
+    record PaymentError(Optional<String> transactionId, ErrorEnvelope<OrderErrorContext> envelope)
+        implements OrderError {}
+    record ShippingError(boolean recoverable, ErrorEnvelope<OrderErrorContext> envelope)
+        implements OrderError {}
+    record NotificationError(ErrorEnvelope<OrderErrorContext> envelope) implements OrderError {}
+    record SystemError(Optional<Throwable> cause, ErrorEnvelope<OrderErrorContext> envelope)
+        implements OrderError {}
+
+    record FieldError(String field, String message, @Nullable Object rejectedValue) {}
+}
+```
+
+~~~admonish tip title="Typing the envelope"
+A hierarchy like this tends to grow the same `code`/`message`/`timestamp`/`context` components on every variant. [`@GenerateErrorEnvelope`](../mapping/merge_envelopes.md#generating-error-envelopes-generateerrorenvelope) generates that envelope and types the context; the book's running example there is exactly an `OrderError`.
+~~~
+
+### For → toState → ForState Comprehension
+
+The workflow uses `For` to gather initial values, then bridges to `ForState` via `toState()` for named field access through the remaining steps:
+
+<!-- verify -->
+```java
+public EitherPath<OrderError, OrderResult> process(OrderRequest request) {
+    var orderId = OrderId.generate();
+    var customerId = new CustomerId(request.customerId());
+    MonadError<EitherKind.Witness<OrderError>, OrderError> monad = Instances.monadError(either());
+
+    Kind<EitherKind.Witness<OrderError>, OrderResult> result =
+        // Phase 1 (Gather): accumulate address, customer, order via For
+        For.from(monad, lift(validateShippingAddress(request.shippingAddress())))
+            .from(addr -> lift(lookupAndValidateCustomer(customerId)))
+            .from(t -> lift(buildValidatedOrder(orderId, request, t._2(), t._1())))
+
+            // Bridge: construct named state from gathered values
+            .toState((address, customer, order) ->
+                ProcessingState.initial(address, customer, order))
+
+            // Phase 2 (Enrich): named field access via ForState + lenses
+            .fromThen(s -> lift(reserveInventory(s.order().orderId(), s.order().lines())),
+                ProcessingStateLenses.reservation())
+            .fromThen(s -> lift(applyDiscounts(s.order(), s.customer())), ProcessingStateLenses.discount())
+            .fromThen(s -> lift(processPayment(s.order(), s.discount())), ProcessingStateLenses.payment())
+            .fromThen(s -> lift(createShipment(s.order(), s.address())), ProcessingStateLenses.shipment())
+            .fromThen(s -> lift(sendNotifications(s.order(), s.customer(), s.discount())),
+                ProcessingStateLenses.notification())
+            .yield(OrderWorkflow::toOrderResult);
+
+    return Path.either(EITHER.narrow(result));
+}
+```
+
+After `toState()`, every value is accessed by name (`s.order()`, `s.customer()`, `s.discount()`) rather than by tuple position (`t._3()`, `t._2()`, `t._5()`).
+
+### Resilience Patterns
+
+Retry and timeout combinators chain onto the path itself. The committing half of the workflow is never retried, because a payment that already went through is not safe to repeat:
+
+<!-- verify -->
+```java
+// Retry only the idempotent pre-flight reads; one timeout bounds the whole retry loop.
+EitherPath<OrderError, Unit> preflight =
+    EitherPath.withTimeout(
+        () -> toEitherPath(
+            Path.io(() -> runPreflight(request)).withRetry(retryPolicy),
+            "ConfigurableOrderWorkflow.preflight"),
+        preflightTimeout,
+        () -> OrderError.SystemError.timeout(
+            "ConfigurableOrderWorkflow.preflight", preflightTimeout));
+```
+
+### Focus DSL Integration
+
+Immutable state updates using generated lenses:
+
+<!-- verify -->
+```java
+// Replace a validated order's payment method
+ValidatedOrder updated = ValidatedOrderFocus.paymentMethod().set(newMethod, order);
+
+// Add one to every line's quantity
+ValidatedOrder adjusted = ValidatedOrderFocus.lines()
+    .via(ValidatedOrderLineFocus.quantity())
+    .modifyAll(qty -> qty + 1, order);
+```
+
+---
+
+## Source Files
+
+| File | Description | Run Command |
+|------|-------------|-------------|
+| [OrderWorkflowDemo.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/runner/OrderWorkflowDemo.java) | Main demo runner | `./gradlew :hkj-examples:run -PmainClass=org.higherkindedj.example.order.runner.OrderWorkflowDemo` |
+| [EnhancedOrderWorkflowDemo.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/runner/EnhancedOrderWorkflowDemo.java) | Demo with concurrency | `./gradlew :hkj-examples:run -PmainClass=org.higherkindedj.example.order.runner.EnhancedOrderWorkflowDemo` |
+| [OrderWorkflow.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/OrderWorkflow.java) | Core workflow | View source |
+| [ConfigurableOrderWorkflow.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/ConfigurableOrderWorkflow.java) | Feature flags and resilience | View source |
+| [EnhancedOrderWorkflow.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/EnhancedOrderWorkflow.java) | VTask concurrency patterns | View source |
+
+### Domain Model
+
+| File | Description |
+|------|-------------|
+| [OrderError.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/error/OrderError.java) | Sealed error hierarchy |
+| [OrderRequest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/model/OrderRequest.java) | Input request model |
+| [ValidatedOrder.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/model/ValidatedOrder.java) | Post-validation model |
+| [OrderResult.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/model/OrderResult.java) | Workflow result |
+
+### Services
+
+| File | Description |
+|------|-------------|
+| [CustomerService.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/service/CustomerService.java) | Customer lookup |
+| [InventoryService.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/service/InventoryService.java) | Stock reservation |
+| [PaymentService.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/service/PaymentService.java) | Payment processing |
+| [ShippingService.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/service/ShippingService.java) | Shipment creation |
+
+### Extended Workflows
+
+| File | Description |
+|------|-------------|
+| [PartialFulfilmentWorkflow.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/PartialFulfilmentWorkflow.java) | Handling partial inventory |
+| [SplitShipmentWorkflow.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/SplitShipmentWorkflow.java) | Multi-warehouse shipping |
+| [OrderCancellationWorkflow.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/OrderCancellationWorkflow.java) | Cancellation with rollback |
+
+---
+
+## Project Structure
+
+```
+hkj-examples/src/main/java/org/higherkindedj/example/order/
+├── config/
+│   └── WorkflowConfig.java        # Feature flags and configuration
+├── context/
+│   └── OrderContext.java          # Execution context
+├── error/
+│   └── OrderError.java            # Sealed error hierarchy
+├── model/
+│   ├── OrderRequest.java          # Input models
+│   ├── ValidatedOrder.java        # Domain models
+│   ├── OrderResult.java           # Result types
+│   └── value/                     # Value objects (Money, OrderId, etc.)
+├── runner/
+│   ├── OrderWorkflowDemo.java     # Main runner
+│   └── EnhancedOrderWorkflowDemo.java
+├── service/
+│   ├── CustomerService.java       # Service interfaces
+│   ├── InventoryService.java
+│   └── impl/                      # In-memory implementations
+└── workflow/
+    ├── OrderWorkflow.java         # Core workflow
+    ├── ConfigurableOrderWorkflow.java
+    ├── EnhancedOrderWorkflow.java
+    └── FocusDSLExamples.java      # Focus DSL usage
+```
+
+---
+
+## Related Documentation
+
+- [Order Walkthrough](../hkts/order-walkthrough.md) – Step-by-step guide to the workflow
+- [Effect Composition](../hkts/order-composition.md) – Detailed pattern explanations
+- [Production Patterns](../hkts/order-production.md) – Feature flags, retries, and configuration
+- [Concurrency and Scale](../hkts/order-concurrency.md) – VTask, Scope, and structured concurrency
+
+---
+
+**Next:** [Draughts Game](examples_draughts.md)

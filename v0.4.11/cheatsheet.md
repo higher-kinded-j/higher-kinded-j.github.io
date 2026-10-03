@@ -1,0 +1,197 @@
+# Cheat Sheet
+
+~~~admonish info title="What You'll Learn"
+- Quick reference for all Path types, creation, and extraction
+- Common operators at a glance
+- How to get back to standard Java from any Path
+- Type conversion routes between Path types
+~~~
+
+---
+
+## Path Types
+
+| Path Type | For | Create | Extract |
+|-----------|-----|--------|---------|
+| `MaybePath<A>` | Absence | `Path.maybe(v)`, `Path.just(v)`, `Path.nothing()` | `.run()` → `Maybe<A>` |
+| `EitherPath<E, A>` | Typed errors | `Path.right(v)`, `Path.left(e)`, `Path.either(eitherValue)` | `.run()` → `Either<E, A>` |
+| `TryPath<A>` | Exceptions | `Path.tryOf(() -> ...)`, `Path.success(v)`, `Path.failure(ex)` | `.run()` → `Try<A>` |
+| `ValidationPath<E, A>` | Accumulating errors | `Path.valid(v, sg)`, `Path.invalid(e, sg)` | `.run()` → `Validated<E, A>` |
+| `EitherOrBothPath<L, A>` | Success with warnings | `Path.rightNel(v)`, `Path.bothNel(w, v)`, `Path.leftNel(e)` | `.run()` → `EitherOrBoth<L, A>` |
+| `IOPath<A>` | Deferred side effects | `Path.io(() -> ...)`, `Path.ioPure(v)` | `.unsafeRun()` → `A` |
+| `VTaskPath<A>` | Virtual threads | `Path.vtask(() -> ...)`, `Path.vtaskPure(v)` | `.unsafeRun()` → `A` |
+| `VResultPath<E, A>` | Virtual threads + typed error | `Path.vresultRight(v)`, `Path.vresultLeft(e)`, `Path.vresultDefer(() -> either)` | `.toEitherPath()` → `EitherPath<E, A>` |
+| `ReaderPath<R, A>` | Dependency injection | `Path.reader(r)`, `Path.ask()`, `Path.asks(fn)` | `.run(env)` → `A` |
+| `WriterPath<W, A>` | Logging, audit | `Path.writer(w, m)`, `Path.tell(log, m)` | `.run()` → `Writer<W, A>` |
+| `WithStatePath<S, A>` | Stateful computation | `Path.state(s)`, `Path.getState()` | `.run(initial)` → `(S, A)` |
+| `TrampolinePath<A>` | Stack-safe recursion | `Path.trampolineDone(v)`, `Path.trampolineDefer(s)` | `.run()` → `A` |
+| `LazyPath<A>` | Deferred, memoised | `Path.lazyDefer(() -> ...)`, `Path.lazyNow(v)` | `.run()` → `A` |
+| `CompletableFuturePath<A>` | Async | `Path.future(cf)`, `Path.futureAsync(() -> ...)` | `.run()` → `CompletableFuture<A>` |
+| `ListPath<A>` | Batch processing with positional zipping | `Path.listPath(list)` | `.run()` → `List<A>` |
+| `StreamPath<A>` | Lazy sequences | `Path.stream(stream)` | `.run()` → `Stream<A>` |
+| `NonDetPath<A>` | Non-deterministic search, combinations | `Path.list(list)` | `.run()` → `List<A>` |
+| `IdPath<A>` | Pure values | `Path.id(v)` | `.run()` → `Id<A>` |
+| `OptionalPath<A>` | java.util.Optional bridge | `Path.optional(opt)`, `Path.present(v)` | `.run()` → `Optional<A>` |
+| `FreePath<F, A>` | DSL building | `Path.freePure(v, f)`, `Path.freeLift(fa, f)` | `.foldMap(nat, m)` |
+| `GenericPath<F, A>` | Custom monads | `Path.generic(kind, monad)` | `.run()` → `Kind<F, A>` |
+
+---
+
+## Operators
+
+### Transformation
+
+| Operator | What It Does | Available On |
+|----------|-------------|--------------|
+| `.map(fn)` | Transform the success value | All paths |
+| `.peek(fn)` | Observe the value without changing it | All paths |
+| `.focus(lens)` | Navigate into a nested field via optics | MaybePath, EitherPath, TryPath, IOPath, ValidationPath |
+
+### Chaining
+
+| Operator | What It Does | Available On |
+|----------|-------------|--------------|
+| `.via(fn)` | Chain to another path (monadic bind) | All chainable paths |
+| `.flatMap(fn)` | Alias for `via` | All chainable paths |
+| `.then(supplier)` | Sequence, ignoring previous value | All chainable paths |
+
+### Combination
+
+| Operator | What It Does | Available On |
+|----------|-------------|--------------|
+| `.zipWith(other, fn)` | Combine two paths (fail-fast) | All combinable paths |
+| `.zipWith3(b, c, fn)` | Combine three paths (fail-fast) | Most paths |
+| `.zipWithAccum(other, fn)` | Combine, accumulating errors | ValidationPath, EitherOrBothPath |
+| `.zipWith3Accum(b, c, fn)` | Combine three, accumulating errors | ValidationPath, EitherOrBothPath |
+| `.andAlso(other)` | Accumulate errors, keep left value | ValidationPath, EitherOrBothPath |
+| `fields().field(label, v)...apply(Ctor::new)` | Open-arity record assembly, located errors | Validated, Path (ValidationPath), EitherOrBoth |
+| `fields().field(label, v)...construct(Ctor::new, "not a valid X")` | The same, for a constructor that may refuse the fields: its exception becomes a `FieldError` | Validated, Path (ValidationPath), EitherOrBoth |
+
+### Error Handling
+
+| Operator | What It Does | Available On |
+|----------|-------------|--------------|
+| `.recover(fn)` | Error → success value | MaybePath, EitherPath, TryPath, ValidationPath |
+| `.recoverWith(fn)` | Error → new path | MaybePath, EitherPath, TryPath, ValidationPath |
+| `.orElse(supplier)` | Try an alternative path | MaybePath, EitherPath, TryPath, ValidationPath |
+| `.mapError(fn)` | Transform the error type | EitherPath, TryPath, ValidationPath |
+| `.bimap(errFn, okFn)` | Transform error and success together | EitherPath |
+| `.handleError(fn)` | Throwable → recovery value | IOPath, VTaskPath (via `Effectful`) |
+| `.handleErrorWith(fn)` | Throwable → recovery effect | IOPath, VTaskPath (via `Effectful`) |
+| `.guarantee(runnable)` | Run cleanup whether success or failure | IOPath, VTaskPath (via `Effectful`) |
+| `.peekLeft(fn)` | Observe the error without changing it | EitherPath |
+| `.peekFailure(fn)` | Observe the exception without changing it | TryPath |
+
+### Extraction
+
+| Operator | What It Does | Available On |
+|----------|-------------|--------------|
+| `.run()` | Extract the underlying value | All paths |
+| `.unsafeRun()` | Execute a deferred effect (may throw) | IOPath, VTaskPath |
+| `.runSafe()` | Execute safely, returning `Try` | IOPath, VTaskPath |
+| `.fold(onErr, onOk)` | Handle both tracks (error-first) | EitherPath, ValidationPath |
+| `.foldFailureFirst(onErr, onOk)` | Handle both tracks (error-first; replaces deprecated `.fold(onOk, onErr)` since 0.4.6) | TryPath |
+| `.fold(identity, op)` | Reduce a sequence to one value | ListPath, StreamPath, VStreamPath |
+| `.foldLeft(seed, fn)` / `.foldRight(seed, fn)` | Directional reduce (type-changing) | ListPath, StreamPath |
+| `.foldMap(monoid, fn)` | Map then combine via a `Monoid` | ListPath, StreamPath, VStreamPath |
+| `.getOrElse(default)` | Extract or use default | MaybePath, EitherPath, TryPath, ValidationPath |
+| `.getOrElseGet(supplier)` | Extract or compute default | MaybePath, EitherPath, TryPath, ValidationPath |
+
+---
+
+## Boundary Mapping
+
+Compile-time domain ↔ wire codecs, generated from a spec interface you own:
+
+| Surface | What It Does | Where |
+|---------|-------------|-------|
+| `build(domain)` | Total domain → wire render | [`@GenerateMapping`](mapping/ch_intro.md) on `MappingSpec<Domain, Wire>` |
+| `parse(wire)` | Accumulating parse: every bad field at once, each located by path | the generated `XMappingImpl.INSTANCE` |
+| `updateFrom(wire)` | Sparse PATCH fold: absent means "leave unchanged" | [`UpdateSpec`](mapping/beans_patch.md#sparse-patch-write-back-updatespec) |
+| `updateFrom(message, mask)` | A protobuf-java message's update: applies the fields its `FieldMask` names | [`UpdateSpec`](mapping/beans.md#a-patch-through-its-fieldmask) |
+| `StandardCodecs.uuid()`, `localDate()`, `enumByName(...)`, ... | Stock `ValidatedPrism` leaves for identifiers, dates, enums, money | [Standard codecs](mapping/codecs.md#standard-codecs) |
+| `Edits.accumulate(...)` | Hand-written validated multi-edit (irregular PATCH shapes) | [Multi-Edit](optics/multi_edit.md) |
+| `MappingLaws.assertMappingLaws(...)` | Law-check any generated mapping in one test call | [hkj-test](tooling/test_assertions.md#optic-laws) |
+
+---
+
+## Escape Hatches
+
+Getting back to standard Java from any Path:
+
+| From | To | How |
+|------|----|-----|
+| `MaybePath<A>` | `Maybe<A>` | `.run()` |
+| `MaybePath<A>` | `Optional<A>` | `.run().toOptional()` |
+| `MaybePath<A>` | `Stream<A>` | `.run().stream()` |
+| `MaybePath<A>` | `A` (or default) | `.getOrElse(defaultValue)` |
+| `EitherPath<E, A>` | `Either<E, A>` | `.run()` |
+| `EitherPath<E, A>` | `A` (or default) | `.getOrElse(defaultValue)` |
+| `EitherPath<E, A>` | `B` | `.run().fold(onErr, onOk)` |
+| `TryPath<A>` | `Try<A>` | `.run()` |
+| `TryPath<A>` | `A` (or default) | `.getOrElse(defaultValue)` |
+| `ValidationPath<E, A>` | `Validated<E, A>` | `.run()` |
+| `ValidationPath<E, A>` | `B` | `.fold(onInvalid, onValid)` |
+| `IOPath<A>` | `A` | `.unsafeRun()` |
+| `IOPath<A>` | `Try<A>` | `.runSafe()` |
+| `VTaskPath<A>` | `A` | `.unsafeRun()` |
+| `VTaskPath<A>` | `Try<A>` | `.runSafe()` |
+
+---
+
+## Type-Class Instances
+
+One entry point, `Instances.x(...)`, for every type-class instance. See [Obtaining Instances](functional/instances_facade.md).
+
+<!-- verify -->
+```java
+import org.higherkindedj.hkt.instances.Instances;
+import static org.higherkindedj.hkt.instances.Witnesses.*;
+```
+
+| Need | Call |
+|------|------|
+| `Functor` / `Applicative` / `Monad` | `Instances.monad(maybe())` (also `functor`, `applicative`) |
+| `MonadError` (Maybe, Optional, Try, Either, ...) | `Instances.monadError(optional())` (`E` inferred from target) |
+| `MonadZero` / `Alternative` (Maybe, Optional, List, Stream) | `Instances.monadZero(list())` / `Instances.alternative(maybe())` |
+| Phantom-typed (Either, Reader, Context, State) | `Instances.monad(either())` (`L`/`R`/`S` inferred from target) |
+| `Validated` (needs a `Semigroup`) | `Instances.validated(Semigroups.list())` |
+| `Writer` (needs a `Monoid`) | `Instances.writer(Monoids.string())` |
+| Transformers (need the outer `Monad`) | `Instances.eitherT(outer)`, `maybeT`, `optionalT`, `readerT`, `stateT`, `writerT(outer, monoid)` |
+
+> Tokens: `maybe() io() list() optional() try_() vtask() vstream() lazy() stream() completableFuture() trampoline() id() either() reader() context() state()`. The `monadError`/`monadZero`/`alternative` lookups are partial, only valid where the type implements that capability.
+
+---
+
+## Type Conversions
+
+| From | To | Method |
+|------|----|--------|
+| `MaybePath<A>` | `EitherPath<E, A>` | `.toEitherPath(error)`, `.toEitherPath(errorSupplier)` |
+| `MaybePath<A>` | `TryPath<A>` | `.toTryPath(exceptionSupplier)` |
+| `MaybePath<A>` | `ValidationPath<E, A>` | `.toValidationPath(error, semigroup)`, `.toValidationPathGet(errorSupplier, semigroup)` |
+| `MaybePath<A>` | `OptionalPath<A>` | `.toOptionalPath()` |
+| `OptionalPath<A>` | `EitherPath<E, A>` | `.toEitherPath(error)`, `.toEitherPath(errorSupplier)` |
+| `OptionalPath<A>` | `ValidationPath<E, A>` | `.toValidationPath(error, semigroup)`, `.toValidationPathGet(errorSupplier, semigroup)` |
+| `EitherPath<E, A>` | `MaybePath<A>` | `.toMaybePath()` |
+| `EitherPath<E, A>` | `TryPath<A>` | `.toTryPath(errorToException)` |
+| `EitherPath<E, A>` | `ValidationPath<E, A>` | `.toValidationPath(semigroup)` |
+| `EitherPath<E, A>` | `OptionalPath<A>` | `.toOptionalPath()` |
+| `TryPath<A>` | `EitherPath<E, A>` | `.toEitherPath(exceptionToError)` |
+| `TryPath<A>` | `MaybePath<A>` | `.toMaybePath()` |
+| `ValidationPath<E, A>` | `EitherPath<E, A>` | `.toEitherPath()` |
+| `ValidationPath<E, A>` | `MaybePath<A>` | `.toMaybePath()` |
+| `VResultPath<E, A>` | `EitherPath<E, A>` | `.toEitherPath()` (runs it) |
+| `VResultPath<E, A>` | `VTaskPath<A>` | `.toVTaskPath(errorToException)` |
+| `EitherOrBoth<L, R>` | `Either<L, R>` | `.toEitherDroppingWarnings()`, `.toEitherFailingOnWarnings()` |
+| `EitherOrBoth<L, R>` | `Validated<L, R>` | `.toValidated()` |
+| `EitherOrBoth<L, R>` | `Maybe<R>` | `.toMaybe()` |
+| `FocusPath<S, A>` | `MaybePath<A>` | `.toMaybePath()` |
+| `FocusPath<S, A>` | `EitherPath<E, A>` | `.toEitherPath(errorFn)` |
+| `AffinePath<S, A>` | `MaybePath<A>` | `.toMaybePath()` |
+| `AffinePath<S, A>` | `EitherPath<E, A>` | `.toEitherPath(source, error)`, `.toEitherPath(source, errorSupplier)` |
+
+---
+
+**Previous:** [Quickstart](quickstart.md)
+**Next:** [Effect Path API](effect/ch_intro.md)

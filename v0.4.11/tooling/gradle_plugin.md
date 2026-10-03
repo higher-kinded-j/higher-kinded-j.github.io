@@ -1,0 +1,253 @@
+# Build Plugins: One-Line HKJ Setup
+
+~~~admonish info title="What You'll Learn"
+- How to replace multi-block build configuration with a single plugin for Gradle or Maven
+- The full Gradle `hkj { }` extension DSL and its defaults
+- Maven plugin configuration via `<configuration>` block
+- How to enable Spring Boot integration
+- How to override the HKJ library version
+- Manual setup for projects not using the plugins
+~~~
+
+---
+
+## Before and After
+
+### Without the Plugin
+
+A manual setup requires dependencies, annotation processors, the compile-time checker, and preview flags wired into every task that needs them. The full build file runs to roughly 30 lines; see [Manual Gradle and Maven Setup](manual_setup.md) for the complete configuration.
+
+### With the Plugin
+
+```gradle
+// build.gradle.kts
+plugins {
+    id("io.github.higher-kinded-j.hkj") version "LATEST_VERSION"
+}
+```
+
+That is it. The plugin wires in dependencies, preview flags, compile-time checks, and Javadoc configuration automatically. It also enables "-parameters", which keeps constructor parameter names in the compiled class files: some copy strategies read them today, and the [record mapper](../mapping/ch_intro.md) uses them too. In a multi-module build, apply the plugin to **every** module that declares mapping specs or `@GenerateFocus` records other modules navigate into, not only the one that consumes them: a spec is nested through its generated `Impl` and a record is navigated through its generated `Focus`, so each must exist. See [Multi-module builds](manual_setup.md#multi-module-builds).
+
+### Using SNAPSHOT Versions
+
+SNAPSHOT versions of the plugin are published to the Sonatype snapshots repository. Add it to `pluginManagement` in your `settings.gradle.kts`:
+
+```gradle
+// settings.gradle.kts
+pluginManagement {
+    repositories {
+        maven {
+            url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+        }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+```
+
+You also need the same repository in your project's `repositories` block so the plugin can resolve HKJ library dependencies:
+
+```gradle
+// build.gradle.kts
+repositories {
+    mavenCentral()
+    maven {
+        url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+    }
+}
+```
+
+~~~admonish note
+Release versions are published to both Maven Central and the [Gradle Plugin Portal](https://plugins.gradle.org), so no extra repository configuration is needed for releases.
+~~~
+
+---
+
+## Extension DSL Reference
+
+The plugin creates an `hkj` extension block with these options:
+
+```gradle
+hkj {
+    version = "LATEST_VERSION"       // HKJ library version (default: plugin version)
+    preview = true           // add --enable-preview flags (default: true)
+    spring = false           // add the starter and the @HkjHttpClient processor (default: false)
+    skills = false           // install Claude Code skills (default: false)
+    checks {
+        pathTypeMismatch = true   // enable compile-time Path type checking (default: true)
+    }
+}
+```
+
+### Defaults
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `version` | Plugin version | Version of HKJ libraries to use |
+| `preview` | `true` | Adds `--enable-preview` to compile, test, exec, and javadoc tasks |
+| `spring` | `false` | Adds `hkj-spring-boot-starter` to `implementation`, and the `@HkjHttpClient` processor to every annotation processor configuration |
+| `skills` | `false` | Installs Claude Code skills into `.claude/skills/` during build |
+| `checks.pathTypeMismatch` | `true` | Enables compile-time Path type mismatch detection |
+
+With default settings, the plugin adds:
+
+- `hkj-core` to `implementation`
+- `hkj-processor-plugins` to `annotationProcessor`
+- `hkj-checker` to `annotationProcessor`
+- `--enable-preview` to `JavaCompile`, `Test`, `JavaExec`, and `Javadoc` tasks
+- `-parameters` to every `JavaCompile` task (unconditional)
+- `-Xplugin:HKJChecker` to compiler arguments
+
+---
+
+## Spring Boot Mode
+
+Enable Spring Boot integration to add the HKJ Spring Boot starter:
+
+```gradle
+hkj {
+    spring = true
+}
+```
+
+This adds `hkj-spring-boot-starter` to the `implementation` configuration, which provides auto-configuration for using HKJ types with Spring's dependency injection and web layer. It also adds `hkj-spring-boot-client-processor` to every annotation processor configuration, which generates the [`@HkjHttpClient`](../spring/declarative_http_clients.md) clients: a dependency never adds to the processor path, so the starter alone would not.
+
+~~~admonish tip title="See Also"
+- [Spring Boot Integration](../spring/spring_boot_integration.md) - Full guide to using HKJ with Spring Boot
+~~~
+
+---
+
+## Claude Code Skills
+
+Install eight Claude Code skills that provide contextual, in-editor guidance for HKJ:
+
+```gradle
+hkj {
+    skills = true
+}
+```
+
+This runs the `hkjInstallSkills` task during every build, copying skill files into `.claude/skills/`. You can also run the task manually:
+
+```bash
+./gradlew hkjInstallSkills
+```
+
+With the Maven plugin, `<skills>true</skills>` installs them during every build too.
+
+~~~admonish tip title="See Also"
+- [Claude Code Skills](claude_code_skills.md) - Full reference for the eight bundled skills
+~~~
+
+---
+
+## Version Management
+
+By default, the plugin uses its own published version for HKJ dependencies. Override this to pin a different version:
+
+```gradle
+hkj {
+    version = "0.2.2"    // use an older version
+}
+```
+
+All HKJ dependencies (`hkj-core`, `hkj-processor-plugins`, `hkj-checker`, `hkj-spring-boot-starter`, `hkj-spring-boot-client-processor`) use the same version.
+
+---
+
+## Disabling Features
+
+### Disable Preview Features
+
+If your project manages preview flags separately:
+
+```gradle
+hkj {
+    preview = false
+}
+```
+
+~~~admonish warning
+Higher-Kinded-J requires `--enable-preview` on Java 25. Disabling this means you must configure the flags yourself, or compilation will fail.
+~~~
+
+### Disable Compile-Time Checks
+
+To skip Path type mismatch detection:
+
+```gradle
+hkj {
+    checks {
+        pathTypeMismatch = false
+    }
+}
+```
+
+This removes `hkj-checker` from the annotation processor path and omits the `-Xplugin:HKJChecker` compiler argument.
+
+---
+
+## Maven Users
+
+### With the HKJ Maven Plugin
+
+The HKJ Maven plugin provides similar automation to the Gradle plugin. Add it with `<extensions>true</extensions>` so it can configure dependencies and compiler settings automatically:
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.higher-kinded-j</groupId>
+            <artifactId>hkj-bom</artifactId>
+            <version>LATEST_VERSION</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<build>
+    <plugins>
+        <plugin>
+            <groupId>io.github.higher-kinded-j</groupId>
+            <artifactId>hkj-maven-plugin</artifactId>
+            <version>LATEST_VERSION</version>
+            <extensions>true</extensions>
+        </plugin>
+    </plugins>
+</build>
+```
+
+The plugin automatically adds `hkj-core`, annotation processors, compile-time checks, and preview feature flags. Configure options in the `<configuration>` block:
+
+```xml
+<configuration>
+    <version>LATEST_VERSION</version>   <!-- HKJ library version (default: plugin version) -->
+    <preview>true</preview>              <!-- add --enable-preview flags (default: true) -->
+    <spring>false</spring>               <!-- add hkj-spring-boot-starter and the @HkjHttpClient processor (default: false) -->
+    <skills>false</skills>               <!-- install Claude Code skills (default: false) -->
+    <pathTypeMismatch>true</pathTypeMismatch>  <!-- enable compile-time checks (default: true) -->
+</configuration>
+```
+
+The plugin writes `<annotationProcessorPaths>` into every compiler execution, which replaces javac's processor discovery, so list any other processor, such as Lombok, there too. A build that names its processors in `<annotationProcessors>` gets HKJ's added to that list while `<version>` is unset or names the plugin's own release, and no HKJ processor on the path is pinned to another. Otherwise list them yourself: they are the names in that release's `hkj-processor` jar, under `META-INF/services/javax.annotation.processing.Processor`. Run diagnostics with `mvn hkj:diagnostics` or install skills with `mvn hkj:install-skills`.
+
+### Manual Maven Setup
+
+Projects that cannot apply the Maven plugin should see [Manual Gradle and Maven Setup](manual_setup.md) for the full `pom.xml`, including the BOM, annotation processors, the `HKJChecker` compiler plugin, and the preview flags for surefire and exec plugins.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **One line** (Gradle) or a short plugin block (Maven) replaces extensive build configuration
+* **Sensible defaults** enable preview features and compile-time checks out of the box
+* **Claude Code skills** bring contextual HKJ guidance directly into your editor
+* **Everything is optional** and can be disabled or overridden through DSL/configuration
+* **The BOM** manages versions across all HKJ modules for both Gradle and Maven
+~~~
+
+---
+
+**Previous:** [Tooling](ch_intro.md)
+**Next:** [Manual Gradle and Maven Setup](manual_setup.md)

@@ -1,0 +1,150 @@
+<!-- description: Stack effects such as async work and typed errors with EitherT, MaybeT, OptionalT, ReaderT, StateT and WriterT, and write stack-independent code with MTL. -->
+
+# Monad Transformers
+## _Combining Effects_
+
+> *"You can't just bolt two things together and expect them to work."*
+>
+> – Richard Feynman
+
+---
+
+Every Java developer who has worked with `CompletableFuture` and `Either` separately knows they compose beautifully in isolation. `CompletableFuture` handles asynchronicity. `Either` handles typed errors. Each offers clean `map` and `flatMap` operations, each respects its own laws, and each is a pleasure to use alone.
+
+Then you need both at once.
+
+The result, `CompletableFuture<Either<DomainError, Result>>`, is technically correct in the same way that a car engine strapped to a bicycle is technically a vehicle. The types nest, the generics compile, and then you try to `flatMap` across the combined structure and discover that Java has no opinion about how these two contexts should interact. You write nested `thenApply` calls, peel back layers manually, and watch the indentation grow. The ergonomics deteriorate rapidly.
+
+Monad transformers solve this by wrapping the nested structure in a new type that provides a single, unified monadic interface. `EitherT<CompletableFutureKind.Witness, DomainError, Result>` is still `CompletableFuture<Either<DomainError, Result>>` underneath, but it offers one `flatMap` that sequences both the async and error-handling layers together. The nesting is hidden; the composition is restored.
+
+~~~admonish note title="Path First, Stack Later"
+Most users do not need to read this chapter. The [Effect Path API](../effect/ch_intro.md) wraps these transformers into a fluent interface that handles composition for you. Start there. Come here when you need to build custom transformer stacks or understand what happens under the hood.
+
+See [Stack Archetypes](archetypes.md) for named patterns that cover the most common use cases without requiring raw transformer manipulation.
+~~~
+
+Higher-Kinded-J provides six transformers, each adding a specific capability to any outer monad. It also provides MTL-style capability interfaces that let you write code against abstract capabilities rather than concrete transformer stacks.
+
+---
+
+## The Stacking Concept
+
+<pre class="hkj-ascii-diagram">
+<span style="color:#F44336">    ┌─────────────────────────────────────────────────────────────┐
+    │  WITHOUT TRANSFORMER                                        │
+    │                                                             │
+    │    CompletableFuture&lt;Either&lt;Error, Result&gt;&gt;                 │
+    │                                                             │
+    │    future.thenApply(either -&gt;                               │
+    │        either.map(result -&gt;                                 │
+    │            either2.map(r2 -&gt;                                │
+    │                ...)))   // Nesting grows unboundedly        │
+    └─────────────────────────────────────────────────────────────┘</span>
+
+<span style="color:#4CAF50">    ┌─────────────────────────────────────────────────────────────┐
+    │  WITH TRANSFORMER                                           │
+    │                                                             │
+    │    EitherT&lt;FutureWitness, Error, Result&gt;                    │
+    │                                                             │
+    │    eitherT                                                  │
+    │        .flatMap(result -&gt; operation1(result))               │
+    │        .flatMap(r1 -&gt; operation2(r1))                       │
+    │        .map(r2 -&gt; finalTransform(r2))  // Flat!             │
+    └─────────────────────────────────────────────────────────────┘</span>
+</pre>
+
+Same semantics. Vastly different ergonomics.
+
+---
+
+## Which Transformer Do I Need?
+
+```
+    ┌──────────────────────────────────────────────────────────┐
+    │              WHICH TRANSFORMER DO I NEED?                │
+    ├──────────────────────────────────────────────────────────┤
+    │                                                          │
+    │  "My operation might fail with a typed error"            │
+    │    └──▶  EitherT                                         │
+    │                                                          │
+    │  "My operation might return nothing"                     │
+    │    ├──▶  OptionalT  (java.util.Optional)                 │
+    │    └──▶  MaybeT     (Higher-Kinded-J Maybe)              │
+    │                                                          │
+    │  "My operation needs shared configuration"               │
+    │    └──▶  ReaderT                                         │
+    │                                                          │
+    │  "My operation needs to track changing state"            │
+    │    └──▶  StateT                                          │
+    │                                                          │
+    │  "My operation needs to accumulate output or logs"       │
+    │    └──▶  WriterT                                         │
+    │                                                          │
+    │  "I want stack-independent capability abstractions"      │
+    │    └──▶  MTL Capabilities (MonadReader, MonadState, ...) │
+    │                                                          │
+    └──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Available Transformers
+
+| Transformer | Inner Effect | Use Case |
+|-------------|--------------|----------|
+| `EitherT<F, E, A>` | Typed error (`Either<E, A>`) | Async operations that fail with domain errors |
+| `OptionalT<F, A>` | Java Optional (`Optional<A>`) | Async operations that might return nothing |
+| `MaybeT<F, A>` | Optional value (`Maybe<A>`) | Same as OptionalT, for Higher-Kinded-J's `Maybe` |
+| `ReaderT<F, R, A>` | Environment (`Reader<R, A>`) | Dependency injection in effectful contexts |
+| `StateT<S, F, A>` | State (`State<S, A>`) | Stateful computation within other effects |
+| `WriterT<F, W, A>` | Output (`Pair<A, W>`) | Logging, audit trails, diagnostic accumulation |
+
+---
+
+~~~admonish info title="In This Chapter"
+- **Path or Transformer?** – A short triage page that names the three signals you have outgrown the Effect Path API. Read this first if you are not yet sure whether the rest of the chapter applies to you.
+- **Quickstart** – Three runnable transformer examples in about 150 lines: `EitherT` for async-plus-typed-error, `OptionalT` for async lookup chains, and an MTL example for stack-independent code. The fastest path from zero to working code.
+- **Transformers at a Glance** – A one-page reference card listing every transformer, its factory methods, key operations, the equivalent Effect Path type, and the matching MTL capability.
+- **Migration Cookbook** – Pattern-by-pattern translations from imperative Java (and from the Effect Path API) into raw transformers. Recipes for nested `thenCompose`, manual config threading, manual log threading, and manual state threading.
+- **Stack Archetypes** – Seven named patterns (Service, Lookup, Validation, Context, Audit, Workflow, Safe Recursion) that cover the most common enterprise composition problems. Start here to find the right pattern for your use case.
+- **The Problem** – Monads don't compose naturally. A `CompletableFuture<Either<E, A>>` requires nested operations that become unwieldy. Transformers restore ergonomic composition.
+- **EitherT** – Adds typed error handling to any monad. Wrap your async operations with `EitherT` to get a single `flatMap` that handles both async sequencing and error propagation.
+- **OptionalT** – Lifts `java.util.Optional` into another monadic context. When your async operation might return nothing, OptionalT provides clean composition.
+- **MaybeT** – The same capability as OptionalT but for the library's `Maybe` type. Choose based on whether you're using Optional or Maybe elsewhere.
+- **ReaderT** – Threads environment dependencies through effectful computations. Combine dependency injection with async operations or error handling.
+- **StateT** – Manages state within effectful computations. Track state changes across async boundaries or error-handling paths.
+- **WriterT** – Accumulates output (logs, audit trails, diagnostics) alongside computation. Each step appends to the output via a `Monoid`, and `flatMap` combines outputs automatically.
+- **MTL Capabilities** – `MonadReader`, `MonadState`, and `MonadWriter` abstract effect capabilities independently of the concrete transformer stack. Write polymorphic functions that declare *what they need* without specifying *how* it is assembled.
+- **Common Compiler Errors** – The six error messages developers hit most often when working with raw transformers, with the minimal trigger for each and the fix.
+- **Capstone: A Multi-Capability Workflow** – A complete order-processing example that combines typed errors, configuration, audit, and async execution. Three side-by-side versions (imperative, MTL polymorphic, Effect Path) make the trade-offs concrete.
+
+See also [Capstone: Effects Meet Optics](../effect/capstone_focus_effect.md) for a complete example combining effect paths with optics in a single pipeline.
+~~~
+
+---
+
+## Chapter Contents
+
+1. [Path or Transformer?](when_to_drop_to_transformers.md) - The three signals that mean you have outgrown the Path API
+2. [Quickstart](quickstart.md) - Three runnable transformer examples
+3. [Transformers at a Glance](transformers_at_a_glance.md) - One-page reference card
+4. [Migration Cookbook](migration_cookbook.md) - Imperative and Path translations
+5. [Stack Archetypes](archetypes.md) - Named patterns for the most common composition problems
+6. [Monad Transformers](transformers.md) - Why monads stack poorly and what transformers solve
+7. [EitherT](eithert_transformer.md) - Typed errors in any monadic context
+8. [OptionalT](optionalt_transformer.md) - Java Optional lifting
+9. [MaybeT](maybet_transformer.md) - Maybe lifting
+10. [ReaderT](readert_transformer.md) - Environment threading
+11. [StateT](statet_transformer.md) - State management in effectful computation
+12. [WriterT](writert_transformer.md) - Output accumulation and audit trails
+13. [MTL Capabilities](mtl_capabilities.md) - Stack-independent capability abstractions
+    - [MonadReader](mtl_reader.md) - Environment access and scoped modification
+    - [MonadState](mtl_state.md) - State threading and mutation
+    - [MonadWriter](mtl_writer.md) - Output accumulation and log inspection
+    - [Combining Capabilities](mtl_combining.md) - Multi-capability functions and concrete instances
+14. [Common Compiler Errors](common_errors.md) - The six errors developers hit most often, with the fix for each
+15. [Capstone: A Multi-Capability Workflow](transformer_capstone.md) - End-to-end example combining typed errors, config, audit, and async
+
+---
+
+**Next:** [Path or Transformer?](when_to_drop_to_transformers.md)
