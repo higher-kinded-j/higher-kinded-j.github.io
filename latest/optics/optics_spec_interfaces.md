@@ -195,15 +195,13 @@ Name the paths once, at the top of the class, and the business logic reads as in
   static final Traversal<JsonNode, JsonNode> EACH_USER =
       JsonPaths.field("data").andThen(JsonPaths.field("users")).andThen(JsonPaths.elements());
 
-  // A Traversal composes with an Affine through asTraversal(): there is no
-  // Traversal.andThen(Affine) overload, because the result is a Traversal either way.
-  /** Every user's email address, as a String. */
+  /** Every user's email address, as a String: a Traversal followed by an Affine. */
   static final Traversal<JsonNode, String> USER_EMAILS =
-      EACH_USER.andThen(JsonPaths.field("email").andThen(JsonPaths.textValue()).asTraversal());
+      EACH_USER.andThen(JsonPaths.field("email").andThen(JsonPaths.textValue()));
 
   /** Every user's age, as a double. */
   static final Traversal<JsonNode, Double> USER_AGES =
-      EACH_USER.andThen(JsonPaths.field("age").andThen(JsonPaths.numericValue()).asTraversal());
+      EACH_USER.andThen(JsonPaths.field("age").andThen(JsonPaths.numericValue()));
 
   /** The page number: a single value, so an Affine rather than a Traversal. */
   static final Affine<JsonNode, Double> PAGE =
@@ -217,8 +215,8 @@ Those four constants are the whole abstraction. `Traversals.getAll` reads throug
 The JSON structure is now stated in one place. When the API moves `users` under a `payload` wrapper, you change one composition and every reader and writer follows. Compare the defensive version, where the shape is restated at every access site as a chain of `has()` and `isArray()` checks, and a structural change means finding all of them.
 ~~~
 
-~~~admonish warning title="Composing a Traversal with an Affine"
-`Traversal` has `andThen` overloads for `Traversal`, `Lens` and `Prism`, but not for `Affine`. Convert first: `traversal.andThen(affine.asTraversal())`. The result is a `Traversal` either way, since a traversal composed with anything stays a traversal.
+~~~admonish note title="Composing a Traversal with an Affine"
+`traversal.andThen(affine)` composes directly and gives a `Traversal`: an element where the affine finds nothing is left unchanged. [Composition Rules](composition_rules.md#composition-rules-table) has the result for every pair.
 ~~~
 
 ---

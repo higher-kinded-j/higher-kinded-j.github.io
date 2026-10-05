@@ -1488,7 +1488,7 @@ JsonValue result3 = jsonStringPrism.build(new JsonString("world"));
 
 ### Step 3: Composing Prisms for Deep Access
 
-The true power is composing `Prism`s with other optics. When a `Prism` meets a `Lens` or an `Affine`, the focus can be missing and nothing can build the whole from it, so the result is an `Affine`. Two prisms stay a `Prism`. A `Prism`, `Lens` or `Affine` followed by a `Traversal`, or a `Traversal` followed by a `Lens` or `Prism`, is a `Traversal`.
+The true power is composing `Prism`s with other optics. When a `Prism` meets a `Lens` or an `Affine`, the focus can be missing and nothing can build the whole from it, so the result is an `Affine`. Two prisms stay a `Prism`, and anything composed with a `Traversal`, on either side, is a `Traversal`.
 
 ~~~admonish tip title="Direct Composition Methods"
 higher-kinded-j provides direct composition methods that automatically return the correct type:
@@ -1519,7 +1519,7 @@ Traversal<JsonObject, String> userNameTraversal =
         .andThen(jsonObjectPrism)   // -> JsonObject (if it's an object)
         .andThen(fieldsLens)        // -> Map<String, JsonValue>
         .andThen(Traversals.forMap("name"))       // -> JsonValue (if "name" key exists)
-        .andThen(jsonStringValue.asTraversal());  // -> String (if it's a string)
+        .andThen(jsonStringValue);  // -> String (if it's a string)
 ```
 
 This composed `Traversal` now represents a safe, deep path that will only succeed if every step in the chain matches.
@@ -2345,7 +2345,7 @@ List<Animal> animals = List.of(
 );
 
 List<String> breeds = Traversals.getAll(
-    Traversals.<Animal>forList().andThen(dogBreed.asTraversal()),
+    Traversals.<Animal>forList().andThen(dogBreed),
     animals
 );
 // Result: ["German Shepherd", "Beagle"]
@@ -3529,6 +3529,7 @@ The most powerful feature of an `Iso` is its ability to act as an adapter or "gl
 * `Iso + Iso = Iso`
 * **`Iso + Lens = Lens`**
 * **`Iso + Prism = Prism`**
+* **`Iso + Affine = Affine`**
 * **`Iso + Traversal = Traversal`**
 
 This second rule is incredibly useful. We can compose our `Iso<Point, Tuple2>` with a `Lens` that operates on a `Tuple2` to create a brand new `Lens` that operates directly on our `Point`:
@@ -3954,7 +3955,7 @@ New circle: Circle[centre=Point[x=20, y=30], radius=5]
 
 ~~~admonish info title="Key Takeaways"
 * **An Iso is a lossless two-way street**: `get` and `reverseGet` convert between equivalent representations, and `reverse()` flips the direction for free
-* **Isos are the composition bridge**: composed with a Lens, Prism, or Affine they preserve that optic's shape (`asTraversal()` bridges to Traversals), so a generic optic works on your domain type
+* **Isos are the composition bridge**: composed with a Lens, Prism, Affine or Traversal they preserve that optic's shape, so a generic optic works on your domain type
 * **Losslessness is the law**: a conversion that drops information or can fail in either direction is not an Iso; test the round trip, and reach for [Validated Prisms](validated_prism.md) when parsing can fail
 * **Reuse as constants**: define each Iso once, test it, and compose it everywhere the representation boundary appears
 ~~~
@@ -4019,35 +4020,33 @@ These arrows rank what each optic can do; they are not `extends` edges. `Getter 
 - Working with nullable properties
 - Navigating through optional intermediate structures
 
-**Key insight**: When composing two different optic types, the result is always the **most specific optic type that can represent both operations**.
+**Key insight**: composing two optics gives the most capable optic that both steps can support; the [composition rules table](#composition-rules-table) states the rule exactly.
 
 ---
 
-## Composition Rules Table
+## Composition Rules Table {#composition-rules-table}
 
-| First Optic | >>> | Second Optic | = | Result Optic | Reason |
-|-------------|-----|--------------|---|--------------|--------|
-| **Iso** | >>> | Iso | = | **Iso** | Both directions preserved |
-| **Iso** | >>> | Lens | = | **Lens** | Lens is more restrictive |
-| **Iso** | >>> | Prism | = | **Prism** | Prism is more restrictive |
-| **Iso** | >>> | Affine | = | **Affine** | Affine is more restrictive |
-| **Iso** | >>> | Traversal | = | **Traversal** | Traversal is most general |
-| **Lens** | >>> | Lens | = | **Lens** | Same type |
-| **Lens** | >>> | Prism | = | **Affine** | May not match (0-1 targets) |
-| **Lens** | >>> | Affine | = | **Affine** | Affine preserves partiality |
-| **Lens** | >>> | Traversal | = | **Traversal** | Traversal is more general |
-| **Lens** | >>> | Iso | = | **Lens** | Iso subsumes Lens |
-| **Prism** | >>> | Prism | = | **Prism** | Same type |
-| **Prism** | >>> | Lens | = | **Affine** | May not match + field access |
-| **Prism** | >>> | Affine | = | **Affine** | Affine preserves partiality |
-| **Prism** | >>> | Traversal | = | **Traversal** | Traversal is more general |
-| **Prism** | >>> | Iso | = | **Prism** | Iso subsumes Prism |
-| **Affine** | >>> | Affine | = | **Affine** | Same type |
-| **Affine** | >>> | Lens | = | **Affine** | Affine preserves partiality |
-| **Affine** | >>> | Prism | = | **Affine** | Both may not match |
-| **Affine** | >>> | Traversal | = | **Traversal** | Traversal is more general |
-| **Affine** | >>> | Iso | = | **Affine** | Iso subsumes Affine |
-| **Traversal** | >>> | any | = | **Traversal** | Traversal is already general |
+Read each cell as what `first.andThen(second)` returns, with the row as `first`. A test in the examples module reads this table from the `andThen` overloads themselves, so it cannot promise a composition the library does not have:
+
+| `first.andThen(second)` | Iso | Lens | Prism | Affine | Traversal |
+|---|---|---|---|---|---|
+| **Iso** | Iso | Lens | Prism | Affine | Traversal |
+| **Lens** | Lens | Lens | Affine | Affine | Traversal |
+| **Prism** | Prism | Affine | Prism | Affine | Traversal |
+| **Affine** | Affine | Affine | Affine | Affine | Traversal |
+| **Traversal** | Traversal | Traversal | Traversal | Traversal | Traversal |
+
+Each optic is fixed by two answers: how many values it reaches, and whether it can build the whole from its part.
+
+| Reaches | Can build the whole | Cannot |
+|---|---|---|
+| exactly one | `Iso` | `Lens` |
+| zero or one | `Prism` | `Affine` |
+| zero or more | | `Traversal` |
+
+A composition reaches the wider of its two steps' reaches, and can build only if both steps can. So a `Lens` and a `Prism` reach zero or one value, and the lens cannot build: an `Affine`. Two prisms reach zero or one and both build: a `Prism`.
+
+`Fold`, `Getter` and `Setter` compose with their own kind (`fold.andThen(otherFold)`), and with the others after a conversion such as `asFold()`; [Conversions](conversions.md) lists them.
 
 ---
 
@@ -4182,7 +4181,7 @@ Traversal<A, C> result = traversalAB.andThen(traversalBC);
 
 ### Via asTraversal (Universal Fallback)
 
-When you need to compose optics in a generic way, convert everything to Traversal:
+Every pair of the five optics composes directly, so you rarely need this. Convert to `Traversal` when you want to hold optics of different kinds as one type, such as in a list of paths:
 
 ```java
 // Any optic composition via Traversal
@@ -4192,7 +4191,7 @@ Traversal<A, D> result =
         .andThen(optic3.asTraversal());
 ```
 
-This approach always works but loses type information (you get a Traversal even when a more specific type would be possible).
+It loses type information: you get a `Traversal` even where a more specific optic was possible. `Fold` and `Getter` do not convert to a `Traversal` at all.
 
 ---
 
@@ -4239,7 +4238,7 @@ public final class OrderOptics {
 
 ## Parallel Composition with `Fold.plus()`
 
-The composition rules above describe **sequential** composition (`andThen`): navigating deeper into a structure. Higher-Kinded-J also supports **parallel** composition via `Fold.plus()`, which combines results from multiple paths at the same level.
+The [composition rules](#composition-rules-table) describe **sequential** composition (`andThen`): navigating deeper into a structure. Higher-Kinded-J also supports **parallel** composition via `Fold.plus()`, which combines results from multiple paths at the same level.
 
 | Operation | Type | Purpose |
 |-----------|------|---------|
@@ -4332,7 +4331,7 @@ The result type of a composition is not a convenience, it is a promise. When `Le
 ~~~
 
 ~~~admonish info title="Key Takeaways"
-* **The result is the most specific type that honours both**: composing two optics yields the least powerful interface both operations can satisfy
+* **The result is the most capable optic both steps support**: it reaches the wider of the two reaches, and builds only if both steps build
 * **A prism anywhere makes absence possible**: mixed with a `Lens` or `Affine` the chain drops to `Affine`, and through a `Traversal` the whole chain is a `Traversal`; `Prism >>> Prism` itself stays a `Prism`, still zero-or-one but keeping `build`
 * **`Iso` is invisible in composition**: `Iso >>> X = X`, which is what makes it the universal adapter
 * **`andThen` keeps precise types; `asTraversal` is the generic fallback**; `plus()` combines parallel paths read-only, as a `Fold`
@@ -18483,15 +18482,13 @@ Name the paths once, at the top of the class, and the business logic reads as in
   static final Traversal<JsonNode, JsonNode> EACH_USER =
       JsonPaths.field("data").andThen(JsonPaths.field("users")).andThen(JsonPaths.elements());
 
-  // A Traversal composes with an Affine through asTraversal(): there is no
-  // Traversal.andThen(Affine) overload, because the result is a Traversal either way.
-  /** Every user's email address, as a String. */
+  /** Every user's email address, as a String: a Traversal followed by an Affine. */
   static final Traversal<JsonNode, String> USER_EMAILS =
-      EACH_USER.andThen(JsonPaths.field("email").andThen(JsonPaths.textValue()).asTraversal());
+      EACH_USER.andThen(JsonPaths.field("email").andThen(JsonPaths.textValue()));
 
   /** Every user's age, as a double. */
   static final Traversal<JsonNode, Double> USER_AGES =
-      EACH_USER.andThen(JsonPaths.field("age").andThen(JsonPaths.numericValue()).asTraversal());
+      EACH_USER.andThen(JsonPaths.field("age").andThen(JsonPaths.numericValue()));
 
   /** The page number: a single value, so an Affine rather than a Traversal. */
   static final Affine<JsonNode, Double> PAGE =
@@ -18505,8 +18502,8 @@ Those four constants are the whole abstraction. `Traversals.getAll` reads throug
 The JSON structure is now stated in one place. When the API moves `users` under a `payload` wrapper, you change one composition and every reader and writer follows. Compare the defensive version, where the shape is restated at every access site as a chain of `has()` and `isArray()` checks, and a structural change means finding all of them.
 ~~~
 
-~~~admonish warning title="Composing a Traversal with an Affine"
-`Traversal` has `andThen` overloads for `Traversal`, `Lens` and `Prism`, but not for `Affine`. Convert first: `traversal.andThen(affine.asTraversal())`. The result is a `Traversal` either way, since a traversal composed with anything stays a traversal.
+~~~admonish note title="Composing a Traversal with an Affine"
+`traversal.andThen(affine)` composes directly and gives a `Traversal`: an element where the affine finds nothing is left unchanged. [Composition Rules](composition_rules.md#composition-rules-table) has the result for every pair.
 ~~~
 
 ---
@@ -24128,9 +24125,8 @@ If the DTO and the domain config hold the same information, the conversion pair 
 // A lossless pair: ConfigDto <-> AppConfig
 Iso<ConfigDto, AppConfig> dtoIso = Iso.of(Auditing::toAppConfig, Auditing::toConfigDto);
 
-// Iso has andThen overloads for Lens, Prism, Affine and Iso, but not Traversal.
-// Widen it first: Traversal >>> Traversal = Traversal.
-Traversal<ConfigDto, byte[]> legacyAuditor = dtoIso.asTraversal().andThen(finalAuditor);
+// An Iso followed by a Traversal is a Traversal
+Traversal<ConfigDto, byte[]> legacyAuditor = dtoIso.andThen(finalAuditor);
 
 List<byte[]> passwords = Traversals.getAll(legacyAuditor, someDto);
 ```
@@ -26057,9 +26053,9 @@ This page covers (1). For (2), see the rules table.
 |---|---|---|---|
 | `lens.asTraversal()` | `Lens<S, A>` | `Traversal<S, A>` | You need to call a traversal-only API (`Traversals.modify`, traversal `andThen`) on a lens. |
 | `lens.asFold()` | `Lens<S, A>` | `Fold<S, A>` | You want to express read-only intent or use fold-only operations like `exists`, `find`, `all`. |
-| `prism.asTraversal()` | `Prism<S, A>` | `Traversal<S, A>` | Same as for lenses, lifting a prism into a traversal-shaped pipeline. |
+| `prism.asTraversal()` | `Prism<S, A>` | `Traversal<S, A>` | Same as for lenses: to call a `Traversal`-only utility such as `Traversals.modify`. |
 | `prism.asFold()` | `Prism<S, A>` | `Fold<S, A>` | Read-only query of a sum-type variant. |
-| `affine.asTraversal()` | `Affine<S, A>` | `Traversal<S, A>` | Lifting an affine for use in a traversal-shaped pipeline. |
+| `affine.asTraversal()` | `Affine<S, A>` | `Traversal<S, A>` | To call a `Traversal`-only utility such as `Traversals.modify`. |
 | `affine.asFold()` | `Affine<S, A>` | `Fold<S, A>` | Read-only access to the optional field. |
 | `iso.asLens()` | `Iso<S, A>` | `Lens<S, A>` | When you only need the forward direction; the `reverseGet` capability is dropped. |
 | `iso.asTraversal()` | `Iso<S, A>` | `Traversal<S, A>` | Same lifting as for a lens. |
@@ -26075,7 +26071,7 @@ You cannot widen the other direction: a `Traversal` does not become a `Lens`, be
 
 ## Implicit lifting during composition
 
-`andThen` infers the result type automatically. You do not need to call `asTraversal()` before composing a `Lens` with a `Traversal`; the compiler picks the [Composition Rules](composition_rules.md) result.
+`andThen` infers the result type automatically. Any two of `Iso`, `Lens`, `Prism`, `Affine` and `Traversal` compose directly, with no `asTraversal()` first; the [composition rules table](composition_rules.md#composition-rules-table) gives the result for each pair.
 
 ```java
 Lens<User, List<Order>> ordersLens = UserLenses.orders();
