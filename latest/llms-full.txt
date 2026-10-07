@@ -81493,6 +81493,12 @@ VStream<Event> allEvents = VStreamPar.merge(List.of(
 // Elements arrive as they become available from any source
 ```
 
+When the consumer stops early, with `take(n)` or `headOption()` for example, the merge is
+closed. It interrupts any source still being pulled and waits for the source threads to stop.
+Then it closes each source that had not finished, so each source's finalisers run. A source
+failing stops the merge the same way. A source finaliser that fails while the merge closes is
+dropped, since the merge has already stopped.
+
 ### parCollect: Parallel Batch Collection
 
 Terminal operation that collects all elements using parallel batch processing.
@@ -81979,7 +81985,7 @@ import java.nio.file.Path;
 Path path = Path.of("data.txt"); // the file to stream
 
 VStream<String> lines = VStream.bracket(
-    // Acquire: open the resource (runs lazily on first pull)
+    // Acquire: open the resource (runs lazily, each time the stream is consumed)
     VTask.of(() -> Files.newBufferedReader(path)),
 
     // Use: produce a stream from the resource
@@ -82002,13 +82008,13 @@ VStream<String> lines = VStream.bracket(
 
 Three key properties make this safe:
 
-1. **Lazy acquisition**: The resource is acquired on the first `pull()`, not when `bracket`
-   is called. This means creating the stream is free; the resource only opens when consumption
-   begins.
+1. **Lazy acquisition**: The resource is acquired when the `VTask` that `pull()` returns runs,
+   afresh on each run, not when `bracket` is called. This means creating the stream is free; the
+   resource only opens when consumption begins.
 
-2. **Guaranteed release**: The release function runs exactly once, regardless of how the
-   stream terminates, whether by normal completion, error, or partial consumption via `take`,
-   `headOption`, or `find`.
+2. **Guaranteed release**: The release function runs once for each acquisition, regardless of
+   how the stream terminates, whether by normal completion, error, a `use` function that throws,
+   or partial consumption via `take`, `headOption`, or `find`.
 
 3. **Exactly-once semantics**: An internal `AtomicBoolean` ensures the release function
    cannot run twice, even if multiple terminal paths converge.
@@ -82025,8 +82031,8 @@ List<String> firstTen = lines.take(10).toList().run();
 // File handle is closed when take(10) triggers the finaliser
 ```
 
-This works because `take(n)` wraps the stream with a counter that produces `Done` after n
-elements, and `Done` triggers the release.
+This works because `take(n)` closes the rest of the stream after its nth element, and closing
+runs the release.
 
 ### Nested Brackets
 
@@ -82060,9 +82066,12 @@ VStream<String> stream = VStream.of("a", "b", "c")
     .onFinalize(VTask.exec(() -> System.out.println("Stream completed")));
 ```
 
-The finaliser runs once each time the stream is consumed, when that consumption completes or
-encounters an error. Multiple finalisers can be chained; when the stream completes, they
-execute in the order they were attached:
+The finaliser runs once each time the stream is consumed: when that consumption completes,
+fails, or stops early. An operation that stops early, such as `take`, `takeWhile`, `zipWith`,
+`headOption`, `find`, `exists` or `forAll`, closes the rest of the stream, and so does a terminal
+operation that fails. Closing reaches every finaliser upstream that the stream has started
+reading, through any operator in between.
+Multiple finalisers can be chained; they execute in the order they were attached:
 
 <!-- verify -->
 ```java
@@ -82074,7 +82083,10 @@ VStream<Integer> stream = VStream.of(1, 2, 3)
 ### Error Handling in Finalisers
 
 If the finaliser itself throws an exception and the stream also failed, the original error
-is preserved and the finaliser error is added as a suppressed exception:
+is preserved and the finaliser error is added as a suppressed exception. If the stream did not
+fail, a finaliser that throws fails the operation that completed or closed it, such as `toList`
+or `headOption`. The other finalisers still run, and a later failure is suppressed onto the
+first:
 
 <!-- verify -->
 ```java
@@ -82114,22 +82126,24 @@ VStreamPath<String> withCleanup = lines.onFinalize(
 
 ## Known Limitations
 
-~~~admonish warning title="GC-Dependent Release"
-If the consumer simply stops pulling without running the stream to completion and without
-using a terminal operation that triggers the finaliser (such as `toList`, `take`, `headOption`,
-`find`, `fold`, etc.), the release depends on garbage collection. This is a known limitation
-of pull-based streams. Always use terminal operations to ensure cleanup runs promptly.
+~~~admonish warning title="Abandoned Streams"
+A finaliser runs when its stream completes, fails or is closed. If you pull steps by hand and
+drop the tail without draining it or calling `close()`, the finaliser never runs. Every terminal
+operation, `take` and `takeWhile` handle this for you. When a pull you make by hand fails, close
+the stream with `VStream.closeAfterFailure(stream, failure)`, which also closes the rest of the
+stream that a failed `mapTask` task carries. Closing a `bracket` head closes only its
+latest run, so if you run its pulled `VTask` more than once, close the tail of each run.
 ~~~
 
 ## Key Takeaways
 
 ~~~admonish tip title="Key Takeaways"
 - `bracket(acquire, use, release)` ties resource lifecycle to stream lifecycle
-- Resources are acquired lazily and released exactly once
+- Resources are acquired lazily, each time the stream is consumed, and released once for each acquisition
 - Partial consumption (take, headOption, find) still triggers release
 - `onFinalize` provides lightweight cleanup for streams that do not need full bracket
 - Nested brackets release in reverse order (inner before outer)
-- Finaliser errors are suppressed; original errors are preserved
+- A finaliser error is suppressed onto the stream's own failure; otherwise it fails the operation that completed or closed the stream
 ~~~
 
 ## See Also
@@ -82265,7 +82279,12 @@ Flow.Publisher<String> publisher = VStreamReactive.toPublisher(stream);
 ```
 
 The publisher respects backpressure: elements are only pulled from the VStream when the
-subscriber has outstanding demand via `request(n)`. Each subscriber receives all elements.
+subscriber has outstanding demand via `request(n)`, plus one step ahead to notice the end of the
+stream. Each subscriber receives all elements.
+
+When a subscriber cancels, or the stream fails, the publisher closes what is left of the stream,
+so its finalisers run. A subscriber that cancels before it requests anything closes nothing, so
+it cannot end another subscriber's reading of a shared stream.
 
 ### Publisher to VStream
 
@@ -82277,7 +82296,8 @@ VStream<Event> events = VStreamReactive.fromPublisher(eventPublisher, 64);
 
 The publisher is subscribed to immediately. Incoming elements are buffered in a bounded queue
 (configurable via the `bufferSize` parameter). The VStream pulls from this queue, converting
-push-based delivery to pull-based consumption.
+push-based delivery to pull-based consumption. Closing the VStream cancels the subscription, so
+`events.take(5)` stops the publisher once it has its five elements.
 
 ### Round-Trip
 
@@ -86425,10 +86445,11 @@ List<PriceTick> merged = FeedMerger.merge(nyse, lse).take(10).toList().run();
 
 ~~~admonish warning title="Cancellation and Resource Safety"
 When the consumer terminates early (e.g. `take(20)`), the merge stream's `close()` method
-sets a cancellation flag that stops the producer threads. Without this, producers would
-continue pushing into the queue indefinitely, a classic resource leak with concurrent
-streams. The *structured concurrency* design principle ensures this cleanup happens
-automatically.
+sets a cancellation flag and interrupts the producer, which stops the threads reading each
+feed. The producer then closes every feed that had not finished, so a feed's own finalisers
+run. Without this, producers would continue pushing into the queue indefinitely, a classic
+resource leak with concurrent streams. The *structured concurrency* design principle ensures
+this cleanup happens automatically.
 ~~~
 
 ~~~admonish note title="Design Decision: Why merge over concat or interleave?"
@@ -96528,6 +96549,7 @@ public VStreamPath<User> streamUsers() {
 3. Each element is written as an SSE `data:` event with JSON payload
 4. A completion event is sent when the stream ends
 5. On error, an SSE error event is sent
+6. If the client disconnects, the request times out or an element fails to serialise, the stream is closed, so its finalisers run
 
 #### Parameterised Streams
 
@@ -97820,7 +97842,6 @@ A generic `@HkjHttpClient` interface is supported **codegen-only**: the native i
 - **A sealed error type with no `@JsonTypeInfo`.** Jackson cannot pick the subtype, so decoding fails. Add the type info, or use a concrete error type.
 - **Client interfaces outside the component scan.** If your `@HkjHttpClient` interfaces are not under your `@SpringBootApplication`'s scanned packages, the generated configuration is not picked up and Spring never creates the proxy. Add an explicit `@ImportHttpServices(basePackages = "...")`.
 - **Expecting a transport failure to become a `Left`.** Connection-refused and timeout are not domain errors; they propagate. Use the `VTaskPath` variant and `runSafe()` to capture them as the failure arm of `Try<Either<E, T>>`.
-- **Short-circuiting an SSE stream.** Drain it (`toList()`) or bound it (`take(n).toList()`); a `headOption()`/`find(...)` returns before the stream completes and may leave the HTTP response open.
 - **Inheriting methods from a precompiled base.** A super-interface in a dependency jar must be compiled with `-parameters`, or its `@PathVariable`/`@RequestParam` arguments bind to `arg0`-style names. A jar built against 0.4.10 or earlier also carries none of its `@OnStatus` overrides, which were discarded when it was compiled, so its methods ignore them until it is rebuilt. Interfaces compiled in your own build are fine. Wherever the base is compiled, a module declaring `@OnStatus` should expose `hkj-spring-boot-client` to the modules that use it (Gradle's `api` configuration): its class files name the annotation, and a module compiling against them without it warns under `-Xlint:all`, which fails a `-Werror` build.
 - **An `@OnStatus` error type that is not assignable to the method's declared error type.** This is a compile error, by design.
 ~~~
@@ -102864,10 +102885,15 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`StateT` is built from its state function alone** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): its constructor, `create` and `StateTKindHelper.stateT` take no `Monad`, and `mapT` takes only the transformation, as on every other transformer. The record holds only that function, so `equals`, `hashCode` and `toString` leave the `Monad` out. See [Running StateT Computations](../transformers/statet_transformer.md#running-statet-computations).
 - **`@PathSource` points an effect algebra to `FreePath`** ([#1008](https://github.com/higher-kinded-j/higher-kinded-j/issues/1008)): a Path over a witness that `@EffectAlgebra` generates now draws a note at the witness. The algebra has a `Functor` and no `Monad` to pass to the Path's `of` and `pure`, so the note shows how to wrap its programs in a `FreePath`. See [A witness another processor writes](../effect/path_source.md#a-witness-another-processor-writes).
 - **`TrampolineUtils.traverseListStackSafe` is stack-safe under every applicative** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): it combines the effects as a balanced tree, so a million-element traversal under `IO` no longer overflows the stack. It builds the result in linear time instead of copying the list at every element, and a `Validated` collecting its errors in a list is no longer quadratic in the failures. See [Core Components](../monads/trampoline_monad.md#core-components).
+- **A `VStream` releases its resources when it stops early or fails** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): closing reaches every finaliser upstream that the stream has started reading, through any operator, innermost first. `takeWhile`, `zipWith`, `headOption`, `find`, `exists`, `forAll` and a failing terminal operation close what they leave unread. So `bracket(...).map(f).headOption()` releases at once. `VStream.closeAfterFailure` closes a failed manual pull. See [onFinalize: Lightweight Cleanup](../monads/vstream_resources.md#onfinalize-lightweight-cleanup).
+- **`VStreamReactive` passes cancellation across the bridge** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): a `toPublisher` subscription closes the rest of its stream when it cancels or the stream fails, once it has requested elements. Closing a `fromPublisher` stream cancels its subscription, so `take(n)` stops the publisher. See [Reactive Interop: Flow.Publisher Bridge](../monads/vstream_advanced.md#reactive-interop-flowpublisher-bridge).
 
 ---
 
 ## Spring {#spring}
+
+- **A streamed `VStreamPath` response closes its stream when it stops** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): a client disconnect, a timeout or a serialisation failure now runs the stream's finalisers. See [VStreamPath: SSE Streaming on Virtual Threads](../spring/spring_boot_integration.md#vstreampath-sse-streaming).
+- **An SSE stream from a declarative HTTP client closes when you stop early** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): `headOption()`, `find(...)` or `take(n)` on a stream from `HkjClientExchange.vstream` now closes the response. There is no need to drain it first. See [Streaming with `VStreamPath`](../spring/declarative_http_clients.md#streaming-with-vstreampath).
 
 ---
 
@@ -102918,6 +102944,13 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`TrampolineUtils.traverseListStackSafe` and `sequenceStackSafe` return an unmodifiable list** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): as `Traversals.traverseList` does. Changing it throws `UnsupportedOperationException`, so copy it into a new `ArrayList` first.
 - **`onFinalize` runs its finaliser for each consumption of a `VStream`** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): a second consumption, or one after `close()`, used to skip it. It now also runs when the source fails as it is pulled. `close()` runs it for the latest consumption only, unless that consumption has run it already. See [onFinalize: Lightweight Cleanup](../monads/vstream_resources.md#onfinalize-lightweight-cleanup).
 - **`VStreamThrottle.throttle` gives each consumption its own window** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): each consumption's first emission opens its first window. A later or concurrent consumption used to share the first one's window.
+- **`VStream.defer` calls its supplier when the pulled `VTask` runs** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): not when `pull()` is called, and again on each run. `generate`, `iterate` and `unfold` call their functions then too. `distinct`, `chunk` and `chunkWhile` now give the same step each time a pulled `VTask` runs, and a `distinct` tail pulled again replays its elements.
+- **`VStreamPar.parEvalMap`, `parEvalMapUnordered` and the `VStream` applicative's `ap` read their input when the pulled `VTask` runs** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): not when `pull()` is called, and afresh on each run.
+- **Closing a pulled `bracket` stream releases its latest run** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): closing the head of a `bracket` after a pull releases the resource that pull acquired, where it used to release nothing.
+- **A finaliser that used to be skipped now runs** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): when a `VStream` stops early, a terminal operation fails, or a function given to an operator such as `map`, `filter` or `mapTask` throws. A finaliser that throws then fails the operation that stopped, such as `take` or `headOption`. Closing runs the innermost finaliser first, as completing does.
+- **`VStreamPar.merge` starts a producer for each run of its pulled `VTask`** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): not when `pull()` is called. Closing it stops that run's producer and closes each unfinished source. `close()` used to stop the producer when called; now it works when its `VTask` runs, as every stream's does, so run that `VTask`. See [merge: Concurrent Multi-Source Consumption](../monads/vstream_parallel.md#merge-concurrent-multi-source-consumption).
+- **Cancelling a `toPublisher` subscription runs the stream's finalisers** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): once the subscriber has requested elements. It used to leave the stream open.
+- **A `bracket` whose `use` function throws releases the resource** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): before the failure reaches the caller. It used to leave the resource acquired.
 
 #### Testing {#runtime-testing}
 
