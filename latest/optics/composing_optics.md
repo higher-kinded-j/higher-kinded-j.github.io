@@ -396,7 +396,7 @@ public static Validated<String, Form> validatePermissionsForUser(Form form) {
 
 ---
 
-## Complete, Runnable Example
+## Complete, Runnable Example {#complete-runnable-example}
 
 With our composed `Traversal`, we can now use `modifyF` to run our validation logic. The `Traversal` handles the navigation and filtering, while the `Validated` applicative (created with a `Semigroup` for joining error strings) handles the effects and error accumulation.
 
@@ -569,13 +569,11 @@ public class ValidatedTraversalExample {
   }
 
   /**
-   * Demonstrates using Selective to keep the expensive validation's result only where a cheap check
-   * passes. {@code modifyWhen} still calls the function for every element; the cheap check decides
-   * which result is kept.
+   * Demonstrates using Selective for smarter validation: {@code modifyWhen} runs the cheap check
+   * first and calls the expensive validation only for the elements that pass it.
    */
   private static void selectiveValidationExample() {
-    System.out.println(
-        "--- Scenario 7: Selective Validation (Keeping the Result Conditionally) ---");
+    System.out.println("--- Scenario 7: Selective Validation (Skipping the Expensive Check) ---");
 
     var userWithInvalidPerms =
         new VTUser(
@@ -589,7 +587,7 @@ public class ValidatedTraversalExample {
 
     System.out.println("Input: " + form);
 
-    // Two-stage validation: the cheap check decides whose expensive result is kept
+    // Two-stage validation: cheap check first, expensive check only if needed
     Predicate<String> notEmpty = name -> !name.isEmpty();
 
     Function<String, Kind<ValidatedKind.Witness<String>, String>> expensiveValidation =
@@ -604,14 +602,12 @@ public class ValidatedTraversalExample {
     Kind<ValidatedKind.Witness<String>, Form> selectiveResult =
         FORM_TO_PERMISSION_NAMES.modifyWhen(
             notEmpty, // Cheap check
-            expensiveValidation, // Runs for every element; kept only where the cheap check passes
+            expensiveValidation, // Expensive check (only if the cheap one passes)
             form,
             selective);
 
     System.out.println("Result: " + VALIDATED.narrow(selectiveResult));
-    System.out.println(
-        "Note: the expensive result was kept only for non-empty permissions,"
-            + " though the function ran for every element\n");
+    System.out.println("Note: the expensive validation ran only for non-empty permissions\n");
   }
 }
 ```
@@ -647,18 +643,17 @@ Batch validation results:
 --- Scenario 6: Different Error Accumulation Strategy ---
 Input: Form[formId=3, principal=VTUser[username=charlie, permissions=[Permission[name=PERM_EXECUTE], Permission[name=PERM_WRITE], Permission[name=PERM_SUDO], Permission[name=PERM_READ]]]]
 Result with list accumulation: Invalid([Invalid permission: PERM_EXECUTE, Invalid permission: PERM_SUDO])
---- Scenario 7: Selective Validation (Keeping the Result Conditionally) ---
+--- Scenario 7: Selective Validation (Skipping the Expensive Check) ---
 Input: Form[formId=7, principal=VTUser[username=eve, permissions=[Permission[name=], Permission[name=PERM_READ], Permission[name=INVALID_PERM]]]]
-  Running EXPENSIVE validation for:
   Running EXPENSIVE validation for: PERM_READ
   Running EXPENSIVE validation for: INVALID_PERM
 Result: Invalid(Invalid permission: INVALID_PERM)
-Note: the expensive result was kept only for non-empty permissions, though the function ran for every element
+Note: the expensive validation ran only for non-empty permissions
 ```
 
 This shows how our single, composed optic correctly handled all cases: it accumulated multiple failures into a single `Invalid` result, and it correctly did nothing (resulting in a `Valid` state) when the path did not match. This is the power of composing simple, reusable optics to solve complex problems in a safe, declarative, and boilerplate-free way.
 
-Scenario 7 runs the same path through `modifyWhen` with a `Selective`. The cheap check decides which result is kept, but the expensive function still runs for every element, as its output shows: use it to choose a result, not to save the work.
+Scenario 7 runs the same path through `modifyWhen` with a `Selective`. The cheap check runs first, and the expensive validation is called only for the names that pass it. The output shows no call for the empty name, so the expensive function may assume the check held. A name the check rejects is kept as it is and adds no error, which is why only `INVALID_PERM` is reported.
 
 ---
 
