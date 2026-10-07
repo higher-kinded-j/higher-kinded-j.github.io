@@ -277,4 +277,4 @@ void headquartersCityBridgeIsLawful() {
 ---
 
 **Previous:** [Database Records with JOOQ](copy_strategies.md)
-**Next:** [Kind Field Support](kind_field_support.md)
+**Next:** [Validation, Batching and Auditing](ch5_intro.md)
