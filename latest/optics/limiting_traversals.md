@@ -508,7 +508,7 @@ Catalogue updated = Traversals.modify(first10Prices, p -> p * 0.9, catalogue);
 * **Terminal operations** - Counting, finding, collecting to new structures
 * **Complex transformations** - Multiple chained operations with sorting/grouping
 * **No structural preservation needed** - You're extracting data, not updating in place
-* **Performance-critical paths** - Minimal abstraction overhead
+* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -591,154 +591,162 @@ Optional<Product> fifth = IxedInstances.get(IxedInstances.listIx(), 4, products)
 
 ---
 
-## Performance Notes
-
-What a limiting traversal costs:
-
-* **Element references are shared**: the elements outside the slice are reused as they are, while the list holding them is rebuilt on every modify
-* **Reusable**: store a limiting traversal as a constant and compose it like any other optic
-
-**Best Practice**: Store frequently-used limiting traversals as constants:
-
-<!-- verify -->
-```java
-public class CatalogueOptics {
-    // Pagination constants
-    public static final int PAGE_SIZE = 20;
-
-    public static Traversal<List<Product>, Product> page(int pageNum) {
-        return ListTraversals.slicing(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE);
-    }
-
-    // Featured products (first 5)
-    public static final Traversal<Catalogue, Product> FEATURED =
-        CatalogueLenses.products()
-            .andThen(ListTraversals.taking(5));
-
-    // Latest additions (last 10)
-    public static final Traversal<Catalogue, Product> LATEST =
-        CatalogueLenses.products()
-            .andThen(ListTraversals.takingLast(10));
-
-    // Exclude promotional items at end
-    public static final Traversal<Catalogue, Product> NON_PROMOTIONAL =
-        CatalogueLenses.products()
-            .andThen(ListTraversals.droppingLast(3));
-}
-```
-
----
-
 ## Real-World Example: E-Commerce Pagination
 
-Here's a comprehensive example demonstrating limiting traversals in a business context:
+[`PaginationExample`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PaginationExample.java) serves a catalogue of twenty products the way a REST endpoint would: a page at a time, with a hero section at the front and a clearance section at the back. Each product carries a stock count and a badge:
 
-<!-- verify -->
-```java
-package org.higherkindedj.example.optics;
-
-import org.higherkindedj.optics.*;
-import org.higherkindedj.optics.util.*;
-import java.util.*;
-
-public class PaginationExample {
-
-    public record Product(String sku, String name, double price, boolean featured) {
-        Product applyDiscount(double pct) {
-            return new Product(sku, name, price * (1 - pct), featured);
-        }
+``` java
+  public record Product(
+      String sku, String name, double price, int stock, boolean featured, String badge) {
+    Product withBadge(String newBadge) {
+      return new Product(sku, name, price, stock, featured, newBadge);
     }
 
-    public static void main(String[] args) {
-        List<Product> catalogue = createCatalogue();
-
-        System.out.println("=== E-COMMERCE PAGINATION WITH LIMITING TRAVERSALS ===\n");
-
-        // --- Scenario 1: Basic Pagination ---
-        System.out.println("--- Scenario 1: Paginated Product Display ---");
-
-        int pageSize = 3;
-        int totalPages = (int) Math.ceil(catalogue.size() / (double) pageSize);
-
-        for (int page = 0; page < totalPages; page++) {
-            Traversal<List<Product>, Product> pageTraversal =
-                ListTraversals.slicing(page * pageSize, (page + 1) * pageSize);
-
-            List<Product> pageProducts = Traversals.getAll(pageTraversal, catalogue);
-            System.out.printf("Page %d: %s%n", page + 1,
-                pageProducts.stream().map(Product::name).toList());
-        }
-
-        // --- Scenario 2: Featured Products ---
-        System.out.println("\n--- Scenario 2: Featured Products (First 3) ---");
-
-        Traversal<List<Product>, Product> featured = ListTraversals.taking(3);
-        List<Product> featuredProducts = Traversals.getAll(featured, catalogue);
-        featuredProducts.forEach(p ->
-            System.out.printf("  %s - £%.2f%n", p.name(), p.price()));
-
-        // --- Scenario 3: Apply Discount to Featured ---
-        System.out.println("\n--- Scenario 3: 10% Discount on Featured ---");
-
-        List<Product> withDiscount = Traversals.modify(featured, p -> p.applyDiscount(0.1), catalogue);
-        System.out.println("After discount on first 3:");
-        withDiscount.forEach(p -> System.out.printf("  %s: £%.2f%n", p.name(), p.price()));
-
-        // --- Scenario 4: Exclude Last Items ---
-        System.out.println("\n--- Scenario 4: All Except Last 2 (Clearance) ---");
-
-        Traversal<List<Product>, Product> nonClearance = ListTraversals.droppingLast(2);
-        List<Product> regularStock = Traversals.getAll(nonClearance, catalogue);
-        System.out.println("Regular stock: " + regularStock.stream().map(Product::name).toList());
-
-        System.out.println("\n=== PAGINATION COMPLETE ===");
+    Product applyDiscount(double percentage) {
+      return new Product(sku, name, price * (1 - percentage), stock, featured, badge);
     }
 
-    private static List<Product> createCatalogue() {
-        return List.of(
-            new Product("SKU001", "Laptop", 999.99, true),
-            new Product("SKU002", "Mouse", 29.99, false),
-            new Product("SKU003", "Keyboard", 79.99, true),
-            new Product("SKU004", "Monitor", 349.99, true),
-            new Product("SKU005", "Webcam", 89.99, false),
-            new Product("SKU006", "Headset", 149.99, false),
-            new Product("SKU007", "USB Hub", 39.99, false),
-            new Product("SKU008", "Desk Lamp", 44.99, false)
-        );
+    Product markFeatured() {
+      return new Product(sku, name, price, stock, true, badge);
     }
-}
+  }
+
+  public record PageInfo(int pageNumber, int pageSize, int totalItems, int totalPages) {}
+
+  public record PagedResponse(List<Product> items, PageInfo pageInfo) {}
+
 ```
 
-**Expected Output:**
+Each page is one `slicing` traversal, built from the page number:
+
+``` java
+  private static PagedResponse getPage(List<Product> catalogue, int pageNumber, int pageSize) {
+    Traversal<List<Product>, Product> pageTraversal =
+        ListTraversals.slicing(pageNumber * pageSize, (pageNumber + 1) * pageSize);
+
+    List<Product> items = Traversals.getAll(pageTraversal, catalogue);
+
+    int totalPages = (int) Math.ceil(catalogue.size() / (double) pageSize);
+    PageInfo pageInfo = new PageInfo(pageNumber, pageSize, catalogue.size(), totalPages);
+
+    return new PagedResponse(items, pageInfo);
+  }
 
 ```
-=== E-COMMERCE PAGINATION WITH LIMITING TRAVERSALS ===
 
---- Scenario 1: Paginated Product Display ---
-Page 1: [Laptop, Mouse, Keyboard]
-Page 2: [Monitor, Webcam, Headset]
-Page 3: [USB Hub, Desk Lamp]
+The hero section is the first three products. `taking(3)` marks them as featured, and composed with a price lens it discounts the same three, leaving every other price as it was:
 
---- Scenario 2: Featured Products (First 3) ---
-  Laptop - £999.99
-  Mouse - £29.99
-  Keyboard - £79.99
+``` java
+  private static void demonstrateFeaturedProducts(List<Product> catalogue) {
+    System.out.println("--- Scenario 2: Featured Products (Hero Section) ---");
 
---- Scenario 3: 10% Discount on Featured ---
-After discount on first 3:
-  Laptop: £899.99
-  Mouse: £26.99
-  Keyboard: £71.99
-  Monitor: £349.99
-  Webcam: £89.99
-  Headset: £149.99
-  USB Hub: £39.99
-  Desk Lamp: £44.99
+    // First 3 products are featured on the hero section
+    Traversal<List<Product>, Product> heroProducts = ListTraversals.taking(3);
 
---- Scenario 4: All Except Last 2 (Clearance) ---
-Regular stock: [Laptop, Mouse, Keyboard, Monitor, Webcam, Headset]
+    // Mark them as featured and add "HOT" badge
+    List<Product> withHeroSection =
+        Traversals.modify(heroProducts, p -> p.markFeatured().withBadge("HOT"), catalogue);
 
-=== PAGINATION COMPLETE ===
+    System.out.println("Hero section products:");
+    Traversals.getAll(heroProducts, withHeroSection)
+        .forEach(
+            p ->
+                System.out.printf(
+                    "  ⭐ %s [%s] - Featured: %s%n", p.name(), p.badge(), p.featured()));
+
+    // Apply special 15% discount to hero products
+    Lens<Product, Double> priceLens =
+        Lens.of(
+            Product::price,
+            (prod, newPrice) ->
+                new Product(
+                    prod.sku(),
+                    prod.name(),
+                    newPrice,
+                    prod.stock(),
+                    prod.featured(),
+                    prod.badge()));
+
+    Traversal<List<Product>, Double> heroPrices = heroProducts.andThen(priceLens);
+
+    List<Product> discountedHero = Traversals.modify(heroPrices, price -> price * 0.85, catalogue);
+
+    System.out.println("\nAfter 15% hero discount:");
+    for (int i = 0; i < 5; i++) {
+      Product original = catalogue.get(i);
+      Product discounted = discountedHero.get(i);
+      String marker = i < 3 ? "★" : " ";
+      System.out.printf(
+          "  %s %s: £%.2f → £%.2f%n",
+          marker, original.name(), original.price(), discounted.price());
+    }
+    System.out.println();
+  }
+
+```
+
+The clearance section is the last four. `takingLast(4)` discounts them, and `droppingLast(4)` counts the regular products that are left:
+
+``` java
+  private static void demonstrateClearanceSection(List<Product> catalogue) {
+    System.out.println("--- Scenario 3: Clearance Section ---");
+
+    // Last 4 products are clearance items
+    Traversal<List<Product>, Product> clearanceItems = ListTraversals.takingLast(4);
+
+    System.out.println("Clearance items (last 4):");
+    List<Product> clearance = Traversals.getAll(clearanceItems, catalogue);
+    clearance.forEach(p -> System.out.printf("  🏷️ %s - £%.2f%n", p.name(), p.price()));
+
+    // Apply 30% clearance discount
+    List<Product> withClearance =
+        Traversals.modify(
+            clearanceItems, p -> p.applyDiscount(0.3).withBadge("CLEARANCE"), catalogue);
+
+    System.out.println("\nAfter 30% clearance discount:");
+    Traversals.getAll(clearanceItems, withClearance)
+        .forEach(p -> System.out.printf("  🏷️ %s [%s] - £%.2f%n", p.name(), p.badge(), p.price()));
+
+    // Regular items (all except clearance)
+    Traversal<List<Product>, Product> regularItems = ListTraversals.droppingLast(4);
+    List<Product> regular = Traversals.getAll(regularItems, catalogue);
+    System.out.println("\nRegular items (excluding clearance): " + regular.size() + " products");
+
+    System.out.println();
+  }
+
+```
+
+The hero and clearance sections print:
+
+```
+--- Scenario 2: Featured Products (Hero Section) ---
+Hero section products:
+  ⭐ Premium Electronics Item 1 [HOT] - Featured: true
+  ⭐ Standard Home Item 2 [HOT] - Featured: true
+  ⭐ Budget Garden Item 3 [HOT] - Featured: true
+
+After 15% hero discount:
+  ★ Premium Electronics Item 1: £17.50 → £14.88
+  ★ Standard Home Item 2: £25.00 → £21.25
+  ★ Budget Garden Item 3: £25.00 → £21.25
+    Deluxe Sports Item 4: £32.50 → £32.50
+    Basic Books Item 5: £40.00 → £40.00
+
+--- Scenario 3: Clearance Section ---
+Clearance items (last 4):
+  🏷️ Standard Home Item 17 - £100.00
+  🏷️ Budget Garden Item 18 - £100.00
+  🏷️ Deluxe Sports Item 19 - £107.50
+  🏷️ Basic Books Item 20 - £115.00
+
+After 30% clearance discount:
+  🏷️ Standard Home Item 17 [CLEARANCE] - £70.00
+  🏷️ Budget Garden Item 18 [CLEARANCE] - £70.00
+  🏷️ Deluxe Sports Item 19 [CLEARANCE] - £75.25
+  🏷️ Basic Books Item 20 [CLEARANCE] - £80.50
+
+Regular items (excluding clearance): 16 products
 ```
 
 ---
@@ -781,9 +789,7 @@ val firstN: Traversal[List[A], A] = ...
 
 ---
 
-## Summary: The Power of Limiting Traversals
-
-Limiting traversals bring **positional focus** into the heart of your optic compositions:
+## The limiting methods at a glance {#summary-the-power-of-limiting-traversals}
 
 | Method | Focus |
 |--------|-------|
@@ -807,6 +813,7 @@ Limiting traversals bring **positional focus** into the heart of your optic comp
 - [List Decomposition](list_decomposition.md): head/tail and init/last access as prisms and affines
 - [Filtered Optics](filtered_optics.md): focusing by predicate across the whole list
 - [Traversals](traversals.md): the unrestricted bulk-update optic these methods refine
+- [Production Readiness](production_readiness.md#collection-optics): what a limiting traversal copies, and when to cache a composed optic
 ~~~
 
 ~~~admonish tip title="Further Reading"

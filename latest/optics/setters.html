@@ -749,179 +749,147 @@ Setter&lt;Product, Double&gt; priceSetter = Setter.fromGetSet(
     (p, price) -&gt; new Product(p.name(), price, p.stock(), p.tags()));
 </code></pre>
 <hr />
-<h2 id="performance-considerations"><a class="header" href="#performance-considerations">Performance Considerations</a></h2>
-<p>Setters are <strong>lightweight and efficient</strong>:</p>
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJjb25zdHJ1Y3Rpb24iLCAiYnVpbGQiLCAidGhlaXIiLCAicmVzdWx0IiwgIndpdGhvdXQiLCAiY29weWluZyIsICJpdCIsICJhdCIsICJlYWNoIiwgInN0ZXAiXQ==" data-since="v0.4.11"></div>
-<ul>
-<li><strong>Minimal overhead</strong>: Just function composition</li>
-<li><strong>No reflection</strong>: Direct method calls</li>
-<li><strong>JIT-friendly</strong>: Can be inlined by the JVM</li>
-<li><strong>O(n) collection construction</strong>: <code>forList()</code> and <code>forMapValues()</code> build their result without copying it at each step</li>
-</ul>
-<h3 id="optimised-collection-operations"><a class="header" href="#optimised-collection-operations">Optimised Collection Operations</a></h3>
-<p>The <code>modifyF</code> implementations in <code>forList()</code> and <code>forMapValues()</code> use efficient algorithms:</p>
-<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJQcmVwZW5kcyIsICJlYWNoIiwgInJlc3VsdCIsICJvbnRvIiwgImFuIiwgImltbXV0YWJsZSIsICJsaXN0IiwgImluIiwgImNvbnN0YW50IiwgInRpbWUiLCAiY29weWluZyIsICJhbiIsICJhdCIsICJlYWNoIiwgInN0ZXAiLCAiTGluZWFyLXRpbWUiLCAiY29uc3RydWN0aW9uIiwgIkJ1aWxkaW5nIiwgInRoZSIsICJyZXN1bHQiLCAidGFrZXMiXQ==" data-since="v0.4.11"></div>
-<ul>
-<li><strong>Right-to-left folding</strong>: Prepends each result onto an immutable list in constant time, instead of copying an array at each step</li>
-<li><strong>Single pass construction</strong>: Collects effects first, sequences them, then builds the final collection once</li>
-<li><strong>Linear-time construction</strong>: Building the result takes O(n) for n elements</li>
-</ul>
-<div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJTbyIsICJyZWJ1aWxkaW5nIiwgImEiLCAiY29sbGVjdGlvbiIsICJ0YWtlcyIsICJsaW5lYXIiLCAidGltZSJd" data-since="v0.4.11"></div>
-<p>So rebuilding a large collection takes linear time:</p>
-<!-- verify -->
-<pre><code class="language-java">// Efficient even for large lists
-Setter&lt;List&lt;Integer&gt;, Integer&gt; listSetter = Setter.forList();
-// largeList holds thousands of elements
-
-// O(n) time complexity, not O(n²)
-Kind&lt;OptionalKind.Witness, List&lt;Integer&gt;&gt; result =
-    listSetter.modifyF(validateAndTransform, largeList, Instances.monadError(optional()));
-</code></pre>
-<p><strong>Best Practice</strong>: Compose Setters at initialisation time, then reuse:</p>
-<!-- verify -->
-<pre><code class="language-java">// Define once
-final Setter&lt;Company, Double&gt; allProductPrices =
-    companyProductsSetter.andThen(productsSetter).andThen(priceSetter);
-
-// Reuse many times
-Company discounted = allProductPrices.modify(p -&gt; p * 0.9, company);
-Company inflated = allProductPrices.modify(p -&gt; p * 1.05, company);
-</code></pre>
-<hr />
 <h2 id="complete-runnable-example"><a class="header" href="#complete-runnable-example">Complete, Runnable Example</a></h2>
-<!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJpbmNsdWRlIiwgIi8uLi8uLi9oa2otZXhhbXBsZXMvc3JjL21haW4vamF2YS9vcmcvaGlnaGVya2luZGVkai9leGFtcGxlL2Jvb2svb3B0aWNzL3NldHRlcnMvU2V0dGVyRXhhbXBsZS5qYXZhOmltcG9ydHMiLCAiaW5jbHVkZSIsICIvLi4vLi4vaGtqLWV4YW1wbGVzL3NyYy9tYWluL2phdmEvb3JnL2hpZ2hlcmtpbmRlZGovZXhhbXBsZS9ib29rL29wdGljcy9zZXR0ZXJzL1NldHRlckV4YW1wbGUuamF2YTpzZXR0ZXJfZXhhbXBsZSJd" data-since="v0.4.11"></div>
 <pre><code class="language-java">import static org.higherkindedj.hkt.instances.Witnesses.optional;
 
-import org.higherkindedj.optics.Setter;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
 import org.higherkindedj.hkt.Kind;
 import org.higherkindedj.hkt.instances.Instances;
 import org.higherkindedj.hkt.optional.OptionalKind;
 import org.higherkindedj.hkt.optional.OptionalKindHelper;
-import java.util.*;
-import java.util.function.Function;
+import org.higherkindedj.optics.Setter;
+
 
 public class SetterExample {
 
-    public record User(String username, String email, int loginCount, UserSettings settings) {}
-    // A trimmed UserSettings, so the runnable example stays small
-    public record UserSettings(String theme, boolean notifications, int fontSize) {}
-    public record Product(String name, double price, int stock) {}
+  public record User(String username, String email, int loginCount, UserSettings settings) {}
 
-    public static void main(String[] args) {
-        // === Basic Setters ===
-        Setter&lt;User, String&gt; usernameSetter = Setter.fromGetSet(
-            User::username,
-            (u, name) -&gt; new User(name, u.email(), u.loginCount(), u.settings()));
+  // A trimmed UserSettings, so the runnable example stays small
+  public record UserSettings(String theme, boolean notifications, int fontSize) {}
 
-        Setter&lt;User, Integer&gt; loginCountSetter = Setter.fromGetSet(
-            User::loginCount,
-            (u, count) -&gt; new User(u.username(), u.email(), count, u.settings()));
+  public record Product(String name, double price, int stock) {}
 
-        UserSettings settings = new UserSettings("light", true, 14);
-        User user = new User("JOHN_DOE", "john@example.com", 10, settings);
+  public static void main(String[] args) {
+    // === Basic Setters ===
+    Setter&lt;User, String&gt; usernameSetter =
+        Setter.fromGetSet(
+            User::username, (u, name) -&gt; new User(name, u.email(), u.loginCount(), u.settings()));
 
-        // Normalise username
-        User normalised = usernameSetter.modify(String::toLowerCase, user);
-        System.out.println("Normalised: " + normalised.username());
+    Setter&lt;User, Integer&gt; loginCountSetter =
+        Setter.fromGetSet(
+            User::loginCount, (u, count) -&gt; new User(u.username(), u.email(), count, u.settings()));
 
-        // Increment login count
-        User incremented = loginCountSetter.modify(count -&gt; count + 1, user);
-        System.out.println("Login count: " + incremented.loginCount());
+    UserSettings settings = new UserSettings("light", true, 14);
+    User user = new User("JOHN_DOE", "john@example.com", 10, settings);
 
-        // === Composition ===
-        Setter&lt;User, UserSettings&gt; settingsSetter = Setter.fromGetSet(
-            User::settings,
-            (u, s) -&gt; new User(u.username(), u.email(), u.loginCount(), s));
+    // Normalise username
+    User normalised = usernameSetter.modify(String::toLowerCase, user);
+    System.out.println("Normalised: " + normalised.username());
 
-        Setter&lt;UserSettings, String&gt; themeSetter = Setter.fromGetSet(
+    // Increment login count
+    User incremented = loginCountSetter.modify(count -&gt; count + 1, user);
+    System.out.println("Login count: " + incremented.loginCount());
+
+    // === Composition ===
+    Setter&lt;User, UserSettings&gt; settingsSetter =
+        Setter.fromGetSet(
+            User::settings, (u, s) -&gt; new User(u.username(), u.email(), u.loginCount(), s));
+
+    Setter&lt;UserSettings, String&gt; themeSetter =
+        Setter.fromGetSet(
             UserSettings::theme,
             (s, theme) -&gt; new UserSettings(theme, s.notifications(), s.fontSize()));
 
-        Setter&lt;User, String&gt; userThemeSetter = settingsSetter.andThen(themeSetter);
+    Setter&lt;User, String&gt; userThemeSetter = settingsSetter.andThen(themeSetter);
 
-        User darkMode = userThemeSetter.set("dark", user);
-        System.out.println("Theme: " + darkMode.settings().theme());
+    User darkMode = userThemeSetter.set("dark", user);
+    System.out.println("Theme: " + darkMode.settings().theme());
 
-        // === Collection Setters ===
-        Setter&lt;List&lt;Integer&gt;, Integer&gt; listSetter = Setter.forList();
+    // === Collection Setters ===
+    Setter&lt;List&lt;Integer&gt;, Integer&gt; listSetter = Setter.forList();
 
-        List&lt;Integer&gt; numbers = List.of(1, 2, 3, 4, 5);
-        List&lt;Integer&gt; doubled = listSetter.modify(x -&gt; x * 2, numbers);
-        System.out.println("Doubled: " + doubled);
+    List&lt;Integer&gt; numbers = List.of(1, 2, 3, 4, 5);
+    List&lt;Integer&gt; doubled = listSetter.modify(x -&gt; x * 2, numbers);
+    System.out.println("Doubled: " + doubled);
 
-        // === Product Batch Update ===
-        Setter&lt;Product, Double&gt; priceSetter = Setter.fromGetSet(
-            Product::price,
-            (p, price) -&gt; new Product(p.name(), price, p.stock()));
+    // === Product Batch Update ===
+    Setter&lt;Product, Double&gt; priceSetter =
+        Setter.fromGetSet(Product::price, (p, price) -&gt; new Product(p.name(), price, p.stock()));
 
-        Setter&lt;List&lt;Product&gt;, Product&gt; productsSetter = Setter.forList();
+    Setter&lt;List&lt;Product&gt;, Product&gt; productsSetter = Setter.forList();
 
-        List&lt;Product&gt; products = List.of(
+    List&lt;Product&gt; products =
+        List.of(
             new Product("Laptop", 999.99, 50),
             new Product("Keyboard", 79.99, 100),
             new Product("Monitor", 299.99, 30));
 
-        // Apply 10% discount
-        List&lt;Product&gt; discounted = productsSetter.modify(
-            product -&gt; priceSetter.modify(price -&gt; price * 0.9, product),
-            products);
+    // Apply 10% discount
+    List&lt;Product&gt; discounted =
+        productsSetter.modify(
+            product -&gt; priceSetter.modify(price -&gt; price * 0.9, product), products);
 
-        System.out.println("Discounted prices:");
-        for (Product p : discounted) {
-            System.out.printf("  %s: £%.2f%n", p.name(), p.price());
-        }
+    System.out.println("Discounted prices:");
+    for (Product p : discounted) {
+      System.out.printf("  %s: £%.2f%n", p.name(), p.price());
+    }
 
-        // === Effectful Modification ===
-        Function&lt;String, Kind&lt;OptionalKind.Witness, String&gt;&gt; validateUsername =
-            username -&gt; {
-                if (username.length() &gt;= 3 &amp;&amp; username.matches("[a-z_]+")) {
-                    return OptionalKindHelper.OPTIONAL.widen(Optional.of(username));
-                } else {
-                    return OptionalKindHelper.OPTIONAL.widen(Optional.empty());
-                }
-            };
-
-        User validUser = new User("john_doe", "john@example.com", 10, settings);
-        Kind&lt;OptionalKind.Witness, User&gt; validResult =
-            usernameSetter.modifyF(validateUsername, validUser, Instances.monadError(optional()));
-
-        Optional&lt;User&gt; validated = OptionalKindHelper.OPTIONAL.narrow(validResult);
-        System.out.println("Valid username: " + validated.map(User::username).orElse("INVALID"));
-
-        User invalidUser = new User("ab", "a@test.com", 0, settings);
-        Kind&lt;OptionalKind.Witness, User&gt; invalidResult =
-            usernameSetter.modifyF(validateUsername, invalidUser, Instances.monadError(optional()));
-
-        Optional&lt;User&gt; invalidValidated = OptionalKindHelper.OPTIONAL.narrow(invalidResult);
-        System.out.println("Invalid username: " + invalidValidated.map(User::username).orElse("INVALID"));
-
-        // === Data Normalisation ===
-        Setter&lt;Product, String&gt; nameSetter = Setter.fromGetSet(
-            Product::name,
-            (p, name) -&gt; new Product(name, p.price(), p.stock()));
-
-        Function&lt;String, String&gt; titleCase = name -&gt; {
-            String trimmed = name.trim();
-            return trimmed.substring(0, 1).toUpperCase() + trimmed.substring(1).toLowerCase();
+    // === Effectful Modification ===
+    Function&lt;String, Kind&lt;OptionalKind.Witness, String&gt;&gt; validateUsername =
+        username -&gt; {
+          if (username.length() &gt;= 3 &amp;&amp; username.matches("[a-z_]+")) {
+            return OptionalKindHelper.OPTIONAL.widen(Optional.of(username));
+          } else {
+            return OptionalKindHelper.OPTIONAL.widen(Optional.empty());
+          }
         };
 
-        List&lt;Product&gt; rawProducts = List.of(
+    User validUser = new User("john_doe", "john@example.com", 10, settings);
+    Kind&lt;OptionalKind.Witness, User&gt; validResult =
+        usernameSetter.modifyF(validateUsername, validUser, Instances.monadError(optional()));
+
+    Optional&lt;User&gt; validated = OptionalKindHelper.OPTIONAL.narrow(validResult);
+    System.out.println("Valid username: " + validated.map(User::username).orElse("INVALID"));
+
+    User invalidUser = new User("ab", "a@test.com", 0, settings);
+    Kind&lt;OptionalKind.Witness, User&gt; invalidResult =
+        usernameSetter.modifyF(validateUsername, invalidUser, Instances.monadError(optional()));
+
+    Optional&lt;User&gt; invalidValidated = OptionalKindHelper.OPTIONAL.narrow(invalidResult);
+    System.out.println(
+        "Invalid username: " + invalidValidated.map(User::username).orElse("INVALID"));
+
+    // === Data Normalisation ===
+    Setter&lt;Product, String&gt; nameSetter =
+        Setter.fromGetSet(Product::name, (p, name) -&gt; new Product(name, p.price(), p.stock()));
+
+    Function&lt;String, String&gt; titleCase =
+        name -&gt; {
+          String trimmed = name.trim();
+          return trimmed.substring(0, 1).toUpperCase() + trimmed.substring(1).toLowerCase();
+        };
+
+    List&lt;Product&gt; rawProducts =
+        List.of(
             new Product("  LAPTOP  ", 999.99, 50),
             new Product("keyboard", 79.99, 100),
             new Product("MONITOR", 299.99, 30));
 
-        List&lt;Product&gt; normalisedProducts = productsSetter.modify(
-            product -&gt; nameSetter.modify(titleCase, product),
-            rawProducts);
+    List&lt;Product&gt; normalisedProducts =
+        productsSetter.modify(product -&gt; nameSetter.modify(titleCase, product), rawProducts);
 
-        System.out.println("Normalised product names:");
-        for (Product p : normalisedProducts) {
-            System.out.println("  - " + p.name());
-        }
+    System.out.println("Normalised product names:");
+    for (Product p : normalisedProducts) {
+      System.out.println("  - " + p.name());
     }
+  }
 }
 </code></pre>
 <p><strong>Expected Output:</strong></p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJpbmNsdWRlIiwgIi8uLi8uLi9oa2otZXhhbXBsZXMvc3JjL3Rlc3QvcmVzb3VyY2VzL2dvbGRlbi9vcHRpY3Mtc2V0dGVycy1leGFtcGxlLW91dHB1dC50eHQuZ29sZGVuIl0=" data-since="v0.4.11"></div>
 <pre><code>Normalised: john_doe
 Login count: 11
 Theme: dark
@@ -955,6 +923,7 @@ Normalised product names:
 </ul>
 </div>
 </div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJQcm9kdWN0aW9uIiwgIlJlYWRpbmVzc10ocHJvZHVjdGlvbl9yZWFkaW5lc3MubWQjY29sbGVjdGlvbi1vcHRpY3MiLCAid2hhdCIsICJTZXR0ZXIuZm9yTGlzdCIsICJhbmQiLCAiZm9yTWFwVmFsdWVzIiwgImJ1aWxkIiwgImFuZCIsICJ3aGVuIiwgInRvIiwgImNhY2hlIiwgImEiLCAiY29tcG9zZWQiLCAib3B0aWMiXQ==" data-since="v0.4.11"></div>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
 <div class="admonition-title">
 <div id="admonition-see-also-title">
@@ -967,6 +936,7 @@ Normalised product names:
 <li><a href="getters.html">Getters</a>: the read-only mirror of this page</li>
 <li><a href="traversals.html">Traversals</a>: when bulk modification also needs <code>getAll</code> and queries</li>
 <li><a href="lenses.html">Lenses</a>: when the same field needs reading and writing</li>
+<li><a href="production_readiness.html#collection-optics">Production Readiness</a>: what <code>Setter.forList()</code> and <code>forMapValues()</code> build, and when to cache a composed optic</li>
 </ul>
 </div>
 </div>

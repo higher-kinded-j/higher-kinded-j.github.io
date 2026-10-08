@@ -509,55 +509,30 @@ public class EmployeeService {
 }
 ```
 
-#### Performance Considerations
-
-`getMaybe` adds minimal overhead:
-
-* **One null check**: Checks if the extracted value is null
-* **One Maybe wrapping**: Creates `Just` or `Nothing` instance
-* **Same extraction cost**: Uses `Getter.get()` internally
-
-**Optimisation Tip**: For performance-critical hot paths where values are guaranteed non-null, use `Getter.get()` directly. For most business logic, the safety and composability of `getMaybe` far outweigh the negligible cost.
-
-<!-- verify -->
-```java
-// Hot path with guaranteed non-null (use direct get)
-String fastAccess = nameGetter.get(person);
-
-// Business logic with potential nulls (use getMaybe)
-Maybe<String> safeAccess = getMaybe(addressGetter, person)
-    .flatMap(addr -> getMaybe(cityGetter, addr));
-```
-
 #### Practical Pattern: Building Maybe-Safe Composed Getters
 
 Create reusable null-safe extraction functions:
 
-<!-- verify -->
-```java
+``` java
 public class SafeGetters {
-    // Create a null-safe composed getter using Maybe
-    public static <A, B, C> Function<A, Maybe<C>> safePath(
-        Getter<A, B> first,
-        Getter<B, C> second
-    ) {
-        return source -> getMaybe(first, source)
-            .flatMap(intermediate -> getMaybe(second, intermediate));
-    }
+  // Create a null-safe composed getter using Maybe
+  public static <A, B, C> Function<A, Maybe<C>> safePath(Getter<A, B> first, Getter<B, C> second) {
+    return source ->
+        getMaybe(first, source).flatMap(intermediate -> getMaybe(second, intermediate));
+  }
 
-    // Usage example
-    private static final Function<Person, Maybe<String>> SAFE_CITY_LOOKUP =
-        safePath(
-            Getter.of(Person::address),
-            Getter.of(Address::city)
-        );
+  // Usage example
+  private static final Function<Person, Maybe<String>> SAFE_CITY_LOOKUP =
+      safePath(Getter.of(Person::address), Getter.of(Address::city));
 
-    public static void main(String[] args) {
-        Person person = new Person("Jane", "Smith", 45, null);
-        Maybe<String> city = SAFE_CITY_LOOKUP.apply(person);
-        // Result: Nothing (safely handled null address)
-    }
+  public static void main(String[] args) {
+    Person person = new Person("Jane", "Smith", 45, null);
+    Maybe<String> city = SAFE_CITY_LOOKUP.apply(person);
+    // Nothing   <- the null address is handled safely
+    System.out.println(city);
+  }
 }
+
 ```
 
 ~~~admonish example title="See Example Code"
@@ -774,122 +749,115 @@ Getter<NullableRecord, String> safeGetter = Getter.of(r ->
 
 ---
 
-## Performance Considerations
-
-Getters are **extremely lightweight**:
-
-* **No reflection**: Direct method references
-* **Inline-friendly**: JIT can optimise away the abstraction
-
-**Best Practice**: Use Getters freely; they add minimal runtime cost whilst providing excellent composability and type safety.
-
-<!-- verify -->
-```java
-// Efficient: Computed on demand
-Getter<Person, String> fullName = Getter.of(p -> p.firstName() + " " + p.lastName());
-
-// No storage overhead, computed each time get() is called
-String name1 = fullName.get(person1);
-String name2 = fullName.get(person2);
-```
-
----
-
 ## Complete, Runnable Example
 
-<!-- verify -->
-```java
-import org.higherkindedj.optics.Getter;
-import org.higherkindedj.optics.Fold;
-import org.higherkindedj.hkt.Monoid;
-import java.util.*;
+``` java
+import java.util.List;
+import java.util.Optional;
 import java.util.function.Function;
+import org.higherkindedj.hkt.Monoid;
+import org.higherkindedj.optics.Fold;
+import org.higherkindedj.optics.Getter;
+
 
 public class GetterExample {
 
-    public record Person(String firstName, String lastName, int age, Address address) {}
-    public record Address(String street, String city, String zipCode, String country) {}
-    public record Company(String name, Person ceo, List<Person> employees, Address headquarters) {}
+  public record Person(String firstName, String lastName, int age, Address address) {}
 
-    public static void main(String[] args) {
-        // Create sample data
-        Address ceoAddress = new Address("123 Executive Blvd", "London", "EC1A", "UK");
-        Person ceo = new Person("Jane", "Smith", 45, ceoAddress);
+  public record Address(String street, String city, String zipCode, String country) {}
 
-        List<Person> employees = List.of(
+  public record Company(String name, Person ceo, List<Person> employees, Address headquarters) {}
+
+  public static void main(String[] args) {
+    // Create sample data
+    Address ceoAddress = new Address("123 Executive Blvd", "London", "EC1A", "UK");
+    Person ceo = new Person("Jane", "Smith", 45, ceoAddress);
+
+    List<Person> employees =
+        List.of(
             new Person("John", "Doe", 30, new Address("456 Oak St", "Manchester", "M1", "UK")),
-            new Person("Alice", "Johnson", 28, new Address("789 Elm Ave", "Birmingham", "B1", "UK")),
-            new Person("Bob", "Williams", 35, new Address("321 Pine Rd", "Leeds", "LS1", "UK"))
-        );
+            new Person(
+                "Alice", "Johnson", 28, new Address("789 Elm Ave", "Birmingham", "B1", "UK")),
+            new Person("Bob", "Williams", 35, new Address("321 Pine Rd", "Leeds", "LS1", "UK")));
 
-        Address hqAddress = new Address("1000 Corporate Way", "London", "EC2A", "UK");
-        Company company = new Company("TechCorp", ceo, employees, hqAddress);
+    Address hqAddress = new Address("1000 Corporate Way", "London", "EC2A", "UK");
+    Company company = new Company("TechCorp", ceo, employees, hqAddress);
 
-        // === Basic Getters ===
-        Getter<Person, String> fullName = Getter.of(p -> p.firstName() + " " + p.lastName());
-        Getter<Person, Integer> age = Getter.of(Person::age);
+    // === Basic Getters ===
+    Getter<Person, String> fullName = Getter.of(p -> p.firstName() + " " + p.lastName());
+    Getter<Person, Integer> age = Getter.of(Person::age);
 
-        System.out.println("CEO: " + fullName.get(ceo));
-        System.out.println("CEO Age: " + age.get(ceo));
+    System.out.println("CEO: " + fullName.get(ceo));
+    System.out.println("CEO Age: " + age.get(ceo));
 
-        // === Computed Values ===
-        Getter<Person, String> initials = Getter.of(p ->
-            p.firstName().charAt(0) + "." + p.lastName().charAt(0) + ".");
-        Getter<Person, String> email = Getter.of(p ->
-            p.firstName().toLowerCase() + "." + p.lastName().toLowerCase() + "@techcorp.com");
+    // === Computed Values ===
+    Getter<Person, String> initials =
+        Getter.of(p -> p.firstName().charAt(0) + "." + p.lastName().charAt(0) + ".");
+    Getter<Person, String> email =
+        Getter.of(
+            p -> p.firstName().toLowerCase() + "." + p.lastName().toLowerCase() + "@techcorp.com");
 
-        System.out.println("CEO Initials: " + initials.get(ceo));
-        System.out.println("CEO Email: " + email.get(ceo));
+    System.out.println("CEO Initials: " + initials.get(ceo));
+    System.out.println("CEO Email: " + email.get(ceo));
 
-        // === Composition ===
-        Getter<Person, Address> addressGetter = Getter.of(Person::address);
-        Getter<Address, String> cityGetter = Getter.of(Address::city);
-        Getter<Company, Person> ceoGetter = Getter.of(Company::ceo);
+    // === Composition ===
+    Getter<Person, Address> addressGetter = Getter.of(Person::address);
+    Getter<Address, String> cityGetter = Getter.of(Address::city);
+    Getter<Company, Person> ceoGetter = Getter.of(Company::ceo);
 
-        Getter<Person, String> personCity = addressGetter.andThen(cityGetter);
-        Getter<Company, String> companyCeoCity = ceoGetter.andThen(personCity);
+    Getter<Person, String> personCity = addressGetter.andThen(cityGetter);
+    Getter<Company, String> companyCeoCity = ceoGetter.andThen(personCity);
 
-        System.out.println("CEO City: " + personCity.get(ceo));
-        System.out.println("Company CEO City: " + companyCeoCity.get(company));
+    System.out.println("CEO City: " + personCity.get(ceo));
+    System.out.println("Company CEO City: " + companyCeoCity.get(company));
 
-        // === Getter as Fold ===
-        Optional<Integer> ceoAge = age.preview(ceo);
-        boolean isExperienced = age.exists(a -> a > 40, ceo);
-        int ageCount = age.length(ceo); // Always 1 for Getter
+    // === Getter as Fold ===
+    Optional<Integer> ceoAge = age.preview(ceo);
+    boolean isExperienced = age.exists(a -> a > 40, ceo);
+    int ageCount = age.length(ceo); // Always 1 for Getter
 
-        System.out.println("CEO Age (Optional): " + ceoAge);
-        System.out.println("CEO is Experienced: " + isExperienced);
-        System.out.println("Age Count: " + ageCount);
+    System.out.println("CEO Age (Optional): " + ceoAge);
+    System.out.println("CEO is Experienced: " + isExperienced);
+    System.out.println("Age Count: " + ageCount);
 
-        // === Employee Analysis ===
-        Fold<List<Person>, Person> listFold = Fold.of(list -> list);
+    // === Employee Analysis ===
+    Fold<List<Person>, Person> listFold = Fold.of(list -> list);
 
-        List<String> employeeNames = listFold.andThen(fullName.asFold()).getAll(employees);
-        System.out.println("Employee Names: " + employeeNames);
+    List<String> employeeNames = listFold.andThen(fullName.asFold()).getAll(employees);
+    System.out.println("Employee Names: " + employeeNames);
 
-        List<String> employeeEmails = listFold.andThen(email.asFold()).getAll(employees);
-        System.out.println("Employee Emails: " + employeeEmails);
+    List<String> employeeEmails = listFold.andThen(email.asFold()).getAll(employees);
+    System.out.println("Employee Emails: " + employeeEmails);
 
-        // Calculate average age
-        int totalAge = listFold.andThen(age.asFold())
-            .foldMap(sumMonoid(), Function.identity(), employees);
-        double avgAge = (double) totalAge / employees.size();
-        System.out.println("Average Employee Age: " + String.format("%.1f", avgAge));
+    // Calculate average age
+    int totalAge =
+        listFold.andThen(age.asFold()).foldMap(sumMonoid(), Function.identity(), employees);
+    double avgAge = (double) totalAge / employees.size();
+    System.out.println("Average Employee Age: " + String.format("%.1f", avgAge));
 
-        // Check if all from UK
-        Getter<Address, String> countryGetter = Getter.of(Address::country);
-        boolean allUK = listFold.andThen(addressGetter.asFold())
+    // Check if all from UK
+    Getter<Address, String> countryGetter = Getter.of(Address::country);
+    boolean allUK =
+        listFold
+            .andThen(addressGetter.asFold())
             .andThen(countryGetter.asFold())
             .all(c -> c.equals("UK"), employees);
-        System.out.println("All Employees from UK: " + allUK);
-    }
+    System.out.println("All Employees from UK: " + allUK);
+  }
 
-    private static Monoid<Integer> sumMonoid() {
-        return new Monoid<>() {
-            @Override public Integer empty() { return 0; }
-            @Override public Integer combine(Integer a, Integer b) { return a + b; }
-        };
-    }
+  private static Monoid<Integer> sumMonoid() {
+    return new Monoid<>() {
+      @Override
+      public Integer empty() {
+        return 0;
+      }
+
+      @Override
+      public Integer combine(Integer a, Integer b) {
+        return a + b;
+      }
+    };
+  }
 }
 ```
 
@@ -925,6 +893,7 @@ All Employees from UK: true
 - [Folds](folds.md): the zero-or-more counterpart with monoid aggregation
 - [Setters](setters.md): the write-only mirror of this page
 - [Lenses](lenses.md): when the same field needs reading and writing
+- [Production Readiness](production_readiness.md#read-cost): what a read and `getMaybe` cost, and when to cache a composed optic
 ~~~
 
 ---

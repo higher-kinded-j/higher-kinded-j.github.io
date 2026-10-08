@@ -845,7 +845,7 @@ Where this lives: [Find your field](#find-your-field).
 - [Collections, Optionals and Sealed Types](focus_navigation.md): collection navigation, `.via()` composition, and generated navigators
 - [Type Class and Effect Integration](focus_effects.md): `modifyF()`, `foldMap()`, `traverseOver()`, and Effect path bridging
 - [Custom Containers and Code Generation](focus_containers.md): generated class structure, SPI container types, and registration
-- [Focus DSL Reference](focus_reference.md): decision guide, common patterns, performance, pitfalls, and FAQ
+- [Focus DSL Reference](focus_reference.md): decision guide, common patterns, pitfalls, and FAQ
 ~~~
 
 ---
@@ -3308,32 +3308,6 @@ var finalEmployee = EmployeeLenses.company()
 
 ---
 
-## Performance Notes
-
-Lenses are optimised for immutable updates:
-
-* **Memory efficient**: Only creates new objects along the path that changes
-* **Reusable**: Composed lenses can be stored and reused across your application
-* **Type-safe**: All operations are checked at compile time
-
-**Best Practice**: For frequently used paths, create the composed lens once and store it as a static field:
-
-<!-- verify -->
-```java
-public class EmployeeOptics {
-    public static final Lens<Employee, String> STREET = 
-        EmployeeLenses.company()
-            .andThen(CompanyLenses.address())
-            .andThen(AddressLenses.street());
-        
-    public static final Lens<Employee, String> COMPANY_NAME = 
-        EmployeeLenses.company()
-            .andThen(CompanyLenses.name());
-}
-```
-
----
-
 ## Complete, Runnable Example
 
 The following standalone example puts all these steps together. You can run it to see the output and the immutability in action.
@@ -3472,6 +3446,10 @@ Lenses integrate with For comprehensions in two ways:
 * **Compose with `andThen` to any depth**: build the path once, store it as a constant, reuse it everywhere
 * **Withers for shallow, composed lenses for deep**: the generated `with*` helpers, Lombok's `@With` and hand-written withers each change one record; composition covers the rest, and `Lens.paired` changes coupled components at once
 * **Prefer `modify` over get-then-set**, and `modifyF` when the update carries an effect (validation, async) through the same path
+~~~
+
+~~~admonish tip title="See Also"
+- [Production Readiness](production_readiness.md#what-set-and-modify-allocate): what a lens update allocates, and when to cache a composed optic
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -4145,7 +4123,7 @@ Optional<String> errorMessage = DomainErrorPrisms.validationError()
 
 * **One-off type checks** - Not building reusable logic
 * **Imperative control flow** - You need if/else branching
-* **Performance critical paths** - Minimal abstraction overhead needed
+* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -4232,40 +4210,6 @@ var name3 = stringPrism.getOptional(value3);
 ```
 
 ---
-
-## Performance Notes
-
-Prisms are optimised for type safety and composability:
-
-* **Fast type checking**: Prisms use `instanceof` under the hood, which is optimised by the JVM
-* **Memory efficient**: No boxing or wrapper allocation for failed matches
-* **Composable**: Complex type-safe paths can be built once and reused
-
-**Best Practice**: For frequently used prism combinations, create them once and store as constants:
-
-
-<!-- verify -->
-```java
-public class JsonOptics {
-    private static final Lens<JsonObject, Map<String, JsonValue>> fieldsLens =
-        JsonObjectLenses.fields();
-
-    public static final Prism<JsonValue, JsonString> STRING = 
-        JsonValuePrisms.jsonString();
-  
-    public static final Affine<JsonValue, String> STRING_VALUE =
-        STRING.andThen(JsonStringLenses.value());
-  
-    public static final Traversal<JsonObject, String> USER_NAME = 
-        fieldsLens
-            .andThen(Traversals.forMap("userLogin"))
-            .andThen(JsonValuePrisms.jsonObject())
-            .andThen(fieldsLens)
-            .andThen(Traversals.forMap("name"))
-            .andThen(STRING)
-            .andThen(JsonStringLenses.value());
-}
-```
 
 ## Real-World Example: API Response Handling
 
@@ -4456,6 +4400,7 @@ Validation Result: Invalid(A string field was empty)
 ~~~admonish tip title="See Also"
 - [Prism Toolkit](prism_toolkit.md): the full convenience-method catalogue and the `Prisms` utility factory methods for `Optional`, `Either`, `Maybe`, `Try`, and list decomposition
 - [Validated Prisms](validated_prism.md): when the *no* needs to carry located, accumulated reasons (a validated boundary)
+- [Production Readiness](production_readiness.md#prisms-and-affines): what a prism costs on a miss, and when to cache a composed optic
 ~~~
 
 ~~~admonish tip title="Ready for More?"
@@ -6681,136 +6626,91 @@ Two weaker laws do hold on an absent focus for every affine: `modify` changes no
 
 ## Real-World Example: Configuration Management
 
-<!-- verify -->
-```java
+``` java
+import java.util.Optional;
 import org.higherkindedj.optics.Affine;
 import org.higherkindedj.optics.Lens;
-import org.higherkindedj.optics.util.Affines;
 import org.higherkindedj.optics.util.Prisms;
 
-import java.util.Optional;
-
 // Domain model with nested optionals
-record AppConfig(
-    String appName,
-    Optional<DatabaseConfig> database,
-    Optional<CacheConfig> cache
-) {}
+record AppConfig(String appName, Optional<DatabaseConfig> database, Optional<CacheConfig> cache) {}
 
-record DatabaseConfig(
-    String host,
-    int port,
-    Optional<PoolConfig> pool
-) {}
+record DatabaseConfig(String host, int port, Optional<PoolConfig> pool) {}
 
 record PoolConfig(int minSize, int maxSize) {}
 
 record CacheConfig(String provider, int ttlSeconds) {}
 
+
 public class ConfigOptics {
-    // Lenses for required fields
-    public static final Lens<AppConfig, String> appName =
-        Lens.of(AppConfig::appName, (c, n) -> new AppConfig(n, c.database(), c.cache()));
+  // Lenses for required fields
+  public static final Lens<AppConfig, String> appName =
+      Lens.of(AppConfig::appName, (c, n) -> new AppConfig(n, c.database(), c.cache()));
 
-    public static final Lens<AppConfig, Optional<DatabaseConfig>> database =
-        Lens.of(AppConfig::database, (c, db) -> new AppConfig(c.appName(), db, c.cache()));
+  public static final Lens<AppConfig, Optional<DatabaseConfig>> database =
+      Lens.of(AppConfig::database, (c, db) -> new AppConfig(c.appName(), db, c.cache()));
 
-    public static final Lens<DatabaseConfig, String> host =
-        Lens.of(DatabaseConfig::host, (db, h) -> new DatabaseConfig(h, db.port(), db.pool()));
+  public static final Lens<DatabaseConfig, String> host =
+      Lens.of(DatabaseConfig::host, (db, h) -> new DatabaseConfig(h, db.port(), db.pool()));
 
-    public static final Lens<DatabaseConfig, Optional<PoolConfig>> pool =
-        Lens.of(DatabaseConfig::pool, (db, p) -> new DatabaseConfig(db.host(), db.port(), p));
+  public static final Lens<DatabaseConfig, Optional<PoolConfig>> pool =
+      Lens.of(DatabaseConfig::pool, (db, p) -> new DatabaseConfig(db.host(), db.port(), p));
 
-    public static final Lens<PoolConfig, Integer> maxSize =
-        Lens.of(PoolConfig::maxSize, (p, m) -> new PoolConfig(p.minSize(), m));
+  public static final Lens<PoolConfig, Integer> maxSize =
+      Lens.of(PoolConfig::maxSize, (p, m) -> new PoolConfig(p.minSize(), m));
 
-    // Affines for optional access
-    public static final Affine<AppConfig, DatabaseConfig> databaseAffine =
-        database.andThen(Prisms.some());
+  // Affines for optional access
+  public static final Affine<AppConfig, DatabaseConfig> databaseAffine =
+      database.andThen(Prisms.some());
 
-    public static final Affine<AppConfig, String> databaseHost =
-        databaseAffine.andThen(host);
+  public static final Affine<AppConfig, String> databaseHost = databaseAffine.andThen(host);
 
-    public static final Affine<AppConfig, PoolConfig> poolConfig =
-        databaseAffine
-            .andThen(pool)
-            .andThen(Prisms.some());
+  public static final Affine<AppConfig, PoolConfig> poolConfig =
+      databaseAffine.andThen(pool).andThen(Prisms.some());
 
-    public static final Affine<AppConfig, Integer> poolMaxSize =
-        poolConfig.andThen(maxSize);
+  public static final Affine<AppConfig, Integer> poolMaxSize = poolConfig.andThen(maxSize);
 
-    public static void main(String[] args) {
-        // Create a config with nested optionals
-        AppConfig config = new AppConfig(
+  public static void main(String[] args) {
+    // Create a config with nested optionals
+    AppConfig config =
+        new AppConfig(
             "MyApp",
-            Optional.of(new DatabaseConfig(
-                "localhost",
-                5432,
-                Optional.of(new PoolConfig(5, 20))
-            )),
-            Optional.empty()
-        );
+            Optional.of(new DatabaseConfig("localhost", 5432, Optional.of(new PoolConfig(5, 20)))),
+            Optional.empty());
 
-        // Read nested values safely
-        System.out.println("Host: " + databaseHost.getOptional(config));
-        // Host: Optional[localhost]
+    // Read nested values safely
+    Optional<String> configHost = databaseHost.getOptional(config);
+    // Optional[localhost]
+    System.out.println("Host: " + configHost);
 
-        System.out.println("Pool max: " + poolMaxSize.getOptional(config));
-        // Pool max: Optional[20]
+    Optional<Integer> poolMax = poolMaxSize.getOptional(config);
+    // Optional[20]
+    System.out.println("Pool max: " + poolMax);
 
-        // Update deeply nested value
-        AppConfig updated = poolMaxSize.set(50, config);
-        System.out.println("Updated pool max: " + poolMaxSize.getOptional(updated));
-        // Updated pool max: Optional[50]
+    // Update deeply nested value
+    AppConfig updated = poolMaxSize.set(50, config);
+    Optional<Integer> updatedMax = poolMaxSize.getOptional(updated);
+    // Optional[50]
+    System.out.println("Updated pool max: " + updatedMax);
 
-        // Conditional modification
-        AppConfig doubled = poolMaxSize.modify(n -> n * 2, config);
-        System.out.println("Doubled pool max: " + poolMaxSize.getOptional(doubled));
-        // Doubled pool max: Optional[40]
+    // Conditional modification
+    AppConfig doubled = poolMaxSize.modify(n -> n * 2, config);
+    Optional<Integer> doubledMax = poolMaxSize.getOptional(doubled);
+    // Optional[40]
+    System.out.println("Doubled pool max: " + doubledMax);
 
-        // Safe operation on missing config
-        AppConfig emptyConfig = new AppConfig("EmptyApp", Optional.empty(), Optional.empty());
-        System.out.println("Missing host: " + databaseHost.getOptional(emptyConfig));
-        // Missing host: Optional.empty
+    // Safe operation on missing config: no database reads as empty, and nothing throws
+    AppConfig emptyConfig = new AppConfig("EmptyApp", Optional.empty(), Optional.empty());
+    boolean hostMissing = databaseHost.getOptional(emptyConfig).isEmpty();
+    // true
+    System.out.println("Missing host: " + hostMissing);
 
-        // Modification on missing does nothing
-        AppConfig unchanged = poolMaxSize.modify(n -> n * 2, emptyConfig);
-        System.out.println("Empty config unchanged: " + (unchanged == emptyConfig));
-        // Empty config unchanged: true
-    }
-}
-```
-
----
-
-## Performance Notes
-
-Affines are designed for both safety and efficiency:
-
-* **Zero allocation for absent values**: `getOptional` returns `Optional.empty()` without allocating
-* **Short-circuit reads**: `getOptional` on a composed affine stops at the first absent value
-* **Immutable by design**: All operations return new values, enabling safe concurrent use
-
-**Best Practice**: Create composed affines once and reuse them:
-
-<!-- verify -->
-```java
-public class UserOptics {
-    private static final Lens<User, Optional<Address>> addressLens =
-        Lens.of(User::address, (u, a) -> new User(u.name(), a));
-    private static final Prism<Optional<Address>, Address> addressPrism = Prisms.some();
-    private static final Lens<Address, String> streetLens =
-        Lens.of(Address::street, (a, s) -> new Address(s, a.postcode()));
-    private static final Lens<Address, Optional<String>> postcodeLens =
-        Lens.of(Address::postcode, (a, p) -> new Address(a.street(), p));
-    private static final Prism<Optional<String>, String> postcodePrism = Prisms.some();
-
-    // Create once, use everywhere
-    public static final Affine<User, String> STREET =
-        addressLens.andThen(addressPrism).andThen(streetLens);
-
-    public static final Affine<User, String> POSTCODE =
-        addressLens.andThen(addressPrism).andThen(postcodeLens).andThen(postcodePrism);
+    // Modification on missing does nothing
+    AppConfig unchanged = poolMaxSize.modify(n -> n * 2, emptyConfig);
+    boolean sameConfig = unchanged == emptyConfig;
+    // true
+    System.out.println("Empty config unchanged: " + sameConfig);
+  }
 }
 ```
 
@@ -6827,6 +6727,7 @@ public class UserOptics {
 - [Prisms](prisms.md): the constructing sibling for sum types
 - [Composition Rules](composition_rules.md): why `Lens.andThen(Prism) = Affine`, and everything else
 - [Coupled Fields](coupled_fields.md): when sibling fields must change together
+- [Production Readiness](production_readiness.md#prisms-and-affines): what an affine costs when its focus is absent, and when to cache a composed optic
 ~~~
 
 ---
@@ -7078,7 +6979,7 @@ Lens<Account, Long> rawAccountId = AccountLenses.id().andThen(userIdIso);
 
 * **One-way conversion** - You do not need the reverse operation
 * **Non-lossless conversion** - Information is lost in the conversion
-* **Performance critical paths** - Minimal abstraction overhead needed
+* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -7161,42 +7062,6 @@ public static final Iso<Point, Tuple2<Integer, Integer>> POINT_TO_TUPLE =
 
 ---
 
-## Performance Notes
-
-Isos are designed for efficient, lossless conversion:
-
-* **Type safety**: All conversions are checked at compile time
-* **Reusable**: Isos can be stored and reused across your application
-
-**Best Practice**: For frequently used conversions, create Isos as constants and test them:
-
-<!-- verify -->
-```java
-public class DataIsos {
-    public static final Iso<UserId, Long> USER_ID_LONG =
-        Iso.of(UserId::value, UserId::new);
-
-    public static final Iso<Money, BigDecimal> MONEY_DECIMAL =
-        Iso.of(Money::amount, Money::new);
-
-    // Test your isos
-    static {
-        testIsomorphism(USER_ID_LONG, new UserId(12345L));
-        testIsomorphism(MONEY_DECIMAL, new Money(new BigDecimal("99.99")));
-    }
-
-    private static <A, B> void testIsomorphism(Iso<A, B> iso, A original) {
-        B converted = iso.get(original);
-        A roundTrip = iso.reverse().get(converted);
-        if (!original.equals(roundTrip)) {
-            throw new AssertionError("Iso failed round-trip test: " + original + " -> " + converted + " -> " + roundTrip);
-        }
-    }
-}
-```
-
----
-
 ## Real-World Example: Wrapper Type Integration
 
 <!-- verify -->
@@ -7227,131 +7092,142 @@ A tempting use of an Iso is a bridge between a domain record and its wire DTO (`
 
 ## Complete, Runnable Example
 
-This example puts all the steps together to show both direct conversion and composition.
+This example puts all the steps together to show both direct conversion and composition. Its records pass `targetPackage` to `@GenerateLenses`, so `CircleLenses` is generated into `org.higherkindedj.example.optics.iso` and imported from there; your own records can leave the attribute out.
 
-<!-- verify -->
-```java
+``` java
+import org.higherkindedj.example.optics.iso.CircleLenses;
+import org.higherkindedj.hkt.tuple.Tuple;
+import org.higherkindedj.hkt.tuple.Tuple2;
+import org.higherkindedj.hkt.tuple.Tuple2Lenses;
+import org.higherkindedj.optics.Iso;
+import org.higherkindedj.optics.Lens;
+import org.higherkindedj.optics.annotations.GenerateIsos;
+import org.higherkindedj.optics.annotations.GenerateLenses;
+
+/**
+ * A runnable example demonstrating how to use an Iso (Isomorphism) to perform lossless, two-way
+ * conversions between equivalent types.
+ */
 public class IsoUsageExample {
 
-    @GenerateLenses
-    public record Point(int x, int y) {}
+  @GenerateLenses(targetPackage = "org.higherkindedj.example.optics.iso")
+  public record Point(int x, int y) {}
 
-    @GenerateLenses
-    public record Circle(Point centre, int radius) {}
+  @GenerateLenses(targetPackage = "org.higherkindedj.example.optics.iso")
+  public record Circle(Point centre, int radius) {}
 
-    public static class Converters {
-        @GenerateIsos
-        public static Iso<Point, Tuple2<Integer, Integer>> pointToTuple() {
-            return Iso.of(
-                    point -> Tuple.of(point.x(), point.y()),
-                    tuple -> new Point(tuple._1(), tuple._2()));
-        }
-
-        // Additional useful Isos
-        public static final Iso<Point, String> POINT_STRING = Iso.of(
-                point -> point.x() + "," + point.y(),
-                str -> {
-                    String[] parts = str.split(",");
-                    return new Point(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
-                }
-        );
+  public static class Converters {
+    @GenerateIsos
+    public static Iso<Point, Tuple2<Integer, Integer>> pointToTuple() {
+      return Iso.of(
+          point -> Tuple.of(point.x(), point.y()), tuple -> new Point(tuple._1(), tuple._2()));
     }
 
-    // Test helper
-    private static <A, B> void testRoundTrip(Iso<A, B> iso, A original, String description) {
-        B converted = iso.get(original);
-        A roundTrip = iso.reverse().get(converted);
-        System.out.println(description + ":");
-        System.out.println("  Original:  " + original);
-        System.out.println("  Converted: " + converted);
-        System.out.println("  Round-trip: " + roundTrip);
-        System.out.println("  Success: " + original.equals(roundTrip));
-        System.out.println();
-    }
+    // Additional useful Isos
+    public static final Iso<Point, String> POINT_STRING =
+        Iso.of(
+            point -> point.x() + "," + point.y(),
+            str -> {
+              String[] parts = str.split(",");
+              return new Point(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
+            });
+  }
 
-    public static void main(String[] args) {
-        // 1. Define a point and circle.
-        var myPoint = new Point(10, 20);
-        var myCircle = new Circle(myPoint, 5);
+  // Test helper
+  private static <A, B> void testRoundTrip(Iso<A, B> iso, A original, String description) {
+    B converted = iso.get(original);
+    A roundTrip = iso.reverse().get(converted);
+    System.out.println(description + ":");
+    System.out.println("  Original:  " + original);
+    System.out.println("  Converted: " + converted);
+    System.out.println("  Round-trip: " + roundTrip);
+    System.out.println("  Success: " + original.equals(roundTrip));
+    System.out.println();
+  }
 
-        System.out.println("=== ISO USAGE EXAMPLE ===");
-        System.out.println("Original Point: " + myPoint);
-        System.out.println("Original Circle: " + myCircle);
-        System.out.println("------------------------------------------");
+  public static void main(String[] args) {
+    // 1. Define a point and circle.
+    var myPoint = new Point(10, 20);
+    var myCircle = new Circle(myPoint, 5);
 
-        // 2. Get the generated Iso.
-        var pointToTupleIso = ConvertersIsos.pointToTuple;
+    System.out.println("=== ISO USAGE EXAMPLE ===");
+    System.out.println("Original Point: " + myPoint);
+    System.out.println("Original Circle: " + myCircle);
+    System.out.println("------------------------------------------");
 
-        // --- SCENARIO 1: Direct conversions and round-trip testing ---
-        System.out.println("--- Scenario 1: Direct Conversions ---");
-        testRoundTrip(pointToTupleIso, myPoint, "Point to Tuple conversion");
-        testRoundTrip(Converters.POINT_STRING, myPoint, "Point to String conversion");
+    // 2. Get the generated Iso.
+    var pointToTupleIso = ConvertersIsos.pointToTuple;
 
-        // --- SCENARIO 2: Using reverse() ---
-        System.out.println("--- Scenario 2: Reverse Operations ---");
-        var tupleToPointIso = pointToTupleIso.reverse();
-        var myTuple = Tuple.of(30, 40);
-        Point pointFromTuple = tupleToPointIso.get(myTuple);
-        System.out.println("Tuple: " + myTuple + " -> Point: " + pointFromTuple);
-        System.out.println();
+    // --- SCENARIO 1: Direct conversions and round-trip testing ---
+    System.out.println("--- Scenario 1: Direct Conversions ---");
+    testRoundTrip(pointToTupleIso, myPoint, "Point to Tuple conversion");
+    testRoundTrip(Converters.POINT_STRING, myPoint, "Point to String conversion");
 
-        // --- SCENARIO 3: Composition with lenses ---
-        System.out.println("--- Scenario 3: Composition with Lenses ---");
+    // --- SCENARIO 2: Using reverse() ---
+    System.out.println("--- Scenario 2: Reverse Operations ---");
+    var tupleToPointIso = pointToTupleIso.reverse();
+    var myTuple = Tuple.of(30, 40);
+    Point pointFromTuple = tupleToPointIso.get(myTuple);
+    System.out.println("Tuple: " + myTuple + " -> Point: " + pointFromTuple);
+    System.out.println();
 
-        // Create a lens manually that works with Point directly
-        Lens<Point, Integer> pointToXLens = Lens.of(
-                Point::x,
-                (point, newX) -> new Point(newX, point.y())
-        );
+    // --- SCENARIO 3: Composition with lenses ---
+    System.out.println("--- Scenario 3: Composition with Lenses ---");
 
-        // Use the lens
-        Point movedPoint = pointToXLens.modify(x -> x + 5, myPoint);
-        System.out.println("Original point: " + myPoint);
-        System.out.println("After moving X by 5: " + movedPoint);
-        System.out.println();
+    // Create a lens manually that works with Point directly
+    Lens<Point, Integer> pointToXLens =
+        Lens.of(Point::x, (point, newX) -> new Point(newX, point.y()));
 
-        // --- SCENARIO 4: Demonstrating Iso composition ---
-        System.out.println("--- Scenario 4: Iso Composition ---");
+    // Use the lens
+    Point movedPoint = pointToXLens.modify(x -> x + 5, myPoint);
+    System.out.println("Original point: " + myPoint);
+    System.out.println("After moving X by 5: " + movedPoint);
+    System.out.println();
 
-        // Show how the Iso can be used to convert and work with tuples
-        Tuple2<Integer, Integer> tupleRepresentation = pointToTupleIso.get(myPoint);
-        System.out.println("Point as tuple: " + tupleRepresentation);
+    // --- SCENARIO 4: Demonstrating Iso composition ---
+    System.out.println("--- Scenario 4: Iso Composition ---");
 
-        // Modify the tuple using tuple operations
-        Lens<Tuple2<Integer, Integer>, Integer> tupleFirstLens = Tuple2Lenses._1();
-        Tuple2<Integer, Integer> modifiedTuple = tupleFirstLens.modify(x -> x * 2, tupleRepresentation);
+    // Show how the Iso can be used to convert and work with tuples
+    Tuple2<Integer, Integer> tupleRepresentation = pointToTupleIso.get(myPoint);
+    System.out.println("Point as tuple: " + tupleRepresentation);
 
-        // Convert back to Point
-        Point modifiedPoint = pointToTupleIso.reverse().get(modifiedTuple);
-        System.out.println("Modified tuple: " + modifiedTuple);
-        System.out.println("Back to point: " + modifiedPoint);
-        System.out.println();
+    // Modify the tuple using tuple operations
+    Lens<Tuple2<Integer, Integer>, Integer> tupleFirstLens = Tuple2Lenses._1();
+    Tuple2<Integer, Integer> modifiedTuple = tupleFirstLens.modify(x -> x * 2, tupleRepresentation);
 
-        // --- SCENARIO 5: String format conversions ---
-        System.out.println("--- Scenario 5: String Format Conversions ---");
+    // Convert back to Point
+    Point modifiedPoint = pointToTupleIso.reverse().get(modifiedTuple);
+    System.out.println("Modified tuple: " + modifiedTuple);
+    System.out.println("Back to point: " + modifiedPoint);
+    System.out.println();
 
-        String pointAsString = Converters.POINT_STRING.get(myPoint);
-        System.out.println("Point as string: " + pointAsString);
+    // --- SCENARIO 5: String format conversions ---
+    System.out.println("--- Scenario 5: String Format Conversions ---");
 
-        Point recoveredFromString = Converters.POINT_STRING.reverse().get(pointAsString);
-        System.out.println("Recovered from string: " + recoveredFromString);
-        System.out.println("Perfect round-trip: " + myPoint.equals(recoveredFromString));
+    String pointAsString = Converters.POINT_STRING.get(myPoint);
+    System.out.println("Point as string: " + pointAsString);
 
-        // --- SCENARIO 6: Working with Circle centre through Iso ---
-        System.out.println("--- Scenario 6: Circle Centre Manipulation ---");
+    Point recoveredFromString = Converters.POINT_STRING.reverse().get(pointAsString);
+    System.out.println("Recovered from string: " + recoveredFromString);
+    System.out.println("Perfect round-trip: " + myPoint.equals(recoveredFromString));
+    System.out.println();
 
-        // Get the centre as a tuple, modify it, and put it back
-        Point originalCentre = myCircle.centre();
-        Tuple2<Integer, Integer> centreAsTuple = pointToTupleIso.get(originalCentre);
-        Tuple2<Integer, Integer> shiftedCentre = Tuple.of(centreAsTuple._1() + 10, centreAsTuple._2() + 10);
-        Point newCentre = pointToTupleIso.reverse().get(shiftedCentre);
-        Circle newCircle = CircleLenses.centre().set(newCentre, myCircle);
+    // --- SCENARIO 6: Working with Circle centre through Iso ---
+    System.out.println("--- Scenario 6: Circle Centre Manipulation ---");
 
-        System.out.println("Original circle: " + myCircle);
-        System.out.println("Centre as tuple: " + centreAsTuple);
-        System.out.println("Shifted centre tuple: " + shiftedCentre);
-        System.out.println("New circle: " + newCircle);
-    }
+    // Get the centre as a tuple, modify it, and put it back
+    Point originalCentre = myCircle.centre();
+    Tuple2<Integer, Integer> centreAsTuple = pointToTupleIso.get(originalCentre);
+    Tuple2<Integer, Integer> shiftedCentre =
+        Tuple.of(centreAsTuple._1() + 10, centreAsTuple._2() + 10);
+    Point newCentre = pointToTupleIso.reverse().get(shiftedCentre);
+    Circle newCircle = CircleLenses.centre().set(newCentre, myCircle);
+
+    System.out.println("Original circle: " + myCircle);
+    System.out.println("Centre as tuple: " + centreAsTuple);
+    System.out.println("Shifted centre tuple: " + shiftedCentre);
+    System.out.println("New circle: " + newCircle);
+  }
 }
 ```
 
@@ -7412,6 +7288,7 @@ New circle: Circle[centre=Point[x=20, y=30], radius=5]
 - [Composition Rules](composition_rules.md): why `Iso.andThen(X)` is an `X` for each of the five optics in its table
 - [Validated Prisms](validated_prism.md): the fallible sibling for conversions that can reject
 - [What Your Spec Generates](../mapping/tiers.md): where a lossless generated record mapping earns its `asIso()`
+- [Production Readiness](production_readiness.md#runtime-cost): what each optic allocates, and when to cache a composed optic
 ~~~
 
 ---
@@ -7603,14 +7480,6 @@ public static final Iso<UserId, String> USER_ID_VALUE = Iso.of(UserId::value, Us
 
 ---
 
-## Performance Notes
-
-* **Adapters are thin**: each operation wraps the underlying optic with the conversion functions; there is no reflection and no copying beyond what the conversions themselves do
-* **Reuse beats rebuilding**: store composed or adapted optics as constants, the same discipline as every other page
-* **Conversion cost is your cost**: a `dimap` bridge runs your two functions on every pass, so keep them cheap and total
-
----
-
 ## Real-World Example: API Integration
 
 The runnable [OpticProfunctorExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/profunctor/OpticProfunctorExample.java) walks a complete integration: an internal `Employee`/`Person` model, an external `EmployeeDto`/`PersonDto` wire format, and adapters hand-built with `Lens.of` (Route 3), including a formatted-date bridge that reads through a formatter and writes back through a parser, plus a conversion pair driven through `modifyF`. It compiles and runs on every build, so it is the reference when you wire your own.
@@ -7650,6 +7519,7 @@ public class ApiIntegration {
 - [Profunctor Optics: Recipes](profunctor_optics_recipes.md): wrapper-type recipes, V1/V2 migration adapters, and a complete runnable example
 - [Isomorphisms](iso.md): the lossless conversions that keep the full optic API
 - [Composition Rules](composition_rules.md): what `andThen` yields for every optic pairing
+- [Production Readiness](production_readiness.md#adapters-and-paths): what an adapter adds to the optic it wraps, and when to cache a composed optic
 ~~~
 
 ---
@@ -8148,7 +8018,7 @@ Company withNormalisedEmails = Traversals.modify(allEmails, String::toLowerCase,
 
 * **Complex transformations** - Multiple operations that don't map cleanly to traversals
 * **Filtering and collecting** - You need to change the collection structure
-* **Performance critical paths** - Minimal abstraction overhead needed
+* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -8223,33 +8093,6 @@ String playerName = player.name(); // Simple and clear
 // Defensive: Handle empty collections gracefully  
 List<Integer> allScores = Traversals.getAll(scoreTraversal, league);
 OptionalDouble average = allScores.stream().mapToInt(Integer::intValue).average();
-```
-
----
-
-## Performance Notes
-
-Traversals are optimised for immutable updates:
-
-* **Structural sharing**: only the spine along the focused path is rebuilt; branches the path does not touch are reused as-is
-* **Batch operations**: `modifyF` processes all targets in a single pass
-* **No hidden laziness**: every focused element is visited and the path spine is rebuilt on each `modify`, so cost is proportional to the number of targets
-
-**Best Practice**: For frequently used traversal combinations, create them once and store as constants:
-
-<!-- verify -->
-```java
-public class LeagueOptics {
-    public static final Traversal<League, Integer> ALL_PLAYER_SCORES = 
-        LeagueTraversals.teams()
-            .andThen(TeamTraversals.players())
-            .andThen(PlayerLenses.score());
-      
-    public static final Traversal<League, String> ALL_PLAYER_NAMES = 
-        LeagueTraversals.teams()
-            .andThen(TeamTraversals.players())
-            .andThen(PlayerLenses.name());
-}
 ```
 
 ---
@@ -8567,34 +8410,6 @@ Collections.shuffle(prices);              // Randomise
 Collections.rotate(prices, 3);            // Circular rotation
 prices.sort(Comparator.reverseOrder());   // Descending sort
 prices.removeIf(p -> p < 10.0);          // Filter (with caveats)
-```
-
-### Performance Considerations
-
-`partsOf` operations traverse the structure twice:
-
-1. **Once for `get`**: Collect all focused elements
-2. **Once for `set`**: Distribute modified elements back
-
-For very large structures with thousands of focuses, consider:
-
-* Caching the lens if used repeatedly
-* Using direct stream operations if structure preservation isn't required
-* Profiling to ensure the abstraction overhead is acceptable
-
-**Best Practice**: Create the `partsOf` lens once and reuse it:
-
-<!-- verify -->
-```java
-public class CatalogueOptics {
-    private static final Traversal<Catalogue, Double> ALL_PRICES =
-        CatalogueTraversals.categories()
-            .andThen(CategoryTraversals.products())
-            .andThen(ProductLenses.price());
-
-    public static final Lens<Catalogue, List<Double>> PRICES_AS_LIST =
-        Traversals.partsOf(ALL_PRICES);
-}
 ```
 
 ### Common Pitfalls with partsOf
@@ -9062,6 +8877,7 @@ This is the reason they can all be composed together so seamlessly.
 - [Limiting Traversals](limiting_traversals.md): focusing on slices of a list instead of every element
 - [Composition Rules](composition_rules.md): what type `andThen` returns for each pair of optics
 - [Bulk Operations with ForTraversal](../functional/for_optics.md#bulk-operations-with-fortraversal): comprehension-style filtering, modifying, and collecting through a traversal
+- [Production Readiness](production_readiness.md#runtime-cost): what a traversal and `partsOf` allocate, and when to cache a composed optic
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -9736,16 +9552,6 @@ Maybe<Product> firstMaybe = previewMaybe(itemsFold, order);
 Optional<Product> loweredToOptional = firstMaybe.map(Optional::of).orElse(Optional.empty());
 ```
 
-#### Performance Considerations
-
-Maybe-based extensions have minimal overhead:
-
-* **`previewMaybe`**: Same performance as `preview()`, just wraps in `Maybe` instead of `Optional`
-* **`findMaybe`**: Identical to `find()`, just wrapping the result in `Maybe` rather than `Optional`
-* **`getAllMaybe`**: Adds one extra `Maybe` wrapping over `getAll()` - negligible cost
-
-**Optimisation Tip**: For performance-critical code, prefer `getAll()` if you don't need the Maybe semantics. The extra wrapping and pattern matching adds a small but measurable cost in tight loops.
-
 #### Practical Example: Safe Navigation with Maybe
 
 Combining `getAllMaybe` with composed folds creates powerful null-safe query pipelines:
@@ -9918,8 +9724,8 @@ emailFirst.getAll(employee);
 // Returns: ["alice@example.com", "Alice"]
 ```
 
-~~~admonish note title="Performance Note"
-Each constituent fold in a `plus` combination performs its own pass over the source. For most use cases this is negligible, but if you are combining many folds over very large collections, consider whether a single custom `foldMap` implementation would be more appropriate.
+~~~admonish note title="Each fold makes its own pass"
+Each fold in a `plus` combination makes its own pass over the source, which `FoldPlusBenchmark` in `hkj-benchmarks` measures. To combine many folds over a very large collection in one pass, write a single `foldMap` instead.
 ~~~
 
 ---
@@ -9985,7 +9791,7 @@ List<String> topExpensiveItems = order.items().stream()
 ### Use Direct Field Access When
 
 * **Simple cases** - Single, straightforward field read
-* **Performance critical** - Minimal abstraction overhead
+* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 * **One-off operations** - Not building reusable logic
 
 <!-- verify -->
@@ -10054,34 +9860,6 @@ Fold<Order, Double> pricesFold = OrderTraversals.items()
     .andThen(ProductLenses.price())
     .asFold();
 double orderTotal = pricesFold.foldMap(Monoids.doubleAddition(), p -> p, order);
-```
-
----
-
-## Performance Notes
-
-Folds are optimised for query operations:
-
-* **Memory efficient**: Uses iterators internally, no intermediate collections for most operations
-* **Reusable**: Composed folds can be stored and reused across your application
-* **Type-safe**: All operations checked at compile time
-* **Zero allocation**: `foldMap` with monoids avoids creating intermediate collections
-
-**Best Practice**: For frequently used query paths, create them once and store as constants:
-
-<!-- verify -->
-```java
-public class OrderQueries {
-    public static final Fold<OrderHistory, Product> ALL_PRODUCTS =
-        OrderHistoryFolds.orders()
-            .andThen(OrderFolds.items());
-
-    public static final Fold<OrderHistory, Double> ALL_PRICES =
-        ALL_PRODUCTS.andThen(ProductLenses.price().asFold());
-
-    public static final Fold<Order, String> ALL_CATEGORIES =
-        OrderFolds.items().andThen(ProductLenses.category().asFold());
-}
 ```
 
 ---
@@ -10515,6 +10293,7 @@ Electronics total: £1549.99
 - [Getters](getters.md): read-only focus on exactly one value
 - [Semigroup and Monoid](../functional/semigroup_and_monoid.md): the combining structures behind `foldMap`
 - [Foldable and Traverse](../functional/foldable_and_traverse.md): the type class this optic mirrors
+- [Production Readiness](production_readiness.md#read-cost): what each fold read visits, and when to cache a composed optic
 ~~~
 
 ~~~admonish tip title="Further Reading"
@@ -11046,55 +10825,30 @@ public class EmployeeService {
 }
 ```
 
-#### Performance Considerations
-
-`getMaybe` adds minimal overhead:
-
-* **One null check**: Checks if the extracted value is null
-* **One Maybe wrapping**: Creates `Just` or `Nothing` instance
-* **Same extraction cost**: Uses `Getter.get()` internally
-
-**Optimisation Tip**: For performance-critical hot paths where values are guaranteed non-null, use `Getter.get()` directly. For most business logic, the safety and composability of `getMaybe` far outweigh the negligible cost.
-
-<!-- verify -->
-```java
-// Hot path with guaranteed non-null (use direct get)
-String fastAccess = nameGetter.get(person);
-
-// Business logic with potential nulls (use getMaybe)
-Maybe<String> safeAccess = getMaybe(addressGetter, person)
-    .flatMap(addr -> getMaybe(cityGetter, addr));
-```
-
 #### Practical Pattern: Building Maybe-Safe Composed Getters
 
 Create reusable null-safe extraction functions:
 
-<!-- verify -->
-```java
+``` java
 public class SafeGetters {
-    // Create a null-safe composed getter using Maybe
-    public static <A, B, C> Function<A, Maybe<C>> safePath(
-        Getter<A, B> first,
-        Getter<B, C> second
-    ) {
-        return source -> getMaybe(first, source)
-            .flatMap(intermediate -> getMaybe(second, intermediate));
-    }
+  // Create a null-safe composed getter using Maybe
+  public static <A, B, C> Function<A, Maybe<C>> safePath(Getter<A, B> first, Getter<B, C> second) {
+    return source ->
+        getMaybe(first, source).flatMap(intermediate -> getMaybe(second, intermediate));
+  }
 
-    // Usage example
-    private static final Function<Person, Maybe<String>> SAFE_CITY_LOOKUP =
-        safePath(
-            Getter.of(Person::address),
-            Getter.of(Address::city)
-        );
+  // Usage example
+  private static final Function<Person, Maybe<String>> SAFE_CITY_LOOKUP =
+      safePath(Getter.of(Person::address), Getter.of(Address::city));
 
-    public static void main(String[] args) {
-        Person person = new Person("Jane", "Smith", 45, null);
-        Maybe<String> city = SAFE_CITY_LOOKUP.apply(person);
-        // Result: Nothing (safely handled null address)
-    }
+  public static void main(String[] args) {
+    Person person = new Person("Jane", "Smith", 45, null);
+    Maybe<String> city = SAFE_CITY_LOOKUP.apply(person);
+    // Nothing   <- the null address is handled safely
+    System.out.println(city);
+  }
 }
+
 ```
 
 ~~~admonish example title="See Example Code"
@@ -11311,122 +11065,115 @@ Getter<NullableRecord, String> safeGetter = Getter.of(r ->
 
 ---
 
-## Performance Considerations
-
-Getters are **extremely lightweight**:
-
-* **No reflection**: Direct method references
-* **Inline-friendly**: JIT can optimise away the abstraction
-
-**Best Practice**: Use Getters freely; they add minimal runtime cost whilst providing excellent composability and type safety.
-
-<!-- verify -->
-```java
-// Efficient: Computed on demand
-Getter<Person, String> fullName = Getter.of(p -> p.firstName() + " " + p.lastName());
-
-// No storage overhead, computed each time get() is called
-String name1 = fullName.get(person1);
-String name2 = fullName.get(person2);
-```
-
----
-
 ## Complete, Runnable Example
 
-<!-- verify -->
-```java
-import org.higherkindedj.optics.Getter;
-import org.higherkindedj.optics.Fold;
-import org.higherkindedj.hkt.Monoid;
-import java.util.*;
+``` java
+import java.util.List;
+import java.util.Optional;
 import java.util.function.Function;
+import org.higherkindedj.hkt.Monoid;
+import org.higherkindedj.optics.Fold;
+import org.higherkindedj.optics.Getter;
+
 
 public class GetterExample {
 
-    public record Person(String firstName, String lastName, int age, Address address) {}
-    public record Address(String street, String city, String zipCode, String country) {}
-    public record Company(String name, Person ceo, List<Person> employees, Address headquarters) {}
+  public record Person(String firstName, String lastName, int age, Address address) {}
 
-    public static void main(String[] args) {
-        // Create sample data
-        Address ceoAddress = new Address("123 Executive Blvd", "London", "EC1A", "UK");
-        Person ceo = new Person("Jane", "Smith", 45, ceoAddress);
+  public record Address(String street, String city, String zipCode, String country) {}
 
-        List<Person> employees = List.of(
+  public record Company(String name, Person ceo, List<Person> employees, Address headquarters) {}
+
+  public static void main(String[] args) {
+    // Create sample data
+    Address ceoAddress = new Address("123 Executive Blvd", "London", "EC1A", "UK");
+    Person ceo = new Person("Jane", "Smith", 45, ceoAddress);
+
+    List<Person> employees =
+        List.of(
             new Person("John", "Doe", 30, new Address("456 Oak St", "Manchester", "M1", "UK")),
-            new Person("Alice", "Johnson", 28, new Address("789 Elm Ave", "Birmingham", "B1", "UK")),
-            new Person("Bob", "Williams", 35, new Address("321 Pine Rd", "Leeds", "LS1", "UK"))
-        );
+            new Person(
+                "Alice", "Johnson", 28, new Address("789 Elm Ave", "Birmingham", "B1", "UK")),
+            new Person("Bob", "Williams", 35, new Address("321 Pine Rd", "Leeds", "LS1", "UK")));
 
-        Address hqAddress = new Address("1000 Corporate Way", "London", "EC2A", "UK");
-        Company company = new Company("TechCorp", ceo, employees, hqAddress);
+    Address hqAddress = new Address("1000 Corporate Way", "London", "EC2A", "UK");
+    Company company = new Company("TechCorp", ceo, employees, hqAddress);
 
-        // === Basic Getters ===
-        Getter<Person, String> fullName = Getter.of(p -> p.firstName() + " " + p.lastName());
-        Getter<Person, Integer> age = Getter.of(Person::age);
+    // === Basic Getters ===
+    Getter<Person, String> fullName = Getter.of(p -> p.firstName() + " " + p.lastName());
+    Getter<Person, Integer> age = Getter.of(Person::age);
 
-        System.out.println("CEO: " + fullName.get(ceo));
-        System.out.println("CEO Age: " + age.get(ceo));
+    System.out.println("CEO: " + fullName.get(ceo));
+    System.out.println("CEO Age: " + age.get(ceo));
 
-        // === Computed Values ===
-        Getter<Person, String> initials = Getter.of(p ->
-            p.firstName().charAt(0) + "." + p.lastName().charAt(0) + ".");
-        Getter<Person, String> email = Getter.of(p ->
-            p.firstName().toLowerCase() + "." + p.lastName().toLowerCase() + "@techcorp.com");
+    // === Computed Values ===
+    Getter<Person, String> initials =
+        Getter.of(p -> p.firstName().charAt(0) + "." + p.lastName().charAt(0) + ".");
+    Getter<Person, String> email =
+        Getter.of(
+            p -> p.firstName().toLowerCase() + "." + p.lastName().toLowerCase() + "@techcorp.com");
 
-        System.out.println("CEO Initials: " + initials.get(ceo));
-        System.out.println("CEO Email: " + email.get(ceo));
+    System.out.println("CEO Initials: " + initials.get(ceo));
+    System.out.println("CEO Email: " + email.get(ceo));
 
-        // === Composition ===
-        Getter<Person, Address> addressGetter = Getter.of(Person::address);
-        Getter<Address, String> cityGetter = Getter.of(Address::city);
-        Getter<Company, Person> ceoGetter = Getter.of(Company::ceo);
+    // === Composition ===
+    Getter<Person, Address> addressGetter = Getter.of(Person::address);
+    Getter<Address, String> cityGetter = Getter.of(Address::city);
+    Getter<Company, Person> ceoGetter = Getter.of(Company::ceo);
 
-        Getter<Person, String> personCity = addressGetter.andThen(cityGetter);
-        Getter<Company, String> companyCeoCity = ceoGetter.andThen(personCity);
+    Getter<Person, String> personCity = addressGetter.andThen(cityGetter);
+    Getter<Company, String> companyCeoCity = ceoGetter.andThen(personCity);
 
-        System.out.println("CEO City: " + personCity.get(ceo));
-        System.out.println("Company CEO City: " + companyCeoCity.get(company));
+    System.out.println("CEO City: " + personCity.get(ceo));
+    System.out.println("Company CEO City: " + companyCeoCity.get(company));
 
-        // === Getter as Fold ===
-        Optional<Integer> ceoAge = age.preview(ceo);
-        boolean isExperienced = age.exists(a -> a > 40, ceo);
-        int ageCount = age.length(ceo); // Always 1 for Getter
+    // === Getter as Fold ===
+    Optional<Integer> ceoAge = age.preview(ceo);
+    boolean isExperienced = age.exists(a -> a > 40, ceo);
+    int ageCount = age.length(ceo); // Always 1 for Getter
 
-        System.out.println("CEO Age (Optional): " + ceoAge);
-        System.out.println("CEO is Experienced: " + isExperienced);
-        System.out.println("Age Count: " + ageCount);
+    System.out.println("CEO Age (Optional): " + ceoAge);
+    System.out.println("CEO is Experienced: " + isExperienced);
+    System.out.println("Age Count: " + ageCount);
 
-        // === Employee Analysis ===
-        Fold<List<Person>, Person> listFold = Fold.of(list -> list);
+    // === Employee Analysis ===
+    Fold<List<Person>, Person> listFold = Fold.of(list -> list);
 
-        List<String> employeeNames = listFold.andThen(fullName.asFold()).getAll(employees);
-        System.out.println("Employee Names: " + employeeNames);
+    List<String> employeeNames = listFold.andThen(fullName.asFold()).getAll(employees);
+    System.out.println("Employee Names: " + employeeNames);
 
-        List<String> employeeEmails = listFold.andThen(email.asFold()).getAll(employees);
-        System.out.println("Employee Emails: " + employeeEmails);
+    List<String> employeeEmails = listFold.andThen(email.asFold()).getAll(employees);
+    System.out.println("Employee Emails: " + employeeEmails);
 
-        // Calculate average age
-        int totalAge = listFold.andThen(age.asFold())
-            .foldMap(sumMonoid(), Function.identity(), employees);
-        double avgAge = (double) totalAge / employees.size();
-        System.out.println("Average Employee Age: " + String.format("%.1f", avgAge));
+    // Calculate average age
+    int totalAge =
+        listFold.andThen(age.asFold()).foldMap(sumMonoid(), Function.identity(), employees);
+    double avgAge = (double) totalAge / employees.size();
+    System.out.println("Average Employee Age: " + String.format("%.1f", avgAge));
 
-        // Check if all from UK
-        Getter<Address, String> countryGetter = Getter.of(Address::country);
-        boolean allUK = listFold.andThen(addressGetter.asFold())
+    // Check if all from UK
+    Getter<Address, String> countryGetter = Getter.of(Address::country);
+    boolean allUK =
+        listFold
+            .andThen(addressGetter.asFold())
             .andThen(countryGetter.asFold())
             .all(c -> c.equals("UK"), employees);
-        System.out.println("All Employees from UK: " + allUK);
-    }
+    System.out.println("All Employees from UK: " + allUK);
+  }
 
-    private static Monoid<Integer> sumMonoid() {
-        return new Monoid<>() {
-            @Override public Integer empty() { return 0; }
-            @Override public Integer combine(Integer a, Integer b) { return a + b; }
-        };
-    }
+  private static Monoid<Integer> sumMonoid() {
+    return new Monoid<>() {
+      @Override
+      public Integer empty() {
+        return 0;
+      }
+
+      @Override
+      public Integer combine(Integer a, Integer b) {
+        return a + b;
+      }
+    };
+  }
 }
 ```
 
@@ -11462,6 +11209,7 @@ All Employees from UK: true
 - [Folds](folds.md): the zero-or-more counterpart with monoid aggregation
 - [Setters](setters.md): the write-only mirror of this page
 - [Lenses](lenses.md): when the same field needs reading and writing
+- [Production Readiness](production_readiness.md#read-cost): what a read and `getMaybe` cost, and when to cache a composed optic
 ~~~
 
 ---
@@ -12033,184 +11781,144 @@ Setter<Product, Double> priceSetter = Setter.fromGetSet(
 
 ---
 
-## Performance Considerations
-
-Setters are **lightweight and efficient**:
-
-* **Minimal overhead**: Just function composition
-* **No reflection**: Direct method calls
-* **JIT-friendly**: Can be inlined by the JVM
-* **O(n) collection construction**: `forList()` and `forMapValues()` build their result without copying it at each step
-
-### Optimised Collection Operations
-
-The `modifyF` implementations in `forList()` and `forMapValues()` use efficient algorithms:
-
-* **Right-to-left folding**: Prepends each result onto an immutable list in constant time, instead of copying an array at each step
-* **Single pass construction**: Collects effects first, sequences them, then builds the final collection once
-* **Linear-time construction**: Building the result takes O(n) for n elements
-
-So rebuilding a large collection takes linear time:
-
-<!-- verify -->
-```java
-// Efficient even for large lists
-Setter<List<Integer>, Integer> listSetter = Setter.forList();
-// largeList holds thousands of elements
-
-// O(n) time complexity, not O(n²)
-Kind<OptionalKind.Witness, List<Integer>> result =
-    listSetter.modifyF(validateAndTransform, largeList, Instances.monadError(optional()));
-```
-
-**Best Practice**: Compose Setters at initialisation time, then reuse:
-
-<!-- verify -->
-```java
-// Define once
-final Setter<Company, Double> allProductPrices =
-    companyProductsSetter.andThen(productsSetter).andThen(priceSetter);
-
-// Reuse many times
-Company discounted = allProductPrices.modify(p -> p * 0.9, company);
-Company inflated = allProductPrices.modify(p -> p * 1.05, company);
-```
-
----
-
 ## Complete, Runnable Example
 
-<!-- verify -->
-```java
+``` java
 import static org.higherkindedj.hkt.instances.Witnesses.optional;
 
-import org.higherkindedj.optics.Setter;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
 import org.higherkindedj.hkt.Kind;
 import org.higherkindedj.hkt.instances.Instances;
 import org.higherkindedj.hkt.optional.OptionalKind;
 import org.higherkindedj.hkt.optional.OptionalKindHelper;
-import java.util.*;
-import java.util.function.Function;
+import org.higherkindedj.optics.Setter;
+
 
 public class SetterExample {
 
-    public record User(String username, String email, int loginCount, UserSettings settings) {}
-    // A trimmed UserSettings, so the runnable example stays small
-    public record UserSettings(String theme, boolean notifications, int fontSize) {}
-    public record Product(String name, double price, int stock) {}
+  public record User(String username, String email, int loginCount, UserSettings settings) {}
 
-    public static void main(String[] args) {
-        // === Basic Setters ===
-        Setter<User, String> usernameSetter = Setter.fromGetSet(
-            User::username,
-            (u, name) -> new User(name, u.email(), u.loginCount(), u.settings()));
+  // A trimmed UserSettings, so the runnable example stays small
+  public record UserSettings(String theme, boolean notifications, int fontSize) {}
 
-        Setter<User, Integer> loginCountSetter = Setter.fromGetSet(
-            User::loginCount,
-            (u, count) -> new User(u.username(), u.email(), count, u.settings()));
+  public record Product(String name, double price, int stock) {}
 
-        UserSettings settings = new UserSettings("light", true, 14);
-        User user = new User("JOHN_DOE", "john@example.com", 10, settings);
+  public static void main(String[] args) {
+    // === Basic Setters ===
+    Setter<User, String> usernameSetter =
+        Setter.fromGetSet(
+            User::username, (u, name) -> new User(name, u.email(), u.loginCount(), u.settings()));
 
-        // Normalise username
-        User normalised = usernameSetter.modify(String::toLowerCase, user);
-        System.out.println("Normalised: " + normalised.username());
+    Setter<User, Integer> loginCountSetter =
+        Setter.fromGetSet(
+            User::loginCount, (u, count) -> new User(u.username(), u.email(), count, u.settings()));
 
-        // Increment login count
-        User incremented = loginCountSetter.modify(count -> count + 1, user);
-        System.out.println("Login count: " + incremented.loginCount());
+    UserSettings settings = new UserSettings("light", true, 14);
+    User user = new User("JOHN_DOE", "john@example.com", 10, settings);
 
-        // === Composition ===
-        Setter<User, UserSettings> settingsSetter = Setter.fromGetSet(
-            User::settings,
-            (u, s) -> new User(u.username(), u.email(), u.loginCount(), s));
+    // Normalise username
+    User normalised = usernameSetter.modify(String::toLowerCase, user);
+    System.out.println("Normalised: " + normalised.username());
 
-        Setter<UserSettings, String> themeSetter = Setter.fromGetSet(
+    // Increment login count
+    User incremented = loginCountSetter.modify(count -> count + 1, user);
+    System.out.println("Login count: " + incremented.loginCount());
+
+    // === Composition ===
+    Setter<User, UserSettings> settingsSetter =
+        Setter.fromGetSet(
+            User::settings, (u, s) -> new User(u.username(), u.email(), u.loginCount(), s));
+
+    Setter<UserSettings, String> themeSetter =
+        Setter.fromGetSet(
             UserSettings::theme,
             (s, theme) -> new UserSettings(theme, s.notifications(), s.fontSize()));
 
-        Setter<User, String> userThemeSetter = settingsSetter.andThen(themeSetter);
+    Setter<User, String> userThemeSetter = settingsSetter.andThen(themeSetter);
 
-        User darkMode = userThemeSetter.set("dark", user);
-        System.out.println("Theme: " + darkMode.settings().theme());
+    User darkMode = userThemeSetter.set("dark", user);
+    System.out.println("Theme: " + darkMode.settings().theme());
 
-        // === Collection Setters ===
-        Setter<List<Integer>, Integer> listSetter = Setter.forList();
+    // === Collection Setters ===
+    Setter<List<Integer>, Integer> listSetter = Setter.forList();
 
-        List<Integer> numbers = List.of(1, 2, 3, 4, 5);
-        List<Integer> doubled = listSetter.modify(x -> x * 2, numbers);
-        System.out.println("Doubled: " + doubled);
+    List<Integer> numbers = List.of(1, 2, 3, 4, 5);
+    List<Integer> doubled = listSetter.modify(x -> x * 2, numbers);
+    System.out.println("Doubled: " + doubled);
 
-        // === Product Batch Update ===
-        Setter<Product, Double> priceSetter = Setter.fromGetSet(
-            Product::price,
-            (p, price) -> new Product(p.name(), price, p.stock()));
+    // === Product Batch Update ===
+    Setter<Product, Double> priceSetter =
+        Setter.fromGetSet(Product::price, (p, price) -> new Product(p.name(), price, p.stock()));
 
-        Setter<List<Product>, Product> productsSetter = Setter.forList();
+    Setter<List<Product>, Product> productsSetter = Setter.forList();
 
-        List<Product> products = List.of(
+    List<Product> products =
+        List.of(
             new Product("Laptop", 999.99, 50),
             new Product("Keyboard", 79.99, 100),
             new Product("Monitor", 299.99, 30));
 
-        // Apply 10% discount
-        List<Product> discounted = productsSetter.modify(
-            product -> priceSetter.modify(price -> price * 0.9, product),
-            products);
+    // Apply 10% discount
+    List<Product> discounted =
+        productsSetter.modify(
+            product -> priceSetter.modify(price -> price * 0.9, product), products);
 
-        System.out.println("Discounted prices:");
-        for (Product p : discounted) {
-            System.out.printf("  %s: £%.2f%n", p.name(), p.price());
-        }
+    System.out.println("Discounted prices:");
+    for (Product p : discounted) {
+      System.out.printf("  %s: £%.2f%n", p.name(), p.price());
+    }
 
-        // === Effectful Modification ===
-        Function<String, Kind<OptionalKind.Witness, String>> validateUsername =
-            username -> {
-                if (username.length() >= 3 && username.matches("[a-z_]+")) {
-                    return OptionalKindHelper.OPTIONAL.widen(Optional.of(username));
-                } else {
-                    return OptionalKindHelper.OPTIONAL.widen(Optional.empty());
-                }
-            };
-
-        User validUser = new User("john_doe", "john@example.com", 10, settings);
-        Kind<OptionalKind.Witness, User> validResult =
-            usernameSetter.modifyF(validateUsername, validUser, Instances.monadError(optional()));
-
-        Optional<User> validated = OptionalKindHelper.OPTIONAL.narrow(validResult);
-        System.out.println("Valid username: " + validated.map(User::username).orElse("INVALID"));
-
-        User invalidUser = new User("ab", "a@test.com", 0, settings);
-        Kind<OptionalKind.Witness, User> invalidResult =
-            usernameSetter.modifyF(validateUsername, invalidUser, Instances.monadError(optional()));
-
-        Optional<User> invalidValidated = OptionalKindHelper.OPTIONAL.narrow(invalidResult);
-        System.out.println("Invalid username: " + invalidValidated.map(User::username).orElse("INVALID"));
-
-        // === Data Normalisation ===
-        Setter<Product, String> nameSetter = Setter.fromGetSet(
-            Product::name,
-            (p, name) -> new Product(name, p.price(), p.stock()));
-
-        Function<String, String> titleCase = name -> {
-            String trimmed = name.trim();
-            return trimmed.substring(0, 1).toUpperCase() + trimmed.substring(1).toLowerCase();
+    // === Effectful Modification ===
+    Function<String, Kind<OptionalKind.Witness, String>> validateUsername =
+        username -> {
+          if (username.length() >= 3 && username.matches("[a-z_]+")) {
+            return OptionalKindHelper.OPTIONAL.widen(Optional.of(username));
+          } else {
+            return OptionalKindHelper.OPTIONAL.widen(Optional.empty());
+          }
         };
 
-        List<Product> rawProducts = List.of(
+    User validUser = new User("john_doe", "john@example.com", 10, settings);
+    Kind<OptionalKind.Witness, User> validResult =
+        usernameSetter.modifyF(validateUsername, validUser, Instances.monadError(optional()));
+
+    Optional<User> validated = OptionalKindHelper.OPTIONAL.narrow(validResult);
+    System.out.println("Valid username: " + validated.map(User::username).orElse("INVALID"));
+
+    User invalidUser = new User("ab", "a@test.com", 0, settings);
+    Kind<OptionalKind.Witness, User> invalidResult =
+        usernameSetter.modifyF(validateUsername, invalidUser, Instances.monadError(optional()));
+
+    Optional<User> invalidValidated = OptionalKindHelper.OPTIONAL.narrow(invalidResult);
+    System.out.println(
+        "Invalid username: " + invalidValidated.map(User::username).orElse("INVALID"));
+
+    // === Data Normalisation ===
+    Setter<Product, String> nameSetter =
+        Setter.fromGetSet(Product::name, (p, name) -> new Product(name, p.price(), p.stock()));
+
+    Function<String, String> titleCase =
+        name -> {
+          String trimmed = name.trim();
+          return trimmed.substring(0, 1).toUpperCase() + trimmed.substring(1).toLowerCase();
+        };
+
+    List<Product> rawProducts =
+        List.of(
             new Product("  LAPTOP  ", 999.99, 50),
             new Product("keyboard", 79.99, 100),
             new Product("MONITOR", 299.99, 30));
 
-        List<Product> normalisedProducts = productsSetter.modify(
-            product -> nameSetter.modify(titleCase, product),
-            rawProducts);
+    List<Product> normalisedProducts =
+        productsSetter.modify(product -> nameSetter.modify(titleCase, product), rawProducts);
 
-        System.out.println("Normalised product names:");
-        for (Product p : normalisedProducts) {
-            System.out.println("  - " + p.name());
-        }
+    System.out.println("Normalised product names:");
+    for (Product p : normalisedProducts) {
+      System.out.println("  - " + p.name());
     }
+  }
 }
 ```
 
@@ -12247,6 +11955,7 @@ Normalised product names:
 - [Getters](getters.md): the read-only mirror of this page
 - [Traversals](traversals.md): when bulk modification also needs `getAll` and queries
 - [Lenses](lenses.md): when the same field needs reading and writing
+- [Production Readiness](production_readiness.md#collection-optics): what `Setter.forList()` and `forMapValues()` build, and when to cache a composed optic
 ~~~
 
 ---
@@ -12785,41 +12494,6 @@ Tuple2<Integer, String> updatedPair = new Tuple2<>(
 
 ---
 
-## Performance Notes
-
-Structure traversals are optimised for immutability, not for raw throughput:
-
-* **Structural sharing**: values the function leaves alone are reused by reference; only the container is rebuilt
-* **Zero targets cost nothing**: an empty `Optional` or an empty map never calls the function, so `modify` reduces to a single `of`
-* **No hidden laziness**: every present value is visited, and `forMapValues()` reassembles the map inside the applicative, so a large map allocates more than a hand-written `stream().collect()` would
-* **They earn their keep by nesting**: the win is composing the map or optional into a deeper path, not out-running a stream over a flat structure
-
-**Best Practice**: Store commonly-used structure traversals as constants:
-
-<!-- verify -->
-```java
-public class ConfigOptics {
-    // Reusable structure traversals
-    public static final Traversal<Optional<String>, String> OPTIONAL_STRING =
-        Traversals.forOptional();
-
-    public static final Traversal<Map<String, Integer>, Integer> MAP_INT_VALUES =
-        Traversals.forMapValues();
-
-    public static final Traversal<Tuple2<Double, Double>, Double> COORDINATE_PAIR =
-        TupleTraversals.both();
-
-    // Domain-specific compositions
-    public static final Traversal<ServiceConfig, Integer> ALL_PORTS =
-        ServiceConfigLenses.ports()
-            .andThen(MAP_INT_VALUES);
-}
-```
-
----
-
-## Summary
-
 ~~~admonish info title="Key Takeaways"
 * **`forOptional()` treats absence as zero targets**: modifications on an empty `Optional` are safe no-ops, so nested optional fields compose without `.map()` chains
 * **`forMapValues()` rewrites values, never keys**: the key set survives a bulk transformation intact, and the result keeps the source's iteration order, so a `TreeMap` keeps its order but not its type
@@ -12832,6 +12506,7 @@ public class ConfigOptics {
 - [Traversals](traversals.md): the core bulk-update optic these combinators extend
 - [Affines](affine.md): the zero-or-one optic behind `Optional` field access
 - [Limiting Traversals](limiting_traversals.md): slicing lists instead of traversing every element
+- [Production Readiness](production_readiness.md#collection-optics): what each of these traversals builds, and when to cache a composed optic
 ~~~
 
 ~~~admonish tip title="Further Reading"
@@ -13356,7 +13031,7 @@ Catalogue updated = Traversals.modify(first10Prices, p -> p * 0.9, catalogue);
 * **Terminal operations** - Counting, finding, collecting to new structures
 * **Complex transformations** - Multiple chained operations with sorting/grouping
 * **No structural preservation needed** - You're extracting data, not updating in place
-* **Performance-critical paths** - Minimal abstraction overhead
+* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -13439,154 +13114,162 @@ Optional<Product> fifth = IxedInstances.get(IxedInstances.listIx(), 4, products)
 
 ---
 
-## Performance Notes
-
-What a limiting traversal costs:
-
-* **Element references are shared**: the elements outside the slice are reused as they are, while the list holding them is rebuilt on every modify
-* **Reusable**: store a limiting traversal as a constant and compose it like any other optic
-
-**Best Practice**: Store frequently-used limiting traversals as constants:
-
-<!-- verify -->
-```java
-public class CatalogueOptics {
-    // Pagination constants
-    public static final int PAGE_SIZE = 20;
-
-    public static Traversal<List<Product>, Product> page(int pageNum) {
-        return ListTraversals.slicing(pageNum * PAGE_SIZE, (pageNum + 1) * PAGE_SIZE);
-    }
-
-    // Featured products (first 5)
-    public static final Traversal<Catalogue, Product> FEATURED =
-        CatalogueLenses.products()
-            .andThen(ListTraversals.taking(5));
-
-    // Latest additions (last 10)
-    public static final Traversal<Catalogue, Product> LATEST =
-        CatalogueLenses.products()
-            .andThen(ListTraversals.takingLast(10));
-
-    // Exclude promotional items at end
-    public static final Traversal<Catalogue, Product> NON_PROMOTIONAL =
-        CatalogueLenses.products()
-            .andThen(ListTraversals.droppingLast(3));
-}
-```
-
----
-
 ## Real-World Example: E-Commerce Pagination
 
-Here's a comprehensive example demonstrating limiting traversals in a business context:
+[`PaginationExample`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PaginationExample.java) serves a catalogue of twenty products the way a REST endpoint would: a page at a time, with a hero section at the front and a clearance section at the back. Each product carries a stock count and a badge:
 
-<!-- verify -->
-```java
-package org.higherkindedj.example.optics;
-
-import org.higherkindedj.optics.*;
-import org.higherkindedj.optics.util.*;
-import java.util.*;
-
-public class PaginationExample {
-
-    public record Product(String sku, String name, double price, boolean featured) {
-        Product applyDiscount(double pct) {
-            return new Product(sku, name, price * (1 - pct), featured);
-        }
+``` java
+  public record Product(
+      String sku, String name, double price, int stock, boolean featured, String badge) {
+    Product withBadge(String newBadge) {
+      return new Product(sku, name, price, stock, featured, newBadge);
     }
 
-    public static void main(String[] args) {
-        List<Product> catalogue = createCatalogue();
-
-        System.out.println("=== E-COMMERCE PAGINATION WITH LIMITING TRAVERSALS ===\n");
-
-        // --- Scenario 1: Basic Pagination ---
-        System.out.println("--- Scenario 1: Paginated Product Display ---");
-
-        int pageSize = 3;
-        int totalPages = (int) Math.ceil(catalogue.size() / (double) pageSize);
-
-        for (int page = 0; page < totalPages; page++) {
-            Traversal<List<Product>, Product> pageTraversal =
-                ListTraversals.slicing(page * pageSize, (page + 1) * pageSize);
-
-            List<Product> pageProducts = Traversals.getAll(pageTraversal, catalogue);
-            System.out.printf("Page %d: %s%n", page + 1,
-                pageProducts.stream().map(Product::name).toList());
-        }
-
-        // --- Scenario 2: Featured Products ---
-        System.out.println("\n--- Scenario 2: Featured Products (First 3) ---");
-
-        Traversal<List<Product>, Product> featured = ListTraversals.taking(3);
-        List<Product> featuredProducts = Traversals.getAll(featured, catalogue);
-        featuredProducts.forEach(p ->
-            System.out.printf("  %s - £%.2f%n", p.name(), p.price()));
-
-        // --- Scenario 3: Apply Discount to Featured ---
-        System.out.println("\n--- Scenario 3: 10% Discount on Featured ---");
-
-        List<Product> withDiscount = Traversals.modify(featured, p -> p.applyDiscount(0.1), catalogue);
-        System.out.println("After discount on first 3:");
-        withDiscount.forEach(p -> System.out.printf("  %s: £%.2f%n", p.name(), p.price()));
-
-        // --- Scenario 4: Exclude Last Items ---
-        System.out.println("\n--- Scenario 4: All Except Last 2 (Clearance) ---");
-
-        Traversal<List<Product>, Product> nonClearance = ListTraversals.droppingLast(2);
-        List<Product> regularStock = Traversals.getAll(nonClearance, catalogue);
-        System.out.println("Regular stock: " + regularStock.stream().map(Product::name).toList());
-
-        System.out.println("\n=== PAGINATION COMPLETE ===");
+    Product applyDiscount(double percentage) {
+      return new Product(sku, name, price * (1 - percentage), stock, featured, badge);
     }
 
-    private static List<Product> createCatalogue() {
-        return List.of(
-            new Product("SKU001", "Laptop", 999.99, true),
-            new Product("SKU002", "Mouse", 29.99, false),
-            new Product("SKU003", "Keyboard", 79.99, true),
-            new Product("SKU004", "Monitor", 349.99, true),
-            new Product("SKU005", "Webcam", 89.99, false),
-            new Product("SKU006", "Headset", 149.99, false),
-            new Product("SKU007", "USB Hub", 39.99, false),
-            new Product("SKU008", "Desk Lamp", 44.99, false)
-        );
+    Product markFeatured() {
+      return new Product(sku, name, price, stock, true, badge);
     }
-}
+  }
+
+  public record PageInfo(int pageNumber, int pageSize, int totalItems, int totalPages) {}
+
+  public record PagedResponse(List<Product> items, PageInfo pageInfo) {}
+
 ```
 
-**Expected Output:**
+Each page is one `slicing` traversal, built from the page number:
+
+``` java
+  private static PagedResponse getPage(List<Product> catalogue, int pageNumber, int pageSize) {
+    Traversal<List<Product>, Product> pageTraversal =
+        ListTraversals.slicing(pageNumber * pageSize, (pageNumber + 1) * pageSize);
+
+    List<Product> items = Traversals.getAll(pageTraversal, catalogue);
+
+    int totalPages = (int) Math.ceil(catalogue.size() / (double) pageSize);
+    PageInfo pageInfo = new PageInfo(pageNumber, pageSize, catalogue.size(), totalPages);
+
+    return new PagedResponse(items, pageInfo);
+  }
 
 ```
-=== E-COMMERCE PAGINATION WITH LIMITING TRAVERSALS ===
 
---- Scenario 1: Paginated Product Display ---
-Page 1: [Laptop, Mouse, Keyboard]
-Page 2: [Monitor, Webcam, Headset]
-Page 3: [USB Hub, Desk Lamp]
+The hero section is the first three products. `taking(3)` marks them as featured, and composed with a price lens it discounts the same three, leaving every other price as it was:
 
---- Scenario 2: Featured Products (First 3) ---
-  Laptop - £999.99
-  Mouse - £29.99
-  Keyboard - £79.99
+``` java
+  private static void demonstrateFeaturedProducts(List<Product> catalogue) {
+    System.out.println("--- Scenario 2: Featured Products (Hero Section) ---");
 
---- Scenario 3: 10% Discount on Featured ---
-After discount on first 3:
-  Laptop: £899.99
-  Mouse: £26.99
-  Keyboard: £71.99
-  Monitor: £349.99
-  Webcam: £89.99
-  Headset: £149.99
-  USB Hub: £39.99
-  Desk Lamp: £44.99
+    // First 3 products are featured on the hero section
+    Traversal<List<Product>, Product> heroProducts = ListTraversals.taking(3);
 
---- Scenario 4: All Except Last 2 (Clearance) ---
-Regular stock: [Laptop, Mouse, Keyboard, Monitor, Webcam, Headset]
+    // Mark them as featured and add "HOT" badge
+    List<Product> withHeroSection =
+        Traversals.modify(heroProducts, p -> p.markFeatured().withBadge("HOT"), catalogue);
 
-=== PAGINATION COMPLETE ===
+    System.out.println("Hero section products:");
+    Traversals.getAll(heroProducts, withHeroSection)
+        .forEach(
+            p ->
+                System.out.printf(
+                    "  ⭐ %s [%s] - Featured: %s%n", p.name(), p.badge(), p.featured()));
+
+    // Apply special 15% discount to hero products
+    Lens<Product, Double> priceLens =
+        Lens.of(
+            Product::price,
+            (prod, newPrice) ->
+                new Product(
+                    prod.sku(),
+                    prod.name(),
+                    newPrice,
+                    prod.stock(),
+                    prod.featured(),
+                    prod.badge()));
+
+    Traversal<List<Product>, Double> heroPrices = heroProducts.andThen(priceLens);
+
+    List<Product> discountedHero = Traversals.modify(heroPrices, price -> price * 0.85, catalogue);
+
+    System.out.println("\nAfter 15% hero discount:");
+    for (int i = 0; i < 5; i++) {
+      Product original = catalogue.get(i);
+      Product discounted = discountedHero.get(i);
+      String marker = i < 3 ? "★" : " ";
+      System.out.printf(
+          "  %s %s: £%.2f → £%.2f%n",
+          marker, original.name(), original.price(), discounted.price());
+    }
+    System.out.println();
+  }
+
+```
+
+The clearance section is the last four. `takingLast(4)` discounts them, and `droppingLast(4)` counts the regular products that are left:
+
+``` java
+  private static void demonstrateClearanceSection(List<Product> catalogue) {
+    System.out.println("--- Scenario 3: Clearance Section ---");
+
+    // Last 4 products are clearance items
+    Traversal<List<Product>, Product> clearanceItems = ListTraversals.takingLast(4);
+
+    System.out.println("Clearance items (last 4):");
+    List<Product> clearance = Traversals.getAll(clearanceItems, catalogue);
+    clearance.forEach(p -> System.out.printf("  🏷️ %s - £%.2f%n", p.name(), p.price()));
+
+    // Apply 30% clearance discount
+    List<Product> withClearance =
+        Traversals.modify(
+            clearanceItems, p -> p.applyDiscount(0.3).withBadge("CLEARANCE"), catalogue);
+
+    System.out.println("\nAfter 30% clearance discount:");
+    Traversals.getAll(clearanceItems, withClearance)
+        .forEach(p -> System.out.printf("  🏷️ %s [%s] - £%.2f%n", p.name(), p.badge(), p.price()));
+
+    // Regular items (all except clearance)
+    Traversal<List<Product>, Product> regularItems = ListTraversals.droppingLast(4);
+    List<Product> regular = Traversals.getAll(regularItems, catalogue);
+    System.out.println("\nRegular items (excluding clearance): " + regular.size() + " products");
+
+    System.out.println();
+  }
+
+```
+
+The hero and clearance sections print:
+
+```
+--- Scenario 2: Featured Products (Hero Section) ---
+Hero section products:
+  ⭐ Premium Electronics Item 1 [HOT] - Featured: true
+  ⭐ Standard Home Item 2 [HOT] - Featured: true
+  ⭐ Budget Garden Item 3 [HOT] - Featured: true
+
+After 15% hero discount:
+  ★ Premium Electronics Item 1: £17.50 → £14.88
+  ★ Standard Home Item 2: £25.00 → £21.25
+  ★ Budget Garden Item 3: £25.00 → £21.25
+    Deluxe Sports Item 4: £32.50 → £32.50
+    Basic Books Item 5: £40.00 → £40.00
+
+--- Scenario 3: Clearance Section ---
+Clearance items (last 4):
+  🏷️ Standard Home Item 17 - £100.00
+  🏷️ Budget Garden Item 18 - £100.00
+  🏷️ Deluxe Sports Item 19 - £107.50
+  🏷️ Basic Books Item 20 - £115.00
+
+After 30% clearance discount:
+  🏷️ Standard Home Item 17 [CLEARANCE] - £70.00
+  🏷️ Budget Garden Item 18 [CLEARANCE] - £70.00
+  🏷️ Deluxe Sports Item 19 [CLEARANCE] - £75.25
+  🏷️ Basic Books Item 20 [CLEARANCE] - £80.50
+
+Regular items (excluding clearance): 16 products
 ```
 
 ---
@@ -13629,9 +13312,7 @@ val firstN: Traversal[List[A], A] = ...
 
 ---
 
-## Summary: The Power of Limiting Traversals
-
-Limiting traversals bring **positional focus** into the heart of your optic compositions:
+## The limiting methods at a glance {#summary-the-power-of-limiting-traversals}
 
 | Method | Focus |
 |--------|-------|
@@ -13655,6 +13336,7 @@ Limiting traversals bring **positional focus** into the heart of your optic comp
 - [List Decomposition](list_decomposition.md): head/tail and init/last access as prisms and affines
 - [Filtered Optics](filtered_optics.md): focusing by predicate across the whole list
 - [Traversals](traversals.md): the unrestricted bulk-update optic these methods refine
+- [Production Readiness](production_readiness.md#collection-optics): what a limiting traversal copies, and when to cache a composed optic
 ~~~
 
 ~~~admonish tip title="Further Reading"
@@ -14464,7 +14146,7 @@ List<String> topActiveUserNames = users.stream()
 
 * **Control flow** - Early returns, exceptions, complex branching
 * **Side effects** - Logging, metrics, external calls based on conditions
-* **Performance critical** - Minimal abstraction overhead needed
+* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -14530,187 +14212,160 @@ boolean isActive = user.active();
 
 ---
 
-## Performance Notes
-
-Filtered optics are optimised for efficiency:
-
-* **No pre-filtering pass**: the predicate is applied during the traversal, not in a separate pass beforehand
-* **Element reuse**: elements the predicate rejects are carried over by reference; the list container itself is rebuilt by `ListTraverse.traverse`
-* **Single pass**: both filtering and transformation occur in one traversal (every element is visited; the predicate decides whether the function applies)
-
-**Best Practice**: Store frequently-used filtered traversals as constants:
-
-<!-- verify -->
-```java
-public class PlatformOptics {
-    public static final Traversal<Platform, User> ACTIVE_USERS =
-        PlatformTraversals.users().filtered(User::active);
-
-    public static final Traversal<Platform, User> PREMIUM_ACTIVE_USERS =
-        ACTIVE_USERS.filtered(user -> user.tier() == SubscriptionTier.PREMIUM);
-
-    public static final Traversal<Platform, Customer> CUSTOMERS_WITH_OVERDUE =
-        PlatformTraversals.customers()
-            .filterBy(CustomerFolds.invoices(), Invoice::overdue);
-
-    public static final Fold<Platform, Invoice> ALL_OVERDUE_INVOICES =
-        PlatformFolds.customers()
-            .andThen(CustomerFolds.invoices())
-            .filtered(Invoice::overdue);
-}
-```
-
----
-
 ## Real-World Example: Customer Analytics Dashboard
 
 Here's a comprehensive example demonstrating filtered optics in a business context:
 
-<!-- verify -->
-```java
-package org.higherkindedj.example.optics;
-
-import org.higherkindedj.optics.*;
-import org.higherkindedj.optics.util.Traversals;
+``` java
+import java.util.List;
 import org.higherkindedj.hkt.Monoids;
-import java.util.*;
+import org.higherkindedj.optics.Fold;
+import org.higherkindedj.optics.Getter;
+import org.higherkindedj.optics.Lens;
+import org.higherkindedj.optics.Traversal;
+import org.higherkindedj.optics.util.Traversals;
+
 
 public class CustomerAnalytics {
 
-    public record Item(String name, int price, String category, boolean premium) {}
-    public record Order(String id, List<Item> items, double total) {}
-    public record Customer(String name, List<Order> orders, boolean vip) {}
+  public record Item(String name, int price, String category, boolean premium) {}
 
-    // Reusable optics
-    private static final Fold<Customer, Order> CUSTOMER_ORDERS = Fold.of(Customer::orders);
-    private static final Fold<Order, Item> ORDER_ITEMS = Fold.of(Order::items);
-    private static final Fold<Customer, Item> ALL_CUSTOMER_ITEMS =
-        CUSTOMER_ORDERS.andThen(ORDER_ITEMS);
+  public record Order(String id, List<Item> items, double total) {}
 
-    public static void main(String[] args) {
-        List<Customer> customers = createSampleData();
+  public record Customer(String name, List<Order> orders, boolean vip) {}
 
-        System.out.println("=== CUSTOMER ANALYTICS WITH FILTERED OPTICS ===\n");
+  // Reusable optics
+  private static final Fold<Customer, Order> CUSTOMER_ORDERS = Fold.of(Customer::orders);
+  private static final Fold<Order, Item> ORDER_ITEMS = Fold.of(Order::items);
+  private static final Fold<Customer, Item> ALL_CUSTOMER_ITEMS =
+      CUSTOMER_ORDERS.andThen(ORDER_ITEMS);
 
-        // --- Analysis 1: High-Value Customer Identification ---
-        System.out.println("--- Analysis 1: High-Value Customers ---");
+  public static void main(String[] args) {
+    List<Customer> customers = createSampleData();
 
-        Traversal<List<Customer>, Customer> allCustomers = Traversals.forList();
-        Fold<Customer, Double> orderTotals = CUSTOMER_ORDERS.andThen(
-            Getter.of(Order::total).asFold()
-        );
+    System.out.println("=== CUSTOMER ANALYTICS WITH FILTERED OPTICS ===\n");
 
-        // Customers with any order over £500
-        Traversal<List<Customer>, Customer> bigSpenders =
-            allCustomers.filterBy(orderTotals, total -> total > 500);
+    // --- Analysis 1: High-Value Customer Identification ---
+    System.out.println("--- Analysis 1: High-Value Customers ---");
 
-        List<Customer> highValue = Traversals.getAll(bigSpenders, customers);
-        System.out.println("Customers with orders over £500: " +
-            highValue.stream().map(Customer::name).toList());
+    Traversal<List<Customer>, Customer> allCustomers = Traversals.forList();
+    Fold<Customer, Double> orderTotals = CUSTOMER_ORDERS.andThen(Getter.of(Order::total).asFold());
 
-        // --- Analysis 2: Premium Product Buyers ---
-        System.out.println("\n--- Analysis 2: Premium Product Buyers ---");
+    // Customers with any order over £500
+    Traversal<List<Customer>, Customer> bigSpenders =
+        allCustomers.filterBy(orderTotals, total -> total > 500);
 
-        Fold<Customer, Item> premiumItems = ALL_CUSTOMER_ITEMS.filtered(Item::premium);
+    List<Customer> highValue = Traversals.getAll(bigSpenders, customers);
+    System.out.println(
+        "Customers with orders over £500: " + highValue.stream().map(Customer::name).toList());
 
-        for (Customer customer : customers) {
-            int premiumCount = premiumItems.length(customer);
-            if (premiumCount > 0) {
-                double premiumSpend = premiumItems.foldMap(Monoids.doubleAddition(),
-                    item -> (double) item.price(), customer);
-                System.out.printf("%s: %d premium items, £%.2f total%n",
-                    customer.name(), premiumCount, premiumSpend);
-            }
-        }
+    // --- Analysis 2: Premium Product Buyers ---
+    System.out.println("\n--- Analysis 2: Premium Product Buyers ---");
 
-        // --- Analysis 3: Category-Specific Queries ---
-        System.out.println("\n--- Analysis 3: Electronics Spending ---");
+    Fold<Customer, Item> premiumItems = ALL_CUSTOMER_ITEMS.filtered(Item::premium);
 
-        Fold<Customer, Item> electronicsItems =
-            ALL_CUSTOMER_ITEMS.filtered(item -> "Electronics".equals(item.category()));
-
-        for (Customer customer : customers) {
-            double electronicsSpend = electronicsItems.foldMap(Monoids.doubleAddition(),
-                item -> (double) item.price(), customer);
-            if (electronicsSpend > 0) {
-                System.out.printf("%s spent £%.2f on Electronics%n",
-                    customer.name(), electronicsSpend);
-            }
-        }
-
-        // --- Analysis 4: Mark VIP Customers ---
-        System.out.println("\n--- Analysis 4: Auto-Mark VIP Customers ---");
-
-        // Customers who bought premium items AND have any order over £300
-        Traversal<List<Customer>, Customer> potentialVIPs =
-            allCustomers
-                .filterBy(ALL_CUSTOMER_ITEMS, Item::premium)  // Has premium items
-                .filterBy(orderTotals, total -> total > 300); // Has high-value orders
-
-        Lens<Customer, Boolean> vipLens =
-            Lens.of(Customer::vip, (c, v) -> new Customer(c.name(), c.orders(), v));
-
-        List<Customer> updatedCustomers = Traversals.modify(
-            potentialVIPs.andThen(vipLens),
-            _ -> true,
-            customers
-        );
-
-        for (Customer c : updatedCustomers) {
-            if (c.vip()) {
-                System.out.println(c.name() + " is now VIP");
-            }
-        }
-
-        // --- Analysis 5: Aggregated Statistics ---
-        System.out.println("\n--- Analysis 5: Platform Statistics ---");
-
-        Fold<List<Customer>, Customer> customerFold = Fold.of(list -> list);
-        Fold<List<Customer>, Item> allItems = customerFold.andThen(ALL_CUSTOMER_ITEMS);
-
-        Fold<List<Customer>, Item> expensiveItems = allItems.filtered(i -> i.price() > 100);
-        Fold<List<Customer>, Item> cheapItems = allItems.filtered(i -> i.price() <= 100);
-
-        int totalExpensive = expensiveItems.length(customers);
-        int totalCheap = cheapItems.length(customers);
-        double expensiveRevenue = expensiveItems.foldMap(Monoids.doubleAddition(),
-            i -> (double) i.price(), customers);
-
-        System.out.printf("Expensive items (>£100): %d items, £%.2f revenue%n",
-            totalExpensive, expensiveRevenue);
-        System.out.printf("Budget items (≤£100): %d items%n", totalCheap);
-
-        System.out.println("\n=== END OF ANALYTICS ===");
+    for (Customer customer : customers) {
+      int premiumCount = premiumItems.length(customer);
+      if (premiumCount > 0) {
+        double premiumSpend =
+            premiumItems.foldMap(Monoids.doubleAddition(), item -> (double) item.price(), customer);
+        System.out.printf(
+            "%s: %d premium items, £%.2f total%n", customer.name(), premiumCount, premiumSpend);
+      }
     }
 
-    private static List<Customer> createSampleData() {
-        return List.of(
-            new Customer("Alice", List.of(
-                new Order("A1", List.of(
-                    new Item("Laptop", 999, "Electronics", true),
-                    new Item("Mouse", 25, "Electronics", false)
-                ), 1024.0),
-                new Order("A2", List.of(
-                    new Item("Desk", 350, "Furniture", false)
-                ), 350.0)
-            ), false),
-            new Customer("Bob", List.of(
-                new Order("B1", List.of(
-                    new Item("Book", 20, "Books", false),
-                    new Item("Pen", 5, "Stationery", false)
-                ), 25.0)
-            ), false),
-            new Customer("Charlie", List.of(
-                new Order("C1", List.of(
-                    new Item("Phone", 800, "Electronics", true),
-                    new Item("Case", 50, "Accessories", false)
-                ), 850.0),
-                new Order("C2", List.of(
-                    new Item("Headphones", 250, "Electronics", true)
-                ), 250.0)
-            ), false)
-        );
+    // --- Analysis 3: Category-Specific Queries ---
+    System.out.println("\n--- Analysis 3: Electronics Spending ---");
+
+    Fold<Customer, Item> electronicsItems =
+        ALL_CUSTOMER_ITEMS.filtered(item -> "Electronics".equals(item.category()));
+
+    for (Customer customer : customers) {
+      double electronicsSpend =
+          electronicsItems.foldMap(
+              Monoids.doubleAddition(), item -> (double) item.price(), customer);
+      if (electronicsSpend > 0) {
+        System.out.printf("%s spent £%.2f on Electronics%n", customer.name(), electronicsSpend);
+      }
     }
+
+    // --- Analysis 4: Mark VIP Customers ---
+    System.out.println("\n--- Analysis 4: Auto-Mark VIP Customers ---");
+
+    // Customers who bought premium items AND have any order over £300
+    Traversal<List<Customer>, Customer> potentialVIPs =
+        allCustomers
+            .filterBy(ALL_CUSTOMER_ITEMS, Item::premium) // Has premium items
+            .filterBy(orderTotals, total -> total > 300); // Has high-value orders
+
+    Lens<Customer, Boolean> vipLens =
+        Lens.of(Customer::vip, (c, v) -> new Customer(c.name(), c.orders(), v));
+
+    List<Customer> updatedCustomers =
+        Traversals.modify(potentialVIPs.andThen(vipLens), _ -> true, customers);
+
+    for (Customer c : updatedCustomers) {
+      if (c.vip()) {
+        System.out.println(c.name() + " is now VIP");
+      }
+    }
+
+    // --- Analysis 5: Aggregated Statistics ---
+    System.out.println("\n--- Analysis 5: Platform Statistics ---");
+
+    Fold<List<Customer>, Customer> customerFold = Fold.of(list -> list);
+    Fold<List<Customer>, Item> allItems = customerFold.andThen(ALL_CUSTOMER_ITEMS);
+
+    Fold<List<Customer>, Item> expensiveItems = allItems.filtered(i -> i.price() > 100);
+    Fold<List<Customer>, Item> cheapItems = allItems.filtered(i -> i.price() <= 100);
+
+    int totalExpensive = expensiveItems.length(customers);
+    int totalCheap = cheapItems.length(customers);
+    double expensiveRevenue =
+        expensiveItems.foldMap(Monoids.doubleAddition(), i -> (double) i.price(), customers);
+
+    System.out.printf(
+        "Expensive items (>£100): %d items, £%.2f revenue%n", totalExpensive, expensiveRevenue);
+    System.out.printf("Budget items (≤£100): %d items%n", totalCheap);
+
+    System.out.println("\n=== END OF ANALYTICS ===");
+  }
+
+  private static List<Customer> createSampleData() {
+    return List.of(
+        new Customer(
+            "Alice",
+            List.of(
+                new Order(
+                    "A1",
+                    List.of(
+                        new Item("Laptop", 999, "Electronics", true),
+                        new Item("Mouse", 25, "Electronics", false)),
+                    1024.0),
+                new Order("A2", List.of(new Item("Desk", 350, "Furniture", false)), 350.0)),
+            false),
+        new Customer(
+            "Bob",
+            List.of(
+                new Order(
+                    "B1",
+                    List.of(
+                        new Item("Book", 20, "Books", false),
+                        new Item("Pen", 5, "Stationery", false)),
+                    25.0)),
+            false),
+        new Customer(
+            "Charlie",
+            List.of(
+                new Order(
+                    "C1",
+                    List.of(
+                        new Item("Phone", 800, "Electronics", true),
+                        new Item("Case", 50, "Accessories", false)),
+                    850.0),
+                new Order("C2", List.of(new Item("Headphones", 250, "Electronics", true)), 250.0)),
+            false));
+  }
 }
 ```
 
@@ -14761,9 +14416,7 @@ This creates a traversal that focuses on the value only if it satisfies the pred
 
 ---
 
-## Summary: The Power of Filtered Optics
-
-Filtered optics bring **declarative filtering** into the heart of your optic compositions:
+## The filtering methods at a glance {#summary-the-power-of-filtered-optics}
 
 | Method | Focus |
 |--------|-------|
@@ -14784,6 +14437,7 @@ Filtered optics bring **declarative filtering** into the heart of your optic com
 - [Folds](folds.md): the query API and monoid aggregation used with filtered folds
 - [Limiting Traversals](limiting_traversals.md): slicing by position rather than by predicate
 - [Indexed Optics](indexed_optics.md): when the position should inform the update
+- [Production Readiness](production_readiness.md#collection-optics): what a filtered traversal builds, and when to cache a composed optic
 ~~~
 
 ~~~admonish tip title="Further Reading"
@@ -15278,7 +14932,6 @@ List<Product> prioritised = IndexedTraversals.imodify(
 
 * **Position irrelevant** - Pure value transformations
 * **Simpler code** - Index tracking adds unnecessary complexity
-* **Performance critical** - Minimal overhead needed (though indexed optics are optimised)
 * **No positional logic** - All elements treated identically
 
 <!-- verify -->
@@ -15442,33 +15095,6 @@ List<Pair<Integer, String>> renumbered = IntStream.range(0, pairs.size())
 
 ---
 
-## Performance Notes
-
-Indexed optics are designed to be efficient:
-
-* **No additional traversals**: the index is computed during the normal iteration
-* **Minimal overhead**: `forList()` and `forMap()` hand the index and value straight to your function, so nothing is allocated per focus. A `Pair` appears only where one is the result: `toIndexedList`, indexed folds, and `iandThen` composition
-* **Reusable compositions**: indexed optics can be composed once and cached
-
-**Best Practice**: Create indexed optics once and store as constants:
-
-<!-- verify -->
-```java
-public class OrderOptics {
-    public static final IndexedTraversal<Integer, List<LineItem>, LineItem>
-        ITEMS_WITH_INDEX = IndexedTraversals.forList();
-
-    public static final IndexedTraversal<String, Map<String, String>, String>
-        METADATA_WITH_KEYS = IndexedTraversals.forMap();
-
-    // Compose with filtering
-    public static final IndexedTraversal<Integer, List<LineItem>, LineItem>
-        EVEN_POSITIONED_ITEMS = ITEMS_WITH_INDEX.filterIndex(i -> i % 2 == 0);
-}
-```
-
----
-
 ~~~admonish info title="Key Takeaways"
 * **Indexed optics pair every value with where it lives**: list positions, map keys, or field names become part of the focus
 * **`imodify` is the workhorse**: one call replaces manual counter threading, `AtomicInteger` hacks, and entry-set rebuilding
@@ -15478,9 +15104,10 @@ public class OrderOptics {
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Indexed Optics: Advanced Patterns](indexed_optics_advanced.md): composition with paired indices, the Haskell heritage, and the trade-off summary
+- [Indexed Optics: Advanced Patterns](indexed_optics_advanced.md): composition with paired indices, the Haskell heritage, and a before-and-after table of manual index tracking
 - [Indexed Access](indexed_access.md): the At and Ixed type classes for single-key operations
 - [Each Type Class](each_typeclass.md): `EachIndexed.indexedTraversal()` as an alternative source of indexed traversals
+- [Production Readiness](production_readiness.md#collection-optics): what an indexed traversal builds, and when to cache a composed optic
 ~~~
 
 ---
@@ -15827,166 +15454,149 @@ Pair<String, Integer> converted = IndexedTraversals.tuple2ToPair(tuple);
 
 Here's a comprehensive example demonstrating indexed optics in a business context.
 
-<!-- verify -->
-```java
-package org.higherkindedj.example.optics;
-
-import java.time.Instant;
-import java.util.*;
-import org.higherkindedj.optics.indexed.*;
+``` java
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.higherkindedj.optics.indexed.IndexedFold;
+import org.higherkindedj.optics.indexed.IndexedTraversal;
+import org.higherkindedj.optics.indexed.Pair;
 import org.higherkindedj.optics.util.IndexedTraversals;
+
 
 public class OrderFulfilmentDashboard {
 
-    public record LineItem(String productName, int quantity, double price) {}
+  public record LineItem(String productName, int quantity, double price) {}
 
-    public record Order(
-        String orderId,
-        List<LineItem> items,
-        Map<String, String> metadata
-    ) {}
+  public record Order(String orderId, List<LineItem> items, Map<String, String> metadata) {}
 
-    private static Map<String, String> metadataInOrder() {
-        Map<String, String> metadata = new LinkedHashMap<>();
-        metadata.put("priority", "express");
-        metadata.put("gift-wrap", "true");
-        metadata.put("delivery-note", "Leave at door");
-        return metadata;
-    }
+  private static Map<String, String> metadataInOrder() {
+    Map<String, String> metadata = new LinkedHashMap<>();
+    metadata.put("priority", "express");
+    metadata.put("gift-wrap", "true");
+    metadata.put("delivery-note", "Leave at door");
+    return metadata;
+  }
 
-    public static void main(String[] args) {
-        Order order = new Order(
+  public static void main(String[] args) {
+    Order order =
+        new Order(
             "ORD-12345",
             List.of(
                 new LineItem("Laptop", 1, 999.99),
                 new LineItem("Mouse", 2, 24.99),
                 new LineItem("Keyboard", 1, 79.99),
-                new LineItem("Monitor", 1, 299.99)
-            ),
-            // Insertion order matters for the output below, so put() in order:
+                new LineItem("Monitor", 1, 299.99)),
+            // Insertion order matters for the output, so put() in order:
             // wrapping Map.of would inherit its randomised iteration order.
-            metadataInOrder()
-        );
+            metadataInOrder());
 
-        System.out.println("=== ORDER FULFILMENT DASHBOARD ===\n");
+    System.out.println("=== ORDER FULFILMENT DASHBOARD ===\n");
 
-        // --- Task 1: Generate Packing Slip ---
-        System.out.println("--- Packing Slip ---");
-        generatePackingSlip(order);
+    // --- Task 1: Generate Packing Slip ---
+    System.out.println("--- Packing Slip ---");
+    generatePackingSlip(order);
 
-        // --- Task 2: Apply Position-Based Discounts ---
-        System.out.println("\n--- Position-Based Discounts ---");
-        Order discounted = applyPositionDiscounts(order);
-        System.out.printf("Original total: £%.2f%n", calculateTotal(order));
-        System.out.printf("Discounted total: £%.2f%n", calculateTotal(discounted));
+    // --- Task 2: Apply Position-Based Discounts ---
+    System.out.println("\n--- Position-Based Discounts ---");
+    Order discounted = applyPositionDiscounts(order);
+    System.out.printf("Original total: £%.2f%n", calculateTotal(order));
+    System.out.printf("Discounted total: £%.2f%n", calculateTotal(discounted));
 
-        // --- Task 3: Process Metadata with Key Awareness ---
-        System.out.println("\n--- Metadata Processing ---");
-        processMetadata(order);
+    // --- Task 3: Process Metadata with Key Awareness ---
+    System.out.println("\n--- Metadata Processing ---");
+    processMetadata(order);
 
-        // --- Task 4: Identify High-Value Positions ---
-        System.out.println("\n--- High-Value Items ---");
-        identifyHighValuePositions(order);
+    // --- Task 4: Identify High-Value Positions ---
+    System.out.println("\n--- High-Value Items ---");
+    identifyHighValuePositions(order);
 
-        System.out.println("\n=== END OF DASHBOARD ===");
+    System.out.println("\n=== END OF DASHBOARD ===");
+  }
+
+  private static void generatePackingSlip(Order order) {
+    IndexedTraversal<Integer, List<LineItem>, LineItem> itemsIndexed = IndexedTraversals.forList();
+
+    List<Pair<Integer, LineItem>> indexedItems =
+        IndexedTraversals.toIndexedList(itemsIndexed, order.items());
+
+    System.out.println("Order: " + order.orderId());
+    for (Pair<Integer, LineItem> pair : indexedItems) {
+      int position = pair.first() + 1; // 1-based for display
+      LineItem item = pair.second();
+      System.out.printf(
+          "  Item %d: %s (Qty: %d) - £%.2f%n",
+          position, item.productName(), item.quantity(), item.price() * item.quantity());
     }
+  }
 
-    private static void generatePackingSlip(Order order) {
-        IndexedTraversal<Integer, List<LineItem>, LineItem> itemsIndexed =
-            IndexedTraversals.forList();
+  private static Order applyPositionDiscounts(Order order) {
+    IndexedTraversal<Integer, List<LineItem>, LineItem> itemsIndexed = IndexedTraversals.forList();
 
-        List<Pair<Integer, LineItem>> indexedItems =
-            IndexedTraversals.toIndexedList(itemsIndexed, order.items());
-
-        System.out.println("Order: " + order.orderId());
-        for (Pair<Integer, LineItem> pair : indexedItems) {
-            int position = pair.first() + 1;  // 1-based for display
-            LineItem item = pair.second();
-            System.out.printf("  Item %d: %s (Qty: %d) - £%.2f%n",
-                position,
-                item.productName(),
-                item.quantity(),
-                item.price() * item.quantity()
-            );
-        }
-    }
-
-    private static Order applyPositionDiscounts(Order order) {
-        IndexedTraversal<Integer, List<LineItem>, LineItem> itemsIndexed =
-            IndexedTraversals.forList();
-
-        // Every 3rd item gets 15% off (positions 2, 5, 8...)
-        List<LineItem> discounted = IndexedTraversals.imodify(
+    // Every 3rd item gets 15% off (indices 2, 5, 8...)
+    List<LineItem> discounted =
+        IndexedTraversals.imodify(
             itemsIndexed,
             (index, item) -> {
-                if ((index + 1) % 3 == 0) {
-                    double newPrice = item.price() * 0.85;
-                    System.out.printf("  Position %d (%s): £%.2f → £%.2f (15%% off)%n",
-                        index + 1, item.productName(), item.price(), newPrice);
-                    return new LineItem(item.productName(), item.quantity(), newPrice);
-                }
-                return item;
+              if ((index + 1) % 3 == 0) {
+                double newPrice = item.price() * 0.85;
+                System.out.printf(
+                    "  Position %d (%s): £%.2f → £%.2f (15%% off)%n",
+                    index + 1, item.productName(), item.price(), newPrice);
+                return new LineItem(item.productName(), item.quantity(), newPrice);
+              }
+              return item;
             },
-            order.items()
-        );
+            order.items());
 
-        return new Order(order.orderId(), discounted, order.metadata());
+    return new Order(order.orderId(), discounted, order.metadata());
+  }
+
+  private static void processMetadata(Order order) {
+    IndexedTraversal<String, Map<String, String>, String> metadataIndexed =
+        IndexedTraversals.forMap();
+
+    IndexedFold<String, Map<String, String>, String> fold = metadataIndexed.asIndexedFold();
+
+    List<Pair<String, String>> entries = fold.toIndexedList(order.metadata());
+
+    for (Pair<String, String> entry : entries) {
+      String key = entry.first();
+      String value = entry.second();
+
+      // Process based on key
+      switch (key) {
+        case "priority" -> System.out.println("  Shipping priority: " + value.toUpperCase());
+        case "gift-wrap" ->
+            System.out.println(
+                "  Gift wrapping: " + (value.equals("true") ? "Required" : "Not required"));
+        case "delivery-note" -> System.out.println("  Special instructions: " + value);
+        default -> System.out.println("  " + key + ": " + value);
+      }
     }
+  }
 
-    private static void processMetadata(Order order) {
-        IndexedTraversal<String, Map<String, String>, String> metadataIndexed =
-            IndexedTraversals.forMap();
+  private static void identifyHighValuePositions(Order order) {
+    IndexedTraversal<Integer, List<LineItem>, LineItem> itemsIndexed = IndexedTraversals.forList();
 
-        IndexedFold<String, Map<String, String>, String> fold =
-            metadataIndexed.asIndexedFold();
+    // Filter to items over £100
+    IndexedTraversal<Integer, List<LineItem>, LineItem> highValue =
+        itemsIndexed.filteredWithIndex((index, item) -> item.price() > 100);
 
-        List<Pair<String, String>> entries = fold.toIndexedList(order.metadata());
+    List<Pair<Integer, LineItem>> expensive =
+        IndexedTraversals.toIndexedList(highValue, order.items());
 
-        for (Pair<String, String> entry : entries) {
-            String key = entry.first();
-            String value = entry.second();
-
-            // Process based on key
-            switch (key) {
-                case "priority" ->
-                    System.out.println("  Shipping priority: " + value.toUpperCase());
-                case "gift-wrap" ->
-                    System.out.println("  Gift wrapping: " +
-                        (value.equals("true") ? "Required" : "Not required"));
-                case "delivery-note" ->
-                    System.out.println("  Special instructions: " + value);
-                default ->
-                    System.out.println("  " + key + ": " + value);
-            }
-        }
+    System.out.println("  Items over £100 (require special handling):");
+    for (Pair<Integer, LineItem> pair : expensive) {
+      System.out.printf(
+          "    Position %d: %s (£%.2f)%n",
+          pair.first() + 1, pair.second().productName(), pair.second().price());
     }
+  }
 
-    private static void identifyHighValuePositions(Order order) {
-        IndexedTraversal<Integer, List<LineItem>, LineItem> itemsIndexed =
-            IndexedTraversals.forList();
-
-        // Filter to items over £100
-        IndexedTraversal<Integer, List<LineItem>, LineItem> highValue =
-            itemsIndexed.filteredWithIndex((index, item) -> item.price() > 100);
-
-        List<Pair<Integer, LineItem>> expensive =
-            IndexedTraversals.toIndexedList(highValue, order.items());
-
-        System.out.println("  Items over £100 (require special handling):");
-        for (Pair<Integer, LineItem> pair : expensive) {
-            System.out.printf("    Position %d: %s (£%.2f)%n",
-                pair.first() + 1,
-                pair.second().productName(),
-                pair.second().price()
-            );
-        }
-    }
-
-    private static double calculateTotal(Order order) {
-        return order.items().stream()
-            .mapToDouble(item -> item.price() * item.quantity())
-            .sum();
-    }
+  private static double calculateTotal(Order order) {
+    return order.items().stream().mapToDouble(item -> item.price() * item.quantity()).sum();
+  }
 }
 ```
 
@@ -16041,15 +15651,9 @@ This creates an indexed traversal over lists where the index is an integer: exac
 
 ---
 
-## Summary: The Power of Indexed Optics
+## Before and after {#summary-the-power-of-indexed-optics}
 
-Indexed optics bring **position awareness** into your functional data transformations:
-
-* **IndexedTraversal\<I, S, A>**: Bulk operations with index tracking
-* **IndexedFold\<I, S, A>**: Read-only queries with position information
-* **IndexedLens\<I, S, A>**: Single-field access with field name tracking
-
-These tools transform how you work with collections and records:
+What each manual pattern becomes with indexed optics:
 
 | Before (Manual Index Tracking) | After (Declarative Indexed Optics) |
 |-------------------------------|-----------------------------------|
@@ -16988,36 +16592,6 @@ List<Character> extracted = Traversals.getAll(vowels, "banana");
 
 ---
 
-## Performance Notes
-
-String traversals are optimised for immutability:
-
-* **Single pass**: text is decomposed and reconstructed in one traversal
-* **List-based internals**: transformation happens on the decomposed units, with the string rebuilt once at the end
-
-**Best Practice**: For frequently used string transformations, create traversals as constants:
-
-<!-- verify -->
-```java
-public class TextProcessing {
-    // Reusable string traversals
-    public static final Traversal<String, String> WORDS =
-        StringTraversals.worded();
-
-    public static final Traversal<String, String> LINES =
-        StringTraversals.lined();
-
-    public static final Traversal<String, Character> VOWELS =
-        StringTraversals.chars().filtered(c -> "aeiouAEIOU".indexOf(c) >= 0);
-
-    // Domain-specific compositions
-    public static final Traversal<String, String> ERROR_LOG_LINES =
-        LINES.filtered(line -> line.contains("ERROR"));
-}
-```
-
----
-
 ## Effectful Text Processing with Validated
 
 Like every traversal, string traversals accept effects through `modifyF`. Validating each word and accumulating every failure:
@@ -17052,6 +16626,7 @@ Validated<List<String>, String> result = VALIDATED.narrow(
 - [Filtered Optics](filtered_optics.md): the predicate composition used throughout this page
 - [Traversals](traversals.md): the underlying bulk-update optic
 - [List Decomposition](list_decomposition.md): head/tail patterns for the lists these traversals produce
+- [Production Readiness](production_readiness.md#collection-optics): what a string traversal builds, and when to cache a composed optic
 ~~~
 
 ~~~admonish tip title="Further Reading"
@@ -17446,34 +17021,7 @@ Config result = value.modify(String::trim, config);
 
 ---
 
-## Performance Considerations
-
-Both At and Ixed create new collection instances on every modification:
-
-<!-- verify -->
-```java
-// Each operation copies the entire map - O(n)
-Map<String, Integer> step1 = at.insertOrUpdate("a", 1, map);   // Copy
-Map<String, Integer> step2 = at.insertOrUpdate("b", 2, step1); // Copy
-Map<String, Integer> step3 = at.remove("c", step2);            // Copy
-```
-
-~~~admonish tip title="Batch Modifications"
-For multiple updates, consider direct bulk construction then switch to optics for subsequent immutable operations:
-
-<!-- verify -->
-```java
-Map<String, Integer> result = new HashMap<>(original);
-result.put("a", 1);
-result.put("b", 2);
-result.remove("c");
-// Now use At/Ixed for subsequent immutable operations
-```
-~~~
-
----
-
-## Summary
+## Which tool for which job {#summary}
 
 | Use Case | Tool | Why |
 |----------|------|-----|
@@ -17496,6 +17044,7 @@ result.remove("c");
 - [Indexed Optics](indexed_optics.md): traversing every element with its position
 - [Prisms](prisms.md): `Prisms.some()` for unwrapping the `Optional` that At exposes
 - [Common Data Structures](common_data_structure_traversals.md): whole-map value traversals
+- [Production Readiness](production_readiness.md#collection-optics): what At and Ixed copy on each edit, and when to cache a composed optic
 ~~~
 
 ---
@@ -18746,8 +18295,6 @@ Maybe<String> backToMaybe = value
 
 ---
 
-## Summary
-
 ~~~admonish info title="Key Takeaways"
 * **A core type is just another sum type.** `Maybe`, `Either`, `Validated` and `Try` each get prisms for their cases, so matching one is the same operation as matching any sealed hierarchy.
 * **Prisms answer, traversals act.** `matches()` and `getOptional()` interrogate a case; the matching traversal modifies the value inside it and leaves the other case untouched.
@@ -19249,7 +18796,7 @@ Maybe<String> safeBio = maybeProfile.flatMap(p -> getMaybe(bioLens, p));
 
 ---
 
-## Summary
+## Every extension at a glance {#summary}
 
 | Method | Returns | Use Case |
 |--------|---------|----------|
@@ -21065,7 +20612,7 @@ Validated<String, Form> rechecked = validatePermissions(updatedForm);
 
 * **Simple, flat structures** - No deep nesting or conditional access needed
 * **One-off validation** - Logic won't be reused elsewhere
-* **Performance critical** - Minimal abstraction overhead required
+* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 
 <!-- verify -->
@@ -21150,59 +20697,6 @@ var result = FORM_TO_PERMISSION_NAMES.modifyF(
 
 // Be specific about what you're validating
 // This traversal has clear semantics: Form -> User permissions -> permission names
-```
-
----
-
-## Performance Notes
-
-Optic composition trades a little throughput for composability, and it is worth being precise about which:
-
-* **Element references are shared**: values a modification leaves alone are reused, not copied; the containers along the path are rebuilt
-* **No hidden laziness**: every focus the path reaches is visited, so cost is proportional to the number of foci
-* **Single pass**: one `modifyF` walks the structure once, whatever the effect
-* **A prism that does not match costs nothing further**: the rest of the chain is never entered for that element
-
-**Best Practice**: Create composed optics as constants for reuse:
-
-
-<!-- verify -->
-```java
-public class ValidationOptics {
-    private static final Set<String> VALID_PERMISSIONS =
-        Set.of("PERM_READ", "PERM_WRITE", "PERM_DELETE");
-
-    private static Applicative<ValidatedKind.Witness<String>> getValidatedApplicative() {
-        return Instances.validated(Semigroups.string("; "));
-    }
-
-    public static Kind<ValidatedKind.Witness<String>, String> validatePermissionName(String name) {
-        return VALID_PERMISSIONS.contains(name)
-            ? VALIDATED.widen(Validated.valid(name))
-            : VALIDATED.widen(Validated.invalid("Invalid permission: " + name));
-    }
-
-    // Reusable validation paths
-    public static final Traversal<Form, String> USER_PERMISSION_NAMES =
-        FormLenses.principal()
-            .andThen(PrincipalPrisms.user())
-            .andThen(UserTraversals.permissions())
-            .andThen(PermissionLenses.name());
-
-    public static final Affine<Form, String> USERNAMES =
-        FormLenses.principal()
-            .andThen(PrincipalPrisms.user())
-            .andThen(UserLenses.username());
-
-    // Helper methods for common validations
-    public static Validated<String, Form> validatePermissions(Form form) {
-        return VALIDATED.narrow(USER_PERMISSION_NAMES.modifyF(
-            ValidationOptics::validatePermissionName,
-            form,
-            getValidatedApplicative()
-        ));
-    }
-}
 ```
 
 ---
@@ -21572,7 +21066,7 @@ Each individual optic (Lens, Prism, Traversal) can be tested and reasoned about 
 
 The composition automatically handles empty collections, missing data, and type mismatches without special case code.
 
-By mastering optic composition, you gain a powerful tool for building robust, maintainable data processing pipelines that are both expressive and efficient.
+By mastering optic composition, you gain a powerful tool for building robust, maintainable data processing pipelines that read as the path they follow.
 
 ---
 
@@ -21793,6 +21287,7 @@ See [FluentValidationExample.java](https://github.com/higher-kinded-j/higher-kin
 - [Updates That Can Fail](fluent_api.md#part-2-validation-aware-modification): the four validation strategies, the builders, and when to drop to `modifyF`
 - [Composition Rules](composition_rules.md): why a chain of mixed optics widens to a `Traversal`
 - [Core Type Integration](core_type_integration.md): the prisms that let a core type sit mid-path
+- [Production Readiness](production_readiness.md#runtime-cost): what each optic allocates, and when to cache a composed optic
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -22392,7 +21887,7 @@ Traversal<ServerConfig, byte[]> sensitiveDataAuditor =
 ### Use Stream Processing When
 
 - **Simple filtering** - Basic collection operations without complex nesting
-- **Performance critical paths** - Minimal abstraction overhead needed
+- **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 - **Aggregation logic** - Computing statistics or summaries
 
 <!-- verify -->
@@ -22490,45 +21985,6 @@ public void testBase64RoundTrip() {
 
 ---
 
-## Performance Notes
-
-Optic compositions trade a little throughput for composability, and it is worth being precise about which:
-
-- **Element references are shared**: values a transformation leaves alone are reused, not copied; the containers along the path are rebuilt
-- **A prism that does not match costs nothing further**: a non-matching branch puts nothing in focus, so the rest of the chain is never entered for that element
-- **No hidden laziness**: every element the path reaches is visited when you call `getAll` or `modify`, so cost is proportional to the number of foci
-- **The composition is not free**: a deep chain is a chain of objects, and a hot loop over a flat structure will still favour a stream
-
-**Best Practice**: Profile your specific use case and compare with stream-based alternatives:
-
-```java
-public class AuditPerformance {
-
-    // For frequent auditing, create the optic once and reuse it
-    private static final Traversal<AppConfig, byte[]> AUDIT_TRAVERSAL = createAuditTraversal();
-
-    @Benchmark
-    public List<byte[]> opticBasedAudit(List<AppConfig> configs) {
-        return configs.stream()
-            .flatMap(config -> Traversals.getAll(AUDIT_TRAVERSAL, config).stream())
-            .collect(toList());
-    }
-  
-    @Benchmark  
-    public List<byte[]> streamBasedAudit(List<AppConfig> configs) {
-        return configs.stream()
-            .filter(this::isGcpLive)
-            .flatMap(config -> config.settings().stream())
-            .map(Setting::value)
-            .filter(EncryptedValue.class::isInstance)
-            .map(EncryptedValue.class::cast)
-            .map(encrypted -> Base64.getDecoder().decode(encrypted.base64Value()))
-            .collect(toList());
-    }
-
-}
-```
-
 ## Composing the Solution
 
 Here's how we chain these optics together. Each `andThen` returns the most precise optic its two steps allow, and the chain starts from a traversal over the settings, so the result is a `Traversal`, with no conversions along the way. The last step decodes the Base64 through a prism, so a malformed value drops out of the audit rather than throwing.
@@ -22584,7 +22040,7 @@ When we call `Traversals.getAll(finalAuditor, config)`, it performs the entire, 
 * **Declarative & Readable**: The optic chain describes *what* data to get, not *how* to loop and check for it. The logic reads like a path, making it self-documenting.
 * **Composable & Reusable**: Every optic, and every composition, is a reusable component. We could reuse `gcpLiveOnlyPrism` for other tasks, or swap out the final decoding prism to perform a different transformation.
 * **Type-Safe**: The entire operation is checked by the Java compiler. It's impossible to, for example, try to decode a `StringValue` as if it were encrypted. A mismatch in the optic chain results in a compile-time error, not a runtime `ClassCastException`.
-* **Architectural Purity**: By having all optics share a common abstract parent (`Optic`), the library provides universal, lawful composition while allowing for specialised, efficient implementations.
+* **Architectural Purity**: By having all optics share a common abstract parent (`Optic`), the library provides universal, lawful composition while each optic type keeps its own implementation.
 * **Testable**: Each component can be tested independently, and the composition can be tested as a whole.
 
 ---
@@ -22759,6 +22215,7 @@ public static AuditReport generateAuditReport(List<AppConfig> configs, String au
 - [Deep Validation with `modifyF`](composing_optics.md): the same four-optic composition, used for validation instead of reporting
 - [Filtered Optics](filtered_optics.md): the predicate narrowing this example depends on
 - [Folds](folds.md): the read-only optic to reach for when nothing will be written
+- [Production Readiness](production_readiness.md#runtime-cost): what each optic allocates, and when to cache a composed optic
 ~~~
 
 ---
@@ -23650,7 +23107,7 @@ System.out.println(result);  // Person[name=Alice, age=26]
 
 **Production execution**: When you just want to run the operations
 **Simple workflows**: When audit trails or validation aren't needed
-**Performance-critical paths**: Minimal overhead
+**Paths you run often**: When the log and the checks are not worth their cost
 
 ### Characteristics
 
@@ -24417,13 +23874,23 @@ This page does not offer a marketing case for using optics in production; it off
 
 ## Runtime cost
 
+In short, with the method that decides each named in its own subsection:
+
+| You call | It costs |
+|---|---|
+| A lens `set` or `modify` | What a hand-written `with*` cascade allocates |
+| A traversal `modify`, or a read through `Traversals.getAll` | A rebuilt container, on every call |
+| A read through `asFold()` | No rebuild |
+| An `At` edit | A copy of the whole map or list |
+| A prism or affine `modify` that misses | Nothing: no allocation and no rebuild |
+
 ### What `set` and `modify` allocate
 
-Every `set` or `modify` call on a `Lens` over a record allocates one new record per layer of nesting touched. A composed lens through three layers allocates three new records, plus any intermediate captures. There is no in-place mutation; that is the cost of immutability and not specific to optics.
+Every `set` or `modify` call on a `Lens` over a record allocates one new record per layer of nesting touched. A composed lens through three layers allocates three new records, plus any intermediate captures. There is no in-place mutation; that is the cost of immutability and not specific to optics. Everything off the path keeps its reference: a generated lens passes the record's other components to its constructor as they are.
 
 Compared to a hand-written `with*` cascade for the same nested update, generated optics typically incur the same allocation count. The difference is the two or three anonymous `Lens` and `FocusPath` objects the composition allocates.
 
-For a single update on a small record, the cost is unlikely to matter. For tight inner loops, see the caching note below.
+For a single update on a small record, the cost is unlikely to matter. For tight inner loops, see [Caching optics](#caching-optics).
 
 These are engineering estimates from the shape of the generated code, not benchmark output: the [JMH suite](../benchmarks.md) covers `Fold.plus` but not lens or traversal allocation.
 
@@ -24434,6 +23901,50 @@ These are engineering estimates from the shape of the generated code, not benchm
 ### Traversal allocation
 
 `Traversals.modify(traversal, f, source)` over a `List<A>` allocates one new list, plus a small constant number of short-lived objects *per element*: the traversal threads each result through the `Id` applicative and an immutable cons-list before flattening. Budget O(n) allocations, not O(1). (Reads and writes on a bare `Traversal` go through the `Traversals` utility; the interface itself declares no plain read or write.) If the function returns the same value for every element (a no-op modify), the list is still rebuilt; optics do not compare references to skip rebuilding.
+
+### What each collection optic builds {#collection-optics}
+
+Each collection optic rebuilds its container in its own way, and several return the source itself when there is nothing to change. The third column says which, and the last names the method that decides it.
+
+| Optic | What it builds | When nothing changes | Implemented in |
+|---|---|---|---|
+| `Traversals.forMapValues()` | Copies the keys and values into two lists, traverses the values, then builds one new `LinkedHashMap` in the source's order. | An empty map still gets a new, empty map. | `Traversals.traverseMapValues` |
+| `Traversals.forMap(key)` | Copies the whole map to replace one value. | An absent key returns the source itself. | `Traversals.forMap` |
+| `filtered(p)`, `filterBy(query, p)` | Tests each element once, in the same pass as the update; `filterBy`'s test is a `Fold.exists`, which visits every queried focus. | A rejected element passes through with `of`, keeping its reference. | `Traversal.filtered`, `Traversal.filterBy` |
+| `ListTraversals.taking(n)`, `slicing(from, to)` and the other limits | Run the function on the slice only, then copy the elements outside it by reference into one new list; `takingWhile` and `droppingWhile` first scan for the split point. | An empty slice returns the source itself. | `ListTraversals.slicing` |
+| `StringTraversals.chars()`, `worded()`, `lined()` | Split the string into a list, one boxed `Character` per character or a regular-expression split into words or lines, then join one new string. | A new string is joined anyway. | `StringTraversals.chars`, `StringTraversals.worded` |
+| `Traversals.partsOf(t)` | `get` collects the foci into one list through `getAll`, and `set` walks the traversal again, so a `modify` walks it twice. `sorted` and `reversed` copy that list once more, and `distinct` twice. | The traversal is still walked twice. | `Traversals.partsOf` |
+| `IndexedTraversals.forList()`, `forMap()` | Pass the index and the value to your function as two arguments, so no `Pair` is built per focus. | An empty list or map returns the source itself. | `IndexedTraversals.forList`, `IndexedTraversals.forMap` |
+| `IndexedTraversals.toIndexedList`, `IndexedTraversals.length`, `asIndexedFold()`, `iandThen` | Build one `Pair` per focus: the first three to collect or count the foci, and `iandThen` because its index is a pair. `asIndexedFold()` also runs the traversal in an identity applicative, so unlike `asFold()` it rebuilds the structure before it folds. | Not applicable: these read. | `IndexedTraversals.toIndexedList`, `IndexedTraversal.asIndexedFold`, `IndexedTraversal.iandThen` |
+| `Setter.forList()`, `Setter.forMapValues()` | `modify` maps straight into a new list or `LinkedHashMap`, with no applicative. `modifyF` collects the effects, sequences them from the right onto an immutable cons list, and builds the result once. | The collection is rebuilt anyway. | `Setter.forList`, `ConsList.sequence` |
+| `At`: `AtInstances.mapAt()`, `listAt()` | Every `set`, `insertOrUpdate`, `remove` and `modify` copies the whole map or list. | Copies anyway, even when the index is absent. | `AtInstances.mapAt`, `AtInstances.listAt` |
+| `Ixed`: `IxedInstances.mapIx()`, `listIx()` | Copies only when the index is present, even for a read through `IxedInstances.get`. | An absent index returns the source itself. | `IxedInstances.fromAt` |
+
+A run of `At` edits therefore copies the map once per edit. To make many edits at once, copy the map into a `LinkedHashMap` once, change that copy, and carry on with the result.
+
+### Prisms and affines on a miss {#prisms-and-affines}
+
+A generated prism tests its case with `instanceof` for a sealed subtype, `==` for an enum constant, or your predicate for `@MatchWhen`. It answers a miss with the JDK's shared `Optional.empty()`, so a miss allocates no `Optional`. On a miss, `Prism.modify` and `Affine.modify` return the source itself, so nothing is rebuilt. `Affine.andThen` chains the two reads with `Optional.flatMap`, or `map` for a lens step, so a composed affine's `getOptional` stops at the first absent step. Inside a traversal, `Traversal.andThen(Prism)` passes a non-matching element through with `of`, so the rest of the chain never runs for it.
+
+### What reads cost {#read-cost}
+
+A read through a traversal or a fold visits every focus, and some reads also rebuild what they visit.
+
+| Read | What it visits and builds | Implemented in |
+|---|---|---|
+| `Traversals.getAll(t, s)`, and a `TraversalPath`'s `getAll(s)` | Run `modifyF` in the `Id` applicative, so they rebuild the structure as a `modify` would, then discard the copy. | `Traversals.getAll`, `TraversalFocusPath.getAll` |
+| A `TraversalPath`'s `preview`, `count`, `exists`, `all` and `find` | Call `getAll` first, so each collects every focus, rebuild included, before its test runs. | `TraversalPath.exists` |
+| `t.asFold().getAll(s)` | Runs the same `modifyF` in a constant applicative, which skips every rebuild, though a traversal's own set-up, such as a map's key and value lists or a split string, still runs. | `Traversal.asFold` |
+| A `Fold`'s `preview`, `find`, `exists` and `all` | Fold a monoid over every focus, so none of them stops at the first match. | `Fold.preview`, `Fold.exists` |
+| `IxedInstances.get`, `IxedInstances.contains` | Read through `Traversals.getAll`, so a present index copies the whole map or list, as an edit would. `At.get` reads without copying. | `IxedInstances.get` |
+| A fold from `@GenerateFolds` | Loops over an iterable component directly, or applies the function to a single one, with no intermediate list. | `FoldProcessor` |
+| `getMaybe`, `previewMaybe`, `findMaybe`, `getAllMaybe` | Make the plain read, then convert it: a new `Just` for a value, the shared `Nothing` for none. | `GetterExtensions.getMaybe`, `FoldExtensions` |
+
+### Adapters and Focus paths {#adapters-and-paths}
+
+`contramap`, `map` and `dimap` each return one optic that runs your conversion functions around the wrapped optic's `modifyF`, as `Optic.dimap` shows, and add nothing else. An adapter therefore costs what your functions cost, on every call.
+
+A Focus path holds the optic it was built from, and its reads and writes delegate to that optic. Each `via` composes the two optics with `andThen` into a new path. A `via` with another path also joins the two label lists, and a `via` with a bare optic keeps this path's list, as `FocusPath.via` shows. That is a building cost, which [Caching optics](#caching-optics) removes.
 
 ---
 
@@ -26265,7 +25776,7 @@ Traversal<List<Order>, Order> activeOrders =
 
 ---
 
-## Summary
+## Which composition fits which data {#summary}
 
 | Composition | Result | Use Case |
 |-------------|--------|----------|
@@ -26393,29 +25904,6 @@ Validated<List<String>, Company> checked =
 
 ---
 
-## Performance Considerations
-
-A Focus path is a thin wrapper over the underlying optic:
-
-- **Path creation**: a few small objects, one per segment
-- **Traversal**: identical to the optic it wraps
-- **Memory**: one extra object per path segment
-
-The rule that matters is *build the path once*. Rebuilding it inside a loop re-runs the composition on every iteration:
-
-<!-- verify -->
-```java
-// Compose once, outside the loop
-Traversal<Company, String> deptNames =
-    CompanyFocus.departments().via(DepartmentFocus.name()).toTraversal();
-
-for (Company c : companies) {
-  List<String> names = Traversals.getAll(deptNames, c);
-}
-```
-
----
-
 ## Customising Generated Code
 
 ```java
@@ -26474,7 +25962,7 @@ Swap `direct()` for `logging()` or `validating()` to run the same program anothe
 
 ## Common Pitfalls
 
-**Do not rebuild paths in a loop.** Hoist the path (or the extracted optic) above the loop, as in the performance section above.
+**Do not rebuild paths in a loop.** Hoist the path (or the extracted optic) above the loop, as [Caching optics](production_readiness.md#caching-optics) explains.
 
 **Do not reach for `get` on a path that may miss.** Use the operation the path type guarantees:
 
@@ -26574,6 +26062,7 @@ Focus paths are designed for compile-time type safety. When the path is only kno
 - [Lenses](lenses.md): the optic underneath a `FocusPath`
 - [Updates That Can Fail](fluent_api.md): validation-aware modification through `OpticOps`
 - [Free Monad DSL](free_monad_dsl.md): optic programs and interpreters
+- [Production Readiness](production_readiness.md#adapters-and-paths): what a Focus path adds to its optic, and when to cache one
 ~~~
 
 ~~~admonish tip title="Further Reading"

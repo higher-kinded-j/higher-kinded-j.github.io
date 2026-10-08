@@ -529,136 +529,91 @@ Two weaker laws do hold on an absent focus for every affine: `modify` changes no
 
 ## Real-World Example: Configuration Management
 
-<!-- verify -->
-```java
+``` java
+import java.util.Optional;
 import org.higherkindedj.optics.Affine;
 import org.higherkindedj.optics.Lens;
-import org.higherkindedj.optics.util.Affines;
 import org.higherkindedj.optics.util.Prisms;
 
-import java.util.Optional;
-
 // Domain model with nested optionals
-record AppConfig(
-    String appName,
-    Optional<DatabaseConfig> database,
-    Optional<CacheConfig> cache
-) {}
+record AppConfig(String appName, Optional<DatabaseConfig> database, Optional<CacheConfig> cache) {}
 
-record DatabaseConfig(
-    String host,
-    int port,
-    Optional<PoolConfig> pool
-) {}
+record DatabaseConfig(String host, int port, Optional<PoolConfig> pool) {}
 
 record PoolConfig(int minSize, int maxSize) {}
 
 record CacheConfig(String provider, int ttlSeconds) {}
 
+
 public class ConfigOptics {
-    // Lenses for required fields
-    public static final Lens<AppConfig, String> appName =
-        Lens.of(AppConfig::appName, (c, n) -> new AppConfig(n, c.database(), c.cache()));
+  // Lenses for required fields
+  public static final Lens<AppConfig, String> appName =
+      Lens.of(AppConfig::appName, (c, n) -> new AppConfig(n, c.database(), c.cache()));
 
-    public static final Lens<AppConfig, Optional<DatabaseConfig>> database =
-        Lens.of(AppConfig::database, (c, db) -> new AppConfig(c.appName(), db, c.cache()));
+  public static final Lens<AppConfig, Optional<DatabaseConfig>> database =
+      Lens.of(AppConfig::database, (c, db) -> new AppConfig(c.appName(), db, c.cache()));
 
-    public static final Lens<DatabaseConfig, String> host =
-        Lens.of(DatabaseConfig::host, (db, h) -> new DatabaseConfig(h, db.port(), db.pool()));
+  public static final Lens<DatabaseConfig, String> host =
+      Lens.of(DatabaseConfig::host, (db, h) -> new DatabaseConfig(h, db.port(), db.pool()));
 
-    public static final Lens<DatabaseConfig, Optional<PoolConfig>> pool =
-        Lens.of(DatabaseConfig::pool, (db, p) -> new DatabaseConfig(db.host(), db.port(), p));
+  public static final Lens<DatabaseConfig, Optional<PoolConfig>> pool =
+      Lens.of(DatabaseConfig::pool, (db, p) -> new DatabaseConfig(db.host(), db.port(), p));
 
-    public static final Lens<PoolConfig, Integer> maxSize =
-        Lens.of(PoolConfig::maxSize, (p, m) -> new PoolConfig(p.minSize(), m));
+  public static final Lens<PoolConfig, Integer> maxSize =
+      Lens.of(PoolConfig::maxSize, (p, m) -> new PoolConfig(p.minSize(), m));
 
-    // Affines for optional access
-    public static final Affine<AppConfig, DatabaseConfig> databaseAffine =
-        database.andThen(Prisms.some());
+  // Affines for optional access
+  public static final Affine<AppConfig, DatabaseConfig> databaseAffine =
+      database.andThen(Prisms.some());
 
-    public static final Affine<AppConfig, String> databaseHost =
-        databaseAffine.andThen(host);
+  public static final Affine<AppConfig, String> databaseHost = databaseAffine.andThen(host);
 
-    public static final Affine<AppConfig, PoolConfig> poolConfig =
-        databaseAffine
-            .andThen(pool)
-            .andThen(Prisms.some());
+  public static final Affine<AppConfig, PoolConfig> poolConfig =
+      databaseAffine.andThen(pool).andThen(Prisms.some());
 
-    public static final Affine<AppConfig, Integer> poolMaxSize =
-        poolConfig.andThen(maxSize);
+  public static final Affine<AppConfig, Integer> poolMaxSize = poolConfig.andThen(maxSize);
 
-    public static void main(String[] args) {
-        // Create a config with nested optionals
-        AppConfig config = new AppConfig(
+  public static void main(String[] args) {
+    // Create a config with nested optionals
+    AppConfig config =
+        new AppConfig(
             "MyApp",
-            Optional.of(new DatabaseConfig(
-                "localhost",
-                5432,
-                Optional.of(new PoolConfig(5, 20))
-            )),
-            Optional.empty()
-        );
+            Optional.of(new DatabaseConfig("localhost", 5432, Optional.of(new PoolConfig(5, 20)))),
+            Optional.empty());
 
-        // Read nested values safely
-        System.out.println("Host: " + databaseHost.getOptional(config));
-        // Host: Optional[localhost]
+    // Read nested values safely
+    Optional<String> configHost = databaseHost.getOptional(config);
+    // Optional[localhost]
+    System.out.println("Host: " + configHost);
 
-        System.out.println("Pool max: " + poolMaxSize.getOptional(config));
-        // Pool max: Optional[20]
+    Optional<Integer> poolMax = poolMaxSize.getOptional(config);
+    // Optional[20]
+    System.out.println("Pool max: " + poolMax);
 
-        // Update deeply nested value
-        AppConfig updated = poolMaxSize.set(50, config);
-        System.out.println("Updated pool max: " + poolMaxSize.getOptional(updated));
-        // Updated pool max: Optional[50]
+    // Update deeply nested value
+    AppConfig updated = poolMaxSize.set(50, config);
+    Optional<Integer> updatedMax = poolMaxSize.getOptional(updated);
+    // Optional[50]
+    System.out.println("Updated pool max: " + updatedMax);
 
-        // Conditional modification
-        AppConfig doubled = poolMaxSize.modify(n -> n * 2, config);
-        System.out.println("Doubled pool max: " + poolMaxSize.getOptional(doubled));
-        // Doubled pool max: Optional[40]
+    // Conditional modification
+    AppConfig doubled = poolMaxSize.modify(n -> n * 2, config);
+    Optional<Integer> doubledMax = poolMaxSize.getOptional(doubled);
+    // Optional[40]
+    System.out.println("Doubled pool max: " + doubledMax);
 
-        // Safe operation on missing config
-        AppConfig emptyConfig = new AppConfig("EmptyApp", Optional.empty(), Optional.empty());
-        System.out.println("Missing host: " + databaseHost.getOptional(emptyConfig));
-        // Missing host: Optional.empty
+    // Safe operation on missing config: no database reads as empty, and nothing throws
+    AppConfig emptyConfig = new AppConfig("EmptyApp", Optional.empty(), Optional.empty());
+    boolean hostMissing = databaseHost.getOptional(emptyConfig).isEmpty();
+    // true
+    System.out.println("Missing host: " + hostMissing);
 
-        // Modification on missing does nothing
-        AppConfig unchanged = poolMaxSize.modify(n -> n * 2, emptyConfig);
-        System.out.println("Empty config unchanged: " + (unchanged == emptyConfig));
-        // Empty config unchanged: true
-    }
-}
-```
-
----
-
-## Performance Notes
-
-Affines are designed for both safety and efficiency:
-
-* **Zero allocation for absent values**: `getOptional` returns `Optional.empty()` without allocating
-* **Short-circuit reads**: `getOptional` on a composed affine stops at the first absent value
-* **Immutable by design**: All operations return new values, enabling safe concurrent use
-
-**Best Practice**: Create composed affines once and reuse them:
-
-<!-- verify -->
-```java
-public class UserOptics {
-    private static final Lens<User, Optional<Address>> addressLens =
-        Lens.of(User::address, (u, a) -> new User(u.name(), a));
-    private static final Prism<Optional<Address>, Address> addressPrism = Prisms.some();
-    private static final Lens<Address, String> streetLens =
-        Lens.of(Address::street, (a, s) -> new Address(s, a.postcode()));
-    private static final Lens<Address, Optional<String>> postcodeLens =
-        Lens.of(Address::postcode, (a, p) -> new Address(a.street(), p));
-    private static final Prism<Optional<String>, String> postcodePrism = Prisms.some();
-
-    // Create once, use everywhere
-    public static final Affine<User, String> STREET =
-        addressLens.andThen(addressPrism).andThen(streetLens);
-
-    public static final Affine<User, String> POSTCODE =
-        addressLens.andThen(addressPrism).andThen(postcodeLens).andThen(postcodePrism);
+    // Modification on missing does nothing
+    AppConfig unchanged = poolMaxSize.modify(n -> n * 2, emptyConfig);
+    boolean sameConfig = unchanged == emptyConfig;
+    // true
+    System.out.println("Empty config unchanged: " + sameConfig);
+  }
 }
 ```
 
@@ -675,6 +630,7 @@ public class UserOptics {
 - [Prisms](prisms.md): the constructing sibling for sum types
 - [Composition Rules](composition_rules.md): why `Lens.andThen(Prism) = Affine`, and everything else
 - [Coupled Fields](coupled_fields.md): when sibling fields must change together
+- [Production Readiness](production_readiness.md#prisms-and-affines): what an affine costs when its focus is absent, and when to cache a composed optic
 ~~~
 
 ---

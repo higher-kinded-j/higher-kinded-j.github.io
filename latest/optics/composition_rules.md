@@ -350,7 +350,7 @@ Traversal<List<Order>, Order> activeOrders =
 
 ---
 
-## Summary
+## Which composition fits which data {#summary}
 
 | Composition | Result | Use Case |
 |-------------|--------|----------|

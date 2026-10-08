@@ -356,7 +356,7 @@ List<String> topActiveUserNames = users.stream()
 
 * **Control flow** - Early returns, exceptions, complex branching
 * **Side effects** - Logging, metrics, external calls based on conditions
-* **Performance critical** - Minimal abstraction overhead needed
+* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -422,187 +422,160 @@ boolean isActive = user.active();
 
 ---
 
-## Performance Notes
-
-Filtered optics are optimised for efficiency:
-
-* **No pre-filtering pass**: the predicate is applied during the traversal, not in a separate pass beforehand
-* **Element reuse**: elements the predicate rejects are carried over by reference; the list container itself is rebuilt by `ListTraverse.traverse`
-* **Single pass**: both filtering and transformation occur in one traversal (every element is visited; the predicate decides whether the function applies)
-
-**Best Practice**: Store frequently-used filtered traversals as constants:
-
-<!-- verify -->
-```java
-public class PlatformOptics {
-    public static final Traversal<Platform, User> ACTIVE_USERS =
-        PlatformTraversals.users().filtered(User::active);
-
-    public static final Traversal<Platform, User> PREMIUM_ACTIVE_USERS =
-        ACTIVE_USERS.filtered(user -> user.tier() == SubscriptionTier.PREMIUM);
-
-    public static final Traversal<Platform, Customer> CUSTOMERS_WITH_OVERDUE =
-        PlatformTraversals.customers()
-            .filterBy(CustomerFolds.invoices(), Invoice::overdue);
-
-    public static final Fold<Platform, Invoice> ALL_OVERDUE_INVOICES =
-        PlatformFolds.customers()
-            .andThen(CustomerFolds.invoices())
-            .filtered(Invoice::overdue);
-}
-```
-
----
-
 ## Real-World Example: Customer Analytics Dashboard
 
 Here's a comprehensive example demonstrating filtered optics in a business context:
 
-<!-- verify -->
-```java
-package org.higherkindedj.example.optics;
-
-import org.higherkindedj.optics.*;
-import org.higherkindedj.optics.util.Traversals;
+``` java
+import java.util.List;
 import org.higherkindedj.hkt.Monoids;
-import java.util.*;
+import org.higherkindedj.optics.Fold;
+import org.higherkindedj.optics.Getter;
+import org.higherkindedj.optics.Lens;
+import org.higherkindedj.optics.Traversal;
+import org.higherkindedj.optics.util.Traversals;
+
 
 public class CustomerAnalytics {
 
-    public record Item(String name, int price, String category, boolean premium) {}
-    public record Order(String id, List<Item> items, double total) {}
-    public record Customer(String name, List<Order> orders, boolean vip) {}
+  public record Item(String name, int price, String category, boolean premium) {}
 
-    // Reusable optics
-    private static final Fold<Customer, Order> CUSTOMER_ORDERS = Fold.of(Customer::orders);
-    private static final Fold<Order, Item> ORDER_ITEMS = Fold.of(Order::items);
-    private static final Fold<Customer, Item> ALL_CUSTOMER_ITEMS =
-        CUSTOMER_ORDERS.andThen(ORDER_ITEMS);
+  public record Order(String id, List<Item> items, double total) {}
 
-    public static void main(String[] args) {
-        List<Customer> customers = createSampleData();
+  public record Customer(String name, List<Order> orders, boolean vip) {}
 
-        System.out.println("=== CUSTOMER ANALYTICS WITH FILTERED OPTICS ===\n");
+  // Reusable optics
+  private static final Fold<Customer, Order> CUSTOMER_ORDERS = Fold.of(Customer::orders);
+  private static final Fold<Order, Item> ORDER_ITEMS = Fold.of(Order::items);
+  private static final Fold<Customer, Item> ALL_CUSTOMER_ITEMS =
+      CUSTOMER_ORDERS.andThen(ORDER_ITEMS);
 
-        // --- Analysis 1: High-Value Customer Identification ---
-        System.out.println("--- Analysis 1: High-Value Customers ---");
+  public static void main(String[] args) {
+    List<Customer> customers = createSampleData();
 
-        Traversal<List<Customer>, Customer> allCustomers = Traversals.forList();
-        Fold<Customer, Double> orderTotals = CUSTOMER_ORDERS.andThen(
-            Getter.of(Order::total).asFold()
-        );
+    System.out.println("=== CUSTOMER ANALYTICS WITH FILTERED OPTICS ===\n");
 
-        // Customers with any order over £500
-        Traversal<List<Customer>, Customer> bigSpenders =
-            allCustomers.filterBy(orderTotals, total -> total > 500);
+    // --- Analysis 1: High-Value Customer Identification ---
+    System.out.println("--- Analysis 1: High-Value Customers ---");
 
-        List<Customer> highValue = Traversals.getAll(bigSpenders, customers);
-        System.out.println("Customers with orders over £500: " +
-            highValue.stream().map(Customer::name).toList());
+    Traversal<List<Customer>, Customer> allCustomers = Traversals.forList();
+    Fold<Customer, Double> orderTotals = CUSTOMER_ORDERS.andThen(Getter.of(Order::total).asFold());
 
-        // --- Analysis 2: Premium Product Buyers ---
-        System.out.println("\n--- Analysis 2: Premium Product Buyers ---");
+    // Customers with any order over £500
+    Traversal<List<Customer>, Customer> bigSpenders =
+        allCustomers.filterBy(orderTotals, total -> total > 500);
 
-        Fold<Customer, Item> premiumItems = ALL_CUSTOMER_ITEMS.filtered(Item::premium);
+    List<Customer> highValue = Traversals.getAll(bigSpenders, customers);
+    System.out.println(
+        "Customers with orders over £500: " + highValue.stream().map(Customer::name).toList());
 
-        for (Customer customer : customers) {
-            int premiumCount = premiumItems.length(customer);
-            if (premiumCount > 0) {
-                double premiumSpend = premiumItems.foldMap(Monoids.doubleAddition(),
-                    item -> (double) item.price(), customer);
-                System.out.printf("%s: %d premium items, £%.2f total%n",
-                    customer.name(), premiumCount, premiumSpend);
-            }
-        }
+    // --- Analysis 2: Premium Product Buyers ---
+    System.out.println("\n--- Analysis 2: Premium Product Buyers ---");
 
-        // --- Analysis 3: Category-Specific Queries ---
-        System.out.println("\n--- Analysis 3: Electronics Spending ---");
+    Fold<Customer, Item> premiumItems = ALL_CUSTOMER_ITEMS.filtered(Item::premium);
 
-        Fold<Customer, Item> electronicsItems =
-            ALL_CUSTOMER_ITEMS.filtered(item -> "Electronics".equals(item.category()));
-
-        for (Customer customer : customers) {
-            double electronicsSpend = electronicsItems.foldMap(Monoids.doubleAddition(),
-                item -> (double) item.price(), customer);
-            if (electronicsSpend > 0) {
-                System.out.printf("%s spent £%.2f on Electronics%n",
-                    customer.name(), electronicsSpend);
-            }
-        }
-
-        // --- Analysis 4: Mark VIP Customers ---
-        System.out.println("\n--- Analysis 4: Auto-Mark VIP Customers ---");
-
-        // Customers who bought premium items AND have any order over £300
-        Traversal<List<Customer>, Customer> potentialVIPs =
-            allCustomers
-                .filterBy(ALL_CUSTOMER_ITEMS, Item::premium)  // Has premium items
-                .filterBy(orderTotals, total -> total > 300); // Has high-value orders
-
-        Lens<Customer, Boolean> vipLens =
-            Lens.of(Customer::vip, (c, v) -> new Customer(c.name(), c.orders(), v));
-
-        List<Customer> updatedCustomers = Traversals.modify(
-            potentialVIPs.andThen(vipLens),
-            _ -> true,
-            customers
-        );
-
-        for (Customer c : updatedCustomers) {
-            if (c.vip()) {
-                System.out.println(c.name() + " is now VIP");
-            }
-        }
-
-        // --- Analysis 5: Aggregated Statistics ---
-        System.out.println("\n--- Analysis 5: Platform Statistics ---");
-
-        Fold<List<Customer>, Customer> customerFold = Fold.of(list -> list);
-        Fold<List<Customer>, Item> allItems = customerFold.andThen(ALL_CUSTOMER_ITEMS);
-
-        Fold<List<Customer>, Item> expensiveItems = allItems.filtered(i -> i.price() > 100);
-        Fold<List<Customer>, Item> cheapItems = allItems.filtered(i -> i.price() <= 100);
-
-        int totalExpensive = expensiveItems.length(customers);
-        int totalCheap = cheapItems.length(customers);
-        double expensiveRevenue = expensiveItems.foldMap(Monoids.doubleAddition(),
-            i -> (double) i.price(), customers);
-
-        System.out.printf("Expensive items (>£100): %d items, £%.2f revenue%n",
-            totalExpensive, expensiveRevenue);
-        System.out.printf("Budget items (≤£100): %d items%n", totalCheap);
-
-        System.out.println("\n=== END OF ANALYTICS ===");
+    for (Customer customer : customers) {
+      int premiumCount = premiumItems.length(customer);
+      if (premiumCount > 0) {
+        double premiumSpend =
+            premiumItems.foldMap(Monoids.doubleAddition(), item -> (double) item.price(), customer);
+        System.out.printf(
+            "%s: %d premium items, £%.2f total%n", customer.name(), premiumCount, premiumSpend);
+      }
     }
 
-    private static List<Customer> createSampleData() {
-        return List.of(
-            new Customer("Alice", List.of(
-                new Order("A1", List.of(
-                    new Item("Laptop", 999, "Electronics", true),
-                    new Item("Mouse", 25, "Electronics", false)
-                ), 1024.0),
-                new Order("A2", List.of(
-                    new Item("Desk", 350, "Furniture", false)
-                ), 350.0)
-            ), false),
-            new Customer("Bob", List.of(
-                new Order("B1", List.of(
-                    new Item("Book", 20, "Books", false),
-                    new Item("Pen", 5, "Stationery", false)
-                ), 25.0)
-            ), false),
-            new Customer("Charlie", List.of(
-                new Order("C1", List.of(
-                    new Item("Phone", 800, "Electronics", true),
-                    new Item("Case", 50, "Accessories", false)
-                ), 850.0),
-                new Order("C2", List.of(
-                    new Item("Headphones", 250, "Electronics", true)
-                ), 250.0)
-            ), false)
-        );
+    // --- Analysis 3: Category-Specific Queries ---
+    System.out.println("\n--- Analysis 3: Electronics Spending ---");
+
+    Fold<Customer, Item> electronicsItems =
+        ALL_CUSTOMER_ITEMS.filtered(item -> "Electronics".equals(item.category()));
+
+    for (Customer customer : customers) {
+      double electronicsSpend =
+          electronicsItems.foldMap(
+              Monoids.doubleAddition(), item -> (double) item.price(), customer);
+      if (electronicsSpend > 0) {
+        System.out.printf("%s spent £%.2f on Electronics%n", customer.name(), electronicsSpend);
+      }
     }
+
+    // --- Analysis 4: Mark VIP Customers ---
+    System.out.println("\n--- Analysis 4: Auto-Mark VIP Customers ---");
+
+    // Customers who bought premium items AND have any order over £300
+    Traversal<List<Customer>, Customer> potentialVIPs =
+        allCustomers
+            .filterBy(ALL_CUSTOMER_ITEMS, Item::premium) // Has premium items
+            .filterBy(orderTotals, total -> total > 300); // Has high-value orders
+
+    Lens<Customer, Boolean> vipLens =
+        Lens.of(Customer::vip, (c, v) -> new Customer(c.name(), c.orders(), v));
+
+    List<Customer> updatedCustomers =
+        Traversals.modify(potentialVIPs.andThen(vipLens), _ -> true, customers);
+
+    for (Customer c : updatedCustomers) {
+      if (c.vip()) {
+        System.out.println(c.name() + " is now VIP");
+      }
+    }
+
+    // --- Analysis 5: Aggregated Statistics ---
+    System.out.println("\n--- Analysis 5: Platform Statistics ---");
+
+    Fold<List<Customer>, Customer> customerFold = Fold.of(list -> list);
+    Fold<List<Customer>, Item> allItems = customerFold.andThen(ALL_CUSTOMER_ITEMS);
+
+    Fold<List<Customer>, Item> expensiveItems = allItems.filtered(i -> i.price() > 100);
+    Fold<List<Customer>, Item> cheapItems = allItems.filtered(i -> i.price() <= 100);
+
+    int totalExpensive = expensiveItems.length(customers);
+    int totalCheap = cheapItems.length(customers);
+    double expensiveRevenue =
+        expensiveItems.foldMap(Monoids.doubleAddition(), i -> (double) i.price(), customers);
+
+    System.out.printf(
+        "Expensive items (>£100): %d items, £%.2f revenue%n", totalExpensive, expensiveRevenue);
+    System.out.printf("Budget items (≤£100): %d items%n", totalCheap);
+
+    System.out.println("\n=== END OF ANALYTICS ===");
+  }
+
+  private static List<Customer> createSampleData() {
+    return List.of(
+        new Customer(
+            "Alice",
+            List.of(
+                new Order(
+                    "A1",
+                    List.of(
+                        new Item("Laptop", 999, "Electronics", true),
+                        new Item("Mouse", 25, "Electronics", false)),
+                    1024.0),
+                new Order("A2", List.of(new Item("Desk", 350, "Furniture", false)), 350.0)),
+            false),
+        new Customer(
+            "Bob",
+            List.of(
+                new Order(
+                    "B1",
+                    List.of(
+                        new Item("Book", 20, "Books", false),
+                        new Item("Pen", 5, "Stationery", false)),
+                    25.0)),
+            false),
+        new Customer(
+            "Charlie",
+            List.of(
+                new Order(
+                    "C1",
+                    List.of(
+                        new Item("Phone", 800, "Electronics", true),
+                        new Item("Case", 50, "Accessories", false)),
+                    850.0),
+                new Order("C2", List.of(new Item("Headphones", 250, "Electronics", true)), 250.0)),
+            false));
+  }
 }
 ```
 
@@ -653,9 +626,7 @@ This creates a traversal that focuses on the value only if it satisfies the pred
 
 ---
 
-## Summary: The Power of Filtered Optics
-
-Filtered optics bring **declarative filtering** into the heart of your optic compositions:
+## The filtering methods at a glance {#summary-the-power-of-filtered-optics}
 
 | Method | Focus |
 |--------|-------|
@@ -676,6 +647,7 @@ Filtered optics bring **declarative filtering** into the heart of your optic com
 - [Folds](folds.md): the query API and monoid aggregation used with filtered folds
 - [Limiting Traversals](limiting_traversals.md): slicing by position rather than by predicate
 - [Indexed Optics](indexed_optics.md): when the position should inform the update
+- [Production Readiness](production_readiness.md#collection-optics): what a filtered traversal builds, and when to cache a composed optic
 ~~~
 
 ~~~admonish tip title="Further Reading"

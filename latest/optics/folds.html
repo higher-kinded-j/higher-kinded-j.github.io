@@ -847,14 +847,6 @@ Maybe&lt;Product&gt; liftedToMaybe = Maybe.fromOptional(firstOptional);
 Maybe&lt;Product&gt; firstMaybe = previewMaybe(itemsFold, order);
 Optional&lt;Product&gt; loweredToOptional = firstMaybe.map(Optional::of).orElse(Optional.empty());
 </code></pre>
-<h4 id="performance-considerations"><a class="header" href="#performance-considerations">Performance Considerations</a></h4>
-<p>Maybe-based extensions have minimal overhead:</p>
-<ul>
-<li><strong><code>previewMaybe</code></strong>: Same performance as <code>preview()</code>, just wraps in <code>Maybe</code> instead of <code>Optional</code></li>
-<li><strong><code>findMaybe</code></strong>: Identical to <code>find()</code>, just wrapping the result in <code>Maybe</code> rather than <code>Optional</code></li>
-<li><strong><code>getAllMaybe</code></strong>: Adds one extra <code>Maybe</code> wrapping over <code>getAll()</code> - negligible cost</li>
-</ul>
-<p><strong>Optimisation Tip</strong>: For performance-critical code, prefer <code>getAll()</code> if you don't need the Maybe semantics. The extra wrapping and pattern matching adds a small but measurable cost in tight loops.</p>
 <h4 id="practical-example-safe-navigation-with-maybe"><a class="header" href="#practical-example-safe-navigation-with-maybe">Practical Example: Safe Navigation with Maybe</a></h4>
 <p>Combining <code>getAllMaybe</code> with composed folds creates powerful null-safe query pipelines:</p>
 <!-- verify -->
@@ -1004,15 +996,16 @@ Fold&lt;Employee, String&gt; emailFirst = emailLens.asFold().plus(nameLens.asFol
 emailFirst.getAll(employee);
 // Returns: ["alice@example.com", "Alice"]
 </code></pre>
-<div id="admonition-performance-note" class="admonition admonish-note" role="note" aria-labelledby="admonition-performance-note-title">
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJ0aXRsZT1cIkVhY2giLCAiZm9sZCIsICJtYWtlcyIsICJpdHMiLCAib3duIiwgInBhc3MiLCAibWFrZXMiLCAid2hpY2giLCAiRm9sZFBsdXNCZW5jaG1hcmsiLCAiaW4iLCAiaGtqLWJlbmNobWFya3MiLCAibWVhc3VyZXMiLCAiVG8iLCAiY29tYmluZSIsICJhIiwgImNvbGxlY3Rpb24iLCAiaW4iLCAib25lIiwgInBhc3MiLCAid3JpdGUiLCAiaW5zdGVhZCJd" data-since="v0.4.11"></div>
+<div id="admonition-each-fold-makes-its-own-pass" class="admonition admonish-note" role="note" aria-labelledby="admonition-each-fold-makes-its-own-pass-title">
 <div class="admonition-title">
-<div id="admonition-performance-note-title">
-<p>Performance Note</p>
+<div id="admonition-each-fold-makes-its-own-pass-title">
+<p>Each fold makes its own pass</p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-performance-note"></a>
+<a class="admonition-anchor-link" href="#admonition-each-fold-makes-its-own-pass"></a>
 </div>
 <div>
-<p>Each constituent fold in a <code>plus</code> combination performs its own pass over the source. For most use cases this is negligible, but if you are combining many folds over very large collections, consider whether a single custom <code>foldMap</code> implementation would be more appropriate.</p>
+<p>Each fold in a <code>plus</code> combination makes its own pass over the source, which <code>FoldPlusBenchmark</code> in <code>hkj-benchmarks</code> measures. To combine many folds over a very large collection in one pass, write a single <code>foldMap</code> instead.</p>
 </div>
 </div>
 <hr />
@@ -1071,11 +1064,12 @@ List&lt;String&gt; topExpensiveItems = order.items().stream()
     .map(Product::name)
     .toList();
 </code></pre>
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-since="v0.4.11"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-since="v0.4.11"></div>
 <h3 id="use-direct-field-access-when"><a class="header" href="#use-direct-field-access-when">Use Direct Field Access When</a></h3>
+<div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJBIiwgImhvdCIsICJsb29wIiwgInlvdSIsICJoYXZlIiwgIm1lYXN1cmVkIiwgIlByb2R1Y3Rpb24iLCAiUmVhZGluZXNzXShwcm9kdWN0aW9uX3JlYWRpbmVzcy5tZCNydW50aW1lLWNvc3QiLCAic2F5cyIsICJ3aGF0IiwgImVhY2giLCAiY2FsbCIsICJhbGxvY2F0ZXMiXQ==" data-since="v0.4.11"></div>
 <ul>
 <li><strong>Simple cases</strong> - Single, straightforward field read</li>
-<li><strong>Performance critical</strong> - Minimal abstraction overhead</li>
+<li><strong>A hot loop you have measured</strong> - <a href="production_readiness.html#runtime-cost">Production Readiness</a> says what each call allocates</li>
 <li><strong>One-off operations</strong> - Not building reusable logic</li>
 </ul>
 <!-- verify -->
@@ -1138,29 +1132,6 @@ Fold&lt;Order, Double&gt; pricesFold = OrderTraversals.items()
     .andThen(ProductLenses.price())
     .asFold();
 double orderTotal = pricesFold.foldMap(Monoids.doubleAddition(), p -&gt; p, order);
-</code></pre>
-<hr />
-<h2 id="performance-notes"><a class="header" href="#performance-notes">Performance Notes</a></h2>
-<p>Folds are optimised for query operations:</p>
-<ul>
-<li><strong>Memory efficient</strong>: Uses iterators internally, no intermediate collections for most operations</li>
-<li><strong>Reusable</strong>: Composed folds can be stored and reused across your application</li>
-<li><strong>Type-safe</strong>: All operations checked at compile time</li>
-<li><strong>Zero allocation</strong>: <code>foldMap</code> with monoids avoids creating intermediate collections</li>
-</ul>
-<p><strong>Best Practice</strong>: For frequently used query paths, create them once and store as constants:</p>
-<!-- verify -->
-<pre><code class="language-java">public class OrderQueries {
-    public static final Fold&lt;OrderHistory, Product&gt; ALL_PRODUCTS =
-        OrderHistoryFolds.orders()
-            .andThen(OrderFolds.items());
-
-    public static final Fold&lt;OrderHistory, Double&gt; ALL_PRICES =
-        ALL_PRODUCTS.andThen(ProductLenses.price().asFold());
-
-    public static final Fold&lt;Order, String&gt; ALL_CATEGORIES =
-        OrderFolds.items().andThen(ProductLenses.category().asFold());
-}
 </code></pre>
 <hr />
 <h2 id="real-world-example-order-analytics"><a class="header" href="#real-world-example-order-analytics">Real-World Example: Order Analytics</a></h2>
@@ -1566,6 +1537,7 @@ Electronics total: £1549.99
 </ul>
 </div>
 </div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJQcm9kdWN0aW9uIiwgIlJlYWRpbmVzc10ocHJvZHVjdGlvbl9yZWFkaW5lc3MubWQjcmVhZC1jb3N0IiwgIndoYXQiLCAiZWFjaCIsICJmb2xkIiwgInJlYWQiLCAidmlzaXRzIiwgImFuZCIsICJ3aGVuIiwgInRvIiwgImNhY2hlIiwgImEiLCAiY29tcG9zZWQiLCAib3B0aWMiXQ==" data-since="v0.4.11"></div>
 <div id="admonition-see-also" class="admonition admonish-tip" role="note" aria-labelledby="admonition-see-also-title">
 <div class="admonition-title">
 <div id="admonition-see-also-title">
@@ -1579,6 +1551,7 @@ Electronics total: £1549.99
 <li><a href="getters.html">Getters</a>: read-only focus on exactly one value</li>
 <li><a href="../functional/semigroup_and_monoid.html">Semigroup and Monoid</a>: the combining structures behind <code>foldMap</code></li>
 <li><a href="../functional/foldable_and_traverse.html">Foldable and Traverse</a>: the type class this optic mirrors</li>
+<li><a href="production_readiness.html#read-cost">Production Readiness</a>: what each fold read visits, and when to cache a composed optic</li>
 </ul>
 </div>
 </div>
