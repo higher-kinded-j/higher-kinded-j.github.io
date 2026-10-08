@@ -312,27 +312,50 @@
 <div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJFdmVyeSIsICJlbGVtZW50IiwgImV2ZXJ5IiwgImVycm9yIiwgImV2ZXJ5LWVsZW1lbnQtZXZlcnktZXJyb3IiXQ==" data-since="v0.4.11"></div>
 <h2 id="every-element-every-error"><a class="header" href="#every-element-every-error">Every element, every error</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<p>The records are an order of priced line items and a user:</p>
+<p>The records are the chapter's cast: an order of priced line items, placed by a customer.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">@GenerateFocus
-record LineItem(String sku, BigDecimal price) {}
-
-@GenerateFocus
-record Order(String id, List&lt;LineItem&gt; items) {}
-
-@GenerateFocus
-record User(String username, String email) {}
-
+<details id="admonition-the-cast-these-examples-use" class="admonition admonish-example" role="note" aria-labelledby="admonition-the-cast-these-examples-use-title">
+<summary class="admonition-title">
+<div id="admonition-the-cast-these-examples-use-title">
+<p>The cast these examples use</p>
+</div>
+<a class="admonition-anchor-link" href="#admonition-the-cast-these-examples-use"></a>
+</summary>
+<div>
+<pre><code class="language-java">@GenerateLenses
+@GenerateFocus(generateNavigators = true)
+@GenerateTraversals
+public record Order(
+    UUID id,
+    Customer customer,
+    List&lt;LineItem&gt; lines,
+    Instant placedAt,
+    Currency currency,
+    OrderStatus status) {}
 </code></pre>
+<pre><code class="language-java">@GenerateLenses
+@GenerateFocus
+public record LineItem(String sku, Integer quantity, BigDecimal price) {}
+</code></pre>
+<pre><code class="language-java">@GenerateLenses
+@GenerateFocus(generateNavigators = true)
+public record Customer(String name, EmailAddress email) {}
+</code></pre>
+<pre><code class="language-java">@GenerateLenses
+@GenerateFocus
+public record EmailAddress(String value) {}
+</code></pre>
+</div>
+</details>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <p>Checking every price on an order by hand is a loop that collects the errors:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <pre><code class="language-java">    List&lt;String&gt; errors = new ArrayList&lt;&gt;();
-    for (LineItem item : order.items()) {
-      if (item.price().signum() &lt; 0) {
-        errors.add("Price cannot be negative: " + item.price());
-      } else if (item.price().compareTo(MAXIMUM) &gt; 0) {
-        errors.add("Price exceeds maximum: " + item.price());
+    for (LineItem line : order.lines()) {
+      if (line.price().signum() &lt; 0) {
+        errors.add("Price cannot be negative: " + line.price());
+      } else if (line.price().compareTo(MAXIMUM) &gt; 0) {
+        errors.add("Price exceeds maximum: " + line.price());
       }
     }
 </code></pre>
@@ -353,7 +376,7 @@ record User(String username, String email) {}
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <pre><code class="language-java">    Traversal&lt;Order, BigDecimal&gt; prices =
-        OrderFocus.items().via(LineItemFocus.price()).toTraversal();
+        OrderFocus.lines().via(LineItemFocus.price()).toTraversal();
 
     Validated&lt;List&lt;String&gt;, Order&gt; checked =
         OpticOps.modifyAllValidated(order, prices, FluentBook::checkPrice);
@@ -414,9 +437,9 @@ record User(String username, String email) {}
     return email.contains("@") ? Either.right(email) : Either.left("Invalid email: " + email);
   }
 
-  static Maybe&lt;String&gt; normaliseUsername(String username) {
-    String trimmed = username.strip();
-    return trimmed.length() &gt;= 3 &amp;&amp; trimmed.length() &lt;= 20 ? Maybe.just(trimmed) : Maybe.nothing();
+  static Maybe&lt;String&gt; normaliseName(String name) {
+    String trimmed = name.strip();
+    return trimmed.length() &gt;= 2 &amp;&amp; trimmed.length() &lt;= 40 ? Maybe.just(trimmed) : Maybe.nothing();
   }
 
 </code></pre>
@@ -425,24 +448,26 @@ record User(String username, String email) {}
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <h3 id="one-field-fail-fast"><a class="header" href="#one-field-fail-fast">One field, fail fast</a></h3>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">    Lens&lt;User, String&gt; email = UserFocus.email().toLens();
+<pre><code class="language-java">    Lens&lt;Customer, String&gt; email = CustomerFocus.email().value().toLens();
 
-    Either&lt;String, User&gt; result = OpticOps.modifyEither(user, email, FluentBook::checkEmail);
+    Either&lt;String, Customer&gt; result =
+        OpticOps.modifyEither(customer, email, FluentBook::checkEmail);
 
-    String message = result.fold(error -&gt; "rejected: " + error, u -&gt; "accepted: " + u.email());
+    String message =
+        result.fold(error -&gt; "rejected: " + error, c -&gt; "accepted: " + c.email().value());
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<p>For <code>alice@example.com</code>, <code>message</code> is <code>"accepted: alice@example.com"</code>; for <code>bob.example.com</code>, <code>result</code> is <code>Left("Invalid email: bob.example.com")</code>.</p>
+<p>For <code>ada@example.com</code>, <code>message</code> is <code>"accepted: ada@example.com"</code>; for <code>bob.example.com</code>, <code>result</code> is <code>Left("Invalid email: bob.example.com")</code>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <h3 id="one-field-silent-failure"><a class="header" href="#one-field-silent-failure">One field, no detail</a></h3>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">    Maybe&lt;User&gt; normalised =
-        OpticOps.modifyMaybe(user, UserFocus.username().toLens(), FluentBook::normaliseUsername);
+<pre><code class="language-java">    Maybe&lt;Customer&gt; normalised =
+        OpticOps.modifyMaybe(customer, CustomerFocus.name().toLens(), FluentBook::normaliseName);
 
-    User safe = normalised.orElse(user);
+    Customer safe = normalised.orElse(customer);
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<p>A username of <code>"  alice  "</code> comes back trimmed in a <code>Just</code>; one of two letters gives <code>Nothing</code>, and <code>safe</code> falls back to the user as they were. <code>modifyMaybe</code> has the shape of <code>modifyEither</code>, minus the explanation, so use it when the caller's next move is a fallback rather than a message.</p>
+<p>A name of <code>"  Ada  "</code> comes back trimmed in a <code>Just</code>; a one-letter name gives <code>Nothing</code>, and <code>safe</code> falls back to the customer as they were. <code>modifyMaybe</code> has the shape of <code>modifyEither</code>, minus the explanation, so use it when the caller's next move is a fallback rather than a message.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <h3 id="every-element-first-error-only"><a class="header" href="#every-element-first-error-only">Every element, first error only</a></h3>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
@@ -468,20 +493,21 @@ record User(String username, String email) {}
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <p><code>Either</code> chains, so a fail-fast registration is a <code>flatMap</code> per field:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">    Either&lt;String, User&gt; registered =
-        OpticOps.modifyEither(user, UserFocus.email().toLens(), FluentBook::checkEmail)
+<pre><code class="language-java">    Either&lt;String, Customer&gt; registered =
+        OpticOps.modifyEither(
+                customer, CustomerFocus.email().value().toLens(), FluentBook::checkEmail)
             .flatMap(
                 checked -&gt;
                     OpticOps.modifyEither(
                         checked,
-                        UserFocus.username().toLens(),
+                        CustomerFocus.name().toLens(),
                         name -&gt;
-                            name.length() &gt;= 3
+                            name.length() &gt;= 2
                                 ? Either.right(name)
-                                : Either.left("Username must be at least 3 characters")));
+                                : Either.left("Name must be at least 2 characters")));
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<p>A bad email stops the chain with <code>Left("Invalid email: ...")</code> before the username is looked at; a good email and a two-letter username give <code>Left("Username must be at least 3 characters")</code>.</p>
+<p>A bad email stops the chain with <code>Left("Invalid email: ...")</code> before the name is looked at; a good email and a one-letter name give <code>Left("Name must be at least 2 characters")</code>.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <div id="admonition-you-can-ship-now" class="admonition admonish-tip" role="note" aria-labelledby="admonition-you-can-ship-now-title">
 <div class="admonition-title">
@@ -499,42 +525,31 @@ record User(String username, String email) {}
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <h2 id="part-3-arbitrary-effects-with-modifyf"><a class="header" href="#part-3-arbitrary-effects-with-modifyf">Any other effect: <code>modifyF</code></a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<p>The four methods cover <code>Either</code>, <code>Maybe</code> and <code>Validated</code>. For any other effect, such as fetching a bonus asynchronously, every optic that writes and every path has <code>modifyF</code>. It takes an <code>Applicative</code>, the object that knows how to combine results inside that effect, and it speaks <code>Kind</code>, the library's encoding of a generic container such as <code>CompletableFuture&lt;A&gt;</code>. That makes it the mechanism behind <code>modifyAllValidated</code> and <code>modifyAllEither</code>, at the price of some ceremony at the call site:</p>
+<p>The four methods cover <code>Either</code>, <code>Maybe</code> and <code>Validated</code>. For any other effect, such as fetching current prices asynchronously, every optic that writes and every path has <code>modifyF</code>. It takes an <code>Applicative</code>, the object that knows how to combine results inside that effect, and it speaks <code>Kind</code>, the library's encoding of a generic container such as <code>CompletableFuture&lt;A&gt;</code>. That makes it the mechanism behind <code>modifyAllValidated</code> and <code>modifyAllEither</code>, at the price of some ceremony at the call site:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<details id="admonition-bonuses-fetched-asynchronously-with-modifyf" class="admonition admonish-example" role="note" aria-labelledby="admonition-bonuses-fetched-asynchronously-with-modifyf-title">
+<details id="admonition-current-prices-fetched-asynchronously-with-modifyf" class="admonition admonish-example" role="note" aria-labelledby="admonition-current-prices-fetched-asynchronously-with-modifyf-title">
 <summary class="admonition-title">
-<div id="admonition-bonuses-fetched-asynchronously-with-modifyf-title">
-<p>Bonuses fetched asynchronously, with <code>modifyF</code></p>
+<div id="admonition-current-prices-fetched-asynchronously-with-modifyf-title">
+<p>Current prices fetched asynchronously, with <code>modifyF</code></p>
 </div>
-<a class="admonition-anchor-link" href="#admonition-bonuses-fetched-asynchronously-with-modifyf"></a>
+<a class="admonition-anchor-link" href="#admonition-current-prices-fetched-asynchronously-with-modifyf"></a>
 </summary>
 <div>
-<pre><code class="language-java">@GenerateLenses
-record Person(String name, int age, String status) {}
-
-@GenerateLenses
-@GenerateFocus
-record Player(String name, int score, String status) {}
-
-@GenerateFocus
-@GenerateTraversals
-record Team(String name, List&lt;Player&gt; players) {}
-</code></pre>
-<pre><code class="language-java">  static CompletableFuture&lt;Integer&gt; fetchBonus(int score) {
-    return CompletableFuture.completedFuture(score + 10);
+<pre><code class="language-java">  static CompletableFuture&lt;BigDecimal&gt; currentPrice(BigDecimal listed) {
+    return CompletableFuture.completedFuture(listed.add(BigDecimal.ONE));
   }
 
 </code></pre>
 <pre><code class="language-java">    Applicative&lt;CompletableFutureKind.Witness&gt; futures = Instances.applicative(completableFuture());
 
-    TraversalPath&lt;Team, Integer&gt; scores = TeamFocus.players().via(PlayerFocus.score());
+    TraversalPath&lt;Order, BigDecimal&gt; prices = OrderFocus.lines().via(LineItemFocus.price());
 
-    Kind&lt;CompletableFutureKind.Witness, Team&gt; pending =
-        scores.modifyF(score -&gt; FUTURE.widen(fetchBonus(score)), team, futures);
+    Kind&lt;CompletableFutureKind.Witness, Order&gt; pending =
+        prices.modifyF(price -&gt; FUTURE.widen(currentPrice(price)), order, futures);
 
-    CompletableFuture&lt;Team&gt; withBonuses = FUTURE.narrow(pending);
+    CompletableFuture&lt;Order&gt; repriced = FUTURE.narrow(pending);
 </code></pre>
-<p>For scores of 100 and 85, the future completes with scores of 110 and 95. <code>FUTURE.widen</code> and <code>FUTURE.narrow</code> convert between <code>CompletableFuture</code> and its <code>Kind</code>. <code>modifyAllValidated</code> is the same call with a <code>Validated</code> applicative over a list of errors, each check's error wrapped in a list, and it does that conversion out of sight.</p>
+<p><code>currentPrice</code> is a stub standing in for a price service. For prices of 40.00 and 2.50, the future completes with prices of 41.00 and 3.50. <code>FUTURE.widen</code> and <code>FUTURE.narrow</code> convert between <code>CompletableFuture</code> and its <code>Kind</code>. <code>modifyAllValidated</code> is the same call with a <code>Validated</code> applicative over a list of errors, each check's error wrapped in a list, and it does that conversion out of sight.</p>
 </div>
 </details>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
@@ -548,64 +563,54 @@ record Team(String name, List&lt;Player&gt; players) {}
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <h3 id="part-1-reading-writing-querying"><a class="header" href="#part-1-reading-writing-querying">Reads, writes and queries</a></h3>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<p><code>OpticOps</code> restates every read and write, source first, and is overloaded on the optic type, so the same names work whatever you hand them. If you know optics from Haskell or Scala, <code>get</code> is <code>view</code>, <code>modify</code> is <code>over</code>, and <code>preview</code> keeps its name. These examples use generated <code>Lenses</code> and <code>Traversals</code> classes:</p>
+<p><code>OpticOps</code> restates every read and write, source first, and is overloaded on the optic type, so the same names work whatever you hand them. If you know optics from Haskell or Scala, <code>get</code> is <code>view</code>, <code>modify</code> is <code>over</code>, and <code>preview</code> keeps its name. These examples use the cast's generated <code>Lenses</code> and <code>Traversals</code> classes:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">@GenerateLenses
-record Person(String name, int age, String status) {}
-
-@GenerateLenses
-@GenerateFocus
-record Player(String name, int score, String status) {}
-
-@GenerateFocus
-@GenerateTraversals
-record Team(String name, List&lt;Player&gt; players) {}
-</code></pre>
-<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">    Traversal&lt;Team, Integer&gt; playerScores = TeamTraversals.players().andThen(PlayerLenses.score());
+<pre><code class="language-java">    Traversal&lt;Order, Integer&gt; quantities =
+        OrderTraversals.lines().andThen(LineItemLenses.quantity());
 
     // Read
-    String name = OpticOps.get(alice, PersonLenses.name());
-    List&lt;Integer&gt; scores = OpticOps.getAll(team, playerScores);
-    Optional&lt;Integer&gt; firstScore = OpticOps.preview(team, playerScores);
+    String name = OpticOps.get(customer, CustomerLenses.name());
+    List&lt;Integer&gt; allQuantities = OpticOps.getAll(order, quantities);
+    Optional&lt;Integer&gt; firstQuantity = OpticOps.preview(order, quantities);
 
     // Write
-    Person updated = OpticOps.set(alice, PersonLenses.age(), 30);
-    Team doubled = OpticOps.modifyAll(team, playerScores, score -&gt; score * 2);
+    Order paid = OpticOps.set(order, OrderLenses.status(), OrderStatus.PAID);
+    Order doubled = OpticOps.modifyAll(order, quantities, quantity -&gt; quantity * 2);
 
     // Query, without modifying anything
-    boolean hasHighScorer = OpticOps.exists(team, playerScores, score -&gt; score &gt; 90);
-    boolean allPassed = OpticOps.all(team, playerScores, score -&gt; score &gt;= 50);
-    int playerCount = OpticOps.count(team, TeamTraversals.players());
-    boolean noPlayers = OpticOps.isEmpty(team, TeamTraversals.players());
-    Optional&lt;Player&gt; top =
-        OpticOps.find(team, TeamTraversals.players(), player -&gt; player.score() &gt; 90);
+    boolean anyBulk = OpticOps.exists(order, quantities, quantity -&gt; quantity &gt;= 4);
+    boolean allOrdered = OpticOps.all(order, quantities, quantity -&gt; quantity &gt;= 1);
+    int lineCount = OpticOps.count(order, OrderTraversals.lines());
+    boolean noLines = OpticOps.isEmpty(order, OrderTraversals.lines());
+    Optional&lt;LineItem&gt; overTen =
+        OpticOps.find(
+            order, OrderTraversals.lines(), line -&gt; line.price().compareTo(BigDecimal.TEN) &gt; 0);
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.11"></div>
 <h3 id="the-two-styles"><a class="header" href="#the-two-styles">Static methods or builders</a></h3>
 <p>Nearly every operation exists as a concise static method and as a fluent builder. They compile to the same thing; pick per call site:</p>
 <div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJpbmNsdWRlIiwgIi8uLi8uLi9oa2otZXhhbXBsZXMvc3JjL21haW4vamF2YS9vcmcvaGlnaGVya2luZGVkai9leGFtcGxlL2Jvb2svb3B0aWNzL2ZsdWVudC9GbHVlbnRCb29rLmphdmE6c3R5bGVzIl0=" data-since="v0.4.11"></div>
 <pre><code class="language-java">    // Static style
-    int age = OpticOps.get(alice, PersonLenses.age());
-    Person older = OpticOps.modify(alice, PersonLenses.age(), a -&gt; a + 1);
+    int quantity = OpticOps.get(lamp, LineItemLenses.quantity());
+    LineItem more = OpticOps.modify(lamp, LineItemLenses.quantity(), q -&gt; q + 1);
 
     // Builder style
-    int sameAge = OpticOps.getting(alice).through(PersonLenses.age());
-    Person alsoOlder = OpticOps.modifying(alice).through(PersonLenses.age(), a -&gt; a + 1);
+    int sameQuantity = OpticOps.getting(lamp).through(LineItemLenses.quantity());
+    LineItem alsoMore = OpticOps.modifying(lamp).through(LineItemLenses.quantity(), q -&gt; q + 1);
 </code></pre>
 <div class="hkj-ct-mark" data-kind="modified" data-run="mid" data-words="WyJmb3IiLCAiYSIsICJvbmUtb2ZmIiwgIm9wZXJhdGlvbiIsICJ3aGVyZSIsICJuYW1pbmciLCAiaXQiLCAidHdpY2UiLCAid291bGQiLCAiYmUiLCAibm9pc2UiLCAiVGhlIiwgIkZvdXIiLCAiYnVpbGRlcnMiLCAiY292ZXIiLCAicmVhZGluZyIsICJzZXR0aW5nIiwgIm1vZGlmeWluZyIsICJhbmQiLCAicXVlcnlpbmciXQ==" data-since="v0.4.11"></div>
 <p>The static form is shorter, for a one-off operation where naming it twice would be noise. The builder reads better when the optic expression is long, and the IDE's completion list after <code>OpticOps.modifying(order).</code> is a decent map of what is possible. Four builders cover reading, setting, modifying and querying:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">    List&lt;Integer&gt; allScores = OpticOps.getting(team).allThrough(playerScores);
-    Team reset = OpticOps.setting(team).allThrough(playerScores, 0);
-    Team bumped = OpticOps.modifying(team).allThrough(playerScores, score -&gt; score + 5);
-    boolean any = OpticOps.querying(team).anyMatch(playerScores, score -&gt; score &gt; 90);
+<pre><code class="language-java">    List&lt;Integer&gt; all = OpticOps.getting(order).allThrough(quantities);
+    Order reset = OpticOps.setting(order).allThrough(quantities, 1);
+    Order bumped = OpticOps.modifying(order).allThrough(quantities, quantity -&gt; quantity + 1);
+    boolean any = OpticOps.querying(order).anyMatch(quantities, quantity -&gt; quantity &gt;= 4);
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <p>The validation methods have a builder too:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">    Either&lt;String, User&gt; checkedEmail =
-        OpticOps.modifyingWithValidation(user).throughEither(email, FluentBook::checkEmail);
+<pre><code class="language-java">    Either&lt;String, Customer&gt; checkedEmail =
+        OpticOps.modifyingWithValidation(customer).throughEither(email, FluentBook::checkEmail);
 
     Validated&lt;List&lt;String&gt;, Order&gt; checkedPrices =
         OpticOps.modifyingWithValidation(order).allThroughValidated(prices, FluentBook::checkPrice);
@@ -625,39 +630,43 @@ record Team(String name, List&lt;Player&gt; players) {}
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <p><strong>A conditional update.</strong> When the decision depends on one field and the write targets another, read once, decide, then write. <code>modify</code> is not the tool here:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">    Person classified =
-        OpticOps.get(alice, PersonLenses.age()) &gt;= 18
-            ? OpticOps.set(alice, PersonLenses.status(), "ADULT")
-            : alice;
+<pre><code class="language-java">    Order stamped =
+        OpticOps.get(order, OrderLenses.status()) == OrderStatus.NEW
+            ? OpticOps.set(order, OrderLenses.placedAt(), now)
+            : order;
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <p><strong>An update narrowed by a predicate.</strong> <code>filtered</code> narrows the traversal itself, so the update reaches only the elements that qualify, and no membership test leaks into the function:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">    Traversal&lt;Team, Player&gt; topPerformers =
-        TeamTraversals.players().filtered(player -&gt; player.score() &gt;= 90);
+<pre><code class="language-java">    Traversal&lt;Order, LineItem&gt; bulk =
+        OrderTraversals.lines().filtered(line -&gt; line.quantity() &gt;= 4);
 
-    Team starred = OpticOps.setAll(team, topPerformers.andThen(PlayerLenses.status()), "STAR");
+    Order discounted =
+        OpticOps.modifyAll(
+            order,
+            bulk.andThen(LineItemLenses.price()),
+            price -&gt; price.multiply(new BigDecimal("0.9")));
 
-    List&lt;Player&gt; stars = OpticOps.getAll(starred, topPerformers);
+    List&lt;LineItem&gt; bulkLines = OpticOps.getAll(discounted, bulk);
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<p>For Alice on 100 and Bob on 85, only Alice is starred, and reading <code>topPerformers</code> back from <code>starred</code> finds her alone.</p>
+<p>For one lamp and four bulbs, only the bulbs are discounted, and reading <code>bulk</code> back from <code>discounted</code> finds that line alone.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <p><strong>An aggregate.</strong> A <code>Fold</code> collapses every focused value through a <code>Monoid</code>, and a <code>Traversal</code> reads as a <code>Fold</code> through <code>asFold()</code>. For a one-off, <code>getAll(...).stream()</code> reads as well; a fold earns its place when the aggregate is itself a value you pass around:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <pre><code class="language-java">    int total =
-        TeamTraversals.players()
-            .andThen(PlayerLenses.score())
+        OrderTraversals.lines()
+            .andThen(LineItemLenses.quantity())
             .asFold()
-            .foldMap(Monoids.integerAddition(), score -&gt; score, team);
+            .foldMap(Monoids.integerAddition(), quantity -&gt; quantity, order);
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <p><strong>A stream.</strong> Optics get the values out, and the Stream API does the rest:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
-<pre><code class="language-java">    List&lt;String&gt; highScorerNames =
-        OpticOps.getting(team).allThrough(TeamTraversals.players()).stream()
-            .filter(player -&gt; player.score() &gt; 90)
-            .map(Player::name)
+<pre><code class="language-java">    List&lt;String&gt; dearSkus =
+        OpticOps.getting(order).allThrough(OrderTraversals.lines()).stream()
+            .filter(line -&gt; line.price().compareTo(BigDecimal.TEN) &gt; 0)
+            .map(LineItem::sku)
             .toList();
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
@@ -668,18 +677,19 @@ record Team(String name, List&lt;Player&gt; players) {}
 <p>A builder adds one short-lived object to what the operation allocates anyway, which is almost never the reason code is slow. Each <code>andThen</code> allocates a small wrapper optic, so compose once, before the loop, and the optic is built once:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <pre><code class="language-java">    // Compose once, before the loop
-    Traversal&lt;Team, Integer&gt; scores = TeamTraversals.players().andThen(PlayerLenses.score());
+    Traversal&lt;Order, Integer&gt; quantities =
+        OrderTraversals.lines().andThen(LineItemLenses.quantity());
 
-    List&lt;List&lt;Integer&gt;&gt; allScores = new ArrayList&lt;&gt;();
-    for (Team team : teams) {
-      allScores.add(OpticOps.getAll(team, scores));
+    List&lt;List&lt;Integer&gt;&gt; allQuantities = new ArrayList&lt;&gt;();
+    for (Order order : orders) {
+      allQuantities.add(OpticOps.getAll(order, quantities));
     }
 </code></pre>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <h3 id="pitfalls"><a class="header" href="#pitfalls">Pitfalls</a></h3>
 <div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.11"></div>
 <ul>
-<li><strong>Reading, then setting, when you mean <code>modify</code>.</strong> <code>OpticOps.modify(person, PersonLenses.age(), a -&gt; a + 1)</code> names the path once, and keeps the read and the write in one expression.</li>
+<li><strong>Reading, then setting, when you mean <code>modify</code>.</strong> <code>OpticOps.modify(lamp, LineItemLenses.quantity(), q -&gt; q + 1)</code> names the path once, and keeps the read and the write in one expression.</li>
 <li><strong>Recomposing an optic in a loop.</strong> Hoist the composition, as <a href="#performance">Performance</a> shows.</li>
 <li><strong>Asking <code>querying</code> for the elements.</strong> It answers questions; <code>getting(...).allThrough(...)</code> returns the values.</li>
 <li><strong>Expecting <code>modify</code> on a bare <code>Traversal</code>.</strong> Its reads and writes go through the <code>Traversals</code> utility or <code>OpticOps</code>, as <a href="optics_intro.html#using-an-optic-directly">Using an optic directly</a> shows. A <code>TraversalPath</code> carries <code>getAll</code> and <code>modifyAll</code> itself.</li>

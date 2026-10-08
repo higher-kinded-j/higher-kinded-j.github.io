@@ -21,29 +21,50 @@ A path's `modify` takes a function that always succeeds. A real update often has
 
 ## Every element, every error {#every-element-every-error}
 
-The records are an order of priced line items and a user:
+The records are the chapter's cast: an order of priced line items, placed by a customer.
+
+~~~admonish example title="The cast these examples use" collapsible=true
+``` java
+@GenerateLenses
+@GenerateFocus(generateNavigators = true)
+@GenerateTraversals
+public record Order(
+    UUID id,
+    Customer customer,
+    List<LineItem> lines,
+    Instant placedAt,
+    Currency currency,
+    OrderStatus status) {}
+```
 
 ``` java
+@GenerateLenses
 @GenerateFocus
-record LineItem(String sku, BigDecimal price) {}
-
-@GenerateFocus
-record Order(String id, List<LineItem> items) {}
-
-@GenerateFocus
-record User(String username, String email) {}
-
+public record LineItem(String sku, Integer quantity, BigDecimal price) {}
 ```
+
+``` java
+@GenerateLenses
+@GenerateFocus(generateNavigators = true)
+public record Customer(String name, EmailAddress email) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record EmailAddress(String value) {}
+```
+~~~
 
 Checking every price on an order by hand is a loop that collects the errors:
 
 ``` java
     List<String> errors = new ArrayList<>();
-    for (LineItem item : order.items()) {
-      if (item.price().signum() < 0) {
-        errors.add("Price cannot be negative: " + item.price());
-      } else if (item.price().compareTo(MAXIMUM) > 0) {
-        errors.add("Price exceeds maximum: " + item.price());
+    for (LineItem line : order.lines()) {
+      if (line.price().signum() < 0) {
+        errors.add("Price cannot be negative: " + line.price());
+      } else if (line.price().compareTo(MAXIMUM) > 0) {
+        errors.add("Price exceeds maximum: " + line.price());
       }
     }
 ```
@@ -66,7 +87,7 @@ That loop works. It knows the order's shape, though, and it ends in a list you s
 
 ``` java
     Traversal<Order, BigDecimal> prices =
-        OrderFocus.items().via(LineItemFocus.price()).toTraversal();
+        OrderFocus.lines().via(LineItemFocus.price()).toTraversal();
 
     Validated<List<String>, Order> checked =
         OpticOps.modifyAllValidated(order, prices, FluentBook::checkPrice);
@@ -122,9 +143,9 @@ The rest of this section uses three more checks, each as short as `checkPrice`:
     return email.contains("@") ? Either.right(email) : Either.left("Invalid email: " + email);
   }
 
-  static Maybe<String> normaliseUsername(String username) {
-    String trimmed = username.strip();
-    return trimmed.length() >= 3 && trimmed.length() <= 20 ? Maybe.just(trimmed) : Maybe.nothing();
+  static Maybe<String> normaliseName(String name) {
+    String trimmed = name.strip();
+    return trimmed.length() >= 2 && trimmed.length() <= 40 ? Maybe.just(trimmed) : Maybe.nothing();
   }
 
 ```
@@ -133,25 +154,27 @@ The rest of this section uses three more checks, each as short as `checkPrice`:
 ### One field, fail fast {#one-field-fail-fast}
 
 ``` java
-    Lens<User, String> email = UserFocus.email().toLens();
+    Lens<Customer, String> email = CustomerFocus.email().value().toLens();
 
-    Either<String, User> result = OpticOps.modifyEither(user, email, FluentBook::checkEmail);
+    Either<String, Customer> result =
+        OpticOps.modifyEither(customer, email, FluentBook::checkEmail);
 
-    String message = result.fold(error -> "rejected: " + error, u -> "accepted: " + u.email());
+    String message =
+        result.fold(error -> "rejected: " + error, c -> "accepted: " + c.email().value());
 ```
 
-For `alice@example.com`, `message` is `"accepted: alice@example.com"`; for `bob.example.com`, `result` is `Left("Invalid email: bob.example.com")`.
+For `ada@example.com`, `message` is `"accepted: ada@example.com"`; for `bob.example.com`, `result` is `Left("Invalid email: bob.example.com")`.
 
 ### One field, no detail {#one-field-silent-failure}
 
 ``` java
-    Maybe<User> normalised =
-        OpticOps.modifyMaybe(user, UserFocus.username().toLens(), FluentBook::normaliseUsername);
+    Maybe<Customer> normalised =
+        OpticOps.modifyMaybe(customer, CustomerFocus.name().toLens(), FluentBook::normaliseName);
 
-    User safe = normalised.orElse(user);
+    Customer safe = normalised.orElse(customer);
 ```
 
-A username of `"  alice  "` comes back trimmed in a `Just`; one of two letters gives `Nothing`, and `safe` falls back to the user as they were. `modifyMaybe` has the shape of `modifyEither`, minus the explanation, so use it when the caller's next move is a fallback rather than a message.
+A name of `"  Ada  "` comes back trimmed in a `Just`; a one-letter name gives `Nothing`, and `safe` falls back to the customer as they were. `modifyMaybe` has the shape of `modifyEither`, minus the explanation, so use it when the caller's next move is a fallback rather than a message.
 
 ### Every element, first error only {#every-element-first-error-only}
 
@@ -171,20 +194,21 @@ The difference between `modifyAllValidated` and `modifyAllEither` is a product d
 `Either` chains, so a fail-fast registration is a `flatMap` per field:
 
 ``` java
-    Either<String, User> registered =
-        OpticOps.modifyEither(user, UserFocus.email().toLens(), FluentBook::checkEmail)
+    Either<String, Customer> registered =
+        OpticOps.modifyEither(
+                customer, CustomerFocus.email().value().toLens(), FluentBook::checkEmail)
             .flatMap(
                 checked ->
                     OpticOps.modifyEither(
                         checked,
-                        UserFocus.username().toLens(),
+                        CustomerFocus.name().toLens(),
                         name ->
-                            name.length() >= 3
+                            name.length() >= 2
                                 ? Either.right(name)
-                                : Either.left("Username must be at least 3 characters")));
+                                : Either.left("Name must be at least 2 characters")));
 ```
 
-A bad email stops the chain with `Left("Invalid email: ...")` before the username is looked at; a good email and a two-letter username give `Left("Username must be at least 3 characters")`.
+A bad email stops the chain with `Left("Invalid email: ...")` before the name is looked at; a good email and a one-letter name give `Left("Name must be at least 2 characters")`.
 
 ~~~admonish tip title="You can ship now"
 You can now check a field or every element of a list as you update it, and choose whether the caller hears the first error or every one. The rest of this page is for an effect other than these three, and for code that holds an optic rather than a path.
@@ -194,25 +218,12 @@ You can now check a field or every element of a list as you update it, and choos
 
 ## Any other effect: `modifyF` {#part-3-arbitrary-effects-with-modifyf}
 
-The four methods cover `Either`, `Maybe` and `Validated`. For any other effect, such as fetching a bonus asynchronously, every optic that writes and every path has `modifyF`. It takes an `Applicative`, the object that knows how to combine results inside that effect, and it speaks `Kind`, the library's encoding of a generic container such as `CompletableFuture<A>`. That makes it the mechanism behind `modifyAllValidated` and `modifyAllEither`, at the price of some ceremony at the call site:
+The four methods cover `Either`, `Maybe` and `Validated`. For any other effect, such as fetching current prices asynchronously, every optic that writes and every path has `modifyF`. It takes an `Applicative`, the object that knows how to combine results inside that effect, and it speaks `Kind`, the library's encoding of a generic container such as `CompletableFuture<A>`. That makes it the mechanism behind `modifyAllValidated` and `modifyAllEither`, at the price of some ceremony at the call site:
 
-~~~admonish example title="Bonuses fetched asynchronously, with `modifyF`" collapsible=true
+~~~admonish example title="Current prices fetched asynchronously, with `modifyF`" collapsible=true
 ``` java
-@GenerateLenses
-record Person(String name, int age, String status) {}
-
-@GenerateLenses
-@GenerateFocus
-record Player(String name, int score, String status) {}
-
-@GenerateFocus
-@GenerateTraversals
-record Team(String name, List<Player> players) {}
-```
-
-``` java
-  static CompletableFuture<Integer> fetchBonus(int score) {
-    return CompletableFuture.completedFuture(score + 10);
+  static CompletableFuture<BigDecimal> currentPrice(BigDecimal listed) {
+    return CompletableFuture.completedFuture(listed.add(BigDecimal.ONE));
   }
 
 ```
@@ -220,15 +231,15 @@ record Team(String name, List<Player> players) {}
 ``` java
     Applicative<CompletableFutureKind.Witness> futures = Instances.applicative(completableFuture());
 
-    TraversalPath<Team, Integer> scores = TeamFocus.players().via(PlayerFocus.score());
+    TraversalPath<Order, BigDecimal> prices = OrderFocus.lines().via(LineItemFocus.price());
 
-    Kind<CompletableFutureKind.Witness, Team> pending =
-        scores.modifyF(score -> FUTURE.widen(fetchBonus(score)), team, futures);
+    Kind<CompletableFutureKind.Witness, Order> pending =
+        prices.modifyF(price -> FUTURE.widen(currentPrice(price)), order, futures);
 
-    CompletableFuture<Team> withBonuses = FUTURE.narrow(pending);
+    CompletableFuture<Order> repriced = FUTURE.narrow(pending);
 ```
 
-For scores of 100 and 85, the future completes with scores of 110 and 95. `FUTURE.widen` and `FUTURE.narrow` convert between `CompletableFuture` and its `Kind`. `modifyAllValidated` is the same call with a `Validated` applicative over a list of errors, each check's error wrapped in a list, and it does that conversion out of sight.
+`currentPrice` is a stub standing in for a price service. For prices of 40.00 and 2.50, the future completes with prices of 41.00 and 3.50. `FUTURE.widen` and `FUTURE.narrow` convert between `CompletableFuture` and its `Kind`. `modifyAllValidated` is the same call with a `Validated` applicative over a list of errors, each check's error wrapped in a list, and it does that conversion out of sight.
 ~~~
 
 Reach for `modifyF` for an effect beyond the three, such as `IO`, `CompletableFuture`, `VTask` or your own. Reach for it too for a check that is itself an effect, such as a lookup over the network, and anywhere you already hold an `Applicative`. `OpticOps.modifyF` and `OpticOps.modifyAllF` take the same arguments, source first, for a raw optic. [Type Class and Effect Integration](focus_effects.md) has more.
@@ -241,40 +252,29 @@ The rest of this page is for code that holds an optic rather than a path, and fo
 
 ### Reads, writes and queries {#part-1-reading-writing-querying}
 
-`OpticOps` restates every read and write, source first, and is overloaded on the optic type, so the same names work whatever you hand them. If you know optics from Haskell or Scala, `get` is `view`, `modify` is `over`, and `preview` keeps its name. These examples use generated `Lenses` and `Traversals` classes:
+`OpticOps` restates every read and write, source first, and is overloaded on the optic type, so the same names work whatever you hand them. If you know optics from Haskell or Scala, `get` is `view`, `modify` is `over`, and `preview` keeps its name. These examples use the cast's generated `Lenses` and `Traversals` classes:
 
 ``` java
-@GenerateLenses
-record Person(String name, int age, String status) {}
-
-@GenerateLenses
-@GenerateFocus
-record Player(String name, int score, String status) {}
-
-@GenerateFocus
-@GenerateTraversals
-record Team(String name, List<Player> players) {}
-```
-
-``` java
-    Traversal<Team, Integer> playerScores = TeamTraversals.players().andThen(PlayerLenses.score());
+    Traversal<Order, Integer> quantities =
+        OrderTraversals.lines().andThen(LineItemLenses.quantity());
 
     // Read
-    String name = OpticOps.get(alice, PersonLenses.name());
-    List<Integer> scores = OpticOps.getAll(team, playerScores);
-    Optional<Integer> firstScore = OpticOps.preview(team, playerScores);
+    String name = OpticOps.get(customer, CustomerLenses.name());
+    List<Integer> allQuantities = OpticOps.getAll(order, quantities);
+    Optional<Integer> firstQuantity = OpticOps.preview(order, quantities);
 
     // Write
-    Person updated = OpticOps.set(alice, PersonLenses.age(), 30);
-    Team doubled = OpticOps.modifyAll(team, playerScores, score -> score * 2);
+    Order paid = OpticOps.set(order, OrderLenses.status(), OrderStatus.PAID);
+    Order doubled = OpticOps.modifyAll(order, quantities, quantity -> quantity * 2);
 
     // Query, without modifying anything
-    boolean hasHighScorer = OpticOps.exists(team, playerScores, score -> score > 90);
-    boolean allPassed = OpticOps.all(team, playerScores, score -> score >= 50);
-    int playerCount = OpticOps.count(team, TeamTraversals.players());
-    boolean noPlayers = OpticOps.isEmpty(team, TeamTraversals.players());
-    Optional<Player> top =
-        OpticOps.find(team, TeamTraversals.players(), player -> player.score() > 90);
+    boolean anyBulk = OpticOps.exists(order, quantities, quantity -> quantity >= 4);
+    boolean allOrdered = OpticOps.all(order, quantities, quantity -> quantity >= 1);
+    int lineCount = OpticOps.count(order, OrderTraversals.lines());
+    boolean noLines = OpticOps.isEmpty(order, OrderTraversals.lines());
+    Optional<LineItem> overTen =
+        OpticOps.find(
+            order, OrderTraversals.lines(), line -> line.price().compareTo(BigDecimal.TEN) > 0);
 ```
 
 ### Static methods or builders {#the-two-styles}
@@ -283,28 +283,28 @@ Nearly every operation exists as a concise static method and as a fluent builder
 
 ``` java
     // Static style
-    int age = OpticOps.get(alice, PersonLenses.age());
-    Person older = OpticOps.modify(alice, PersonLenses.age(), a -> a + 1);
+    int quantity = OpticOps.get(lamp, LineItemLenses.quantity());
+    LineItem more = OpticOps.modify(lamp, LineItemLenses.quantity(), q -> q + 1);
 
     // Builder style
-    int sameAge = OpticOps.getting(alice).through(PersonLenses.age());
-    Person alsoOlder = OpticOps.modifying(alice).through(PersonLenses.age(), a -> a + 1);
+    int sameQuantity = OpticOps.getting(lamp).through(LineItemLenses.quantity());
+    LineItem alsoMore = OpticOps.modifying(lamp).through(LineItemLenses.quantity(), q -> q + 1);
 ```
 
 The static form is shorter, for a one-off operation where naming it twice would be noise. The builder reads better when the optic expression is long, and the IDE's completion list after `OpticOps.modifying(order).` is a decent map of what is possible. Four builders cover reading, setting, modifying and querying:
 
 ``` java
-    List<Integer> allScores = OpticOps.getting(team).allThrough(playerScores);
-    Team reset = OpticOps.setting(team).allThrough(playerScores, 0);
-    Team bumped = OpticOps.modifying(team).allThrough(playerScores, score -> score + 5);
-    boolean any = OpticOps.querying(team).anyMatch(playerScores, score -> score > 90);
+    List<Integer> all = OpticOps.getting(order).allThrough(quantities);
+    Order reset = OpticOps.setting(order).allThrough(quantities, 1);
+    Order bumped = OpticOps.modifying(order).allThrough(quantities, quantity -> quantity + 1);
+    boolean any = OpticOps.querying(order).anyMatch(quantities, quantity -> quantity >= 4);
 ```
 
 The validation methods have a builder too:
 
 ``` java
-    Either<String, User> checkedEmail =
-        OpticOps.modifyingWithValidation(user).throughEither(email, FluentBook::checkEmail);
+    Either<String, Customer> checkedEmail =
+        OpticOps.modifyingWithValidation(customer).throughEither(email, FluentBook::checkEmail);
 
     Validated<List<String>, Order> checkedPrices =
         OpticOps.modifyingWithValidation(order).allThroughValidated(prices, FluentBook::checkPrice);
@@ -325,42 +325,46 @@ The validation methods have a builder too:
 **A conditional update.** When the decision depends on one field and the write targets another, read once, decide, then write. `modify` is not the tool here:
 
 ``` java
-    Person classified =
-        OpticOps.get(alice, PersonLenses.age()) >= 18
-            ? OpticOps.set(alice, PersonLenses.status(), "ADULT")
-            : alice;
+    Order stamped =
+        OpticOps.get(order, OrderLenses.status()) == OrderStatus.NEW
+            ? OpticOps.set(order, OrderLenses.placedAt(), now)
+            : order;
 ```
 
 **An update narrowed by a predicate.** `filtered` narrows the traversal itself, so the update reaches only the elements that qualify, and no membership test leaks into the function:
 
 ``` java
-    Traversal<Team, Player> topPerformers =
-        TeamTraversals.players().filtered(player -> player.score() >= 90);
+    Traversal<Order, LineItem> bulk =
+        OrderTraversals.lines().filtered(line -> line.quantity() >= 4);
 
-    Team starred = OpticOps.setAll(team, topPerformers.andThen(PlayerLenses.status()), "STAR");
+    Order discounted =
+        OpticOps.modifyAll(
+            order,
+            bulk.andThen(LineItemLenses.price()),
+            price -> price.multiply(new BigDecimal("0.9")));
 
-    List<Player> stars = OpticOps.getAll(starred, topPerformers);
+    List<LineItem> bulkLines = OpticOps.getAll(discounted, bulk);
 ```
 
-For Alice on 100 and Bob on 85, only Alice is starred, and reading `topPerformers` back from `starred` finds her alone.
+For one lamp and four bulbs, only the bulbs are discounted, and reading `bulk` back from `discounted` finds that line alone.
 
 **An aggregate.** A `Fold` collapses every focused value through a `Monoid`, and a `Traversal` reads as a `Fold` through `asFold()`. For a one-off, `getAll(...).stream()` reads as well; a fold earns its place when the aggregate is itself a value you pass around:
 
 ``` java
     int total =
-        TeamTraversals.players()
-            .andThen(PlayerLenses.score())
+        OrderTraversals.lines()
+            .andThen(LineItemLenses.quantity())
             .asFold()
-            .foldMap(Monoids.integerAddition(), score -> score, team);
+            .foldMap(Monoids.integerAddition(), quantity -> quantity, order);
 ```
 
 **A stream.** Optics get the values out, and the Stream API does the rest:
 
 ``` java
-    List<String> highScorerNames =
-        OpticOps.getting(team).allThrough(TeamTraversals.players()).stream()
-            .filter(player -> player.score() > 90)
-            .map(Player::name)
+    List<String> dearSkus =
+        OpticOps.getting(order).allThrough(OrderTraversals.lines()).stream()
+            .filter(line -> line.price().compareTo(BigDecimal.TEN) > 0)
+            .map(LineItem::sku)
             .toList();
 ```
 
@@ -372,17 +376,18 @@ A builder adds one short-lived object to what the operation allocates anyway, wh
 
 ``` java
     // Compose once, before the loop
-    Traversal<Team, Integer> scores = TeamTraversals.players().andThen(PlayerLenses.score());
+    Traversal<Order, Integer> quantities =
+        OrderTraversals.lines().andThen(LineItemLenses.quantity());
 
-    List<List<Integer>> allScores = new ArrayList<>();
-    for (Team team : teams) {
-      allScores.add(OpticOps.getAll(team, scores));
+    List<List<Integer>> allQuantities = new ArrayList<>();
+    for (Order order : orders) {
+      allQuantities.add(OpticOps.getAll(order, quantities));
     }
 ```
 
 ### Pitfalls {#pitfalls}
 
-- **Reading, then setting, when you mean `modify`.** `OpticOps.modify(person, PersonLenses.age(), a -> a + 1)` names the path once, and keeps the read and the write in one expression.
+- **Reading, then setting, when you mean `modify`.** `OpticOps.modify(lamp, LineItemLenses.quantity(), q -> q + 1)` names the path once, and keeps the read and the write in one expression.
 - **Recomposing an optic in a loop.** Hoist the composition, as [Performance](#performance) shows.
 - **Asking `querying` for the elements.** It answers questions; `getting(...).allThrough(...)` returns the values.
 - **Expecting `modify` on a bare `Traversal`.** Its reads and writes go through the `Traversals` utility or `OpticOps`, as [Using an optic directly](optics_intro.md#using-an-optic-directly) shows. A `TraversalPath` carries `getAll` and `modifyAll` itself.

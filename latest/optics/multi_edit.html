@@ -307,19 +307,20 @@
 <div class="hkj-ct-mark" data-kind="modified" data-run="end" data-since="v0.4.11"></div>
 <hr />
 <h2 id="the-problem"><a class="header" href="#the-problem">The problem</a></h2>
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJBIiwgInBhdGgiLCAibWFrZXMiLCAiZWRpdCIsICJUaGUiLCAiYW5kIiwgIm9uZSIsICJpcyJd" data-since="v0.4.11"></div>
-<p>A path makes one edit at a time. The everyday case is several edits at once, and the classic one is a REST <code>PATCH</code> that tidies the email, trims the SKU, and bumps the quantity. By hand that means threading the value through every step, guarding each optional field with an <code>if</code>, and, if you validate at all, throwing on the first bad field:</p>
-<pre><code class="language-java">    Order updated = order;
-    if (req.email() != null) {
-      updated = updated.withEmail(req.email().toLowerCase()); // thread the result...
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJBIiwgInBhdGgiLCAibWFrZXMiLCAiZWRpdCIsICJUaGUiLCAiYW5kIiwgIm9uZSIsICJpcyIsICJvZiIsICJhbiIsICJvcmRlciIsICJsaW5lIiwgImFuZCIsICJzZXRzIiwgImEiLCAibmV3IiwgInByaWNlIiwgIlRoZSIsICJyZXF1ZXN0IiwgImJvZHkiLCAiaXMiLCAiYSIsICJMaW5lSXRlbVBhdGNoKHNrdSIsICJxdHlEZWx0YSIsICJwcmljZSIsICJlYWNoIiwgImNvbXBvbmVudCIsICJudWxsIiwgIndoZW4iLCAidGhlIiwgImNsaWVudCIsICJkaWQiLCAibm90IiwgInNlbmQiLCAiaXQiXQ==" data-since="v0.4.11"></div>
+<p>A path makes one edit at a time. The everyday case is several edits at once, and the classic one is a REST <code>PATCH</code> of an order line that trims the SKU, bumps the quantity and sets a new price. The request body is a <code>LineItemPatch(sku, qtyDelta, price)</code>, each component <code>null</code> when the client did not send it. By hand that means threading the value through every step, guarding each optional field with an <code>if</code>, and, if you validate at all, throwing on the first bad field:</p>
+<pre><code class="language-java">    LineItem updated = line;
+    if (patch.sku() != null) {
+      updated = updated.withSku(patch.sku().strip()); // thread the result...
     }
-    if (req.sku() != null) {
-      updated = updated.withSku(req.sku().trim()); // ...through every step
+    if (patch.qtyDelta() != null) {
+      updated =
+          updated.withQuantity(updated.quantity() + patch.qtyDelta()); // ...through every step
     }
-    if (req.qtyDelta() != null) {
-      updated = updated.withQuantity(updated.quantity() + req.qtyDelta());
+    if (patch.price() != null) {
+      updated = updated.withPrice(new BigDecimal(patch.price())); // throws on a malformed price
     }
-    // And if the email was malformed? You throw on the first bad field and never see the rest.
+    // The SKU goes unchecked, and a malformed price throws, so the first bad field hides the rest.
 </code></pre>
 <div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJJZiIsICJ5b3UiLCAidXNlIiwgIk1hcFN0cnVjdCIsICJmb3IiLCAidGhpcyIsICJpdHMiLCAiYW5zd2VyIiwgImlzIiwgIkBNYXBwaW5nVGFyZ2V0IiwgIndpdGgiLCAiTnVsbFZhbHVlUHJvcGVydHlNYXBwaW5nU3RyYXRlZ3kuSUdOT1JFIiwgImFuZCIsICJDb21pbmciLCAiZnJvbSIsICJNYXBTdHJ1Y3RdKC4uL21hcHBpbmcvZnJvbV9tYXBzdHJ1Y3QubWQjZnJvbS1tYXBzdHJ1Y3QiLCAic2V0cyIsICJ0aGUiLCAidHdvIiwgInNpZGUiLCAiYnkiLCAic2lkZSJd" data-since="v0.4.11"></div>
 <p>Three pains recur: one <code>if</code> per optional field, the value re-threaded by hand at every step, and validation that stops at the first error instead of collecting them all. If you use MapStruct for this, its answer is <code>@MappingTarget</code> with <code>NullValuePropertyMappingStrategy.IGNORE</code>, and <a href="../mapping/from_mapstruct.html#from-mapstruct">Coming from MapStruct</a> sets the two side by side.</p>
@@ -336,43 +337,50 @@
 <hr />
 <div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJFZGl0cyIsICJ0aGF0IiwgImNhbm5vdCIsICJmYWlsIiwgInB1cmUtbXVsdGktZWRpdC1lZGl0c2NvbWJpbmUiXQ==" data-since="v0.4.11"></div>
 <h2 id="pure-multi-edit-editscombine"><a class="header" href="#pure-multi-edit-editscombine">Edits that cannot fail: <code>Edits.combine</code></a></h2>
-<div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJqb2lucyIsICJpbiIsICJvcmRlciIsICJVcGRhdGU8T3JkZXIiLCAiYSIsICJmdW5jdGlvbiIsICJmcm9tIiwgIm9yZGVyIiwgInRvIiwgIm9yZGVyIiwgInRoYXQiLCAieW91IiwgImNhbiIsICJuYW1lIiwgImFuZCIsICJyZXVzZSJd" data-since="v0.4.11"></div>
-<p>Each <code>Edit</code> factory pairs an optic (a <code>FocusPath</code> or a <code>Setter</code>) with a value or function. <code>combine</code> joins them, in order, into one <code>Update&lt;Order&gt;</code>: a function from order to order that you can name and reuse.</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJqb2lucyIsICJpbiIsICJvcmRlciIsICJVcGRhdGU8TGluZUl0ZW0iLCAiYSIsICJmdW5jdGlvbiIsICJmcm9tIiwgImxpbmUiLCAidG8iLCAibGluZSIsICJ0aGF0IiwgInlvdSIsICJjYW4iLCAibmFtZSIsICJhbmQiLCAicmV1c2UiXQ==" data-since="v0.4.11"></div>
+<p>Each <code>Edit</code> factory pairs an optic (a <code>FocusPath</code> or a <code>Setter</code>) with a value or function. <code>combine</code> joins them, in order, into one <code>Update&lt;LineItem&gt;</code>: a function from line to line that you can name and reuse.</p>
 <pre><code class="language-java">import static org.higherkindedj.optics.edit.Edit.*;
 
-    Update&lt;Order&gt; normalise =
-        Edits.combine(modify(EMAIL, String::toLowerCase), modify(SKU, String::trim));
+    Update&lt;LineItem&gt; tidy =
+        Edits.combine(
+            modify(SKU, sku -&gt; sku.strip().toUpperCase()),
+            modify(PRICE, price -&gt; price.setScale(2, RoundingMode.HALF_EVEN)));
 
-    Order orderA = new Order("ORD-1", "A@B.COM", " sku ", 1);
-    Order orderB = new Order("ORD-2", "C@D.COM", " sku2 ", 2);
+    Update&lt;LineItem&gt; doubled = Edits.combine(modify(QUANTITY, quantity -&gt; quantity * 2));
 
-    Order a = normalise.apply(orderA);
-    Order b = normalise.andThen(APPLY_DISCOUNT).apply(orderB); // Update composes further
+    LineItem lamp = tidy.apply(new LineItem(" lamp ", 1, new BigDecimal("40")));
+    // LineItem[sku=LAMP, quantity=1, price=40.00]
+
+    // an Update composes further: the bulbs are tidied, then their quantity doubled
+    LineItem bulbs = tidy.andThen(doubled).apply(new LineItem("bulb", 4, new BigDecimal("2.5")));
+    // LineItem[sku=BULB, quantity=8, price=2.50]
 </code></pre>
 <p>Only pure <code>Edit</code>s fit <code>combine</code>'s signature; a fallible edit is rejected <strong>at compile time</strong>, so validation failures can never be silently dropped.</p>
 <hr />
 <h2 id="sparse-updates-absent-means-leave-it-alone"><a class="header" href="#sparse-updates-absent-means-leave-it-alone">Sparse updates: absent means "leave it alone"</a></h2>
 <div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJjaGFuZ2VzIiwgIm5vdGhpbmciXQ==" data-since="v0.4.11"></div>
 <p>The <code>…IfPresent</code> factories treat <code>null</code> as <em>absent</em>: the edit changes nothing, so a sparse request DTO lands one-to-one with no <code>if</code> ceremony:</p>
-<pre><code class="language-java">    Edit&lt;Order&gt; number = setIfPresent(ORDER_NUMBER, req.orderNumber()); // null -&gt; no-op
-    Edit&lt;Order&gt; quantity = modifyIfPresent(QUANTITY, req.qtyDelta(), (delta, qty) -&gt; qty + delta);
+<pre><code class="language-java">    Edit&lt;LineItem&gt; sku = setIfPresent(SKU, sparsePatch.sku()); // null -&gt; no-op
+    Edit&lt;LineItem&gt; quantity =
+        modifyIfPresent(QUANTITY, sparsePatch.qtyDelta(), (delta, qty) -&gt; qty + delta);
+
+    LineItem restocked = Edits.combine(sku, quantity).apply(lampLine);
+    // LineItem[sku=LAMP, quantity=4, price=40.00]
 </code></pre>
 <p>Each request field maps to exactly one slot; an absent field simply contributes nothing to the fold:</p>
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJhY2NUaXRsZSIsICJBIiwgInNwYXJzZSIsICJyZXF1ZXN0IiwgImZpZWxkIiwgImJ5IiwgImZpZWxkIiwgImFjY0Rlc2NyIiwgIkEiLCAicmVxdWVzdCIsICJ3aXRoIiwgImFuIiwgImVtYWlsIiwgIm5vIiwgIlNLVSIsICJhbmQiLCAiYSIsICJxdWFudGl0eSIsICJkZWx0YSIsICJvZiIsICIzIiwgIlRoZSIsICJlbWFpbCIsICJpcyIsICJ3cml0dGVuIiwgInRoZSIsICJhYnNlbnQiLCAiU0tVIiwgImNoYW5nZXMiLCAibm90aGluZyIsICJhbmQiLCAidGhlIiwgInF1YW50aXR5IiwgImdyb3dzIiwgImJ5IiwgIjMiLCAic28iLCAidGhlIiwgIm9yZGVyIiwgImNvbWVzIiwgImJhY2siLCAid2l0aCIsICJpdHMiLCAiZW1haWwiLCAiYW5kIiwgInF1YW50aXR5IiwgImNoYW5nZWQiLCAiYW5kIiwgIml0cyIsICJTS1UiLCAidW50b3VjaGVkIiwgImFic2VudDxici8+bm8iXQ==" data-since="v0.4.11"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJhY2NUaXRsZSIsICJBIiwgInNwYXJzZSIsICJyZXF1ZXN0IiwgImZpZWxkIiwgImJ5IiwgImZpZWxkIiwgImFjY0Rlc2NyIiwgIkEiLCAicmVxdWVzdCIsICJ3aXRoIiwgIm5vIiwgIlNLVSIsICJhbmQiLCAiYSIsICJxdWFudGl0eSIsICJkZWx0YSIsICJvZiIsICIzIiwgIlRoZSIsICJhYnNlbnQiLCAiU0tVIiwgImNoYW5nZXMiLCAibm90aGluZyIsICJhbmQiLCAidGhlIiwgInF1YW50aXR5IiwgImdyb3dzIiwgImJ5IiwgIjMiLCAic28iLCAidGhlIiwgImxpbmUiLCAiY29tZXMiLCAiYmFjayIsICJ3aXRoIiwgIml0cyIsICJxdWFudGl0eSIsICJjaGFuZ2VkIiwgImFuZCIsICJpdHMiLCAiU0tVIiwgInVudG91Y2hlZCIsICJSZXEoW1wiTGluZUl0ZW1QYXRjaDxici8+c2t1IiwgImFic2VudDxici8+bm8iLCAicHJlc2VudDxici8+cXVhbnRpdHkiLCAiUyIsICJPdXQoW1wibGluZSIsICJjaGFuZ2VkLDxici8+U0tVIiwgIlJlcSxTLFEiXQ==" data-since="v0.4.11"></div>
 <pre class="mermaid">flowchart TD
     accTitle: A sparse request, field by field
-    accDescr: A request with an email, no SKU and a quantity delta of 3. The email is written, the absent SKU changes nothing, and the quantity grows by 3, so the order comes back with its email and quantity changed and its SKU untouched.
-    Req([&quot;PatchRequest&lt;br/&gt;email: a@b.example, sku: null, qtyDelta: 3&quot;])
-    Req --&gt; E([&quot;email present&lt;br/&gt;write it&quot;])
+    accDescr: A request with no SKU and a quantity delta of 3. The absent SKU changes nothing and the quantity grows by 3, so the line comes back with its quantity changed and its SKU untouched.
+    Req([&quot;LineItemPatch&lt;br/&gt;sku: null, qtyDelta: 3&quot;])
     Req --&gt; S([&quot;sku absent&lt;br/&gt;no change&quot;])
-    Req --&gt; Q([&quot;qtyDelta present&lt;br/&gt;qty += 3&quot;])
-    E --&gt; Out([&quot;order': email and quantity changed,&lt;br/&gt;sku untouched&quot;])
-    S --&gt; Out
+    Req --&gt; Q([&quot;qtyDelta present&lt;br/&gt;quantity += 3&quot;])
+    S --&gt; Out([&quot;line': quantity changed,&lt;br/&gt;SKU untouched&quot;])
     Q --&gt; Out
 
     classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
     classDef out fill:#e5c890,stroke:#df8e1d,color:#232634
-    class Req,E,S,Q tier
+    class Req,S,Q tier
     class Out out
 </pre>
 <div id="admonition-absent-and-null-are-deliberately-the-same" class="admonition admonish-warning" role="note" aria-labelledby="admonition-absent-and-null-are-deliberately-the-same-title">
@@ -388,8 +396,8 @@
 </div>
 <hr />
 <h2 id="validated-patch-editsaccumulate"><a class="header" href="#validated-patch-editsaccumulate">Validated PATCH: <code>Edits.accumulate</code></a></h2>
-<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJzbyIsICJhIiwgImRlZmluZWQiLCAicGFzc2VzIiwgIml0cyIsICJwYXJzZSIsICJoZXJlIiwgIlRoaXMiLCAicmVxdWVzdCdzIiwgIm9yZGVyIiwgIm51bWJlciIsICJlbWFpbCIsICJhcmUiLCAiYm90aCJd" data-since="v0.4.11"></div>
-<p><code>parseIfPresent</code> parses the incoming value first, and a generated path locates any failure <strong>automatically</strong> from its own label. The parser you hand it has exactly the shape of a <a href="validated_prism.html"><code>ValidatedPrism</code></a>'s <code>parse</code>, so a boundary defined once as a prism passes its <code>parse</code> here. This request's order number and email are both bad:</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJzbyIsICJhIiwgImRlZmluZWQiLCAicGFzc2VzIiwgIml0cyIsICJwYXJzZSIsICJoZXJlIiwgIlRoaXMiLCAicmVxdWVzdCdzIiwgIlNLVSIsICJwcmljZSIsICJhcmUiLCAiYm90aCJd" data-since="v0.4.11"></div>
+<p><code>parseIfPresent</code> parses the incoming value first, and a generated path locates any failure <strong>automatically</strong> from its own label. The parser you hand it has exactly the shape of a <a href="validated_prism.html"><code>ValidatedPrism</code></a>'s <code>parse</code>, so a boundary defined once as a prism passes its <code>parse</code> here. This request's SKU and price are both bad:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.11"></div>
 <details id="admonition-the-two-parsers" class="admonition admonish-example" role="note" aria-labelledby="admonition-the-two-parsers-title">
 <summary class="admonition-title">
@@ -400,40 +408,46 @@
 </summary>
 <div>
 <pre><code class="language-java">/** The boundary parsers the page hands to {@code parseIfPresent}. */
-final class OrderNumber {
+final class Sku {
   static Validated&lt;NonEmptyList&lt;FieldError&gt;, String&gt; parse(String raw) {
-    return raw.matches("ORD-\\d+")
-        ? Validated.validNel(raw)
-        : Validated.invalidNel(FieldError.of("not an order number"));
+    String sku = raw.strip();
+    return sku.matches("[A-Z0-9-]+")
+        ? Validated.validNel(sku)
+        : Validated.invalidNel(FieldError.of("not a SKU"));
   }
 
-  private OrderNumber() {}
+  private Sku() {}
 }
 
-final class Email {
-  static Validated&lt;NonEmptyList&lt;FieldError&gt;, String&gt; parse(String raw) {
-    return raw.contains("@")
-        ? Validated.validNel(raw)
-        : Validated.invalidNel(FieldError.of("not an address"));
+final class Price {
+  static Validated&lt;NonEmptyList&lt;FieldError&gt;, BigDecimal&gt; parse(String raw) {
+    try {
+      BigDecimal price = new BigDecimal(raw.strip());
+      return price.signum() &gt;= 0
+          ? Validated.validNel(price)
+          : Validated.invalidNel(FieldError.of("not a price"));
+    } catch (NumberFormatException e) {
+      return Validated.invalidNel(FieldError.of("not a price"));
+    }
   }
 
-  private Email() {}
+  private Price() {}
 }
 </code></pre>
 </div>
 </details>
-<pre><code class="language-java">    Validated&lt;NonEmptyList&lt;FieldError&gt;, Order&gt; patched =
+<pre><code class="language-java">    Validated&lt;NonEmptyList&lt;FieldError&gt;, LineItem&gt; patched =
         Edits.accumulate(
-                parseIfPresent(ORDER_NUMBER, req.orderNumber(), OrderNumber::parse),
-                parseIfPresent(EMAIL, req.email(), Email::parse),
-                modifyIfPresent(QUANTITY, req.qtyDelta(), (delta, qty) -&gt; qty + delta))
-            .apply(order);
-    // Invalid(NonEmptyList[orderNumber: not an order number, email: not an address])
-    //   &lt;- or Valid(order) with only the present fields changed
+                parseIfPresent(SKU, badPatch.sku(), Sku::parse),
+                modifyIfPresent(QUANTITY, badPatch.qtyDelta(), (delta, qty) -&gt; qty + delta),
+                parseIfPresent(PRICE, badPatch.price(), Price::parse))
+            .apply(line);
+    // Invalid(NonEmptyList[sku: not a SKU, price: not a price])
+    //   &lt;- or Valid(line) with only the present fields changed
 </code></pre>
 <div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJjaGVja3MiLCAiZXZlcnkiLCAiZWRpdCIsICJpbmRlcGVuZGVudGx5IiwgImFuZCIsICJyZXBvcnRzIiwgImFsbCIsICJ0aGUiLCAiYmFkIiwgImZpZWxkcyIsICJhdCIsICJvbmNlIiwgImVhY2giLCAibmFtZWQiLCAiYnkiLCAiaXRzIiwgInBhdGgiLCAiVGhlIiwgImVycm9ycyIsICJhcnJpdmUiLCAiYXMiLCAiaW4iLCAiYW5kIiwgIm9uZSIsICJwYXRjaCIsICJjYW4iLCAiaG9sZCIsICJhbnkiLCAibnVtYmVyIiwgIm9mIiwgImVkaXRzIl0=" data-since="v0.4.11"></div>
 <p><code>accumulate</code> checks <strong>every</strong> edit independently and reports <strong>all</strong> the bad fields at once, each named by its path. The errors arrive in edit order on the <code>NonEmptyList</code>, as in the <a href="../monads/validated_assembly.html">accumulating assembly</a>, and one patch can hold any number of edits.</p>
-<div class="hkj-ct-mark" data-kind="modified" data-run="mid" data-words="WyJpcyIsICJsYWJlbGxlZCIsICJDb21wb3NpbmciLCAiam9pbnMiLCAidGhlIiwgInNvIiwgImlzIiwgIndoaWNoIiwgInNlZ21lbnRzIiwgInBhdGhTdHJpbmciLCAicmV0dXJuIiwgInNvIiwgImEiLCAiZ2VuZXJhdGVkIiwgInBhdGgiLCAibmVlZHMiLCAiYSIsICJvcHRpYyIsICJhcyIsICJGaWVsZEVycm9yLmF0IiwgImRvZXMiXQ==" data-since="v0.4.11"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="mid" data-words="WyJMaW5lSXRlbUZvY3VzLnNrdSIsICJpcyIsICJsYWJlbGxlZCIsICJza3UiLCAiQ29tcG9zaW5nIiwgImpvaW5zIiwgInRoZSIsICJzbyIsICJPcmRlckZvY3VzLmN1c3RvbWVyKCkuZW1haWwoKS52YWx1ZSIsICJpcyIsICJjdXN0b21lci5lbWFpbC52YWx1ZSIsICJ3aGljaCIsICJzZWdtZW50cyIsICJwYXRoU3RyaW5nIiwgInJldHVybiIsICJzbyIsICJhIiwgImdlbmVyYXRlZCIsICJwYXRoIiwgIm5lZWRzIiwgImEiLCAib3B0aWMiLCAiYXMiLCAiRmllbGRFcnJvci5hdCIsICJkb2VzIl0=" data-since="v0.4.11"></div>
 <div id="admonition-generated-paths-label-themselves" class="admonition admonish-tip" role="note" aria-labelledby="admonition-generated-paths-label-themselves-title">
 <div class="admonition-title">
 <div id="admonition-generated-paths-label-themselves-title">
@@ -442,11 +456,11 @@ final class Email {
 <a class="admonition-anchor-link" href="#admonition-generated-paths-label-themselves"></a>
 </div>
 <div>
-<p>A path from a <code>@GenerateFocus</code> companion carries its record-component name as a <strong>segment</strong>: <code>OrderFocus.email()</code> is labelled <code>"email"</code>. Composing paths joins the segments, so <code>customer.via(address).via(zip)</code> is <code>"customer.address.zip"</code>, which <code>segments()</code> and <code>pathString()</code> return. <code>parseIfPresent</code> locates failures with them <strong>automatically</strong>, so a generated path needs no <code>.at(...)</code>. An explicit <code>.at(label)</code> still prepends outward, for a hand-written optic or extra context, as <code>FieldError.at</code> does.</p>
+<p>A path from a <code>@GenerateFocus</code> companion carries its record-component name as a <strong>segment</strong>: <code>LineItemFocus.sku()</code> is labelled <code>"sku"</code>. Composing paths joins the segments, so <code>OrderFocus.customer().email().value()</code> is <code>"customer.email.value"</code>, which <code>segments()</code> and <code>pathString()</code> return. <code>parseIfPresent</code> locates failures with them <strong>automatically</strong>, so a generated path needs no <code>.at(...)</code>. An explicit <code>.at(label)</code> still prepends outward, for a hand-written optic or extra context, as <code>FieldError.at</code> does.</p>
 </div>
 </div>
-<div class="hkj-ct-mark" data-kind="modified" data-run="mid" data-words="WyJUbyIsICJjYXJyeSIsICJvbiIsICJpbiIsICJhbiIsICJFZmZlY3QiLCAiUGF0aCJd" data-since="v0.4.11"></div>
-<p>To carry on in an Effect Path, <code>applyPath(order)</code> is the <code>ValidationPath</code> twin of <code>apply(order)</code>, and <code>toValidated()</code> exposes the folded <code>Update</code> itself for reuse.</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="mid" data-words="WyJUbyIsICJjYXJyeSIsICJvbiIsICJpbiIsICJhbiIsICJFZmZlY3QiLCAiUGF0aCIsICJhcHBseVBhdGgobGluZSIsICJhcHBseShsaW5lIl0=" data-since="v0.4.11"></div>
+<p>To carry on in an Effect Path, <code>applyPath(line)</code> is the <code>ValidationPath</code> twin of <code>apply(line)</code>, and <code>toValidated()</code> exposes the folded <code>Update</code> itself for reuse.</p>
 <div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJJdCIsICJyZXR1cm5zIiwgIndpdGgiLCAiYXBwbHkiLCAiYXBwbHlQYXRoIiwgImFuZCIsICJ0b1ZhbGlkYXRlZCJd" data-since="v0.4.11"></div>
 <div id="admonition-generate-this-when-the-shape-is-regular" class="admonition admonish-tip" role="note" aria-labelledby="admonition-generate-this-when-the-shape-is-regular-title">
 <div class="admonition-title">
@@ -490,21 +504,21 @@ final class Email {
 <li><strong>Validate</strong>: each edit's incoming value is checked independently. Validation never sees a source, so every check runs, and one patch applies to many sources.</li>
 <li><strong>Apply</strong>: only if every edit validated, the writes run as a single left-to-right fold.</li>
 </ol>
-<div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJhY2NUaXRsZSIsICJWYWxpZGF0ZSIsICJldmVyeXRoaW5nIiwgInRoZW4iLCAid3JpdGUiLCAib25jZSIsICJhY2NEZXNjciIsICJJbiIsICJwaGFzZSIsICIxIiwgImVhY2giLCAiZWRpdCIsICJpcyIsICJjaGVja2VkIiwgIm9uIiwgIml0cyIsICJvd24iLCAid2l0aCIsICJubyIsICJzb3VyY2UiLCAiYW4iLCAiYWJzZW50IiwgIlNLVSIsICJpcyIsICJhIiwgInZhbGlkIiwgIm5vLW9wIiwgInRoZSIsICJlbWFpbCIsICJpcyIsICJwYXJzZWQiLCAiYW5kIiwgImEiLCAicHJlc2VudCIsICJxdWFudGl0eSIsICJkZWx0YSIsICJpcyIsICJhIiwgInZhbGlkIiwgIndyaXRlIiwgIklmIiwgImV2ZXJ5IiwgImVkaXQiLCAiaXMiLCAidmFsaWQiLCAicGhhc2UiLCAiMiIsICJydW5zIiwgInRoZSIsICJ3cml0ZXMiLCAiYXMiLCAib25lIiwgImxlZnQtdG8tcmlnaHQiLCAiZm9sZCIsICJvdGhlcndpc2UiLCAidGhlIiwgInJlc3VsdCIsICJpcyIsICJJbnZhbGlkIiwgIndpdGgiLCAiZXZlcnkiLCAiYmFkIiwgImZpZWxkIiwgImxvY2F0ZWQiLCAic28iLCAibm8iLCAiY2hhbmdlIl0=" data-since="v0.4.11"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJhY2NUaXRsZSIsICJWYWxpZGF0ZSIsICJldmVyeXRoaW5nIiwgInRoZW4iLCAid3JpdGUiLCAib25jZSIsICJhY2NEZXNjciIsICJJbiIsICJwaGFzZSIsICIxIiwgImVhY2giLCAiZWRpdCIsICJpcyIsICJjaGVja2VkIiwgIm9uIiwgIml0cyIsICJvd24iLCAid2l0aCIsICJubyIsICJzb3VyY2UiLCAiYW4iLCAiYWJzZW50IiwgIlNLVSIsICJpcyIsICJhIiwgInZhbGlkIiwgIm5vLW9wIiwgInRoZSIsICJwcmljZSIsICJpcyIsICJwYXJzZWQiLCAiYW5kIiwgImEiLCAicHJlc2VudCIsICJxdWFudGl0eSIsICJkZWx0YSIsICJpcyIsICJhIiwgInZhbGlkIiwgIndyaXRlIiwgIklmIiwgImV2ZXJ5IiwgImVkaXQiLCAiaXMiLCAidmFsaWQiLCAicGhhc2UiLCAiMiIsICJydW5zIiwgInRoZSIsICJ3cml0ZXMiLCAiYXMiLCAib25lIiwgImxlZnQtdG8tcmlnaHQiLCAiZm9sZCIsICJvdGhlcndpc2UiLCAidGhlIiwgInJlc3VsdCIsICJpcyIsICJJbnZhbGlkIiwgIndpdGgiLCAiZXZlcnkiLCAiYmFkIiwgImZpZWxkIiwgImxvY2F0ZWQiLCAic28iLCAibm8iLCAiY2hhbmdlIiwgIlMyKFtcInBhcnNlSWZQcmVzZW50KFBSSUNFIiwgImZvbGQ8YnIvPlZhbGlkKGxpbmUiLCAiQmFkKFtcIkludmFsaWQoTkVMW3ByaWNlIl0=" data-since="v0.4.11"></div>
 <pre class="mermaid">flowchart TD
     accTitle: Validate everything, then write once
-    accDescr: In phase 1 each edit is checked on its own, with no source: an absent SKU is a valid no-op, the email is parsed, and a present quantity delta is a valid write. If every edit is valid, phase 2 runs the writes as one left-to-right fold; otherwise the result is Invalid with every bad field located.
+    accDescr: In phase 1 each edit is checked on its own, with no source: an absent SKU is a valid no-op, the price is parsed, and a present quantity delta is a valid write. If every edit is valid, phase 2 runs the writes as one left-to-right fold; otherwise the result is Invalid with every bad field located.
     subgraph one[&quot;Phase 1: validate each edit independently, no source involved&quot;]
         direction TB
         S1([&quot;setIfPresent(SKU, null)&lt;br/&gt;absent, so no change&quot;]) --&gt; V1([&quot;Valid, a no-op&quot;])
-        S2([&quot;parseIfPresent(EMAIL, raw)&lt;br/&gt;the parser runs&quot;]) --&gt; V2([&quot;Valid(write)&lt;br/&gt;or Invalid(errors)&quot;])
+        S2([&quot;parseIfPresent(PRICE, raw)&lt;br/&gt;the parser runs&quot;]) --&gt; V2([&quot;Valid(write)&lt;br/&gt;or Invalid(errors)&quot;])
         S3([&quot;modifyIfPresent(QTY, 3)&lt;br/&gt;present → write&quot;]) --&gt; V3([&quot;Valid(write)&quot;])
     end
     V1 --&gt; Q{&quot;every edit Valid?&quot;}
     V2 --&gt; Q
     V3 --&gt; Q
-    Q --&gt;|&quot;yes&quot;| Ok([&quot;Phase 2: one left-to-right fold&lt;br/&gt;Valid(order'), only the present fields written&quot;])
-    Q --&gt;|&quot;no&quot;| Bad([&quot;Invalid(NEL[email: …])&lt;br/&gt;every bad field, located&quot;])
+    Q --&gt;|&quot;yes&quot;| Ok([&quot;Phase 2: one left-to-right fold&lt;br/&gt;Valid(line'), only the present fields written&quot;])
+    Q --&gt;|&quot;no&quot;| Bad([&quot;Invalid(NEL[price: …])&lt;br/&gt;every bad field, located&quot;])
 
     classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
     classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
@@ -516,45 +530,48 @@ final class Email {
 <p>Application order is observable only when paths overlap: disjoint paths commute; an edit at an overlapping path sees the previous edit's result (a <code>modify</code> reads the <em>current</em> value at application time). Genuinely coupled fields belong in one atomic edit (see <a href="coupled_fields.html">Coupled Fields</a> and <code>Lens.paired</code>), or, when a record's constructor checks them against each other, <a href="#fields-a-constructor-checks-together">onto a focus</a>.</p>
 <hr />
 <h2 id="fields-a-constructor-checks-together"><a class="header" href="#fields-a-constructor-checks-together">Fields a constructor checks together</a></h2>
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJUYWtlIiwgImEiLCAiSXQiXQ==" data-since="v0.4.11"></div>
-<p>Each write through a record's path builds a new record, so the constructor sees every value the fold passes through. Take a range whose constructor refuses <code>lo &gt; hi</code>. It cannot move from <code>Range(1, 3)</code> to <code>Range(5, 10)</code> one end at a time: writing <code>lo</code> first builds <code>Range(5, 3)</code>, and the constructor throws before <code>hi</code> is written, although the final range is valid.</p>
-<p><code>Edits.accumulate(focus, edits...)</code> takes a <code>Lens</code> to a value carrying the fields the edits set, with no check of its own. The edits write onto that value, and the lens sets it back once, so the constructor sees only the final values:</p>
-<pre><code class="language-java">record Range(int lo, int hi) {
-  Range {
-    if (lo &gt; hi) {
-      throw new IllegalArgumentException("lo &gt; hi");
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJUYWtlIiwgImEiLCAiUHJpY2VCYW5kIiwgImEiLCAiY2F0YWxvZ3VlIiwgInByaWNlIiwgImJhbmQiLCAiaW4iLCAicGVuY2UiLCAiZmxvb3IiLCAiY2VpbGluZyIsICJJdCIsICJQcmljZUJhbmQoMTAwIiwgIjMwMCIsICJQcmljZUJhbmQoNTAwIiwgIjEwMDAiLCAidGhlIiwgImZsb29yIiwgIlByaWNlQmFuZCg1MDAiLCAiMzAwIiwgInRoZSIsICJjZWlsaW5nIiwgImJhbmQiXQ==" data-since="v0.4.11"></div>
+<p>Each write through a record's path builds a new record, so the constructor sees every value the fold passes through. Take a <code>PriceBand</code>, a catalogue price band in pence, whose constructor refuses <code>floor &gt; ceiling</code>. It cannot move from <code>PriceBand(100, 300)</code> to <code>PriceBand(500, 1000)</code> one end at a time: writing the floor first builds <code>PriceBand(500, 300)</code>, and the constructor throws before the ceiling is written, although the final band is valid.</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJoZXJlIiwgIkJvdW5kcyIsICJUaGUiLCAicmVxdWVzdCIsICJtb3ZlIiwgImFza3MiLCAiZm9yIiwgImEiLCAiZmxvb3IiLCAib2YiLCAiNTAwIiwgImFuZCIsICJhIiwgImNlaWxpbmciLCAib2YiLCAiMTAwMCJd" data-since="v0.4.11"></div>
+<p><code>Edits.accumulate(focus, edits...)</code> takes a <code>Lens</code> to a value carrying the fields the edits set, with no check of its own, here <code>Bounds</code>. The request <code>move</code> asks for a floor of 500 and a ceiling of 1000. The edits write onto that value, and the lens sets it back once, so the constructor sees only the final values:</p>
+<pre><code class="language-java">record PriceBand(int floor, int ceiling) {
+  PriceBand {
+    if (floor &gt; ceiling) {
+      throw new IllegalArgumentException("floor above ceiling");
     }
   }
 }
 
 @GenerateFocus
-record Ends(int lo, int hi) {} // the fields the edits set, with no check of their own
+record Bounds(int floor, int ceiling) {} // the fields the edits set, with no check of their own
 
 </code></pre>
-<pre><code class="language-java">    Lens&lt;Range, Ends&gt; ends =
-        Lens.of(r -&gt; new Ends(r.lo(), r.hi()), (r, e) -&gt; new Range(e.lo(), e.hi()));
+<pre><code class="language-java">    Lens&lt;PriceBand, Bounds&gt; bounds =
+        Lens.of(
+            band -&gt; new Bounds(band.floor(), band.ceiling()),
+            (_, b) -&gt; new PriceBand(b.floor(), b.ceiling()));
 
-    Validated&lt;NonEmptyList&lt;FieldError&gt;, Range&gt; moved =
+    Validated&lt;NonEmptyList&lt;FieldError&gt;, PriceBand&gt; moved =
         Edits.accumulate(
-                ends,
-                setIfPresent(EndsFocus.lo(), move.lo()),
-                setIfPresent(EndsFocus.hi(), move.hi()))
-            .apply(new Range(1, 3));
-    // Valid(Range[lo=5, hi=10])
-    //   &lt;- both ends move together. Moving lo alone would make Range(5, 3), which the
-    //      record's own constructor refuses, and the refusal arrives as a located error.
+                bounds,
+                setIfPresent(BoundsFocus.floor(), move.floor()),
+                setIfPresent(BoundsFocus.ceiling(), move.ceiling()))
+            .apply(new PriceBand(100, 300));
+    // Valid(PriceBand[floor=500, ceiling=1000])
+    //   &lt;- both ends move together. Moving the floor alone would make PriceBand(500, 300), which
+    //      the record's own constructor refuses, and the refusal would arrive as an error.
 </code></pre>
-<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJhY2NUaXRsZSIsICJPbmUiLCAicmVjb3JkIiwgInBlciIsICJlZGl0IiwgIm9yIiwgIm9uZSIsICJyZWNvcmQiLCAiaW4iLCAiYWxsIiwgImFjY0Rlc2NyIiwgIldpdGgiLCAicGxhaW4iLCAiYWNjdW11bGF0ZSIsICJzZXR0aW5nIiwgImxvIiwgInRvIiwgIjUiLCAib24iLCAiUmFuZ2UoMSIsICIzIiwgImJ1aWxkcyIsICJSYW5nZSg1IiwgIjMiLCAid2hpY2giLCAidGhlIiwgImNvbnN0cnVjdG9yIiwgInJlZnVzZXMiLCAiV2l0aCIsICJhY2N1bXVsYXRlIiwgIm9udG8iLCAidGhlIiwgIkVuZHMiLCAiZm9jdXMiLCAibG8iLCAiYW5kIiwgImhpIiwgImFyZSIsICJ3cml0dGVuIiwgIm9udG8iLCAiRW5kcygxIiwgIjMiLCAiaW4iLCAidHVybiIsICJnaXZpbmciLCAiRW5kcyg1IiwgIjEwIiwgImFuZCIsICJ0aGUiLCAibGVucyIsICJzZXRzIiwgIml0IiwgImJhY2siLCAib25jZSIsICJhcyIsICJSYW5nZSg1IiwgIjEwIl0=" data-since="v0.4.11"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJhY2NUaXRsZSIsICJPbmUiLCAicmVjb3JkIiwgInBlciIsICJlZGl0IiwgIm9yIiwgIm9uZSIsICJyZWNvcmQiLCAiaW4iLCAiYWxsIiwgImFjY0Rlc2NyIiwgIldpdGgiLCAicGxhaW4iLCAiYWNjdW11bGF0ZSIsICJzZXR0aW5nIiwgInRoZSIsICJmbG9vciIsICJ0byIsICI1MDAiLCAib24iLCAiUHJpY2VCYW5kKDEwMCIsICIzMDAiLCAiYnVpbGRzIiwgIlByaWNlQmFuZCg1MDAiLCAiMzAwIiwgIndoaWNoIiwgInRoZSIsICJjb25zdHJ1Y3RvciIsICJyZWZ1c2VzIiwgIldpdGgiLCAiYWNjdW11bGF0ZSIsICJvbnRvIiwgInRoZSIsICJCb3VuZHMiLCAiZm9jdXMiLCAidGhlIiwgImZsb29yIiwgImFuZCIsICJjZWlsaW5nIiwgImFyZSIsICJ3cml0dGVuIiwgIm9udG8iLCAiQm91bmRzKDEwMCIsICIzMDAiLCAiaW4iLCAidHVybiIsICJnaXZpbmciLCAiQm91bmRzKDUwMCIsICIxMDAwIiwgImFuZCIsICJ0aGUiLCAibGVucyIsICJzZXRzIiwgIml0IiwgImJhY2siLCAib25jZSIsICJhcyIsICJQcmljZUJhbmQoNTAwIiwgIjEwMDAiLCAiQTEoW1wiUHJpY2VCYW5kKDEwMCIsICIzMDAiLCAifFwiZmxvb3IiLCAiNTAwXCJ8IiwgIkEyKFtcIlByaWNlQmFuZCg1MDAiLCAiMzAwKTxici8+dGhlIiwgIm9uY2VbXCJhY2N1bXVsYXRlKGJvdW5kcyIsICJQcmljZUJhbmQiLCAiQjEoW1wiQm91bmRzKDEwMCIsICIzMDAiLCAifFwiZmxvb3IiLCAiNTAwXCJ8IiwgIkIyKFtcIkJvdW5kcyg1MDAiLCAiMzAwIiwgInxcImNlaWxpbmciLCAiMTAwMFwifCIsICJCMyhbXCJCb3VuZHMoNTAwIiwgIjEwMDAiLCAiQjQoW1wiUHJpY2VCYW5kKDUwMCIsICIxMDAwIl0=" data-since="v0.4.11"></div>
 <pre class="mermaid">flowchart LR
     accTitle: One record per edit, or one record in all
-    accDescr: With plain accumulate, setting lo to 5 on Range(1, 3) builds Range(5, 3), which the constructor refuses. With accumulate onto the Ends focus, lo and hi are written onto Ends(1, 3) in turn, giving Ends(5, 10), and the lens sets it back once as Range(5, 10).
+    accDescr: With plain accumulate, setting the floor to 500 on PriceBand(100, 300) builds PriceBand(500, 300), which the constructor refuses. With accumulate onto the Bounds focus, the floor and ceiling are written onto Bounds(100, 300) in turn, giving Bounds(500, 1000), and the lens sets it back once as PriceBand(500, 1000).
     subgraph each[&quot;accumulate(edits…): one record per edit&quot;]
         direction LR
-        A1([&quot;Range(1, 3)&quot;]) --&gt;|&quot;lo = 5&quot;| A2([&quot;Range(5, 3)&lt;br/&gt;the constructor throws&quot;])
+        A1([&quot;PriceBand(100, 300)&quot;]) --&gt;|&quot;floor = 500&quot;| A2([&quot;PriceBand(500, 300)&lt;br/&gt;the constructor throws&quot;])
     end
-    subgraph once[&quot;accumulate(ends, edits…): one Range in all&quot;]
+    subgraph once[&quot;accumulate(bounds, edits…): one PriceBand in all&quot;]
         direction LR
-        B1([&quot;Ends(1, 3)&quot;]) --&gt;|&quot;lo = 5&quot;| B2([&quot;Ends(5, 3)&quot;]) --&gt;|&quot;hi = 10&quot;| B3([&quot;Ends(5, 10)&quot;]) --&gt;|&quot;set once&quot;| B4([&quot;Range(5, 10)&quot;])
+        B1([&quot;Bounds(100, 300)&quot;]) --&gt;|&quot;floor = 500&quot;| B2([&quot;Bounds(500, 300)&quot;]) --&gt;|&quot;ceiling = 1000&quot;| B3([&quot;Bounds(500, 1000)&quot;]) --&gt;|&quot;set once&quot;| B4([&quot;PriceBand(500, 1000)&quot;])
     end
 
     classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
@@ -562,9 +579,8 @@ record Ends(int lo, int hi) {} // the fields the edits set, with no check of the
     class A1,B1,B2,B3,B4 tier
     class A2 bad
 </pre>
-<div class="hkj-ct-mark" data-kind="modified" data-run="mid" data-words="WyJAR2VuZXJhdGVNYXBwaW5nIiwgIm9uIiwgImFuIiwgIlVwZGF0ZVNwZWNgXSguLi9tYXBwaW5nL2JlYW5zX3BhdGNoLm1kI2ZpZWxkcy1hLWNvbnN0cnVjdG9yLWNoZWNrcy10b2dldGhlciIsICJnZW5lcmF0ZXMiLCAidGhpcyIsICJpdHMiLCAidXBkYXRlRnJvbSIsICJjb21wb25lbnRzIiwgImEiLCAiUEFUQ0giLCAiY2FuIiwgInNldCIsICJjb25zdHJ1Y3RzIiwgInRoZSIsICJkb21haW4iLCAicmVjb3JkIl0=" data-since="v0.4.11"></div>
 <p><code>@GenerateMapping</code> on an <a href="../mapping/beans_patch.html#fields-a-constructor-checks-together"><code>UpdateSpec</code></a> generates exactly this: its <code>updateFrom</code> writes onto the components a PATCH can set and constructs the domain record once.</p>
-<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
+<div class="hkj-ct-mark" data-kind="new" data-run="solo" data-since="v0.4.11"></div>
 <div id="admonition-you-can-ship-now" class="admonition admonish-tip" role="note" aria-labelledby="admonition-you-can-ship-now-title">
 <div class="admonition-title">
 <div id="admonition-you-can-ship-now-title">
@@ -576,9 +592,8 @@ record Ends(int lo, int hi) {} // the fields the edits set, with no check of the
 <p>You can now update nested records, check what you write, and apply a PATCH that reports every bad field. The On demand groups that follow are for when a task needs them, and <a href="#when-the-constructor-refuses">When the constructor refuses</a> is the fine print of this page.</p>
 </div>
 </div>
-<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <hr />
-<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJUaGUiLCAiZmluZSIsICJwcmludCIsICJ0aGUtZmluZS1wcmludCJd" data-since="v0.4.11"></div>
 <h2 id="the-fine-print"><a class="header" href="#the-fine-print">The fine print</a></h2>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <h3 id="when-the-constructor-refuses"><a class="header" href="#when-the-constructor-refuses">When the constructor refuses</a></h3>
@@ -586,15 +601,17 @@ record Ends(int lo, int hi) {} // the fields the edits set, with no check of the
 <p>The edits validate exactly as they do in <code>accumulate</code>, and their errors are reported alone: the record is constructed only once every edit validated. After that, <code>apply</code> treats each kind of exception its own way:</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <div class="table-wrapper"><table><thead><tr><th>What happens</th><th>What <code>apply</code> returns</th></tr></thead><tbody>
-<tr><td>Setting the focus back throws a <code>RuntimeException</code>: the constructor refusing the final values</td><td>An unlabelled <code>FieldError</code> carrying the exception's message, or <code>not a valid Range</code> when the message is missing or blank</td></tr>
+<tr><td>Setting the focus back throws a <code>RuntimeException</code>: the constructor refusing the final values</td><td>An unlabelled <code>FieldError</code> carrying the exception's message, or <code>not a valid PriceBand</code> when the message is missing or blank</td></tr>
 <tr><td>An edit's own function, or reading the focus, throws</td><td>Nothing: the exception propagates, since only setting the focus back is guarded</td></tr>
 <tr><td>Every edit is absent</td><td>The source as it is, without setting the focus</td></tr>
 </tbody></table>
-</div><div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.11"></div>
+</div><div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <p><code>toValidated()</code> hands back an <code>Update</code> that writes onto the focus and sets it back once. An <code>Update</code> has no error channel, so a refusal throws from it.</p>
-<p>The edits' errors are located relative to the focus. Where the focus is a nested component rather than the source's own fields, add the component's name to each edit with <code>.at("range")</code>, so their errors and the source agree on where they are.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
+<p>The edits' errors are located relative to the focus. Where the focus is a nested component rather than the source's own fields, add the component's name to each edit with <code>.at("band")</code>, so their errors and the source agree on where they are.</p>
+<div class="hkj-ct-mark" data-kind="new" data-run="mid" data-since="v0.4.11"></div>
 <hr />
-<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJqb2lucyIsICJ0aGF0IiwgImNhbm5vdCIsICJmYWlsIiwgIkEiLCAiZmFsbGlibGUiLCAiZWRpdCIsICJkb2VzIiwgIm5vdCIsICJjb21waWxlIiwgInRoZXJlIiwgIkFuIiwgImFic2VudCIsICJ2YWx1ZSIsICJjaGFuZ2VzIiwgIm5vdGhpbmciLCAiVGhlIiwgImZvcm1zIiwgInRha2UiLCAiYSIsICJyZXF1ZXN0IiwgImZpZWxkIiwgImJ5IiwgImZpZWxkIiwgImNoZWNrcyIsICJldmVyeSIsICJiYWQiLCAiZmllbGQiLCAiVGhlIiwgImVycm9ycyIsICJhcnJpdmUiLCAiYW5kIiwgImFuZCIsICJhIiwgInBhdGNoIiwgImhvbGRzIiwgImFueSIsICJudW1iZXIiLCAib2YiLCAiZWRpdHMiLCAiQSIsICJwYXRjaCIsICJ2YWxpZGF0ZXMiLCAiZmlyc3QiLCAidGhlbiIsICJ3cml0ZXMiLCAib25jZSIsICJWYWxpZGF0aW9uIiwgIm5ldmVyIiwgInNlZXMiLCAidGhlIiwgInNvdXJjZSIsICJhbmQiLCAidGhlIiwgImxlZnQiLCAidG8iLCAicmlnaHQiLCAiZXZlcnkiLCAiZWRpdCIsICJwYXNzZWQiLCAiRmllbGRzIiwgInRoYXQiLCAibXVzdCIsICJjaGFuZ2UiLCAidG9nZXRoZXIiLCAiYmVsb25nIiwgImluIiwgInN1Y2giLCAiYXMiLCAiYnVpbGRzIiwgInRoZSIsICJyZWNvcmQiLCAiQSIsICJ0aGF0IiwgImNoZWNrcyJd" data-since="v0.4.11"></div>
+<div class="hkj-ct-mark" data-kind="new" data-run="end" data-since="v0.4.11"></div>
 <div id="admonition-key-takeaways" class="admonition admonish-info" role="note" aria-labelledby="admonition-key-takeaways-title">
 <div class="admonition-title">
 <div id="admonition-key-takeaways-title">
