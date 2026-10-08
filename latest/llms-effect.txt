@@ -2730,7 +2730,7 @@ VTaskPath<Data> guarded = Path.vtask(() -> fetchData())
     .withBulkhead(serviceBulkhead);
 ```
 
-Two caveats inherited from `VTask.timeout`: the losing computation is *not* interrupted (it keeps running unobserved after the timeout is reported), and a `TimeoutException` thrown inside the computation is indistinguishable from the budget expiring. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
+Two caveats inherited from `VTask.timeout`: the losing computation is *not* interrupted (it keeps running unobserved after the timeout is reported), and a `TimeoutException` thrown inside the computation is indistinguishable from the budget expiring. To interrupt it instead, fork it into a `Scope` with a `timeout`, as in `Scope.<Data>anySucceed().timeout(d).fork(task).join()`. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
 
 ---
 
@@ -3027,7 +3027,7 @@ VResultPath<OrderError, OrderResult> fulfilled =
 - **`bracketOutcome`**: once the resource is acquired, release *always* runs and receives the `Either` outcome (a typed failure from `acquire` skips both `use` and `release`, since nothing was acquired), so confirm-vs-compensate is decided from the result. Defects inside `use` are typed through `onDefect` first, so release observes a typed outcome whenever `onDefect` can build one. If `onDefect` throws or returns null, release still runs and sees `Left(null)`, so decide on `isRight()` or `fold`, not on the error's value. The path then fails with what `onDefect` threw, or with a `NullPointerException` whose cause is the defect. This is the substrate the order example's deferred compensation Saga hangs on.
 
 ~~~admonish note title="Why these live on VResultPath, not Scope"
-The issue sketched `Scope.firstSuccess(...)`, but `Scope` lives in `hkt.vtask`, which `hkt.effect` depends on; statics there referencing `VResultPath` would create a package cycle. The combinators sit on `VResultPath`, implemented over the same `Scope`/`ScopeJoiner` substrate (which gained an `Either`-aware `firstSuccessEither` joiner).
+`Scope.firstSuccess(...)` would read naturally, but `Scope` lives in `hkt.vtask`, which `hkt.effect` depends on; statics there referencing `VResultPath` would create a package cycle. The combinators sit on `VResultPath`, implemented over the same `Scope`/`ScopeJoiner` substrate, where `ScopeJoiner.firstSuccessEither()` is the `Either`-aware joiner.
 ~~~
 
 ---
@@ -15309,7 +15309,7 @@ The typed carriers (`EitherPath`, `VResultPath`) are **railway-aware** throughou
 - A business `Left` is a value, not a fault: it is **never retried** by default, and it **never trips a circuit breaker** (only thrown exceptions count as failures).
 - The typed `withRetry(retryOn, policy)` overload opts selected transient errors in; on exhaustion the **last `Left`** is returned, staying on the typed channel.
 - The `onTimeout` / `onOpen` / `onFull` overloads land timeouts, open-circuit rejections, and bulkhead rejections as typed `Left`s instead of thrown exceptions.
-- Timeouts do **not** interrupt the losing computation; it keeps running unobserved after the typed timeout is returned, so bound its side effects accordingly.
+- Timeouts do **not** interrupt the losing computation; it keeps running unobserved after the typed timeout is returned, so bound its side effects accordingly. A [`Scope` with a `timeout`](../monads/vtask_scope.md#scope-usage-patterns) interrupts its subtasks instead.
 
 On `IOPath` and `VTaskPath` there is no typed channel, so `withTimeout(duration)` surfaces the timeout on the failure channel (`IOPath` fails with a `CompletionException` wrapping the `TimeoutException`; `VTaskPath` fails with the `TimeoutException` itself), and breaker/bulkhead rejections propagate as exceptions.
 

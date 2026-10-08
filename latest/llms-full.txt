@@ -4021,7 +4021,7 @@ VTaskPath<Data> guarded = Path.vtask(() -> fetchData())
     .withBulkhead(serviceBulkhead);
 ```
 
-Two caveats inherited from `VTask.timeout`: the losing computation is *not* interrupted (it keeps running unobserved after the timeout is reported), and a `TimeoutException` thrown inside the computation is indistinguishable from the budget expiring. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
+Two caveats inherited from `VTask.timeout`: the losing computation is *not* interrupted (it keeps running unobserved after the timeout is reported), and a `TimeoutException` thrown inside the computation is indistinguishable from the budget expiring. To interrupt it instead, fork it into a `Scope` with a `timeout`, as in `Scope.<Data>anySucceed().timeout(d).fork(task).join()`. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
 
 ---
 
@@ -4318,7 +4318,7 @@ VResultPath<OrderError, OrderResult> fulfilled =
 - **`bracketOutcome`**: once the resource is acquired, release *always* runs and receives the `Either` outcome (a typed failure from `acquire` skips both `use` and `release`, since nothing was acquired), so confirm-vs-compensate is decided from the result. Defects inside `use` are typed through `onDefect` first, so release observes a typed outcome whenever `onDefect` can build one. If `onDefect` throws or returns null, release still runs and sees `Left(null)`, so decide on `isRight()` or `fold`, not on the error's value. The path then fails with what `onDefect` threw, or with a `NullPointerException` whose cause is the defect. This is the substrate the order example's deferred compensation Saga hangs on.
 
 ~~~admonish note title="Why these live on VResultPath, not Scope"
-The issue sketched `Scope.firstSuccess(...)`, but `Scope` lives in `hkt.vtask`, which `hkt.effect` depends on; statics there referencing `VResultPath` would create a package cycle. The combinators sit on `VResultPath`, implemented over the same `Scope`/`ScopeJoiner` substrate (which gained an `Either`-aware `firstSuccessEither` joiner).
+`Scope.firstSuccess(...)` would read naturally, but `Scope` lives in `hkt.vtask`, which `hkt.effect` depends on; statics there referencing `VResultPath` would create a package cycle. The combinators sit on `VResultPath`, implemented over the same `Scope`/`ScopeJoiner` substrate, where `ScopeJoiner.firstSuccessEither()` is the `Either`-aware joiner.
 ~~~
 
 ---
@@ -16600,7 +16600,7 @@ The typed carriers (`EitherPath`, `VResultPath`) are **railway-aware** throughou
 - A business `Left` is a value, not a fault: it is **never retried** by default, and it **never trips a circuit breaker** (only thrown exceptions count as failures).
 - The typed `withRetry(retryOn, policy)` overload opts selected transient errors in; on exhaustion the **last `Left`** is returned, staying on the typed channel.
 - The `onTimeout` / `onOpen` / `onFull` overloads land timeouts, open-circuit rejections, and bulkhead rejections as typed `Left`s instead of thrown exceptions.
-- Timeouts do **not** interrupt the losing computation; it keeps running unobserved after the typed timeout is returned, so bound its side effects accordingly.
+- Timeouts do **not** interrupt the losing computation; it keeps running unobserved after the typed timeout is returned, so bound its side effects accordingly. A [`Scope` with a `timeout`](../monads/vtask_scope.md#scope-usage-patterns) interrupts its subtasks instead.
 
 On `IOPath` and `VTaskPath` there is no typed channel, so `withTimeout(duration)` surfaces the timeout on the failure channel (`IOPath` fails with a `CompletionException` wrapping the `TimeoutException`; `VTaskPath` fails with the `TimeoutException` itself), and breaker/bulkhead rejections propagate as exceptions.
 
@@ -79787,7 +79787,7 @@ For more complex concurrent patterns, VTask provides additional APIs documented 
 **[Scope and ScopeJoiner](vtask_scope.md)** - Fluent API for coordinating concurrent tasks with configurable joining strategies:
 - `allSucceed` - Wait for all tasks to complete successfully
 - `anySucceed` - Return first success, cancel others
-- `firstComplete` - Return first result regardless of outcome
+- `firstComplete` - Return first result regardless of outcome, and cancel the rest
 - `accumulating` - Collect all errors using `Validated`
 ~~~
 
@@ -79871,9 +79871,10 @@ See [Benchmarks & Performance](../benchmarks.md) for full details, comparison be
 ~~~admonish info title="What You'll Learn"
 - Using `Scope` for flexible structured concurrent computations
 - Choosing between `allSucceed`, `anySucceed`, `firstComplete`, and `accumulating` joiners
+- Running one `Scope` again, retrying it, or running it from several threads
 - Error accumulation using `Validated` for validation scenarios
 - Safe result handling with `Try`, `Either`, and `Maybe` wrappers
-- Understanding the `ScopeJoiner` interface for custom joining behaviour
+- Using a `ScopeJoiner` with `withJoiner`, or with a `StructuredTaskScope` of your own
 ~~~
 
 ~~~admonish warning title="Preview API Notice"
@@ -79928,7 +79929,7 @@ VTask<String> fastest = Scope.<String>anySucceed()
     .fork(VTask.of(() -> fetchFromServerC()))
     .join();
 
-// First-complete: return first result (success or failure)
+// First-complete: whichever answers first decides, success or failure
 VTask<Data> racing = Scope.<Data>firstComplete()
     .fork(riskyFastPath())
     .fork(reliableSlowPath())
@@ -79952,6 +79953,8 @@ VTask<List<Integer>> all = Scope.<Integer>allSucceed()
 ```
 ~~~
 
+A timeout cancels the scope when it expires: subtasks still running are interrupted, and the run fails with a `TimeoutException` once they have stopped. A subtask that ignores interruption, such as one spinning in a loop, holds that failure back until it finishes. The scope is opened on the thread that runs the `VTask`, so its subtasks see that thread's `ScopedValue` bindings, such as the [request context](../effect/context_request.md). `named(...)` gives the scope a name, which a thread dump in JSON format shows.
+
 ---
 
 ## Scope Factory Methods
@@ -79960,9 +79963,9 @@ VTask<List<Integer>> all = Scope.<Integer>allSucceed()
 |--------|----------|----------|
 | `allSucceed()` | Wait for all to succeed; fail on first failure | Parallel fetches that all must complete |
 | `anySucceed()` | Return first success; cancel others | Racing redundant requests |
-| `firstComplete()` | Return first result (success or failure) | Fast-path with fallback |
+| `firstComplete()` | Return first result (success or failure); cancel others | Fastest answer wins, even a failure |
 | `accumulating(mapper)` | Collect all errors; never fail-fast | Validation scenarios |
-| `withJoiner(joiner)` | Custom joiner behaviour | Advanced use cases |
+| `withJoiner(joiner)` | Join with a `ScopeJoiner` built elsewhere | Sharing one joining policy |
 
 ### When to Use Each Joiner
 
@@ -79990,16 +79993,48 @@ VTask<Package> download = Scope.<Package>anySucceed()
     .join();
 ```
 
-**firstComplete** captures the first result regardless of success or failure:
+**firstComplete** captures the first result regardless of success or failure, and cancels the tasks still running:
 
 <!-- verify -->
 ```java
-// Race a fast but unreliable path against a slow but reliable one
+// Whichever path answers first decides, success or failure; the other is cancelled
 VTask<Result> result = Scope.<Result>firstComplete()
     .fork(VTask.of(() -> fastButRisky()))
     .fork(VTask.of(() -> slowButSafe()))
     .join();
 ```
+
+For a fallback that answers when the fast path fails, use `anySucceed`.
+
+---
+
+## Running a Scope Again {#running-a-scope-again}
+
+A `Scope` is a description, like the `VTask` its `join()` returns. Each run of that `VTask` opens a `StructuredTaskScope` of its own, with a new `Joiner`. So you can run it again, retry it, or run it from several threads at once, and each run joins only the subtasks it forked.
+
+Here the quote service is busy on its first call, and [`Retry`](../resilience/retry.md#vtask-native-retry) runs the same `prices` task again:
+
+```java
+    AtomicInteger quoteCalls = new AtomicInteger();
+    VTask<String> quote =
+        VTask.of(
+            () -> {
+              if (quoteCalls.incrementAndGet() == 1) {
+                throw new IllegalStateException("quote service busy");
+              }
+              return "quote";
+            });
+    VTask<List<String>> prices =
+        Scope.<String>allSucceed().fork(quote).fork(VTask.succeed("rates")).join();
+
+    List<String> retried =
+        Retry.retryTask(prices, RetryPolicy.fixed(3, Duration.ofMillis(100))).run();
+    // [quote, rates]
+    List<String> runAgain = prices.run();
+    // [quote, rates]
+```
+
+The first attempt fails. The second forks both subtasks again and joins only those, so the first attempt's failure cannot fail it, and it returns `[quote, rates]`. Running `prices` once more gives the same list. A retry runs every subtask again, `rates` included, so retry a `Scope` whose subtasks are safe to repeat.
 
 ---
 
@@ -80093,7 +80128,7 @@ Traditional fail-fast behaviour returns only the first error encountered. This f
 
 ## ScopeJoiner Interface
 
-`ScopeJoiner` wraps Java 25's `StructuredTaskScope.Joiner` with HKJ-friendly accessors:
+`ScopeJoiner` is a joining policy. `Scope.withJoiner` takes one, and its `joiner()` builds a Java 25 `StructuredTaskScope.Joiner` when you open a scope yourself:
 
 <!-- verify -->
 ```java
@@ -80106,26 +80141,28 @@ ScopeJoiner<String, String> firstComplete = ScopeJoiner.firstComplete();
 ScopeJoiner<String, Validated<List<ValidationError>, List<String>>> accum =
     ScopeJoiner.accumulating(ValidationError::from);
 
-// Use with custom Scope
+// Use with a Scope
 VTask<List<String>> result = Scope.withJoiner(allSucceed)
     .fork(task1())
     .fork(task2())
     .join();
 
-// Access underlying Java 25 Joiner when needed
-StructuredTaskScope.Joiner<String, List<String>> java25Joiner =
-    allSucceed.joiner();
-
-// Get result wrapped in Either (functional error handling)
-Either<Throwable, List<String>> eitherResult = allSucceed.resultEither();
+// Open a StructuredTaskScope yourself: a new Joiner for each scope
+try (var scope = StructuredTaskScope.open(allSucceed.joiner())) {
+    scope.fork(() -> "first");
+    scope.fork(() -> "second");
+    List<String> both = scope.join();
+}
 ```
+
+A `ScopeJoiner` holds its configuration, not a scope's state. Each call to `joiner()` returns a new `Joiner`, because a `StructuredTaskScope` needs one that no other scope has used. So one `ScopeJoiner` can serve any number of scopes.
 
 ### ScopeJoiner Methods
 
 | Method | Return Type | Description |
 |--------|-------------|-------------|
-| `joiner()` | `StructuredTaskScope.Joiner<T, R>` | Access underlying Java 25 Joiner |
-| `resultEither()` | `Either<Throwable, R>` | Get result wrapped in Either |
+| `joiner()` | `StructuredTaskScope.Joiner<T, R>` | A new Java 25 Joiner, for one `StructuredTaskScope` |
+| `resultEither()` | `Either<Throwable, R>` | Deprecated for removal in 0.6.0; use `Scope.joinEither()` |
 
 ---
 
@@ -80133,9 +80170,10 @@ Either<Throwable, List<String>> eitherResult = allSucceed.resultEither();
 * **Scope** provides a fluent builder for structured concurrency with configurable joining strategies
 * **allSucceed** waits for all tasks and fails fast on any failure
 * **anySucceed** returns the first success and cancels remaining tasks
-* **firstComplete** returns the first result regardless of success or failure
+* **firstComplete** returns the first result regardless of success or failure, and cancels the rest
 * **accumulating** collects all errors using `Validated`, ideal for validation
 * **Safe wrappers** (`joinSafe`, `joinEither`, `joinMaybe`) capture failures functionally
+* **One Scope runs any number of times**: each run joins only its own subtasks, so a `Scope` can be retried or shared between threads
 * **ScopeJoiner** bridges HKJ types with Java 25's native Joiner interface
 ~~~
 
@@ -90436,15 +90474,15 @@ VTask<String> any = Scope.<String>anySucceed()
 - Understanding cancellation behaviour
 - Using `firstComplete` for racing strategies
 
-**Key insight**: The joiner strategy determines both the result type and the cancellation behaviour. `allSucceed` fails fast on any failure; `anySucceed` cancels siblings when one succeeds.
+**Key insight**: The joiner strategy determines both the result type and the cancellation behaviour. `allSucceed` cancels the rest when one fails, `anySucceed` when one succeeds, and `firstComplete` when one completes.
 
 | Joiner | Behaviour | Result Type | Use Case |
 |--------|----------|-------------|----------|
 | `allSucceed` | Wait for all; fail on first failure | `List<T>` | Parallel fetches that all must complete |
 | `anySucceed` | Return first success; cancel others | `T` | Racing redundant requests |
-| `firstComplete` | Return first result (success or failure) | `T` | Fast-path with fallback |
+| `firstComplete` | Return first result (success or failure); cancel others | `T` | Fastest answer wins, even a failure |
 
-**Exercise 3**: Use `firstComplete` to race a fast but risky operation against a slow but safe one
+**Exercise 3**: Use `firstComplete` to race two operations and take whichever answers first
 **Exercise 4**: Add a timeout to a scope operation
 
 ---
@@ -102726,16 +102764,16 @@ Resource<Lock> lock = Resource.make(
 
 ## Scope
 
-**Definition:** A fluent builder for structured concurrent computations in Higher-Kinded-J. Scope wraps Java's `StructuredTaskScope` with functional result handling, providing factory methods for common joining strategies.
+**Definition:** A fluent builder for structured concurrent computations in Higher-Kinded-J. Scope wraps Java's `StructuredTaskScope` with functional result handling, providing factory methods for common joining strategies. The `VTask` from `join()` can run any number of times, and each run joins only its own subtasks.
 
 **Factory Methods:**
 | Method | Behaviour |
 |--------|-----------|
 | `allSucceed()` | Wait for all tasks; fail on first failure |
 | `anySucceed()` | Return first success; cancel others |
-| `firstComplete()` | Return first result (success or failure) |
+| `firstComplete()` | Return first result (success or failure); cancel others |
 | `accumulating(mapper)` | Collect all errors using `Validated` |
-| `withJoiner(joiner)` | Use custom `ScopeJoiner` |
+| `withJoiner(joiner)` | Use a `ScopeJoiner` built elsewhere |
 
 **Example:**
 <!-- verify -->
@@ -102768,14 +102806,14 @@ VTask<Try<List<String>>> safe = Scope.<String>allSucceed()
 
 ## ScopeJoiner
 
-**Definition:** A functional wrapper around Java 25's `StructuredTaskScope.Joiner` interface. ScopeJoiner provides HKJ-friendly result accessors via `Either` and `Validated`, bridging Java's preview APIs with functional error handling.
+**Definition:** A reusable joining policy for Java 25's `StructuredTaskScope`. A `Scope` takes one to decide how its subtasks' results combine, and `joiner()` builds a new `StructuredTaskScope.Joiner` from it for each scope.
 
 **Available Joiners:**
 | Joiner | Result Type | Behaviour |
 |--------|-------------|-----------|
 | `allSucceed()` | `List<T>` | Collect all successful results |
 | `anySucceed()` | `T` | First successful result |
-| `firstComplete()` | `T` | First result regardless of outcome |
+| `firstComplete()` | `T` | First result regardless of outcome; cancels the rest |
 | `accumulating(mapper)` | `Validated<List<E>, List<T>>` | Collect all errors and successes |
 
 **Example:**
@@ -102794,13 +102832,12 @@ VTask<List<String>> result = Scope.withJoiner(allSucceed)
     .fork(task2())
     .join();
 
-// Access underlying Java 25 Joiner for interop
+// Access a Java 25 Joiner for interop: a new one for each StructuredTaskScope
 StructuredTaskScope.Joiner<String, List<String>> java25Joiner =
     allSucceed.joiner();
-
-// Get result wrapped in Either
-Either<Throwable, List<String>> eitherResult = allSucceed.resultEither();
 ```
+
+Each call to `joiner()` returns a new `Joiner`, so one `ScopeJoiner` can serve any number of scopes.
 
 **Related:** [Scope](#scope), [Validated](data-effects.md#validated), [ScopeJoiner Documentation](../monads/vtask_scope.md)
 
@@ -102830,7 +102867,7 @@ VTask<List<UserData>> results = Scope.<UserData>allSucceed()
 // If any task fails or times out:
 // - Other tasks are cancelled
 // - Resources are cleaned up
-// - AppError propagates to caller
+// - the failure, or a TimeoutException, reaches the caller
 ```
 
 **Contrast with Unstructured Concurrency:**
@@ -103018,7 +103055,17 @@ The release that first shipped each feature, with the page that teaches it.
 
 # Upgrading
 
-Sections run newest first: start at the top and read down to the section for the release after the one you are on. Each lists what the release notes flag as able to stop a build that compiled, or to change what a program does. [Removals in 0.5.0](#removals-in-050) lists every API due to go in the next minor release, with the recipe that migrates it.
+Sections run newest first: start at the top and read down to the section for the release after the one you are on. Each lists what the release notes flag as able to stop a build that compiled, or to change what a program does. [Removals in 0.5.0](#removals-in-050) lists every API due to go in the next minor release, with the recipe that migrates it, and [Removals in 0.6.0](#removals-in-060) those due in the release after.
+
+---
+
+## Removals in 0.6.0 {#removals-in-060}
+
+Each of these compiles with javac's `[removal]` warning, which fails a `-Werror` build.
+
+| Deprecated | Since | Use instead | Recipe |
+|---|---|---|---|
+| `ScopeJoiner.resultEither()` | 0.5.0 | `joinEither()` on the `Scope`, in place of `join()`; for a `StructuredTaskScope` you open yourself, the value its `join()` returns, or the cause of the `FailedException` it throws | By hand |
 
 ---
 
@@ -103162,6 +103209,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `VStream` releases its resources when it stops early or fails** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): closing reaches every finaliser upstream that the stream has started reading, through any operator, innermost first. `takeWhile`, `zipWith`, `headOption`, `find`, `exists`, `forAll` and a failing terminal operation close what they leave unread. So `bracket(...).map(f).headOption()` releases at once. `VStream.closeAfterFailure` closes a failed manual pull. See [onFinalize: Lightweight Cleanup](../monads/vstream_resources.md#onfinalize-lightweight-cleanup).
 - **One `Resource` can serve overlapping uses** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): each `use` releases exactly what it acquired, however the `Resource` was composed. So a `Resource` built once with `map` or `flatMap` and used nested, or once per concurrent request, no longer releases one resource twice and leaks the other. See [Using One Resource Many Times](../monads/vtask_resource.md#using-one-resource-many-times).
 - **`VStreamReactive` passes cancellation across the bridge** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): a `toPublisher` subscription closes the rest of its stream when it cancels or the stream fails, once it has requested elements. Closing a `fromPublisher` stream cancels its subscription, so `take(n)` stops the publisher. See [Reactive Interop: Flow.Publisher Bridge](../monads/vstream_advanced.md#reactive-interop-flowpublisher-bridge).
+- **A `Scope` can run again, be retried, or run on several threads** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): each run of the `VTask` from `join()` opens its own `StructuredTaskScope` with a new `Joiner`. A second run used to see the first run's results, and a retry kept failing with the first attempt's error. `VResultPath.allSucceed`, `allSucceedAccumulating` and `firstSuccess` are fixed too. See [Running a Scope Again](../monads/vtask_scope.md#running-a-scope-again).
 
 ---
 
@@ -103251,6 +103299,12 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`and(second, third)` releases its first resource when two releases throw one exception** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): the same exception instance from both used to fail with `IllegalArgumentException` and leave the first resource acquired.
 - **Cleanup after a failed or cancelled use runs with the interrupt status cleared** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): releases, finalisers and `onFailure` actions, so a blocking close is not cut short. The status is restored afterwards.
 - **A `bracket` whose `use` function throws releases the resource** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): before the failure reaches the caller. It used to leave the resource acquired.
+- **`Scope.firstComplete` and `ScopeJoiner.firstComplete()` cancel the other subtasks once one completes** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): they used to wait for every subtask. Those still running are interrupted and those not yet started never start, so work a slower subtask does afterwards, such as writing a cache, no longer happens. Move work that must finish out of the race.
+- **`ScopeJoiner.joiner()` returns a new `Joiner` on each call** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): code that opened a scope with one call and read `result()` from another now reads a `Joiner` no scope has used. That gives an empty result or an exception, so use the value the scope's `join()` returns.
+- **A `Scope`'s timeout cancels its subtasks** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): when it expires, those still running are interrupted, and the run fails with a `TimeoutException` once they have stopped. They used to keep running unobserved, so a subtask that ignores interrupts now delays the failure. Its subtasks now see the caller's `ScopedValue` bindings, which they used to find unbound.
+- **An interrupt while a timed `Scope` waits fails the run** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): with an `InterruptedException`, as it does for an untimed `Scope`. A timed one used to ignore it and keep waiting.
+- **`Par` and `PathOps` copy the list they are given when called** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): `Par.race`, `all` and `traverse`, and `PathOps.sequenceVTask`, `traverseVTask`, `firstVTaskSuccess`, `parSequenceIO` and `raceIO`. Changing the list afterwards no longer changes what a run does. A null task or path in a list, or in `Scope.forkAll`'s, is rejected then, not when it runs.
+- **`Scope.named` names the scope in a JSON thread dump** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): the name used to be dropped. `named(null)` now throws `NullPointerException`, where it was accepted.
 
 #### Testing {#runtime-testing}
 
@@ -103268,11 +103322,13 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Effect Paths | A `StateT` in `var` or a chained call over a witness with a type argument, such as `EitherKind.Witness<E>`, which now infers `Object` for it | Name the types, as in `StateT.<S, EitherKind.Witness<E>, A>create(fn)`, or declare the variable | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | `evalStateT` and `execStateT` without a `Monad`, deprecated since 0.4.6 | Pass the outer `Monad<F>`, the one `Instances.stateT` took, as the last argument | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | `StateT.monadF()`, deprecated since 0.4.6 | Keep a reference to the outer `Monad<F>` you built the stack with, and use it in place of the call | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
+| Effect Paths | A call to `ScopeJoiner.resultEither()` (a `[removal]` warning) | Use `joinEither()` on the `Scope`, as [Deprecated for removal in 0.6.0](#deprecated) says | [#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052) |
 
 ### Deprecated for removal in 0.6.0 {#deprecated}
 
 | Deprecated | Replacement | Recipe |
 |---|---|---|
+| `ScopeJoiner.resultEither()` | `joinEither()` on the `Scope`, in place of `join()`; for a `StructuredTaskScope` you open yourself, the value its `join()` returns, or the cause of the `FailedException` it throws | By hand |
 
 ---
 
