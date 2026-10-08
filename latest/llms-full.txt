@@ -8744,7 +8744,7 @@ Try<List<String>> result = task.runSafe();
 - [StreamPath](../monads/stream_monad.md) - Eager list-based streaming path
 - [Effect Path Overview](effect_path_overview.md) - How all path types fit together
 - [Focus-Effect Integration](focus_integration.md) - Optics meet Effect Path
-- [Each Typeclass](../optics/each_typeclass.md) - Canonical element-wise traversal (includes VStream)
+- [Each Type Class](../optics/each_typeclass.md) - Canonical element-wise traversal (includes VStream)
 ~~~
 
 ---
@@ -20204,7 +20204,7 @@ Each plays the part of a Java idiom you already write:
 | Iso | a wrapper record's constructor and accessor, such as `new EmailAddress(value)` and `email.value()`, which lose nothing | composes, and turns around with `reverse()` |
 | Traversal | `stream().map(f).toList()` over a list field, put back with a wither | does the rebuild for you, at any depth |
 | Fold | a `Stream` over the same values, which only reads | composes, and says in its type that it never writes |
-| Getter | a derived accessor, such as a `fullName()` computed from two fields | composes with other getters, and with any optic through `asFold()` |
+| Getter | a derived accessor, such as a `fullName()` computed from two fields | composes with other getters, and as a fold, through `asFold()`, with any optic's fold |
 | Setter | `stream().map(f).toList()` put back with a wither, with nothing read out first | composes, for a value you change without reading |
 
 An iso keeps a stronger promise than a lens: converting there and back, either way round, returns what you started with, and hkj-test's `IsoLaws` checks it.
@@ -21638,24 +21638,23 @@ Practise this group in the [Lens & Prism Journey](../tutorials/optics/lens_prism
 
 # Nested Updates with Lenses: A Practical Guide
 
-## _Working with Product Types_
+_Update a field three records down in one call, with a lens you build once and reuse._
 
 <img src="../images/lens2.jpg" alt="Visual representation of a lens focusing on a single field within nested immutable data structures" style="width: 100%;" />
 
 ~~~admonish info title="What You'll Learn"
-- How to safely access and update fields in immutable data structures
-- Using `@GenerateLenses` to automatically create type-safe field accessors
-- Composing lenses to navigate deeply nested records
-- The difference between `get`, `set`, and `modify` operations
-- Building reusable, composable data access patterns
-- Decide between direct field access, a wither such as Lombok's `@With`, and a composed lens
+- Generate a lens for each record component with `@GenerateLenses`, and compose them with `andThen` into one path
+- Update a nested field with `set` and `modify`, without writing the copy for each record on the way
+- Decide between a wither, such as Lombok's `@With` or a generated `with*` helper, and a composed lens
+- Check a lens with `LensLaws`, and fix a compact constructor that changes the value you set
+- Write a lens with `Lens.of` for a type you cannot annotate
 ~~~
 
 ~~~admonish example title="See Example Code"
 [LensUsageExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/LensUsageExample.java)
 ~~~
 
-A Lens focuses on a single, required field within a record: the `address` in a `User`, the `street` in an `Address`. It exposes `get`, `set`, and `modify`, and composes with other lenses to reach any depth without hand-written copy cascades. Where a record's `withX` method copies one record, a lens reaches through nested ones ([Why a lens, when you have `@With`?](#lens-or-wither)).
+A Lens focuses on a single, required field within a record: the `address` in a `User`, the `street` in an `Address`. It exposes `get`, `set`, and `modify`, and composes with other lenses to reach any depth without hand-written copy cascades. Where a record's `withX` method copies one record, a lens reaches through nested ones ([Why a lens, when you have `@With`?](#lens-or-wither)). [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
 
 ---
 
@@ -21837,7 +21836,7 @@ Employee updatedEmployee = employeeToStreet.set("456 Main St", initialEmployee);
 
 Understanding when to use each approach will help you write cleaner, more maintainable code:
 
-### Use `with*` Helpers When:
+### Use `with*` Helpers When
 
 * **Simple, top-level field updates** - Direct field replacement on the immediate object
 * **One-off updates** - You don't need to reuse the update logic
@@ -21850,7 +21849,7 @@ Understanding when to use each approach will help you write cleaner, more mainta
 var promotedEmployee = EmployeeLenses.withName(employee, "Senior " + employee.name());
 ```
 
-### Use Composed Lenses When:
+### Use Composed Lenses When
 
 * **Deep updates** - Navigating multiple levels of nesting
 * **Reusable paths** - The same update pattern will be used multiple times
@@ -21887,7 +21886,7 @@ Affine<User, Settings> userSettings = settingsLens.andThen(somePrism);
 See [Composition Rules](composition_rules.md) for the complete reference on how different optics compose.
 ~~~
 
-### Use Manual Lens Creation When: {#use-manual-lens-creation-when}
+### Use Manual Lens Creation When {#use-manual-lens-creation-when}
 
 * **A type you cannot annotate**: a JDK or library class. For a whole library of them, [Optics for External Types](importing_optics.md) generates the lenses instead
 
@@ -21932,7 +21931,7 @@ Java 25, which the library is built on today, has no wither in the language. [JE
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 
 <!-- verify -->
@@ -21951,7 +21950,7 @@ var updatedCompany = CompanyLenses.withName(tempCompany, "New Company");
 var finalEmployee = EmployeeLenses.withCompany(employee, updatedCompany);
 ```
 
-### Do This Instead:
+### Do This Instead
 
 
 <!-- verify -->
@@ -22151,8 +22150,10 @@ Practise lens basics in [Tutorial 01: Lens Basics](https://github.com/higher-kin
 
 # When Lenses Assume Too Much
 
-## _Atomic Updates for Fields with Shared Invariants_
+_Update two fields a constructor checks together, such as a range's bounds, in one step._
+
 <img src="../images/coupled_mr_robot.png" alt="Illustration for coupled fields and atomic updates" style="width: 100%;" />
+
 > *"A bug is never just a mistake. It represents something bigger. An error of thinking that makes you who you are."*
 >
 > – Elliot Alderson, *Mr. Robot*
@@ -22164,12 +22165,10 @@ Consider a familiar scenario: you have a record with validation in its construct
 The hidden culprit? Standard lens composition assumes fields are independent, that you can update `lo` without caring about `hi`. But some fields are *coupled* by invariants. They do not just coexist; they constrain each other. Lenses, in their elegant simplicity, do not know this.
 
 ~~~admonish info title="What You'll Learn"
-- Why standard lens updates can fail with invariant-protected records
-- The hidden assumption of field independence in lens composition
-- How to use `Lens.paired` for atomic multi-field updates
-- How `CoupledLenses.coupled3` ... `coupled9` extend the same shape to N fields
-- When to define paired lenses vs individual field lenses
-- Limitations and alternative approaches
+- Predict when two lens writes in a row fail on a record whose constructor checks two fields together
+- Update coupled fields in one step with `Lens.paired`, keeping the record's other components with the `Function3` form
+- Update three to nine coupled fields the same way with `CoupledLenses.coupled3` to `coupled9`
+- Decide when a field needs a paired lens, a domain method, or no lens at all
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -22644,17 +22643,15 @@ Practise both the binary form and the arity ladder in [Tutorial 23: N-ary Couple
 
 # Prisms: A Practical Guide
 
-## _Working with Sum Types_
+_Read and update one case of a sealed type without an `instanceof` check and a cast._
 
 <img src="../images/prism.jpeg" alt="Visual representation of a prism safely extracting one variant from a sum type" style="width: 100%;" />
 
 ~~~admonish info title="What You'll Learn"
-- How to safely work with sum types and sealed interfaces
-- Using `@GeneratePrisms` to create type-safe variant accessors
-- The difference between `getOptional` and `build` operations
-- Composing prisms with other optics for deep conditional access
-- Handling optional data extraction without `instanceof` chains
-- When to use prisms vs pattern matching vs traditional type checking
+- Generate a prism for each case of a sealed interface with `@GeneratePrisms`
+- Match a case with `getOptional`, and build the sum type from a case with `build`
+- Compose a prism with lenses and traversals, and predict whether the result is a `Prism`, an `Affine` or a `Traversal`
+- Decide between a prism, an `instanceof` check and a pattern-matching `switch`
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -22673,7 +22670,7 @@ For this, we need a different kind of optic: the **Prism**.
 
 ## The Scenario: Working with JSON-like Data
 
-A `Lens` is like a sniper rifle, targeting a single, known field. A **`Prism`** is like a safe-cracker's tool; it attempts to open a specific "lock" (a particular type) and only succeeds if it has the right key.
+A **`Prism`** plays the part of an `instanceof` pattern together with the variant's constructor: `getOptional` matches one case of a sealed type, and `build` returns a value of that case as the sealed type. Unlike a pattern, it is a value that composes with other optics, and `modify` through it changes the value only when the case matches. [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
 
 Consider a common scenario: modelling a JSON structure. A value can be a string, a number, a boolean, or a nested object.
 
@@ -22697,15 +22694,6 @@ public record JsonObject(Map<String, JsonValue> fields) implements JsonValue {}
 ```
 
 **Our Goal:** We need to safely access and update the `value` of a `JsonString` that is deeply nested within another `JsonObject`. An `instanceof` and casting approach would be unsafe and verbose. A `Lens` won't work because a `JsonValue` might be a `JsonNumber`, not the `JsonObject` we expect.
-
----
-
-## Think of Prisms Like...
-
-- **A type-safe filter**: Only "lets through" values that match a specific shape
-- **A safe cast**: Like `instanceof` + cast, but functional and composable
-- **A conditional lens**: Works like a lens, but might return empty if the type doesn't match
-- **A pattern matcher**: Focuses on one specific case of a sum type
 
 ---
 
@@ -22801,7 +22789,7 @@ This composed `Traversal` now represents a safe, deep path that will only succee
 
 ## When to Use Prisms vs Other Approaches
 
-### Use Prisms When:
+### Use Prisms When
 
 * **Type-safe variant handling** - Working with `sealed interface` or `enum` cases
 * **Optional data extraction** - You need to safely "try" to get a specific type
@@ -22816,7 +22804,7 @@ Optional<String> errorMessage = DomainErrorPrisms.validationError()
     .getOptional(someError);
 ```
 
-### Use Traditional instanceof When:
+### Use Traditional instanceof When
 
 * **One-off type checks** - Not building reusable logic
 * **Imperative control flow** - You need if/else branching
@@ -22833,7 +22821,7 @@ String shout(JsonValue jsonValue) {
 }
 ```
 
-### Use Pattern Matching When:
+### Use Pattern Matching When
 
 * **Exhaustive case handling** - You need to handle all variants
 * **Complex extraction logic** - Multiple levels of pattern matching
@@ -22856,7 +22844,7 @@ String describe(JsonValue jsonValue) {
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 
 <!-- verify -->
@@ -22884,7 +22872,7 @@ var name2 = JsonValuePrisms.jsonString().getOptional(value2);
 var name3 = JsonValuePrisms.jsonString().getOptional(value3);
 ```
 
-### Do This Instead:
+### Do This Instead
 
 
 <!-- verify -->
@@ -23167,20 +23155,21 @@ Practise prism basics in [Tutorial 03: Prism Basics](https://github.com/higher-k
 
 # Prism Toolkit
 
-## _Convenience methods and common patterns with the `Prisms` utility_
+_Find the `Prism` method or `Prisms` factory that does an everyday match, update or fallback in one call._
 
 ~~~admonish info title="What You'll Learn"
-- The full set of prism convenience methods on `Prism<S, A>`: direct composition, conditional updates, predicate-based queries, and bulk extraction.
-- The factory methods on the `Prisms` utility class for the standard JDK and Higher-Kinded-J types: `Optional`, `Either`, `Maybe`, `Try`, list head/tail decomposition, and more.
+- Replace `getOptional` plumbing with `matches`, `getOrElse`, `mapOptional` and `modify`
+- Update a matching case only when a predicate holds, with `modifyWhen` and `setWhen`
+- Chain two prisms on the same target type with `orElse`, and fall through on `Optional` when the targets differ
+- Reach into `Optional`, `Either`, nullable values and subtypes with `Prisms.some()`, `left()`, `right()`, `notNull()` and `instanceOf()`
+- Choose a `Traversal` or a `Lens` over the list prisms to change a list, since `listAt` cannot `build`
 ~~~
 
-This page is the lookup catalogue for the prism API. The conceptual introduction, mental models, and worked examples live in [Prisms](prisms.md); use this page when you already know what a prism is and need to find the right method.
+This page is the lookup catalogue for the prism API. The conceptual introduction and worked examples live in [Prisms](prisms.md); use this page when you already know what a prism is and need to find the right method.
 
 ---
 
 ## Prism Convenience Methods
-
-### _Streamlined Operations for Common Patterns_
 
 Whilst `getOptional()` and `build()` are the core operations, the `Prism` interface provides several convenience methods that make everyday tasks more ergonomic and expressive.
 
@@ -23487,8 +23476,6 @@ Optional<String> message =
 
 ## Common Prism Patterns with the Prisms Utility
 
-### _Ready-Made Prisms for Standard Types_
-
 The `Prisms` utility class (in `org.higherkindedj.optics.util`) provides factory methods for common prism patterns, saving you from writing boilerplate for standard Java types.
 
 **Quick Reference:**
@@ -23739,17 +23726,16 @@ public class AppPrisms {
 
 # Advanced Prism Patterns
 
-## _Real-World Applications of Prisms in Production Systems_
+_Route configuration values, API responses, events, states and plugins by case, with prisms you compose once._
 
 ![prism.jpeg](../images/prism.jpeg)
 
 ~~~admonish info title="What You'll Learn"
-- Configuration management with layered prism composition
-- API response handling with type-safe error recovery
-- Data validation pipelines using prisms for conditional processing
-- Event processing systems with prism-based routing
-- State machine implementations using prisms for transitions
-- Plugin architectures with type-safe variant handling
+- Resolve a configuration value through a chain of prism fallbacks with `mapOptional` and `Optional.or`
+- Route API responses, domain events and plugins to their handlers by case, with no `instanceof` cascade
+- Sanitise and validate mixed values with `modifyWhen`, collecting every error into an `Either`
+- Guard a state transition by matching both the current state and the event with `matches`
+- Match a category of values with `Prisms.nearly`, and name the negative case with `doesNotMatch`
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -23774,8 +23760,6 @@ This guide assumes familiarity with prism fundamentals including `getOptional()`
 ---
 
 ## Pattern 1: Configuration Management
-
-### _Type-Safe, Layered Configuration Resolution_
 
 Configuration systems often deal with multiple sources (environment variables, files, defaults) and various data types. Prisms provide a type-safe way to navigate this complexity.
 
@@ -23870,8 +23854,6 @@ Optional<ConfigValue> connConfig = Traversals.getAll(databaseConfig, rootConfig)
 ---
 
 ## Pattern 2: API Response Handling
-
-### _Type-Safe HTTP Response Processing_
 
 Modern APIs return varying response types based on status codes. Prisms provide elegant error handling and recovery strategies.
 
@@ -23984,8 +23966,6 @@ When using prisms for API handling:
 ---
 
 ## Pattern 3: Data Validation Pipelines
-
-### _Composable, Type-Safe Validation Logic_
 
 Validation often requires checking different data types and applying conditional rules. Prisms make validation logic declarative and reusable.
 
@@ -24127,8 +24107,6 @@ public class AccumulatingValidator {
 ---
 
 ## Pattern 4: Event Processing
-
-### _Type-Safe Event Routing and Handling_
 
 Event-driven systems receive heterogeneous event types that require different processing logic. Prisms provide type-safe routing without `instanceof` cascades.
 
@@ -24272,8 +24250,6 @@ public class EventProcessor {
 ---
 
 ## Pattern 5: State Machines
-
-### _Type-Safe State Transitions_
 
 State machines with complex transition rules benefit from prisms' ability to safely match states and transform between them.
 
@@ -24420,8 +24396,6 @@ public class AdvancedStateMachine {
 ---
 
 ## Pattern 6: Plugin Systems
-
-### _Type-Safe Plugin Discovery and Execution_
 
 Plugin architectures require dynamic dispatch to various plugin types whilst maintaining type safety.
 
@@ -24666,12 +24640,12 @@ Practise advanced prism patterns in [Tutorial 10: Advanced Prism Patterns](https
 
 # Advanced Prism Patterns: Recipes
 
-## _Optimisation and testing recipes_
+_Cache composed prisms, split a mixed list by case, and test what a prism matches and misses._
 
 ~~~admonish info title="What You'll Learn"
-- Caching strategies for expensive prism compositions in long-running applications.
-- Bulk-processing helpers for extracting and partitioning items by prism match.
-- Test patterns for prism matching, composed prisms, and conditional operations.
+- Cache a prism composition keyed by a value known only at runtime, such as a settings key
+- Extract every match from a list with `getOptional`, or split the list in two with `matches`
+- Test what a prism matches and misses, a composed prism, and a `modifyWhen` update
 ~~~
 
 This page collects copy-paste-ready recipes for the production concerns that come up once you have prisms running in real systems. The narrative explanations live in [Advanced Prism Patterns](advanced_prism_patterns.md); these are the lookup snippets you return to when you need them.
@@ -24841,15 +24815,14 @@ Practise advanced prism patterns in [Tutorial 10: Advanced Prism Patterns](https
 
 # Affines: A Practical Guide
 
-## _Working with Optional Fields_
+_Read and update a field that may be absent, such as an `Optional` component, without `flatMap` chains._
 
 ~~~admonish info title="What You'll Learn"
-- How to safely work with optional fields and nullable properties
-- The difference between Affine, Lens, and Prism
-- Why `Lens.andThen(Prism)` produces an Affine, not a Traversal
-- Composing affines with other optics for deep optional access
-- Handling zero-or-one element focus without boilerplate
-- When to use Affines vs Prisms vs Lenses
+- Build an affine with `Affines.some()`, `Affines.nullable()` or `Affines.listAt`, or by composing a lens with a prism
+- Predict why `Lens.andThen(Prism)` gives an `Affine` rather than a `Traversal`
+- Update a nested optional field with `modify` and `modifyWhen`, which leave an absent value alone
+- Predict what `set` does on an absent focus, and check an affine with `AffineLaws.assertAffineLaws`
+- Choose between an affine, a prism, a lens and a traversal for a field
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -24859,6 +24832,8 @@ Practise advanced prism patterns in [Tutorial 10: Advanced Prism Patterns](https
 We've seen how a **Lens** focuses on exactly one value that is guaranteed to exist, and how a **Prism** focuses on a value that may or may not exist depending on the variant.
 
 But what about fields that are *sometimes* there? Optional fields in records, nullable properties in legacy APIs, or the result of composing a Lens with a Prism? This is the domain of the **Affine**.
+
+An affine plays the part of an accessor that returns `Optional`, paired with a copy that writes the value back. Unlike the hand-written pair, it composes with other optics, and `modify` leaves an absent value alone. [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
 
 ---
 
@@ -24873,15 +24848,6 @@ record ContactInfo(String email, Optional<String> phone) {}
 ```
 
 **Our Goal:** We need to safely access and update the phone number, which is doubly optional: the contact info might not exist, and even if it does, the phone number might be absent.
-
----
-
-## Think of Affines Like...
-
-- **A Lens with uncertainty**: Gets exactly one value *if* it exists
-- **A Prism without construction**: Can update but not build from scratch
-- **An optional field accessor**: Perfect for `Optional<T>` fields
-- **A Lens + Prism composition**: The natural result of combining them
 
 ---
 
@@ -25243,7 +25209,7 @@ Affine<S, B> affine = Affine.fromPrismAndLens(
 
 ## When to Use Affines vs Other Optics
 
-### Use Affine When:
+### Use Affine When
 
 * **Optional fields** in records or classes (`Optional<T>`)
 * **Nullable properties** in legacy or interop code
@@ -25262,7 +25228,7 @@ Affine<ApiConfig, String> apiKeyAffine =
 Optional<String> key = apiKeyAffine.getOptional(new ApiConfig(Optional.of("secret")));
 ```
 
-### Use Lens When:
+### Use Lens When
 
 * The field is **always present** (guaranteed to exist)
 * You're working with **product types** (records, classes)
@@ -25274,7 +25240,7 @@ record Point(int x, int y) {}
 Lens<Point, Integer> xLens = Lens.of(Point::x, (p, x) -> new Point(x, p.y()));
 ```
 
-### Use Prism When:
+### Use Prism When
 
 * Working with **sum types** (sealed interfaces, enums)
 * You need to **construct** the whole from a part
@@ -25287,7 +25253,7 @@ Prism<Shape, Circle> circlePrism = ...;
 Shape circle = circlePrism.build(new Circle(5.0));  // Can construct!
 ```
 
-### Use Traversal When:
+### Use Traversal When
 
 * Focusing on **multiple elements** (lists, sets)
 * You need to work with **collections**
@@ -25303,7 +25269,7 @@ List<String> upper = Traversals.modify(listTraversal, String::toUpperCase, names
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 ```java
 // Overly complex: manual Optional handling
@@ -25323,7 +25289,7 @@ if (user.address() != null && user.address().postcode() != null) {
 }
 ```
 
-### Do This Instead:
+### Do This Instead
 
 <!-- verify -->
 ```java
@@ -25550,16 +25516,14 @@ Practise affine basics in [Tutorial 04: Affine Basics](https://github.com/higher
 
 # Isomorphisms: A Practical Guide
 
-## _Data Equivalence with Isos_
+_Convert between two types that hold the same information, losslessly in both directions._
 
 ~~~admonish info title="What You'll Learn"
-- How to define lossless, reversible conversions between equivalent types
-- Creating isomorphisms with `Iso.of(get, reverseGet)`
-- Using `reverse()` to flip conversion directions
-- Composing Isos with lenses, prisms, and comprehensions
-- Step-by-step transformation workflows for data format conversion
-- Testing round-trip properties to ensure conversion correctness
-- When to use isos vs direct conversion methods vs manual adapters
+- Define a lossless conversion with `Iso.of(get, reverseGet)`, and flip it with `reverse()`
+- Compose an iso with a lens, prism, affine or traversal, and keep that optic's type
+- Convert through an iso inside a `For` or `ForState` workflow with `through`, `modifyVia` and `updateVia`
+- Check an iso's round trip, and choose a one-way method or a Validated Prism when a conversion loses data or can fail
+- Generate a static iso field with `@GenerateIsos`, and fix a method it refuses
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -25574,7 +25538,7 @@ This leaves one final, fundamental question: what if you have two data types tha
 
 ## The Scenario: Translating Between Equivalent Types
 
-An **`Iso`** (Isomorphism) is a "two-way street." It is an optic that represents a perfectly reversible, lossless conversion between two equivalent types. Think of it as a **universal translator** or a type-safe adapter that you can compose with other optics.
+An **`Iso`** (Isomorphism) is an optic that represents a perfectly reversible, lossless conversion between two equivalent types. It plays the part of a wrapper record's constructor and accessor, such as `new UserId(value)` and `id.value()`: two functions that undo each other. Unlike a loose pair of functions, it is one value that composes with other optics and turns around with `reverse()`, and `IsoLaws` checks that nothing is lost. [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
 
 An `Iso` is the right tool when you need to:
 
@@ -25593,15 +25557,6 @@ public record Tuple2<A, B>(A _1, B _2) {}
 ```
 
 These two records can hold the same information. An `Iso` is the perfect way to formalise this relationship.
-
----
-
-## Think of Isos Like...
-
-* **A universal translator**: Perfect two-way conversion between equivalent representations
-* **A reversible adapter**: Converts between formats without losing information
-* **A bridge**: Connects two different structures that represent the same data
-* **A unit conversion**: The same quantity in two units, convertible both ways with nothing lost
 
 ---
 
@@ -25765,7 +25720,7 @@ For the full range of optics operations within comprehensions (including travers
 
 ## When to Use Isos vs Other Approaches
 
-### Use Isos When:
+### Use Isos When
 
 * **Data format conversion** - Converting between equivalent representations
 * **Legacy system integration** - Bridging old and new data formats
@@ -25782,7 +25737,7 @@ Iso<UserId, Long> userIdIso = Iso.of(UserId::value, UserId::new);
 Lens<Account, Long> rawAccountId = AccountLenses.id().andThen(userIdIso);
 ```
 
-### Use Direct Conversion Methods When:
+### Use Direct Conversion Methods When
 
 * **One-way conversion** - You do not need the reverse operation
 * **Non-lossless conversion** - Information is lost in the conversion
@@ -25794,7 +25749,7 @@ Lens<Account, Long> rawAccountId = AccountLenses.id().andThen(userIdIso);
 String pointDescription = point.x() + "," + point.y();
 ```
 
-### Use Manual Adapters When:
+### Use Manual Adapters When
 
 * **Complex conversion logic** - Multi-step or conditional conversions
 * **Validation required** - Conversion might fail
@@ -25820,7 +25775,7 @@ public Optional<Point> parsePoint(String input) {
 
 ## Common Pitfalls
 
-### Do Not Do This:
+### Do Not Do This
 
 <!-- verify -->
 ```java
@@ -25842,7 +25797,7 @@ var iso2 = Iso.of(Point::x, x -> new Point(x, 0));
 var iso3 = Iso.of(Point::x, x -> new Point(x, 0));
 ```
 
-### Do This Instead:
+### Do This Instead
 
 <!-- verify -->
 ```java
@@ -26131,14 +26086,13 @@ New circle: Circle[centre=Point[x=20, y=30], radius=5]
 
 # Profunctor Optics: Advanced Data Transformation
 
-## *Adapting Optics to Different Data Types*
+_Reuse an optic on a related type, through `dimap`, composition, an `Iso` or `Lens.of`._
 
 ~~~admonish info title="What You'll Learn"
-- Why every optic is a profunctor, and what `contramap`, `map`, and `dimap` really adapt
-- The write-side asymmetry: why `contramap` alone changes where reads come from but not what updates produce
-- Getting a fully-typed optic back: composition for nested sources, `Iso` for equivalent shapes, `Lens.of` for hand-rolled adapters
-- When the raw `Optic`-level operations are the right tool (one-way conversions, effectful pipelines)
-- When to adapt an existing optic versus creating a new one from scratch
+- Adapt an optic to a new source or result type with `contramap`, `map` and `dimap`
+- Predict why `contramap` alone changes where reads come from but not what an update produces
+- Run an adapted `Optic` through `modifyF`, since it has no `get` or `set`
+- Choose composition, an `Iso` or `Lens.of` to get a typed `Lens` back
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -26162,12 +26116,7 @@ In real-world applications, you frequently encounter situations where:
 
 Consider this scenario: you have a well-tested `Lens` that operates on a `Person` record, but you need to use it with an `Employee` record that contains a `Person` as a nested field. Rather than rewriting the lens, you can **adapt** it.
 
-## Think of Profunctor Adaptations Like...
-
-* **Universal adapters**: Like electrical plug adapters that make devices work in different countries
-* **Translation layers**: Converting between different "languages" of data representation
-* **Lens filters**: Modifying what the optic sees (input) and what it produces (output)
-* **Pipeline adapters**: Connecting optics that weren't originally designed to work together
+Adapting an optic with `contramap`, `map` or `dimap` plays the part of `Function.compose` and `Function.andThen` around a function: a conversion runs before the optic reads, or after it writes. Unlike composed functions, the result is a plain `Optic`, which is why the typed routes later on this page are often the better choice.
 
 ---
 
@@ -26277,7 +26226,7 @@ flowchart TD
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 <!-- verify -->
 ```java
@@ -26295,7 +26244,7 @@ Iso<PersonDto, Person> lossy = Iso.of(
     person -> new PersonDto(person.firstName(), "", List.of()));  // Round trip loses data!
 ```
 
-### Do This Instead:
+### Do This Instead
 
 <!-- verify -->
 ```java
@@ -26375,13 +26324,13 @@ public class ApiIntegration {
 
 # Profunctor Optics: Recipes
 
-## _Wrapper adapters, migration recipes, and a complete worked example_
+_Copy a wrapper `Iso` or a schema-migration adapter, and keep tested optics working through a format change._
 
 ~~~admonish info title="What You'll Learn"
-- How to build reusable wrapper-type lenses for strongly-typed value classes (`UserId`, `Email`, etc.)
-- Migration patterns: exposing an old schema's view of new data, and when an `Iso` bridge is honest
-- Where the runnable example demonstrates the adaptation styles end to end
-- How adapted optics interact with effectful updates and deep composition
+- Give a single-field wrapper such as `UserId` an `Iso`, and compose it after a lens to edit the raw value
+- Expose an old schema's view of new data with `Lens.of`, where a lossy bridge cannot be an `Iso`
+- Keep migration adapters in one class, so finishing the migration deletes one file
+- Decide when a raw `Optic.dimap` bridge run through `modifyF` is the right tool
 ~~~
 
 This page is a recipe shelf for the production-shaped problems that optic adaptation solves. The conceptual material, including the crucial distinction between the raw `Optic`-level operations and the typed routes (composition, `Iso`, `Lens.of`), lives in [Profunctor Optics](profunctor_optics.md); use this page when you need a copy-paste recipe.
@@ -26627,17 +26576,14 @@ Practise this group in the [Traversals & Practice Journey](../tutorials/optics/t
 
 # Traversals: Practical Guide
 
-## _Handling Bulk Updates_
+_Update every element in a nested collection with one call, and get the rebuilt structure back._
 
 ~~~admonish info title="What You'll Learn"
-- How to perform bulk operations on collections within immutable structures
-- Using `@GenerateTraversals` for automatic collection optics
-- Composing traversals with lenses and prisms for deep bulk updates
-- The `Traversals.modify()` and `Traversals.getAll()` utility methods
-- Treating all focused elements as one list with `partsOf` (sorting, reversing, deduplicating)
-- Converting a Traversal to a read-only Fold with `asFold()` for queries and aggregation
-- Understanding zero-or-more target semantics
-- When to use traversals vs streams vs manual loops for collection processing
+- Generate traversals with `@GenerateTraversals`, and compose them with lenses into one path to every nested element
+- Update every element the path reaches with `Traversals.modify`, and read them with `Traversals.getAll` or `asFold()`
+- Run a validating or asynchronous update over every element with `modifyF`
+- Sort, reverse or deduplicate the focused values with `partsOf`, and predict what a list of the wrong size does
+- Decide between a traversal, a stream and a loop for a collection update
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -26655,7 +26601,7 @@ But what about operating on *many* items at once? How do we apply a single chang
 
 ## The Scenario: Updating an Entire League
 
-A `Traversal` is a functional "search-and-replace." It gives you a single tool to focus on zero or more items within a larger structure, allowing you to `get`, `set`, or `modify` all of them in one go.
+A `Traversal` plays the part of `stream().map(f).toList()` over a list field, put back with a wither. Unlike the stream, it does the putting back for you, at any depth, so one call reaches zero or more items, changes them, and returns the rebuilt structure. [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
 
 This makes it the perfect optic for working with collections. Consider this data model of a sports league:
 
@@ -26685,13 +26631,6 @@ League updatedLeague = new League(league.name(), newTeams);
 ```
 
 This code is deeply nested and mixes the *what* (add 5 to a score) with the *how* (looping, collecting, and reconstructing). A `Traversal` lets us abstract away the "how" completely.
-
-## Think of Traversals Like...
-
-* **A spotlight**: Illuminates many targets at once within a structure
-* **A search-and-replace tool**: Finds all matching items and transforms them
-* **A bulk editor**: Applies the same operation to multiple items efficiently
-* **A magnifying glass array**: Like a lens, but for zero-to-many targets instead of exactly one
 
 ## A Step-by-Step Walkthrough
 
@@ -26851,7 +26790,7 @@ flowchart TD
     class T,S,L tier
 ```
 
-### Use Traversals When:
+### Use Traversals When
 
 * **Bulk operations on nested collections** - Applying the same operation to many items
 * **Type-safe collection manipulation** - Working with collections inside immutable structures
@@ -26868,7 +26807,7 @@ Traversal<Company, String> allEmails = CompanyTraversals.employees()
 Company withNormalisedEmails = Traversals.modify(allEmails, String::toLowerCase, company);
 ```
 
-### Use Streams When:
+### Use Streams When
 
 * **Complex transformations** - Multiple operations that don't map cleanly to traversals
 * **Filtering and collecting** - You need to change the collection structure
@@ -26885,7 +26824,7 @@ List<String> activePlayerNames = league.teams().stream()
     .collect(toList());
 ```
 
-### Use Manual Loops When:
+### Use Manual Loops When
 
 * **Early termination needed** - You might want to stop processing early
 * **Complex control flow** - Multiple conditions and branches
@@ -26908,7 +26847,7 @@ for (Team team : league.teams()) {
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 
 <!-- verify -->
@@ -26928,7 +26867,7 @@ League emptyLeague = new League("Empty", List.of());
 List<Integer> scores = Traversals.getAll(leagueToAllPlayerScores, emptyLeague); // Returns empty list
 ```
 
-### Do This Instead:
+### Do This Instead
 
 
 <!-- verify -->
@@ -27103,22 +27042,13 @@ public class ConfigValidation {
 
 ## List Manipulation with `partsOf`
 
-### _Treating Traversal Focuses as Collections_
-
 ~~~admonish example title="See Example Code"
 [PartsOfTraversalExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PartsOfTraversalExample.java)
 ~~~
 
 So far, we've seen how traversals excel at applying the *same* operation to every focused element individually. But what if you need to perform operations that consider *all* focuses as a group? Sorting, reversing, or removing duplicates are inherently list-level operations: they require knowledge of the entire collection, not just individual elements.
 
-This is where `partsOf` becomes invaluable. It bridges the gap between element-wise traversal operations and collection-level algorithms.
-
-### Think of partsOf Like...
-
-* **A "collect and redistribute" operation**: Gather all targets, transform them as a group, then put them back
-* **A camera taking a snapshot**: Capture all focused elements, edit the photo, then overlay the changes
-* **A postal sorting centre**: Collect all parcels, sort them efficiently, then redistribute to addresses
-* **The bridge between trees and lists**: Temporarily flatten a structure for list operations, then restore the shape
+This is where `partsOf` becomes invaluable. It plays the part of reading the values into a `List`, sorting or reversing that list, and writing it back one value per position, in the order the traversal visits them. Unlike that hand-written round trip, it is one `Lens<S, List<A>>`, and a shorter list leaves the remaining positions as they were.
 
 ### The Problem: Element-Wise Limitations
 
@@ -27332,7 +27262,7 @@ public class CatalogueOptics {
 
 ### Common Pitfalls with partsOf
 
-#### Don't Do This:
+#### Don't Do This
 
 <!-- verify -->
 ```java
@@ -27353,7 +27283,7 @@ List<Double> prices = lens.get(products);
 prices.forEach(p -> System.out.println(p)); // Just use Traversals.getAll()!
 ```
 
-#### Do This Instead:
+#### Do This Instead
 
 <!-- verify -->
 ```java
@@ -27718,8 +27648,6 @@ Scenarios 7 to 9 convert the traversal to a `Fold` for aggregation (see [Convert
 
 ## Converting to Read-Only Folds with `asFold()`
 
-### _Switching from Modification to Aggregation_
-
 Sometimes you build a `Traversal` for modification but later need the same path for read-only queries, aggregation, or combining with other folds. The `asFold()` method converts any `Traversal<S, A>` into a `Fold<S, A>`, giving you access to the full Fold API: `foldMap`, `exists`, `all`, `length`, `preview`, and more.
 
 ### Why Convert?
@@ -27812,19 +27740,14 @@ Practise traversal basics in [Tutorial 05: Traversal Basics](https://github.com/
 
 # Folds: A Practical Guide
 
-## _Querying Immutable Data_
+_Query, search and total nested data through a reusable optic whose type says it never writes._
 
 ~~~admonish info title="What You'll Learn"
-- How to query and extract data from complex structures without modification
-- Using `@GenerateFolds` to create type-safe query optics automatically
-- Understanding the relationship between Fold and the Foldable type class
-- Aggregating data with monoids for sums, products, and custom combiners
-- Composing folds with other optics for deep, conditional queries
-- The difference between `getAll`, `preview`, `find`, `exists`, `all`, and `length`
-- Maybe-based extensions for functional optional handling (`previewMaybe`, `findMaybe`, `getAllMaybe`)
-- Combining multiple folds with `plus`, `empty`, and `sum` for multi-path extraction
-- When to use Fold vs Traversal vs direct field access vs Stream API
-- Building read-only data processing pipelines with clear intent
+- Generate folds with `@GenerateFolds`, and compose them with other optics into a read-only query path
+- Query with `getAll`, `preview`, `find`, `exists`, `all` and `length`, or get a `Maybe` back with `previewMaybe`
+- Aggregate the focused values with `foldMap` and a monoid, such as a sum, a maximum or a string join
+- Combine folds over several paths with `plus` and `Fold.sum`, and predict the order of the results
+- Decide between a fold, a traversal, the Stream API and direct field access
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -27839,7 +27762,7 @@ But what if you need to perform read-only operations? What if you want to query,
 
 ## The Scenario: Analysing E-Commerce Orders
 
-A **`Fold`** is a read-only optic designed specifically for querying and data extraction. Think of it as a **database query tool** or a **telescope** that lets you peer into your data structures, extract information, and aggregate results: all without the ability to modify anything.
+A **`Fold`** is a read-only optic designed specifically for querying and data extraction. It plays the part of a `Stream` over the values it reaches, ending in `reduce`, `anyMatch` or `count`. Unlike a stream, it is a reusable value that composes with other optics, and its type says it never writes. [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
 
 Consider an e-commerce system where you need to analyse orders:
 
@@ -27869,16 +27792,6 @@ public record OrderHistory(List<Order> orders) {}
 * "Check if all items are under £100"
 
 A `Fold` makes these queries type-safe, composable, and expressive.
-
----
-
-## Think of Folds Like...
-
-* **A database query**: Extracting specific data from complex structures
-* **A read-only telescope**: Magnifying and examining data without touching it
-* **A search engine**: Finding and collecting information efficiently
-* **An aggregation pipeline**: Combining values according to rules (via monoids)
-* **A reporter**: Summarising data into useful metrics
 
 ---
 
@@ -28054,10 +27967,10 @@ The most powerful feature of `Fold` is its ability to aggregate data using **mon
 
 #### Understanding Monoids: The Simple Explanation
 
-Think of a monoid as a recipe for combining things. It needs two ingredients:
+A monoid is the pair you pass to `Stream.reduce(identity, accumulator)`, held as one value. It has two parts:
 
-1. **A starting value** (called `empty`) - like starting with 0 when adding numbers, or "" when joining strings
-2. **A combining rule** (called `combine`) - like "add these two numbers" or "concatenate these two strings"
+1. **A starting value** (called `empty`): the `identity`, such as 0 when adding numbers, or "" when joining strings
+2. **A combining rule** (called `combine`): the `accumulator`, such as "add these two numbers" or "concatenate these two strings"
 
 **Simple Examples:**
 * **Adding numbers**: Start with 0, combine by adding → `0 + 5 + 10 + 3 = 18`
@@ -28228,14 +28141,6 @@ Standard Fold operations use `Optional<A>` for operations that might not find a 
 * Provides better composition with validation and error handling types
 * Offers a more principled functional API
 
-Think of `Maybe` as `Optional`'s more functional cousin; they both represent "a value or nothing", but `Maybe` plays more nicely with the rest of the functional toolkit.
-
-#### Think of Maybe-Based Extensions Like...
-
-* **A search that returns "found" or "not found"** - `Maybe` explicitly models presence or absence
-* **A safe lookup in a dictionary** - Either you get the value wrapped in `Just`, or you get `Nothing`
-* **A nullable pointer that can't cause NPE** - You must explicitly check before unwrapping
-* **Optional's functional sibling** - Same concept, better integration with functional patterns
 
 #### The Three Extension Methods
 
@@ -28684,7 +28589,7 @@ Each constituent fold in a `plus` combination performs its own pass over the sou
 
 ## When to Use Folds vs Other Approaches
 
-### Use Fold When:
+### Use Fold When
 
 * **Read-only queries** - You only need to extract or check data
 * **Intent matters** - You want to express "this is a query, not a modification"
@@ -28705,7 +28610,7 @@ boolean hasElectronics = allProducts.exists(
 );
 ```
 
-### Use Traversal When:
+### Use Traversal When
 
 * **Modifications needed** - You need to update the data
 * **Effectful updates** - Using `modifyF` for validation or async operations
@@ -28722,7 +28627,7 @@ Order discountedOrder = Traversals.modify(
 );
 ```
 
-### Use Stream API When:
+### Use Stream API When
 
 * **Complex filtering** - Multiple filter/map/reduce operations
 * **Parallel processing** - Taking advantage of parallel streams
@@ -28740,7 +28645,7 @@ List<String> topExpensiveItems = order.items().stream()
     .toList();
 ```
 
-### Use Direct Field Access When:
+### Use Direct Field Access When
 
 * **Simple cases** - Single, straightforward field read
 * **Performance critical** - Minimal abstraction overhead
@@ -28756,7 +28661,7 @@ String customerName = order.customerName();
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 <!-- verify -->
 ```java
@@ -28782,7 +28687,7 @@ Fold<Order, Product> fold = traversal.asFold();
 List<Product> products = fold.getAll(order); // Just use Traversals.getAll() directly!
 ```
 
-### Do This Instead:
+### Do This Instead
 
 <!-- verify -->
 ```java
@@ -29295,18 +29200,14 @@ Practise fold combination in [Tutorial 18: Fold Combination](https://github.com/
 
 # Getters: A Practical Guide
 
-## _Composable Read-Only Access_
+_Read one value, stored or computed, through an optic that composes and can never write._
 
 ~~~admonish info title="What You'll Learn"
-- How to extract values from structures using composable, read-only optics
-- Using `@GenerateGetters` to create type-safe value extractors automatically
-- Understanding the relationship between Getter and Fold
-- Creating computed and derived values without storing them
-- Composing Getters with other optics for deep data extraction
-- Factory methods: `of`, `to`, `constant`, `identity`, `first`, `second`
-- Null-safe navigation with `getMaybe` for functional optional handling
-- When to use Getter vs Lens vs direct field access
-- Building data transformation pipelines with clear read-only intent
+- Generate getters with `@GenerateGetters`, or derive a computed value such as a full name with `Getter.of`
+- Compose getters with `andThen`, and reach into a collection by composing with a `Fold` through `asFold()`
+- Query a getter's one value with the `Fold` operations it inherits, such as `exists` and `find`
+- Navigate nullable fields with `getMaybe` and `flatMap`, getting a `Maybe` instead of a `NullPointerException`
+- Decide between a getter, a lens, a fold and direct field access
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -29315,7 +29216,7 @@ Practise fold combination in [Tutorial 18: Fold Combination](https://github.com/
 
 In previous guides, we explored **`Fold`** for querying zero or more elements from a structure. But what if you need to extract exactly one value? What if you want a composable accessor for a single, guaranteed-to-exist value? This is where **`Getter`** excels.
 
-A **`Getter`** is the simplest read-only optic: it extracts precisely one value from a source. Think of it as a **function wrapped in optic form**, enabling composition with other optics whilst maintaining read-only semantics.
+A **`Getter`** is the simplest read-only optic: it extracts precisely one value from a source. It plays the part of a derived accessor, such as a `fullName()` computed from two fields. Unlike an accessor, it is a value: it composes with other getters, answers `exists` and `find` itself, and after `asFold()` composes with any other optic's `asFold()`. [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
 
 ---
 
@@ -29345,16 +29246,6 @@ public record Company(String name, Person ceo, List<Person> employees, Address h
 * "Compute the length of a person's full name"
 
 A `Getter` makes these extractions type-safe, composable, and expressive.
-
----
-
-## Think of Getters Like...
-
-* **A functional accessor**: Extracting a specific value from a container
-* **A read-only lens**: Focusing on one element without modification capability
-* **A computed property**: Deriving values on-the-fly without storage
-* **A data pipeline stage**: Composable extraction steps
-* **A pure function in optic form**: Wrapping functions for composition
 
 ---
 
@@ -29564,14 +29455,7 @@ if (ceo != null) {
 }
 ```
 
-The `getMaybe` extension method provides a more functional approach by wrapping extracted values in `Maybe`, which explicitly models presence or absence without the risk of NPE.
-
-#### Think of getMaybe Like...
-
-* **A safe elevator** - Transports you to the desired floor, or tells you it's unavailable
-* **A null-safe wrapper** - Extracts values whilst protecting against null
-* **Optional's functional cousin** - Same safety guarantees, better functional composition
-* **A maybe-monad extractor** - Lifts extraction into the Maybe context
+The `getMaybe` extension method provides a more functional approach by wrapping extracted values in `Maybe`, which explicitly models presence or absence without the risk of NPE. It plays the part of `Optional.ofNullable(getter.get(source))`, with `Maybe` in place of `Optional`.
 
 #### How getMaybe Works
 
@@ -29928,7 +29812,7 @@ Address address = secondGetter.get(pair);
 
 ## When to Use Getter vs Other Approaches
 
-### Use Getter When:
+### Use Getter When
 
 * You need **computed or derived values** without storing them
 * You want **composable extraction** pipelines
@@ -29949,7 +29833,7 @@ Getter<Company, String> ceoCityUppercase = ceoGetter
     .andThen(Getter.of(String::toUpperCase));
 ```
 
-### Use Lens When:
+### Use Lens When
 
 * You need **both reading and writing**
 * You're working with **mutable state** (functionally)
@@ -29964,7 +29848,7 @@ Lens<Person, String> firstName = Lens.of(
 Person updated = firstName.set("Janet", person);
 ```
 
-### Use Fold When:
+### Use Fold When
 
 * You're querying **zero or more elements**
 * You need to **aggregate or search** collections
@@ -29976,7 +29860,7 @@ Fold<Order, Product> itemsFold = Fold.of(Order::items);
 List<Product> all = itemsFold.getAll(order);
 ```
 
-### Use Direct Field Access When:
+### Use Direct Field Access When
 
 * You need **maximum performance** with no abstraction overhead
 * You're not composing with other optics
@@ -30252,17 +30136,13 @@ All Employees from UK: true
 
 # Setters: A Practical Guide
 
-## _Composable Write-Only Modifications_
+_Change values across a structure, one field or a whole collection, without reading them out._
 
 ~~~admonish info title="What You'll Learn"
-- How to modify data structures using composable, write-only optics
-- Using `@GenerateSetters` to create type-safe modifiers automatically
-- Understanding the relationship between Setter and Traversal
-- Creating modification pipelines without read access
-- Effectful modifications using Applicative contexts
-- Factory methods: `of`, `fromGetSet`, `forList`, `forMapValues`, `identity`
-- When to use Setter vs Lens vs Traversal
-- Building batch update and normalisation pipelines
+- Generate setters with `@GenerateSetters`, or build one with `Setter.fromGetSet`
+- Compose setters with `andThen`, and with `Setter.forList()` or `forMapValues()`, to change every value in a nested collection
+- Run a validating update through `modifyF`, and fix the `UnsupportedOperationException` a `Setter.of` setter throws there
+- Decide between a setter, a lens and a traversal for an update
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -30272,6 +30152,8 @@ All Employees from UK: true
 In the previous guide, we explored **`Getter`** for composable read-only access. Now we turn to its dual: **`Setter`**, a write-only optic that modifies data without necessarily reading it first.
 
 A **`Setter`** is an optic that focuses on transforming elements within a structure. Unlike a `Lens`, which provides both getting and setting, a `Setter` concentrates solely on modification, making it ideal for batch updates, data normalisation, and transformation pipelines where read access isn't required.
+
+It plays the part of `stream().map(f).toList()` put back with a wither, with nothing read out first. Unlike the stream, it composes with other setters, `Setter.forList()` among them, and does the putting back at any depth. [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
 
 ---
 
@@ -30306,16 +30188,6 @@ public record Inventory(List<Product> products, String warehouseId) {}
 * "Set all user themes to dark mode"
 
 A `Setter` makes these modifications type-safe, composable, and expressive.
-
----
-
-## Think of Setters Like...
-
-* **A functional modifier**: Transforming values without reading
-* **A write-only lens**: Focusing on modification only
-* **A batch transformer**: Applying changes to multiple elements
-* **A data normalisation tool**: Standardising formats across structures
-* **A pipeline stage**: Composable modification steps
 
 ---
 
@@ -30647,7 +30519,7 @@ Useful as a base case in composition or for direct value transformation.
 
 ## When to Use Setter vs Other Approaches
 
-### Use Setter When:
+### Use Setter When
 
 * You need **write-only access** without reading
 * You're building **batch transformation** pipelines
@@ -30667,7 +30539,7 @@ Setter<Company, String> employeeNamesSetter = companySetter
     .andThen(personNameSetter);
 ```
 
-### Use Lens When:
+### Use Lens When
 
 * You need **both reading and writing**
 * You want to **get and set** the same field
@@ -30683,7 +30555,7 @@ String current = usernameLens.get(user); // Read
 User updated = usernameLens.set("new_name", user); // Write
 ```
 
-### Use Traversal When:
+### Use Traversal When
 
 * You need **read operations** (`getAll`) on collections
 * You're working with **optional** or multiple focuses
@@ -30694,7 +30566,7 @@ User updated = usernameLens.set("new_name", user); // Write
 List<Product> all = Traversals.getAll(productTraversal, order); // Read
 ```
 
-### Use Direct Mutation When:
+### Use Direct Mutation When
 
 * You're working with **mutable objects** (not recommended in FP)
 * **Performance** is absolutely critical
@@ -31049,15 +30921,14 @@ Normalised product names:
 
 # Common Data Structure Traversals
 
-## _Extending Traversal Power to Optional, Map, and Tuple Types_
+_Update the value inside an `Optional`, every value of a `Map`, or both halves of a `Tuple2`._
 
 ~~~admonish info title="What You'll Learn"
-- Traversing Optional values with affine traversals (0-1 cardinality)
-- Bulk transformations on Map values whilst preserving keys
-- Parallel operations on Tuple2 pairs when elements share a type
-- Composing structure traversals with lenses and filtered optics
-- Real-world patterns: configuration management, feature flags, coordinate transforms
-- When to use structure traversals vs direct access vs Stream API
+- Update an optional value with `Traversals.forOptional()`, leaving an empty `Optional` alone
+- Change every value of a map with `Traversals.forMapValues()`, keeping its keys and its iteration order
+- Traverse a persistent or third-party map's values with `forMapValuesCollecting`, choosing the map type it rebuilds
+- Update both elements of a same-typed pair with `TupleTraversals.both()`
+- Compose these traversals with lenses into deeper paths, and decide when direct access or a stream is clearer
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -31072,14 +30943,9 @@ These structures share a common need: **apply a transformation uniformly across 
 
 ---
 
-## Think of Structure Traversals Like...
+## How many values each one reaches {#how-many-values-each-one-reaches}
 
-* **Java Stream's `Optional.map()`**: Like `optional.map(transform)` but composable with other optics
-* **Scala's for-comprehensions**: Similar to `for { x <- option } yield transform(x)`, but integrated into optic pipelines
-* **Database UPDATE statements**: Like `UPDATE config SET value = transform(value)`, preserving structure
-* **Functional map operations**: Like `fmap` in Haskell, lifting pure functions into wrapped contexts
-
-The key insight: these aren't special cases; they're **traversals with specific cardinality**:
+`forOptional` and `forMapValues` play the part of `Optional.map`, and of streaming a map's entries and collecting them back under the same keys. Unlike those, each is an optic, so it composes into a longer path, and `forMapValues` keeps the map's iteration order, which `Collectors.toMap` does not. None of them is a special case. Each is a traversal, and what differs is how many values it reaches:
 - `Optional<A>`: 0 or 1 element (affine traversal)
 - `Map<K, V>`: 0 to N values, preserving keys
 - `Tuple2<A, A>`: Exactly 2 elements (when same type)
@@ -31330,7 +31196,7 @@ ServiceRegistry updated = Traversals.modify(
 
 ### Persistent and Third-Party Maps: `forMapValuesCollecting()`
 
-`forMapValues()` hands back a plain `java.util.Map` whatever map it was given: the source's iteration order survives, its type does not. To traverse the values of a *persistent* or *specialised* map (PCollections `PMap` / `PSortedMap`, Guava `ImmutableMap`, Eclipse Collections `ImmutableMap`, Vavr `io.vavr.collection.Map`), use `forMapValuesCollecting()`. It is the map-shaped companion to `forIterableCollecting()`, which does the same job for non-`Iterable` collections.
+`forMapValues()` hands back a plain `java.util.Map` whatever map it was given: the source's iteration order survives, its type does not. To traverse the values of a *persistent* or *specialised* map (PCollections `PMap` / `PSortedMap`, Guava `ImmutableMap`, Eclipse Collections `ImmutableMap`, Vavr `io.vavr.collection.Map`), use `forMapValuesCollecting()`. It is the map-shaped companion to `forIterableCollecting()`, which does the same job for collections.
 
 For any map type that *implements* `java.util.Map` (PCollections maps, Guava `ImmutableMap`, Apache Commons map decorators, …), pass a single rebuild function:
 
@@ -31480,7 +31346,7 @@ BoundingBox scaled = Traversals.modify(topLeftCoords, coord -> coord * 2, box);
 
 ## When to Use Structure Traversals vs Other Approaches
 
-### Use Structure Traversals When:
+### Use Structure Traversals When
 
 * **Reusable transformations** - Define once, compose with other optics
 * **Nested optionals** - Avoiding `.map().map().map()` chains
@@ -31500,7 +31366,7 @@ Traversal<ServiceConfig, Integer> allTimeouts =
 ServiceConfig increased = Traversals.modify(allTimeouts, t -> t + 1000, serviceConfig);
 ```
 
-### Use Direct Access When:
+### Use Direct Access When
 
 * **Single Optional** - Simple `map()` or `orElse()` is clearer
 * **Specific Map key** - `map.get(key)` is more direct
@@ -31521,7 +31387,7 @@ Tuple2<Integer, String> result = new Tuple2<>(
 );
 ```
 
-### Use Stream API When:
+### Use Stream API When
 
 * **Complex filtering** - Multiple conditions
 * **Aggregations** - Collecting to new structures
@@ -31540,7 +31406,7 @@ List<Integer> values = map.values().stream()
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 <!-- verify -->
 ```java
@@ -31560,7 +31426,7 @@ Tuple2<Integer, String> mixed = new Tuple2<>(42, "hello");
 // TupleTraversals.both() won't work here; types must match!
 ```
 
-### Do This Instead:
+### Do This Instead
 
 <!-- verify -->
 ```java
@@ -31645,17 +31511,14 @@ public class ConfigOptics {
 
 # Limiting Traversals: Focusing on List Portions
 
-## _Declarative Slicing for Targeted Operations_
+_Update the first or last few elements of a list, or a slice, and leave the rest alone._
 
 ~~~admonish info title="What You'll Learn"
-- How to focus on specific portions of lists (first n, last n, slices)
-- Using `ListTraversals` factory methods for index-based operations
-- Predicate-based slicing with `takingWhile`/`droppingWhile`, and single elements with `element`
-- The difference between limiting traversals and Stream's `limit()`/`skip()`
-- Composing limiting traversals with lenses, prisms, and filtered optics
-- Understanding edge case handling (negative indices, bounds exceeding list size)
-- Real-world patterns for pagination, batch processing, and time-series windowing
-- When to use limiting traversals vs Stream API vs manual loops
+- Focus part of a list by position with `taking`, `dropping`, `takingLast`, `droppingLast` and `slicing`
+- Focus the leading run that meets a condition with `takingWhile`, everything after it with `droppingWhile`, or one index with `element`
+- Predict what `modify` and `getAll` do outside the slice, and with a negative or oversized count
+- Compose a slice with lenses and filters, and apply two slices in sequence where `andThen` cannot chain them
+- Decide between a limiting traversal, a stream and a loop
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -31730,16 +31593,7 @@ List<Order> chunk = orders.subList(startIndex, Math.min(startIndex + chunkSize, 
 
 This approach forces you to abandon the declarative power of optics, manually managing indices, bounds checking, and list reconstruction. **Limiting traversals** let you express this intent directly within your optic composition.
 
----
-
-## Think of Limiting Traversals Like...
-
-* **Java Stream's `limit()` and `skip()`**: Like `stream.limit(n)` and `stream.skip(n)`, but composable with immutable data transformations and integrated into optic pipelines
-* **SQL's LIMIT and OFFSET clauses**: Like database pagination (`LIMIT 10 OFFSET 20`), but for in-memory immutable structures, enabling declarative pagination logic
-* **Spring Batch chunk processing**: Similar to Spring Batch's chunk-oriented processing: divide a list into manageable segments for targeted transformation whilst preserving the complete dataset
-* **ArrayList.subList() but better**: Like `List.subList(from, to)`, but instead of a mutable view, you get an immutable optic that composes with lenses, prisms, and filtered traversals
-
-The key insight: positional focus becomes part of your optic's *identity*, not an external slicing operation applied afterwards.
+A limiting traversal plays the part of a stream's `limit(n)` and `skip(n)`. Unlike the stream, which drops the elements outside the range, a write through it keeps them, and returns a new list with only the chosen part changed.
 
 ---
 
@@ -32141,7 +31995,7 @@ List<Order> processed = Traversals.modify(
 
 ## When to Use Limiting Traversals vs Other Approaches
 
-### Use Limiting Traversals When:
+### Use Limiting Traversals When
 
 * **Positional focus** - You need to operate on elements by index position
 * **Structural preservation** - Non-focused elements must remain in the list
@@ -32160,7 +32014,7 @@ Traversal<Catalogue, Double> first10Prices =
 Catalogue updated = Traversals.modify(first10Prices, p -> p * 0.9, catalogue);
 ```
 
-### Use Stream API When:
+### Use Stream API When
 
 * **Terminal operations** - Counting, finding, collecting to new structures
 * **Complex transformations** - Multiple chained operations with sorting/grouping
@@ -32176,7 +32030,7 @@ int totalStock = products.stream()
     .sum();
 ```
 
-### Use Manual Loops When:
+### Use Manual Loops When
 
 * **Early termination with side effects** - Need to break out of loop
 * **Index-dependent logic** - Processing depends on knowing the exact index
@@ -32197,7 +32051,7 @@ for (int i = 0; i < Math.min(10, products.size()); i++) {
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 <!-- verify -->
 ```java
@@ -32223,7 +32077,7 @@ Traversal<List<Product>, Product> atIndex5 = ListTraversals.slicing(5, 6);
 // Consider using Ixed type class for single-element access instead
 ```
 
-### Do This Instead:
+### Do This Instead
 
 <!-- verify -->
 ```java
@@ -32482,16 +32336,18 @@ Limiting traversals bring **positional focus** into the heart of your optic comp
 
 # List Decomposition: Cons and Snoc Patterns
 
+_Split a list at either end with prisms, and read or change its first or last element._
+
 > _"Begin at the beginning," the King said gravely, "and go on till you come to the end: then stop."_
 >
 > – Lewis Carroll, *Alice's Adventures in Wonderland*
 
 ~~~admonish info title="What You'll Learn"
-- How to decompose lists using the classic functional programming patterns cons and snoc
-- When to use head/tail decomposition versus init/last decomposition
-- Convenience affines for accessing first and last elements directly
-- Stack-safe operations for processing arbitrarily large lists
-- Integration with the Focus DSL for fluent list manipulation
+- Split a list into head and tail with `ListPrisms.cons()`, or into init and last with `snoc()`, and build one back
+- Read and change a list's first or last element with the `head()` and `last()` affines
+- Predict what `set` through `head()` does on an empty list, and match an empty list with `empty()`
+- Fold, map and filter a list of a million elements without a stack overflow, using the trampoline operations
+- Reach a list's last element from a Focus path with `.via()`, starting from the path to the list itself
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -32787,21 +32643,21 @@ These are list-level optics: reach them from a path to the list (`FocusPath.of(C
 
 ## When to Use Each Pattern
 
-### Use Cons (head/tail) When:
+### Use Cons (head/tail) When
 
 - Processing lists from front to back
 - Implementing recursive algorithms that peel off the first element
 - Building lists by prepending elements
 - Pattern matching on "first and rest" structure
 
-### Use Snoc (init/last) When:
+### Use Snoc (init/last) When
 
 - Processing lists from back to front
 - Algorithms that need the final element
 - Building lists by appending elements
 - Pattern matching on "everything before and last" structure
 
-### Use Head/Last Affines When:
+### Use Head/Last Affines When
 
 - You only need direct access to the first or last element
 - Modifying endpoints without caring about the rest
@@ -32898,7 +32754,7 @@ Most readers only need filtered traversals, covered first. The rest solve specif
 1. [Filtered Optics](filtered_optics.md): A predicate that travels with the path
 2. [Indexed Optics](indexed_optics.md): Position-aware operations on collections
    - [Indexed Optics: Advanced Patterns](indexed_optics_advanced.md): Paired indices and audit trails
-3. [Each Typeclass](each_typeclass.md): One canonical traversal per container
+3. [Each Type Class](each_typeclass.md): One canonical traversal per container
 4. [String Traversals](string_traversals.md): Characters, words and lines
 5. [Indexed Access](indexed_access.md): `At` and `Ixed` for keys and indices
 
@@ -32915,17 +32771,14 @@ The [Traversals & Practice Journey](../tutorials/optics/traversals_journey.md) (
 
 # Filtered Optics: Predicate-Based Composition
 
-## _Declarative Filtering for Targeted Operations_
+_Change only the elements that match a condition, and keep the others in place, unchanged._
 
 ~~~admonish info title="What You'll Learn"
-- How to filter elements within traversals and folds using predicates
-- Using `filtered()` for declarative, composable filtering as part of optic composition
-- The difference between filtering during modification vs filtering during queries
-- Advanced filtering with `filterBy()` for query-based predicates
-- The static `Traversals.filtered()` combinator for affine traversals
-- The preserved-versus-excluded semantics: modification keeps the structure, queries drop non-matches
-- When to use filtered optics vs Stream API vs conditional logic
-- Real-world patterns for customer segmentation and analytics
+- Filter a traversal or a fold with `filtered`, and chain filters for AND logic
+- Predict which elements `modify` keeps unchanged and which `getAll` leaves out
+- Insert a reusable filter anywhere in a chain with `Traversals.filtered`
+- Select elements by a nested query, such as customers with an overdue invoice, with `filterBy`
+- Fix a filtered update whose second run targets fewer elements, by filtering on fields it does not change
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -32992,17 +32845,7 @@ List<Customer> customersWithOverdue = platform.customers().stream()
 
 This approach forces you to abandon the declarative power of optics, manually managing iteration and reconstruction. **Filtered optics** let you express this intent directly within your optic composition.
 
----
-
-## Think of Filtered Optics Like...
-
-* **A SQL `UPDATE ... WHERE`**: `UPDATE users SET tier = 'gold' WHERE active = true` changes only the matching rows and keeps the rest, just as a filtered write does
-* **A spotlight with a mask**: Illuminates only the items that match your criteria
-* **A sieve**: Allows matching elements to pass through whilst blocking others
-* **A conditional lens**: Focuses only on elements satisfying a predicate
-* **A smart selector**: Like CSS selectors that target specific elements based on attributes
-
-The key insight: filtering becomes part of your optic's *identity*, not an external operation applied afterwards.
+A filtered traversal plays the part of the conditional `map` in the traditional approach, `user.active() ? user.grantBonus() : user`: matching elements change and the rest pass through untouched. Unlike that stream, it composes into a longer path and puts the list back for you, and unlike a stream's `filter`, it never drops an element.
 
 ---
 
@@ -33243,7 +33086,7 @@ This behaviour is intentional: it allows you to **transform selectively** whilst
 
 ## When to Use Filtered Optics vs Other Approaches
 
-### Use Filtered Optics When:
+### Use Filtered Optics When
 
 * **Declarative composition** - You want filtering to be part of the optic's definition
 * **Selective modifications** - Modify only elements matching criteria
@@ -33262,7 +33105,7 @@ Traversal<Platform, User> activeEnterpriseUsers =
 Platform updated = Traversals.modify(activeEnterpriseUsers, User::grantBonus, platform);
 ```
 
-### Use Stream API When:
+### Use Stream API When
 
 * **Complex transformations** - Multiple map/filter/reduce operations
 * **Collecting to different structures** - Need to change the collection type
@@ -33280,7 +33123,7 @@ List<String> topActiveUserNames = users.stream()
     .collect(toList());
 ```
 
-### Use Conditional Logic When:
+### Use Conditional Logic When
 
 * **Control flow** - Early returns, exceptions, complex branching
 * **Side effects** - Logging, metrics, external calls based on conditions
@@ -33300,7 +33143,7 @@ for (User user : users) {
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 <!-- verify -->
 ```java
@@ -33325,7 +33168,7 @@ Fold<User, Boolean> isActiveFold = UserLenses.active().asFold();
 boolean isActive = isActiveFold.getAll(user).get(0); // Just use user.active()!
 ```
 
-### Do This Instead:
+### Do This Instead
 
 <!-- verify -->
 ```java
@@ -33621,7 +33464,7 @@ Filtered optics bring **declarative filtering** into the heart of your optic com
 
 # Indexed Optics: Position-Aware Operations
 
-## _Tracking Indices During Transformations_
+_Update each element knowing its position, map key or field name, without counting by hand._
 
 > *"Give me a place to stand, and I shall move the earth."*
 >
@@ -33630,13 +33473,11 @@ Filtered optics bring **declarative filtering** into the heart of your optic com
 ![indexed-optics.jpg](../images/indexed-optics.jpg)
 
 ~~~admonish info title="What You'll Learn"
-- How to access both index and value during optic operations
-- Using IndexedTraversal for position-aware bulk updates
-- Using IndexedFold for queries that need position information
-- Using IndexedLens for field name tracking and debugging
-- Creating indexed traversals for Lists and Maps with IndexedTraversals utility
-- Converting between indexed and non-indexed optics
-- When to use indexed optics vs standard optics
+- Pair each list element with its position, or each map value with its key, with `IndexedTraversals.forList()` and `forMap()`
+- Update elements by position or key with `IndexedTraversals.imodify`, such as numbering a packing slip
+- Narrow by position or value with `filterIndex` and `filteredWithIndex`, and predict that indices are never renumbered
+- Record which field a write touched with an `IndexedLens` and its `imodify`
+- Drop the index with `asTraversal()` when the update stops using it
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -33733,18 +33574,7 @@ order.metadata().entrySet().stream()
 
 This approach forces manual index management, mixing the *what* (transformation logic) with the *how* (index tracking). **Indexed optics** provide a declarative, type-safe solution.
 
----
-
-## Think of Indexed Optics Like...
-
-* **GPS coordinates**: Not just the destination, but the latitude and longitude
-* **Line numbers in an editor**: Every line knows its position in the file
-* **Map.Entry**: Provides both key and value instead of just the value
-* **Breadcrumbs in a file system**: Showing the complete path to each file
-* **A numbered list**: Each element has both content and a position
-* **Spreadsheet cells**: Both the cell reference (A1, B2) and the value
-
-The key insight: indexed optics make *position* a first-class citizen, accessible during every operation.
+An indexed optic plays the part of a loop over `map.entrySet()`, or over a list with a counter: each value arrives with its key or position. Unlike the loop, it hands back the rebuilt list or map, and composes into a longer path like any other optic.
 
 ---
 
@@ -33798,7 +33628,7 @@ IndexedTraversal<String, Map<String, String>, String> metadataWithKeys =
 The `forMap()` factory creates a traversal where each value is paired with its key.
 
 ~~~admonish tip title="Alternative: EachIndexed.indexedTraversal()"
-You can also obtain indexed traversals through the [Each typeclass](each_typeclass.md). If a container's `Each` instance supports indexed access it is an `EachIndexed`, whose `indexedTraversal()` returns the `IndexedTraversal` directly; the index type is fixed at compile time, with no `Optional` to unwrap:
+You can also obtain indexed traversals through the [Each type class](each_typeclass.md). If a container's `Each` instance supports indexed access it is an `EachIndexed`, whose `indexedTraversal()` returns the `IndexedTraversal` directly; the index type is fixed at compile time, with no `Optional` to unwrap:
 
 <!-- verify -->
 ```java
@@ -34081,7 +33911,7 @@ List<LineItem> uppercased = Traversals.modify(
 
 Understanding when indexed optics add value is crucial for writing clear, maintainable code.
 
-#### Use Indexed Optics When:
+#### Use Indexed Optics When
 
 * **Position-based logic** - Different behaviour for even/odd indices, first/last elements
 * **Numbering or labelling** - Adding sequence numbers, prefixes, or position markers
@@ -34107,7 +33937,7 @@ List<Product> prioritised = IndexedTraversals.imodify(
 );
 ```
 
-#### Use Standard Optics When:
+#### Use Standard Optics When
 
 * **Position irrelevant** - Pure value transformations
 * **Simpler code** - Index tracking adds unnecessary complexity
@@ -34212,7 +34042,7 @@ List<String> odd = IndexedTraversals.getAll(oddPositions, values);
 
 ## Common Pitfalls
 
-#### Don't Do This:
+#### Don't Do This
 
 <!-- verify -->
 ```java
@@ -34241,7 +34071,7 @@ List<Pair<Integer, String>> pairs = IndexedTraversals.toIndexedList(evenOnly, li
 // Indices are [0, 2, 4], NOT [0, 1, 2] - original positions preserved!
 ```
 
-#### Do This Instead:
+#### Do This Instead
 
 <!-- verify -->
 ```java
@@ -34313,7 +34143,7 @@ public class OrderOptics {
 ~~~admonish tip title="See Also"
 - [Indexed Optics: Advanced Patterns](indexed_optics_advanced.md): composition with paired indices, the Haskell heritage, and the trade-off summary
 - [Indexed Access](indexed_access.md): the At and Ixed type classes for single-key operations
-- [Each Typeclass](each_typeclass.md): `EachIndexed.indexedTraversal()` as an alternative source of indexed traversals
+- [Each Type Class](each_typeclass.md): `EachIndexed.indexedTraversal()` as an alternative source of indexed traversals
 ~~~
 
 ---
@@ -34325,12 +34155,13 @@ public class OrderOptics {
 
 # Indexed Optics: Advanced Patterns
 
-## _Advanced composition patterns and the Haskell heritage_
+_Compose indexed optics through nested lists so every value arrives with the full path that reached it._
 
 ~~~admonish info title="What You'll Learn"
-- How indexed optics compose: paired indices through nested structures, index-aware filtering, and bulk transformations.
-- The relationship between Higher-Kinded-J's indexed optics and the canonical Haskell lens encoding, for readers coming from a functional background.
-- A concise summary of the trade-offs that make indexed optics worth reaching for.
+- Compose indexed traversals with `iandThen`, and log the full index path to each value a nested update changes
+- Turn zero-based positions into display numbers inside `imodify`, with no re-indexing combinator
+- Narrow by position, value or both by layering `filterIndex`, `filtered` and `filteredWithIndex`
+- Write an audit trail that records each changed field's name and old value with an `IndexedLens`
 ~~~
 
 This page collects the advanced composition patterns and reference material that follow on from [Indexed Optics](indexed_optics.md). The narrative introduction, mental model, and step-by-step walkthrough live there; this page is for the deeper compositions and the cross-language background.
@@ -34914,26 +34745,24 @@ These tools transform how you work with collections and records:
 ---
 
 **Previous:** [Indexed Optics](indexed_optics.md)
-**Next:** [Each Typeclass](each_typeclass.md)
+**Next:** [Each Type Class](each_typeclass.md)
 
 <!-- Source: optics/each_typeclass.md -->
 
 # Each: Canonical Element-Wise Traversal
 
-## _One Canonical Traversal per Container_
+_Get a container's natural traversal from one `each()` call, and give your own containers one too._
 
 > *"Simplicity is the ultimate sophistication."*
 >
 > – Leonardo da Vinci
 
 ~~~admonish info title="What You'll Learn"
-- How the `Each` type class provides canonical traversals for container types
-- Using `EachInstances` for Java collections (List, Set, Collection, Map, Optional, arrays, Stream, VStream, String)
-- Using `EachExtensions` for HKT types (Maybe, Either, Try, Validated)
-- Indexed traversal support via `EachIndexed.indexedTraversal()` for position-aware operations
-- Integration with Focus DSL using `.each(Each)` method
-- Creating custom `Each` instances for your own types
-- When to use `Each` vs direct `Traversal` creation
+- Get a traversal for a JDK container from `EachInstances`, or for `Maybe`, `Either`, `Try` and `Validated` from `EachExtensions`
+- Number list elements, or adjust map values by key, through `EachIndexed.indexedTraversal()`
+- Traverse a container a Focus path does not recognise with `.each(Each)`
+- Write an `Each` instance for your own container, or wrap an existing traversal with `Each.fromTraversal`
+- Decide between `Each` and a hand-built `Traversal`
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -34942,7 +34771,7 @@ These tools transform how you work with collections and records:
 
 Every container type has a natural way to traverse its elements. A `List` iterates from first to last. A `Map` visits each value. An `Optional` yields zero or one element. The **Each** type class captures this canonical traversal pattern, providing a uniform interface across diverse container types.
 
-Rather than writing traversal logic repeatedly for each container, `Each` gives you a single method: `each()`. Call it, receive a `Traversal`, and you're ready to read or modify all elements.
+Rather than writing traversal logic repeatedly for each container, `Each` gives you a single method: `each()`. Call it, receive a `Traversal`, and you're ready to read or modify all elements. `Each` plays the part of `Iterable`: Java's enhanced `for` loop works on anything that supplies an iterator, and `each()` works on any container with an `Each` instance. Unlike `Iterable`, whose iterator only reads, the traversal `each()` returns also writes, giving back a new container.
 
 ---
 
@@ -34975,17 +34804,6 @@ Traversal<Optional<String>, String> optTrav = EachInstances.<String>optionalEach
 ```
 
 More importantly, `Each` integrates with the Focus DSL, enabling fluent navigation through any container type.
-
----
-
-## Think of Each Like...
-
-* **A universal remote**: One interface controls many devices
-* **An iterator factory**: Each container knows how to produce its own iterator
-* **A catalogue index**: Every library has a standard way to browse its contents
-* **The "for-each" loop**: Java's enhanced for loop works on any `Iterable`; `Each` works on any container
-
-The key insight: `Each` abstracts the *how* of traversal, letting you focus on the *what*.
 
 ---
 
@@ -35381,15 +35199,14 @@ User updated = allTasks.modifyAll(Task::markReviewed, user);
 
 # String Traversals: Declarative Text Processing
 
-## _Type-Safe Text Manipulation Without Regex Complexity_
+_Change each character, word or line of a string through one traversal, and get the string back._
 
 ~~~admonish info title="What You'll Learn"
-- Breaking strings into traversable units (characters, words, lines)
-- Declarative text normalisation and validation
-- Composing string traversals with filtered optics for pattern matching
-- Real-world text processing: logs, CSV, configuration files
-- When to use string traversals vs Stream API vs regex
-- Performance characteristics and best practices
+- Split a string into characters, words or lines with `chars()`, `worded()` and `lined()`, and rebuild it after a change
+- Predict how `worded()` collapses whitespace and `lined()` normalises line endings, so an identity `modify` can change the text
+- Change only the lines or words that match with `filtered`, such as the `ERROR` lines of a log
+- Validate every word with `modifyF` and `Validated`, collecting each failure
+- Decide between a string traversal, the Stream API and a regular expression
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -35424,16 +35241,7 @@ String normaliseEmail(String email) {
 
 **String traversals** let you separate the "what" (the structure) from the "how" (the transformation), making your text processing logic reusable and composable.
 
----
-
-## Think of String Traversals Like...
-
-* **Java Stream's split() + map()**: Like `text.lines().map(...)` but integrated into optic composition
-* **IntelliJ's "Replace in Selection"**: Focus on text units, transform them, reassemble automatically
-* **Unix text tools**: Similar to `awk` and `sed` pipelines, but type-safe and composable
-* **SQL's string functions**: Like `UPPER()`, `TRIM()`, `SPLIT_PART()`, but for immutable Java strings
-
-The key insight: text structure (characters, words, lines) becomes part of your optic's identity, not preprocessing before the real work.
+A string traversal plays the part of splitting a string, mapping each piece and joining the pieces back, as `text.lines().map(f).collect(joining("\n"))` does. Unlike the hand-written version, it composes into a longer path. Like it, the traversal rejoins with one separator, so `worded()` and `lined()` normalise the whitespace between pieces.
 
 ---
 
@@ -35744,7 +35552,7 @@ String normalised = Traversals.modify(
 
 ## When to Use String Traversals vs Other Approaches
 
-### Use String Traversals When:
+### Use String Traversals When
 
 * **Reusable text transformations** - Define once, apply across multiple strings
 * **Composable pipelines** - Building complex optic chains with lenses and prisms
@@ -35763,7 +35571,7 @@ Traversal<Config, String> allPropertyValues =
 Config trimmed = Traversals.modify(allPropertyValues, String::trim, config);
 ```
 
-### Use Stream API When:
+### Use Stream API When
 
 * **Complex filtering** - Multiple conditions with short-circuiting
 * **Aggregations** - Counting, collecting to new structures
@@ -35779,7 +35587,7 @@ long wordCount = text.lines()
     .count();
 ```
 
-### Use Regular Expressions When:
+### Use Regular Expressions When
 
 * **Complex pattern matching** - Extracting structured data (emails, URLs, dates)
 * **Search and replace** - Simple find-and-replace operations
@@ -35799,7 +35607,7 @@ while (matcher.find()) {
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 <!-- verify -->
 ```java
@@ -35821,7 +35629,7 @@ String result = Traversals.modify(allChars.filtered(c -> c != 'a'), c -> c, "ban
 // Filtered traversals preserve structure!
 ```
 
-### Do This Instead:
+### Do This Instead
 
 <!-- verify -->
 ```java
@@ -35917,23 +35725,21 @@ Validated<List<String>, String> result = VALIDATED.narrow(
 
 ---
 
-**Previous:** [Each Typeclass](each_typeclass.md)
+**Previous:** [Each Type Class](each_typeclass.md)
 **Next:** [Indexed Access](indexed_access.md)
 
 <!-- Source: optics/indexed_access.md -->
 
 # Indexed Access: At and Ixed Type Classes
 
-## _CRUD and Safe Partial Access for Collections_
+_Insert, update or delete a map entry, update or delete a list element, or update either only when it exists._
 
 ~~~admonish info title="What You'll Learn"
-- How to insert, update, and delete entries in indexed structures using `At`
-- How to safely access and update existing elements using `Ixed`
-- The key difference: At provides full CRUD, Ixed provides read/update only
-- Factory methods: `mapAt()`, `listAt()`, `mapIx()`, `listIx()`
-- Composing with Lenses for deep access into nested collections
-- Using `Prisms.some()` to unwrap Optional for chained modifications
-- When to use At vs Ixed vs direct collection operations
+- Insert, update and delete a map entry with `At`'s `insertOrUpdate`, `modify` and `remove`, and update or delete a list element by index
+- Update an entry only when it exists with `Ixed`, so a missing key or index is a no-op rather than an insert or an exception
+- Compose `at(key)` with a lens to insert or delete a nested setting, and unwrap the value with `Prisms.some()`
+- Predict how `At.remove` shifts later list indices, and when `listAt` throws instead of padding
+- Decide between `At`, `Ixed` and plain collection calls for a batch of changes
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -36418,13 +36224,14 @@ Practise the Focus DSL in the [Focus DSL Journey](../tutorials/optics/focus_dsl_
 
 # Focus DSL: Type Class and Effect Integration
 
+_Run an update through an effect, fold a traversal into one value, and cross between Focus and Effect paths._
+
 ~~~admonish info title="What You'll Learn"
-- Effectful modification with `modifyF()` using an `Applicative` or `Monad` instance
-- Monoid-based aggregation with `foldMap()` on traversal paths
-- Generic collection traversal with `traverseOver()` for `Kind<F, A>` fields
-- Conditional modification with `modifyWhen()`
-- Path debugging with `traced()`
-- Bridging between Focus paths and Effect paths in both directions
+- Validate or fetch inside an update with `modifyF`, choosing the effect by the `Applicative` you pass
+- Sum or join every value a traversal reaches with `foldMap` and a `Monoid`
+- Traverse a `Kind<F, A>` field with `traverseOver`, giving the type witnesses Java cannot infer
+- Change only the elements that match with `modifyWhen`, and print what a path focused with `traced`
+- Cross between Focus and Effect paths in either direction, and predict when an `AffinePath` must name its absent case
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -36709,12 +36516,14 @@ EitherPath<String, Integer> salary =
 
 # Focus DSL: Custom Containers and Code Generation
 
+_Predict which path type a container field generates, and teach the processor a container of your own._
+
 ~~~admonish info title="What You'll Learn"
-- What the annotation processor emits for each field shape
-- How container cardinality (`ZERO_OR_ONE` versus `ZERO_OR_MORE`) determines the generated path type
-- What `widenCollections = true` changes, and when you want it
-- The container types supported out of the box, across HKJ, the JDK, Eclipse Collections, Guava, Vavr, Apache Commons, and PCollections
-- How to register your own container type through the `TraversableGenerator` SPI
+- Predict a field's path type from its container's cardinality: exactly one, zero or one, or zero or more
+- Decide whether to set `widenCollections = true`, and say why a `Map` field stops at the container without it
+- Check whether a JDK, HKJ, Eclipse Collections, Guava, Vavr, Apache Commons or PCollections container works out of the box
+- Predict when `@GenerateFocus` rejects a raw or wildcard container type argument
+- Register your own container type by implementing the `TraversableGenerator` SPI
 ~~~
 
 The Focus DSL never asks you which path type you want. It reads the field's type and picks: exactly one, zero or one, or zero or more. This page is the rule book for that choice.
@@ -36985,14 +36794,14 @@ Practise container navigation in [Tutorial 20: Custom Container Navigation](http
 
 # Kind Field Support in Focus DSL
 
-## _Automatic Traversal for Higher-Kinded Type Fields_
+_Navigate a `Kind<F, A>` record field as you would a plain `List` field, with the traversal generated for you._
 
 ~~~admonish info title="What You'll Learn"
-- How the Focus DSL handles `Kind<F, A>` record fields without any extra annotation
-- Convention-based detection for the library witnesses (`ListKind`, `MaybeKind`, and the rest)
-- Using `@TraverseField` for your own `Kind` types
-- What the semantic classifications (`EXACTLY_ONE`, `ZERO_OR_ONE`, `ZERO_OR_MORE`) decide
-- How `traverseOver()` and `headOption()` work together, and the one surprise in `headOption`'s set
+- Read and modify a `Kind<F, A>` field through its generated path, with no `Traverse` passed by hand
+- Predict the path type each library witness generates, from `ListKind` to `IdKind`, by its `KindSemantics`
+- Write `@TraverseField` to give a witness of your own its `Traverse` instance and cardinality
+- Predict when a `Kind` field falls back to a plain `FocusPath`, and apply `traverseOver` yourself
+- Narrow a traversal with `headOption()`, knowing it reads the first element but writes to every one
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -37188,23 +36997,23 @@ Team afterTraining =
 
 # Working with Core Types and Optics
 
-## _Prisms and Traversals for Maybe, Either, Validated and Try_
+_Match, extract and modify the value inside a `Maybe`, `Either`, `Validated` or `Try` with optics._
 
 ![Diagram illustrating optics integration with functional core types like Maybe, Either, and Validated](../images/optics.jpg)
+
+~~~admonish info title="What You'll Learn"
+- Extract a case of `Maybe`, `Either`, `Validated` or `Try` with a prism from `Prisms`, and build one back
+- Modify the value inside a `Just` or a `Right` with `MaybeTraversals` and `EitherTraversals`, leaving the other case untouched
+- Compose `MaybeTraversals.just()` into a lens path to read through a `Maybe` midway along it
+- Filter and count a list of `Try` results with a prism's `getOptional` and `matches`
+- Choose between core type prisms and Optics Extensions for the task in hand
+~~~
 
 As you've learnt from the previous chapters, optics provide a powerful way to focus on and modify immutable data structures. But what happens when the data you're working with is wrapped in Higher-Kinded-J's core types (`Maybe`, `Either`, `Validated`, or `Try`)?
 
 Traditional optics work brilliantly with straightforward, deterministic data. However, real-world applications rarely deal with such certainty. Fields might be `null`, operations might fail, validation might produce errors, and database calls might throw exceptions. Handling these scenarios whilst maintaining clean, composable optics code requires a bridge between these two powerful abstractions.
 
 This is where **Core Type Integration** comes in.
-
-~~~admonish info title="What You'll Learn"
-- How to use Core Type Prisms to extract values from `Maybe`, `Either`, `Validated`, and `Try` without verbose pattern matching
-- How Optics Extensions add null safety, validation, and exception handling to lenses and traversals
-- Composing core type optics with lenses for deep navigation into nested structures
-- Processing collections of core type values using prisms for filtering and extraction
-- When to use Core Type Prisms versus Optics Extensions based on your use case
-~~~
 
 ---
 
@@ -37533,13 +37342,13 @@ dbResults.stream()
 
 ## When to Use Each Approach
 
-### Use Core Type Prisms when:
+### Use Core Type Prisms when
 - Extracting values from `Maybe`, `Either`, `Validated`, or `Try`
 - Pattern matching on functional types without `instanceof`
 - Composing core types with other optics for deep navigation
 - Processing collections of core type values
 
-### Use Optics Extensions when:
+### Use Optics Extensions when
 - Accessing potentially null fields
 - Validating single field or bulk updates
 - Performing operations that might throw exceptions
@@ -37625,15 +37434,14 @@ Maybe<String> backToMaybe = value
 
 # Optics Extensions: Validated Operations
 
-## _Error Handling for Lens and Traversal_
+_Get a `null` field, or an update that can fail, back as a `Maybe`, `Either`, `Validated` or `Try` value._
 
 ~~~admonish info title="What You'll Learn"
-- Safe field access with `getMaybe`, `getEither`, and `getValidated`
-- Validated modifications with `modifyEither`, `modifyMaybe`, and `modifyValidated`
-- Exception-safe operations with `modifyTry`
-- Bulk operations keeping only the first error (`modifyAllEither`) or accumulating every one (`modifyAllValidated`)
-- Selective updates with `modifyWherePossible`
-- Analysis methods: `countValid` and `collectErrors`
+- Read a field that may be `null` as a `Maybe`, `Either` or `Validated` with `getMaybe`, `getEither` and `getValidated`
+- Modify one field with a step that can fail, using `modifyEither`, `modifyMaybe`, `modifyTry` or `setIfValid`
+- Choose an all-or-nothing, first-error or accumulating bulk update: `modifyAllMaybe`, `modifyAllEither` or `modifyAllValidated`
+- Update only the elements that qualify with `modifyWherePossible`, leaving the rest unchanged
+- Check a traversal without writing to it, using `countValid` and `collectErrors`
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -37643,7 +37451,7 @@ Maybe<String> backToMaybe = value
 
 Traditional optics work brilliantly with clean, valid data. Real-world applications, however, deal with nullable fields, validation requirements, and operations that might throw exceptions. **Optics Extensions** bridge this gap by integrating lenses and traversals with Higher-Kinded-J's core types.
 
-Think of optics extensions as **safety rails**: they catch null values, validate modifications, and handle exceptions whilst maintaining the elegance of functional composition.
+Each extension plays the part of a null check, or an `if` on a validation result, written once around a lens or traversal call. A `null` or a failed step comes back as a `Maybe`, `Either`, `Validated` or `Try` value. The extensions catch nothing themselves: for `modifyTry`, wrap the throwing call in `Try.of`, and its exception arrives as a `Try` failure.
 
 ---
 
@@ -38147,7 +37955,7 @@ Maybe<String> safeBio = maybeProfile.flatMap(p -> getMaybe(bioLens, p));
 
 # Optics for External Types
 
-## _Extending Your Reach Beyond Your Own Code_
+_Generate optics for a JDK or library type you cannot annotate, and compose them with your own._
 
 > *"The real voyage of discovery consists not in seeking new landscapes, but in having new eyes."*
 >
@@ -38158,10 +37966,11 @@ Maybe<String> safeBio = maybeProfile.flatMap(p -> getMaybe(bioLens, p));
 The landscape (JDK classes, database libraries, JSON parsers) already exists. What changes is how we *see* it. With `@ImportOptics` we gain new eyes: `LocalDate`, `JsonNode` or any external type becomes a participant in compositional, type-safe transformations. We are not adding code to those libraries; we are generating a view onto them.
 
 ~~~admonish info title="What You'll Learn"
-- How to generate optics for types you cannot modify (JDK classes, third-party libraries)
-- What auto-detection recognises, and the exact rule it uses for wither classes
-- A practical workflow for composing external optics with your own
-- When auto-detection is not enough, and what to reach for instead
+- Generate optics for a JDK or library type with `@ImportOptics` on a `package-info.java`
+- Predict what auto-detection generates for a record, a sealed type, an enum, a wither class and a container field
+- Check the pairing rule that decides whether a `withX` method gets a lens
+- Compose an imported optic with your own, such as the year of an order's date
+- Decide when to write a spec interface instead, for builders, predicates or non-standard naming
 ~~~
 
 ---
@@ -38393,11 +38202,25 @@ A type another annotation processor writes in the same build works like any othe
 
 # Taming JSON with Jackson
 
-## _Spec Interfaces for Jackson and Beyond_
+_Declare the shapes a `JsonNode` can take, and read and write JSON through generated prisms with no casts._
 
 > *"The art of programming is the art of organising complexity, of mastering multitude and avoiding its bastard chaos."*
 >
 > – Edsger W. Dijkstra
+
+~~~admonish info title="What You'll Learn"
+- Write a spec interface for `JsonNode` whose annotated methods generate a class of static prisms
+- Choose `@InstanceOf` for real subtypes, or `@MatchWhen` for a check-and-extract API
+- Compose field access and array traversal from the generated prisms in a plain class, not a `default` method
+- Predict which type arguments an `@InstanceOf` prism over a generic target may promise
+- Declare a generic spec interface, and predict which type parameters each generated method carries
+~~~
+
+~~~admonish example title="See Example Code"
+[JsonNodeOpticsSpec.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/JsonNodeOpticsSpec.java) | [JsonPaths.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/JsonPaths.java) | [JsonApiBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/JsonApiBook.java)
+
+The page includes these directly, so the build compiles the code it shows from them. The output comments were produced by running the class.
+~~~
 
 ---
 
@@ -38426,19 +38249,6 @@ No null checks, no casts, no nested conditionals. And the write direction is the
     List<Double> ages = Traversals.getAll(USER_AGES, aged);
     // [33.0, 29.0, 46.0]
 ```
-
-~~~admonish info title="What You'll Learn"
-- How a spec interface gives you precise control over an external type
-- Building a complete optics toolkit for Jackson's `JsonNode`
-- `@InstanceOf` and `@MatchWhen`, and when each applies
-- Where composed helpers belong, and why not in the spec interface
-~~~
-
-~~~admonish example title="See Example Code"
-[JsonNodeOpticsSpec.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/JsonNodeOpticsSpec.java) | [JsonPaths.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/JsonPaths.java) | [JsonApiBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/JsonApiBook.java)
-
-The page includes these directly, so the build compiles every line above. The output comments were produced by running the class.
-~~~
 
 ---
 
@@ -38848,21 +38658,20 @@ See [Test Assertions](../tooling/test_assertions.md#optic-laws) for the full fam
 
 # Database Records with JOOQ
 
-## _Copy Strategies for Builder-Based Types_
+_Get lenses for a JOOQ record, or any type that copies through a builder, wither or constructor._
 
 > *"First, solve the problem. Then, write the code."*
 >
 > – attributed to John Johnson
 
----
-
 The problem is not "how do I update a field in a JOOQ record". It is "how do I express a domain transformation clearly while respecting immutability". Builders solve the immutability half; optics solve the composition half. A copy strategy is how you tell the processor which builder-shaped door this particular type opens.
 
 ~~~admonish info title="What You'll Learn"
-- How `@ViaBuilder` turns a builder-pattern type into lenses
-- The other three strategies (`@Wither`, `@ViaConstructor`, `@ViaCopyAndSet`) and when each applies
-- `@ThroughField`, which gives you a traversal into a collection field
-- Which types need no strategy at all
+- Generate lenses for a builder-pattern type with `@ViaBuilder`, naming the getter, setter, `toBuilder` and `build` where conventions differ
+- Choose `@ViaBuilder`, `@Wither`, `@ViaConstructor` or `@ViaCopyAndSet` from how a type makes a modified copy
+- Traverse a collection field's elements with `@ThroughField`, and fix the refusal of a concrete container type
+- Check a `@ViaCopyAndSet` lens with `LensLaws` where a shallow or supertype copy constructor can lose state
+- Read through a type that already implements `List`, such as JOOQ's `Result`, with no strategy at all
 ~~~
 
 ---
@@ -39193,11 +39002,24 @@ Start with `@ViaBuilder`: it is the pattern most generated code uses. Fall back 
 
 # Focus DSL with External Libraries
 
-## _Bridging Fluent Navigation into Immutables, Lombok, and Beyond_
+_Navigate from your records into Immutables, Lombok, AutoValue or Protobuf types with one Focus path._
 
 > *"The best interface is no interface at all. The second best is the one that feels invisible."*
 >
 > – Don Norman
+
+~~~admonish info title="What You'll Learn"
+- Join a Focus path to an optic generated for a type you do not own with `.via()`
+- Write a spec interface with `@Wither` for an Immutables value, or `@ViaBuilder` for Lombok, AutoValue and Protocol Buffers
+- Decide when to convert with `toLens()`: only when you want a reusable `Lens` constant rather than a path
+- Organise the bridges in one layer named for the domain, and law-check each with `LensLaws`
+~~~
+
+~~~admonish example title="See Example Code"
+[CompanyBridge.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/bridge/CompanyBridge.java) | [AddressOpticsSpec.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/bridge/external/AddressOpticsSpec.java)
+
+The page includes these directly, so the build compiles every bridge shown here.
+~~~
 
 ---
 
@@ -39218,19 +39040,6 @@ Here is the whole pattern, compiled by the build. A Focus path over your own rec
 ```
 
 `CompanyFocus.departments()` and `DepartmentFocus.staff()` are generated from your records; `ContactInfoOptics.email()` is generated from a spec interface for an Immutables value. `.via()` does not care which is which.
-
-~~~admonish info title="What You'll Learn"
-- How to extend Focus navigation into external library types
-- Building spec interfaces for Immutables-generated classes
-- Where `toLens()` is needed and where `.via()` already suffices
-- Organising a bridge layer so the boundary stays discoverable
-~~~
-
-~~~admonish example title="See Example Code"
-[CompanyBridge.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/bridge/CompanyBridge.java) | [AddressOpticsSpec.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/bridge/external/AddressOpticsSpec.java)
-
-The page includes these directly, so the build compiles every bridge shown here.
-~~~
 
 ---
 
@@ -39529,20 +39338,18 @@ Four optics of three different kinds compose into one value, and that value is r
 
 # Validated Prisms
 
-## _The smart-constructor optic: a `Prism` whose match says why not, and all the reasons at once_
-
-~~~admonish example title="See Example Code"
-**The code on this page is [ValidatedPrismBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/ValidatedPrismBook.java)** - the page includes it directly, so it is compiled and run by the build.
-~~~
+_Parse a wire value into a domain value with every reason it fails, and always build it back._
 
 ~~~admonish info title="What You'll Learn"
-- Why a validated boundary needs a fallible, accumulating `parse` and a total `build`: the "parse, don't validate" asymmetry captured as an optic
-- Constructing a `ValidatedPrism` with `ValidatedPrism.of`, wrapping a throwing parser with the section law guarded via `ValidatedPrism.canonical`, and landing on the railway with `parsePath`
-- How composition splits: `andThen` short-circuits into structure while sibling fields accumulate every reason
-- Which compositions preserve the total build (`ValidatedPrism`, `Iso`, and `Prism`-with-a-reason) and why `Lens` cannot
-- Bridging the optic lattice with `fromIso`, `fromPrism`, `toPrism`, and `toAffine`
-- The two halves, `ValidatedParse` and `ValidatedBuild`, for a boundary crossed one way only
-- The two round-trip laws, and why the second forbids a lossy, normalising `build`
+- Write a `ValidatedPrism` with `ValidatedPrism.of`, or with `ValidatedPrism.canonical` around a throwing parser, and parse straight into a `ValidationPath` with `parsePath`
+- Predict what a composition gives: `andThen` stops at the first reason, sibling fields accumulate, and a `Lens` yields no `ValidatedPrism`
+- Ask for only the half you need, `ValidatedParse` or `ValidatedBuild`, at a boundary crossed one way
+- Check both round-trip laws with `ValidatedPrismLaws`, and say why a normalising parse breaks the second
+- Parse a whole `List`, `Set`, array or `Map` with the bulk forms, locating each failure by index or key
+~~~
+
+~~~admonish example title="See Example Code"
+**The code on this page is [ValidatedPrismBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/ValidatedPrismBook.java)**: the page includes it directly, so it is compiled and run by the build.
 ~~~
 
 A `Prism<S, A>` answers one question about a value: does it match this shape, yes or no? Its match returns `Optional<A>`, present or empty. At a **validated boundary**, where a raw wire value (a `String` off the network) must become an always-valid domain value (an `EmailAddress`), yes/no is too blunt. A rejected value needs to say *why*, and ideally give *every* reason at once (`"not an email"`, `"too long"`), each located to the field it came from. The reverse direction is never in doubt: a domain value you already hold always renders back to a string.
@@ -39721,7 +39528,7 @@ Mapping is not injective, so a container can **collapse**: a prism mapping both 
 * **`parse` is fallible and accumulating** (`Validated<NonEmptyList<FieldError>, A>`); **`build` is total**: the parse-don't-validate asymmetry as an optic
 * **Nesting short-circuits; siblings accumulate** via the assembly builders or `Edits`
 * **Only build-preserving compositions exist**: `ValidatedPrism`, `Iso`, and `Prism`-with-a-reason; `Lens` deliberately not
-* **Both round-trip laws are published** in `hkj-test`; the section law forbids lossy build-normalisation
+* **Both round-trip laws are published** in `hkj-test`; the section law forbids a normalising parse
 * **`canonical(message, parse, render)` guards the section law per value**: the render defines the canonical form and every spelling it cannot reproduce is rejected; that the parse accepts the renderings, injectively, stays your obligation (check with `ValidatedPrismLaws`)
 * **One prism lifts over containers**: The bulk forms accumulate every element failure, located by index or key
 * **`parsePath` lands on the railway** (`ValidationPath`) directly
@@ -39748,14 +39555,14 @@ Practise the boundary in [Tutorial 25: ValidatedPrism](https://github.com/higher
 
 # Deep Validation with `modifyF`
 
+_Validate every element a composed path reaches with `modifyF`, and report every failure at once._
+
 ~~~admonish info title="What You'll Learn"
-- How to compose multiple optic types into powerful processing pipelines
-- Building type-safe validation workflows with error accumulation
-- Composing a lens, a prism and a traversal directly with `andThen`, and reading the type it returns
-- Creating reusable validation paths with effectful operations
-- Simplified validation with `modifyAllValidated`, `modifyAllEither`, and `modifyMaybe`
-- Understanding when composition is superior to manual validation logic
-- Advanced patterns for multi-level and conditional validation scenarios
+- Compose a `Lens`, a `Prism` and a `Traversal` with `andThen`, and predict the optic type the chain returns
+- Validate every focus of the composed path with `modifyF` and a `Validated` applicative, accumulating every error
+- Decide when optic composition beats direct validation or a stream pipeline
+- Combine two path validations with `map2`, and narrow with `filtered` where the model has no prism
+- Skip the `Applicative` setup with `modifyAllValidated` or `modifyAllEither`, choosing by whether the caller needs every error
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -39786,14 +39593,9 @@ This single task requires us to:
 
 ---
 
-## Think of This Composition Like...
+## Building the path, step by step {#building-the-path-step-by-step}
 
-- **A telescope with multiple lenses**: Each optic focuses deeper into the data structure
-- **A manufacturing pipeline**: Each stage processes and refines the data further
-- **A filter chain**: Data flows through multiple filters, each handling a specific concern
-- **A surgical procedure**: Precise, layered operations that work together for a complex outcome
-
----
+Composing optics plays the part of `Function.andThen`: each optic feeds the next. Unlike chained functions, the composed optic also writes, and its type says how many values the whole path reaches.
 
 ### 1. The Data Model
 
@@ -39905,7 +39707,7 @@ This single `formToPermissionNameTraversal` object now encapsulates the entire c
 
 ## When to Use Optic Composition vs Other Approaches
 
-### Use Optic Composition When:
+### Use Optic Composition When
 
 * **Complex nested validation** - Multiple levels of data structure with conditional logic
 * **Reusable validation paths** - The same validation logic applies to multiple scenarios
@@ -39922,7 +39724,7 @@ Validated<String, Form> checked = validatePermissions(form);
 Validated<String, Form> rechecked = validatePermissions(updatedForm);
 ```
 
-### Use Direct Validation When:
+### Use Direct Validation When
 
 * **Simple, flat structures** - No deep nesting or conditional access needed
 * **One-off validation** - Logic won't be reused elsewhere
@@ -39940,7 +39742,7 @@ public Validated<String, User> validateUser(User user) {
 }
 ```
 
-### Use Stream Processing When:
+### Use Stream Processing When
 
 * **Complex transformations** - Multiple operations that don't map to optic patterns
 * **Aggregation logic** - Computing statistics or summaries
@@ -39962,7 +39764,7 @@ Map<String, Long> permissionCounts = forms.stream()
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 
 ```java
@@ -39986,7 +39788,7 @@ var inlineResult = FormLenses.principal()
 Traversal<Form, String> badTraversal = /* any string traversal */;
 ```
 
-### Do This Instead:
+### Do This Instead
 
 
 <!-- verify -->
@@ -40669,15 +40471,14 @@ Practise optic composition in [Tutorial 06: Optics Composition](https://github.c
 
 # Optic-Driven Request Batching
 
-## _Eliminating N+1 at the Optic Seam_
+_Load every id a traversal reaches in one batched backend call, not one call per element._
 
 ~~~admonish info title="What You'll Learn"
-- Why the N+1 query is the most reliable bug in service code, and how a single line change to a traversal collapses it to one call
-- How a batching `Applicative` plugged into `Optic.modifyF` keeps the optic graph untouched while changing how the work runs
-- `FetchOptics.fetchEach` for the `Id -> Entity` case the codegen can't produce
-- `SourceRouter` and `BatchLoaders.chunked` for real backends (multiple sources, per-request size caps)
-- `SafeFetch` for failures that belong on the value channel rather than in a stack trace
-- Where batching stops working: the applicative-monad boundary
+- Batch a traversal's per-element loads into one backend call by passing `FetchApplicative` to `modifyF`, and check it with `RunResult.backendCalls()`
+- Load each id in a list field into its entity with `FetchOptics.fetchEach`, where the focus type changes
+- Route keys to several backends with `SourceRouter.routed`, and cap each request's size with `BatchLoaders.chunked`
+- Get failures back as `Either` values rather than exceptions with `SafeFetch`, and split per-key results with `SafeFetch.partition`
+- Predict how many rounds a program costs: `map2`, `ap` and traversals collapse into one, and each `flatMap` adds another
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -40949,14 +40750,14 @@ Practise the four pieces (batching, heterogeneous fetch, multi-source routing, r
 
 # Plan Introspection and Guardrails
 
-## _Knowing What an Optic Run Would Do, Before It Does It_
+_See what a batched optic run would send before it runs, and refuse a batch with too many keys._
 
 ~~~admonish info title="What You'll Learn"
-- How to fold a `Fetch` program into a structural `Plan` with zero I/O, for audit logs and dry-run output
-- Why round 1's keyset is always reliable and what makes later rounds value-dependent
-- How a `Guard` interposes at the round boundary to refuse runaway batches before they leave the JVM
-- The standard guards: `maxKeysPerRound`, `maxRounds`, `maxBackendCalls`, `audit`, and how to compose them
-- How `SafeFetch.runCachedWithGuard` turns a refusal into a value on the `Either` channel
+- Read a `Fetch` program's first-round keyset with `Plans.preflight`, with no I/O, for an audit log or a test
+- Predict when a plan is `truncated()`, and why its first round stays accurate when it is
+- Refuse a run before a round reaches the backend: too many keys in one round with `Guards.maxKeysPerRound`, too many rounds with `maxRounds`, too many calls with `maxBackendCalls`
+- Compose guards with `and`, such as an `audit` log with a key ceiling, and run them with `Guards.runCached`
+- Get a refusal back as `Either.left` with `SafeFetch.runCachedWithGuard`, so the run never throws
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -41160,25 +40961,24 @@ Practise the five exercises (preflight, truncation, refusal, audit, railway) in 
 
 # Auditing Complex Data with Optics
 
-## _A Real-World Deep Dive into Conditional Config Auditing_
+_Find and decode every live GCP password in a config with one composed optic, not nested loops._
 
 ~~~admonish info title="What You'll Learn"
-- Solving complex, real-world data processing challenges with optics
-- Building conditional filtering and transformation pipelines
-- Combining all four core optic types in a single, powerful composition
-- Creating declarative, type-safe alternatives to nested loops and type casting
-- Advanced patterns like safe decoding, profunctor adaptations, and audit trails
-- When optic composition provides superior solutions to imperative approaches
+- Compose lenses, prisms and a traversal into one `Traversal<AppConfig, byte[]>` that filters and decodes as it goes
+- Put a condition in the path with a filtering `Prism`, so only live GCP configs are audited
+- Decode through a `Prism` rather than an `Iso` when decoding can fail, and keep the reason with a `ValidatedPrism`
+- Reuse the same optic to re-encrypt with `Traversals.modify`, or adapt it to a DTO with an `Iso` or `dimap`
+- Decide when optic composition beats a stream pipeline or a manual loop
 ~~~
-
-In modern software, we often work with complex, nested data structures. Performing a seemingly simple task, like "find and decode all production database passwords", can lead to messy, error-prone code with nested loops, `if` statements, and manual type casting.
-
-This page builds a single, declarative, type-safe optic that performs a deep, conditional data transformation.
 
 ~~~admonish example title="See Example Code"
 - [Config Audit example](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-examples/src/main/java/org/higherkindedj/example/configaudit): the worked audit this page builds
 - [Optics examples](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-examples/src/main/java/org/higherkindedj/example/optics): the wider optics example set
 ~~~
+
+In modern software, we often work with complex, nested data structures. Performing a seemingly simple task, like "find and decode all production database passwords", can lead to messy, error-prone code with nested loops, `if` statements, and manual type casting.
+
+This page builds a single, declarative, type-safe optic that performs a deep, conditional data transformation.
 
 ---
 
@@ -41199,40 +40999,31 @@ Doing this imperatively is a recipe for complexity. Let's build it with optics i
 
 ---
 
-## Think of This Problem Like...
-
-- **A treasure hunt with conditional maps**: Only certain maps (GCP/Live configs) contain the treasures (encrypted passwords)
-- **A selective mining operation**: Drill down only into the right geological formations (config types) to extract specific minerals (encrypted data)
-- **A security scanner with filters**: Only scan certain types of systems (matching deployment criteria) for specific vulnerabilities (encrypted values)
-- **A data archaeology expedition**: Excavate only specific sites (qualified configs) to uncover particular artefacts (encoded passwords)
-
----
-
 ## The Four Tools for the Job
 
-Our solution will compose the four primary optic types, each solving a specific part of the problem.
+Our solution will compose the four primary optic types, each solving a specific part of the problem. [Choosing an optic](optics_intro.md#choosing-an-optic) gives the Java idiom each one stands in for.
 
-### 1. **Lens**: The Magnifying Glass
+### 1. **Lens**: one field of a record {#1-lens-the-magnifying-glass}
 
 A `Lens` provides focused access to a field within a product type (like a Java `record`). We'll use lenses to look inside our configuration objects.
 
 * `AppConfigLenses.settings()`: Zooms from an `AppConfig` to its `List<Setting>`.
 * `SettingLenses.value()`: Zooms from a `Setting` to its `SettingValue`.
 
-### 2. **Iso**: The Universal Translator
+### 2. **Iso**: a conversion that loses nothing {#2-iso-the-universal-translator}
 
 An `Iso` (Isomorphism) defines a lossless, two-way conversion between two types. It's perfect for handling different representations of the same data.
 
 * `DeploymentTarget <-> String`: the example renders a structured target as a raw string like `"gcp|live"`, and only reads that way. Parsing a string from outside could fail, which is a [Validated Prism](validated_prism.md)'s job.
 * `String -> byte[]` looks like a second Iso, but decoding fails on malformed Base64, so the solution decodes through a **prism**: a bad value is skipped rather than thrown. [Safe Decoding with a `ValidatedPrism`](#1-safe-decoding-with-a-validatedprism) also keeps the reason.
 
-### 3. **Prism**: The Safe Filter
+### 3. **Prism**: one case of a sealed type {#3-prism-the-safe-filter}
 
 A `Prism` provides focused access to a specific case within a sum type (like a `sealed interface`). It lets us safely attempt to "zoom in" on one variant, failing gracefully if the data is of a different kind.
 
 * `SettingValuePrisms.encryptedValue()`: This is our key filter. It will look at a `SettingValue` and only succeed if it's the `EncryptedValue` variant.
 
-### 4. **Traversal**: The Bulk Operator
+### 4. **Traversal**: every element of a list {#4-traversal-the-bulk-operator}
 
 A `Traversal` lets us operate on zero or more targets within a larger structure. It's the ideal optic for working with collections.
 
@@ -41242,7 +41033,7 @@ A `Traversal` lets us operate on zero or more targets within a larger structure.
 
 ## When to Use This Approach vs Alternatives
 
-### Use Optic Composition When:
+### Use Optic Composition When
 
 - **Complex conditional filtering** - Multiple levels of filtering based on different criteria
 - **Reusable audit logic** - The same audit pattern applies to different config types
@@ -41261,7 +41052,7 @@ Traversal<ServerConfig, byte[]> sensitiveDataAuditor =
         .andThen(base64Decoded);   // decoding can fail, so a prism
 ```
 
-### Use Stream Processing When:
+### Use Stream Processing When
 
 - **Simple filtering** - Basic collection operations without complex nesting
 - **Performance critical paths** - Minimal abstraction overhead needed
@@ -41276,7 +41067,7 @@ List<String> allConfigNames = configs.stream()
     .collect(toList());
 ```
 
-### Use Manual Iteration When:
+### Use Manual Iteration When
 
 - **Early termination** - You might want to stop processing on first match
 - **Complex business logic** - Multiple conditions and branches that don't map cleanly
@@ -41297,7 +41088,7 @@ for (AppConfig config : configs) {
 
 ## Common Pitfalls
 
-### Don't Do This:
+### Don't Do This
 
 <!-- verify -->
 ```java
@@ -41323,7 +41114,7 @@ Iso<String, byte[]> unsafeBase64 = Iso.of(
 // nothing verifies that encode(decode(x)) == x
 ```
 
-### Do This Instead:
+### Do This Instead
 
 <!-- verify -->
 ```java
@@ -41715,17 +41506,16 @@ Practise the Fluent API and the Free Monad DSL in the [Fluent & Free DSL Journey
 
 # Free Monad DSL: Composable Optic Programs
 
-## _Optic Operations as Data You Can Inspect, Replay and Refuse_
+_Build optic operations as a program value, then choose to run, log, check or test it._
 
 ![free_monad.jpg](../images/lens2.jpg)
 
 ~~~admonish info title="What You'll Learn"
-- What Free monads are and why they're powerful for optics
-- How to build composable optic programs step by step
-- Separating program description from execution
-- Using conditional logic and branching in programs
-- Real-world scenarios: audit trails, validation, and testing
-- Creating reusable program fragments
+- Build a program with `OpticPrograms.get`, `set`, `modify` and `modifyAll`, and run it with `OpticInterpreters.direct()`
+- Sequence steps with `flatMap`, branching on an earlier result and returning `pure` where a branch has nothing to do
+- Run one program under the logging, validating or mock interpreter to audit, check or test it
+- Write reusable program fragments and combine them, keeping side effects out of program construction
+- Decide when a program is worth its extra layer over direct execution with `OpticOps`
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -41746,7 +41536,7 @@ Consider these real-world requirements:
 This is where the Free Monad DSL comes in. It lets you **describe** a sequence of optic operations as data, then **interpret** that description in different ways.
 
 ~~~admonish tip title="Why this matters"
-A Free monad program is like a recipe. Writing the recipe doesn't cook the meal; it just describes what to do. You can review the recipe, validate it, translate it, or follow it to cook. The Free monad DSL gives you that same power with optic operations.
+A Free monad program plays the part of a `Stream` pipeline before its terminal operation: building it runs nothing, it only describes what to do. Unlike a stream, the description is a value you can hand to different interpreters, to log, check or test it, and you can run it more than once. The Free monad DSL gives you that same power with optic operations.
 ~~~
 
 ---
@@ -42425,17 +42215,16 @@ Practise the Free Monad DSL in [Tutorial 11: Advanced Optics DSL](https://github
 
 # Optic Interpreters: Multiple Execution Strategies
 
-## _One Program, Several Answers_
+_Choose how an optic program runs: directly, with an audit log, as a checked run, or your own way._
 
 <img src="../images/the-interpreter.jpg" alt="Illustration of an interpreter translating a Free Monad program into a concrete execution strategy" style="width: 100%;" />
 
 ~~~admonish info title="What You'll Learn"
-- How the Interpreter pattern separates description from execution
-- The three built-in interpreters: Direct, Logging, and Validation
-- When to use each interpreter effectively
-- How to create custom interpreters for specific needs
-- Combining interpreters for powerful workflows
-- Real-world applications: audit trails, testing, and optimisation
+- Choose the `direct()`, `logging()` or `validating()` interpreter for a job, knowing that all three execute the program
+- Read a `LoggingOpticInterpreter` log, and clear it with `clearLog()` between runs, since it accumulates
+- Predict what `validate` reports: `null` writes and throwing modifiers, but not a throw inside `flatMap`
+- Write a profiling or mock interpreter of your own by folding a function over the program with `foldMap`
+- Combine interpreters in one workflow, such as validating a program and then running it with logging
 ~~~
 
 ~~~admonish example title="See Example Code"
@@ -43667,7 +43456,7 @@ flowchart TD
 | "Apply only to elements matching a predicate" | [Filtered Optics](filtered_optics.md) |
 | "I need the index alongside each element" | [Indexed Optics](indexed_optics.md) |
 | "Access by key in a `Map`" | [Indexed Access](indexed_access.md): the `At` (full CRUD) and `Ixed` (read/update) type classes |
-| "Apply over every element of a custom container" | [Each Typeclass](each_typeclass.md) |
+| "Apply over every element of a custom container" | [Each Type Class](each_typeclass.md) |
 | "Operate on individual characters of a `String`" | [String Traversals](string_traversals.md) |
 | "Adapt a lens for a different source record type" | Compose: `outerLens.andThen(innerLens)` ([Profunctor Optics](profunctor_optics.md)) |
 | "The two shapes hold the same information" | An [`Iso`](iso.md), then compose: `Iso.andThen(Lens) = Lens` |
@@ -81340,7 +81129,7 @@ See [Benchmarks & Performance](../benchmarks.md) for full details and how to int
 - [VTask](vtask_monad.md) - The single-value effect type that powers VStream pulls
 - [VTaskPath](../effect/path_vtask.md) - Fluent Path API wrapper for VTask
 - [Stream](stream_monad.md) - Eager list-based streaming
-- [Each Typeclass](../optics/each_typeclass.md) - Canonical element-wise traversal (includes VStream)
+- [Each Type Class](../optics/each_typeclass.md) - Canonical element-wise traversal (includes VStream)
 ~~~
 
 ---
@@ -92295,7 +92084,7 @@ The smart-constructor optic: a `Prism` whose match says *why not*, and all the r
 - Nesting short-circuits; sibling fields accumulate through `Validated.fields()`
 - Verifying both round-trip laws with `ValidatedPrismLaws`
 
-**Key insight**: the section law forbids a normalising `build`; the prism's parse is exactly the leaf shape the mapper and the `Edits` builder consume.
+**Key insight**: the section law forbids a `parse` that normalises; the prism's parse is exactly the leaf shape the mapper and the `Edits` builder consume.
 
 ---
 
@@ -103466,6 +103255,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **Two hard rules in the Optics chapter now come with a story** ([#1040](https://github.com/higher-kinded-j/higher-kinded-j/pull/1040)). Composition Rules opens on a short dialogue about why a lens and a prism make an affine. The Lenses page tells how a constructor that lowercases an email quietly breaks a lens. The old capstone page is now Deep Validation with `modifyF`. See [Optic Composition Rules](../optics/composition_rules.md).
 - **Two optics tutorials now ask for the type their hints build** ([#1040](https://github.com/higher-kinded-j/higher-kinded-j/pull/1040)). In Tutorials 6 and 10, a lens and a prism compose to an `Affine`, which the exercises now declare in place of a `Traversal`. The Optics Journeys page shows which pages each tutorial practises. See [Optics Journeys](../tutorials/optics/ch_intro.md).
 - **Practise the Optics chapter from its Quickstart to its Capstone** ([#1041](https://github.com/higher-kinded-j/higher-kinded-j/pull/1041)). Tutorial 00 names, reads and writes an order's fields through its generated paths in three exercises, and the optics Capstone builds the Capstone page's order desk in five. See [Optics Journeys](../tutorials/optics/ch_intro.md).
+- **The Optics chapter's deeper pages say what you will be able to do** ([#1042](https://github.com/higher-kinded-j/higher-kinded-j/pull/1042)). Each opens with a one-line promise and at most five outcomes, and sets its optic beside the Java idiom it stands in for, in place of a list of metaphors. The Optics Extensions page no longer says the extensions catch exceptions. See [Choosing an optic](../optics/optics_intro.md#choosing-an-optic).
 - **The Optics chapter's examples come from the build** ([#1020](https://github.com/higher-kinded-j/higher-kinded-j/pull/1020)): composed optics declare the precise type `andThen` returns, and each runnable program and its output come from the examples module. The Affines page says what `set` does on an absent focus. See [When the focus is absent](../optics/affine.md#when-the-focus-is-absent).
 - **`@PathSource` has a page of its own** ([#999](https://github.com/higher-kinded-j/higher-kinded-j/issues/999)): [Custom Paths with `@PathSource`](../effect/path_source.md) says when a generated Path is worth it over `GenericPath`, what each capability generates, and how `errorType` types recovery.
 - **`modifyAllEither` says it keeps the first error, not that it stops there** ([#1031](https://github.com/higher-kinded-j/higher-kinded-j/pull/1031)): every focused value is still validated, and the result keeps the first error in traversal order. The javadoc of `allThroughEither` and `TraversalExtensions.modifyAllEither`, and the examples, now say so too. See [`modifyAllEither`: First Error Only](../optics/optics_extensions.md#modifyalleither-first-error-only).
