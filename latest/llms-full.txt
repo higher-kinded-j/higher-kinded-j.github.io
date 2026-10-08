@@ -19058,7 +19058,9 @@ The processor reads the spec and generates a `JsonNodeOptics` class (the `Spec` 
             .flatMap(object -> JsonNodeOptics.text().getOptional(object.get("name")));
 ```
 
+~~~admonish tip title="Plain Java wins here"
 For one read like this, Jackson's own `response.at("/items/0/name")` is shorter. The prisms earn their place when they compose with the rest of your optics, so that a JSON tree joins the same paths as your records. [Taming JSON with Jackson](optics_spec_interfaces.md) shows that, and how `@MatchWhen` handles Jackson's predicate-based type checks.
+~~~
 
 ---
 
@@ -20016,10 +20018,10 @@ Each plays the part of a Java idiom you already write:
 | Affine | an accessor that returns `Optional`, with a copy that writes the value | composes, and `modify` leaves an absent value alone |
 | Prism | an `instanceof` pattern, and the variant's constructor | composes, and builds the variant back |
 | Iso | a wrapper record's constructor and accessor, such as `new Sku(text)` and `sku.text()`, which lose nothing | composes, and turns around with `reverse()` |
-| Traversal | `replaceAll` over a list inside a record, returning a new record | reaches every element in one pass, through nested lists |
+| Traversal | `stream().map(f).toList()` over a list field, put back with a wither | does the rebuild for you, at any depth |
 | Fold | a `Stream` over the same values, which only reads | composes, and says in its type that it never writes |
 | Getter | a derived accessor, such as a `fullName()` computed from two fields | composes with other getters, and with any optic through `asFold()` |
-| Setter | `replaceAll` with nothing to read back | composes, for a value you change without reading |
+| Setter | `stream().map(f).toList()` put back with a wither, with nothing read out first | composes, for a value you change without reading |
 
 The [chapter introduction](ch_intro.md#how-the-optic-types-relate) draws how the eight types relate, and [Decision Trees](decision_trees.md#tree-1-which-optic-do-i-need) asks the same two questions as a tree.
 
@@ -20865,7 +20867,7 @@ User shouted = streetName.modify(String::toUpperCase, user);
 A **Lens** focuses a field that is always there. A **Prism** focuses one variant of a sealed type, which might not match. An **Affine** focuses a value that may be absent, such as an `Optional` field. An **Iso** converts between two shapes of the same information. [Decision Trees](decision_trees.md#tree-1-which-optic-do-i-need) picks one for your data, and [Composition Rules](composition_rules.md) says what type two of them compose to.
 
 ~~~admonish tip title="Why this matters"
-Three things separate these optics from a bag of getter helpers. They are **generated**: annotate a record and the boilerplate is the processor's problem, forever in sync with the fields. They are **effect-ready**: the same path that does a pure `set` today runs a validating, accumulating, or asynchronous update tomorrow through `modifyF`, because every settable optic is generic over an `Applicative`. And they are **lawful**: the round-trip laws each optic must satisfy are published in `hkj-test` and checked, not assumed.
+Three things separate these optics from a bag of getter helpers. They are **generated**: annotate a record and the boilerplate is the processor's problem, forever in sync with the fields. They are **effect-ready**: the same path that does a pure `set` today runs a validating, accumulating, or asynchronous update tomorrow through [`modifyF`](../glossary/optics.md#modifyf), because every settable optic is generic over an [`Applicative`](../glossary/type-classes.md#applicative). And they are **lawful**: the round-trip laws each optic must satisfy are published in `hkj-test` and checked, not assumed.
 ~~~
 
 ---
@@ -21091,7 +21093,7 @@ Lenses can also compose with other optic types. When you compose a `Lens` with a
 
 <!-- verify -->
 ```java
-// Lens >>> Prism = Affine
+// Lens.andThen(Prism) = Affine
 @GenerateLenses
 record User(Optional<Settings> settings) {}
 Lens<User, Optional<Settings>> settingsLens = UserLenses.settings();
@@ -21997,7 +21999,7 @@ Prism<JsonValue, JsonString> jsonStringPrism = JsonValuePrisms.jsonString();
 Lens<JsonObject, Map<String, JsonValue>> fieldsLens = JsonObjectLenses.fields();
 Lens<JsonString, String> valueLens = JsonStringLenses.value();
 
-// Direct composition: Prism >>> Lens = Affine
+// Direct composition: Prism.andThen(Lens) = Affine
 Affine<JsonValue, String> jsonStringValue =
     jsonStringPrism.andThen(valueLens);
 
@@ -22752,7 +22754,7 @@ Either<String, Integer> error = Either.left("Failed");
 Optional<String> errorMsg = leftPrism.getOptional(error); // Optional.of("Failed")
 Optional<Integer> noValue = rightPrism.getOptional(error); // Optional.empty()
 
-// Compose with lenses for deep access (Prism >>> Lens = Affine)
+// Compose with lenses for deep access (Prism.andThen(Lens) = Affine)
 Lens<ValidationError, String> messageLens = ValidationErrorLenses.message();
 
 Affine<Either<ValidationError, Data>, String> errorMessage =
@@ -24191,7 +24193,7 @@ Lens<Config, Optional<DatabaseSettings>> databaseLens =
 // Prism to extract from Optional
 Prism<Optional<DatabaseSettings>, DatabaseSettings> somePrism = Prisms.some();
 
-// Composition: Lens >>> Prism = Affine
+// Composition: Lens.andThen(Prism) = Affine
 Affine<Config, DatabaseSettings> databaseAffine =
     databaseLens.andThen(somePrism);
 
@@ -24359,19 +24361,19 @@ Not all affines support the `remove` operation. Calling `remove` on an affine th
 Affines compose with other optics following precise rules:
 
 ```java
-// Affine >>> Affine = Affine
+// Affine.andThen(Affine) = Affine
 Affine<A, C> result = affineAB.andThen(affineBC);
 
-// Affine >>> Lens = Affine
+// Affine.andThen(Lens) = Affine
 Affine<A, C> result = affineAB.andThen(lensBC);
 
-// Affine >>> Prism = Affine
+// Affine.andThen(Prism) = Affine
 Affine<A, C> result = affineAB.andThen(prismBC);
 
-// Affine >>> Iso = Affine
+// Affine.andThen(Iso) = Affine
 Affine<A, C> result = affineAB.andThen(isoBC);
 
-// Affine >>> Traversal = Traversal
+// Affine.andThen(Traversal) = Traversal
 Traversal<A, C> result = affineAB.andThen(traversalBC);
 ```
 
@@ -24395,9 +24397,9 @@ Prism<Optional<String>, String> postcodePrism = Prisms.some();
 // Compose to access nested optional
 Affine<User, String> userPostcode =
     addressLens
-        .andThen(addressPrism)           // Lens >>> Prism = Affine
-        .andThen(postcodeLens)           // Affine >>> Lens = Affine
-        .andThen(postcodePrism);         // Affine >>> Prism = Affine
+        .andThen(addressPrism)           // Lens.andThen(Prism) = Affine
+        .andThen(postcodeLens)           // Affine.andThen(Lens) = Affine
+        .andThen(postcodePrism);         // Affine.andThen(Prism) = Affine
 
 // Usage
 User user1 = new User("Alice", Optional.of(
@@ -24738,7 +24740,7 @@ public class UserOptics {
 
 ~~~admonish tip title="See Also"
 - [Prisms](prisms.md): the constructing sibling for sum types
-- [Composition Rules](composition_rules.md): why `Lens >>> Prism = Affine`, and everything else
+- [Composition Rules](composition_rules.md): why `Lens.andThen(Prism) = Affine`, and everything else
 - [Coupled Fields](coupled_fields.md): when sibling fields must change together
 ~~~
 
@@ -25333,7 +25335,7 @@ New circle: Circle[centre=Point[x=20, y=30], radius=5]
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Composition Rules](composition_rules.md): why `Iso >>> X = X` for every optic `X`
+- [Composition Rules](composition_rules.md): why `Iso.andThen(X)` is an `X` for each of the five optics in its table
 - [Validated Prisms](validated_prism.md): the fallible sibling for conversions that can reject
 - [What Your Spec Generates](../mapping/tiers.md): where a lossless generated record mapping earns its `asIso()`
 ~~~
@@ -25441,7 +25443,7 @@ Employee shouted = employeeFirstName.modify(String::toUpperCase, employee);
 
 ### Route 2: An `Iso`, when the two shapes hold the same information
 
-If your conversion functions form a lossless pair, they are an [Iso](iso.md), and composing with one keeps the whole API in either direction (`Lens >>> Iso = Lens`, and `Iso >>> Lens = Lens`). This is `dimap` with the power retained:
+If your conversion functions form a lossless pair, they are an [Iso](iso.md), and composing with one keeps the whole API in either direction (`Lens.andThen(Iso) = Lens`, and `Iso.andThen(Lens) = Lens`). This is `dimap` with the power retained:
 
 <!-- verify -->
 ```java
@@ -25619,7 +25621,7 @@ public record Email(String value) {}
 public record User(UserId id, UserName name, Email email, LocalDate createdAt) {}
 ```
 
-**The Solution**: A single-field wrapper and its raw value are the textbook lossless pair, so give each wrapper an `Iso` and compose. `Lens >>> Iso = Lens`, so the full API survives:
+**The Solution**: A single-field wrapper and its raw value are the textbook lossless pair, so give each wrapper an `Iso` and compose. `Lens.andThen(Iso) = Lens`, so the full API survives:
 
 <!-- verify -->
 ```java
@@ -25736,7 +25738,7 @@ public class SchemaAdapters {
 ```
 
 ~~~admonish note title="When schemas really are equivalent"
-If the two versions hold exactly the same information in different shapes, write the conversion pair as an `Iso` and compose old optics through it: `Iso >>> Lens = Lens`. Reach for the raw `Optic.dimap` bridge only when the pipeline is effectful and lives in `modifyF` anyway; see [Profunctor Optics](profunctor_optics.md#the-three-profunctor-operations).
+If the two versions hold exactly the same information in different shapes, write the conversion pair as an `Iso` and compose old optics through it: `Iso.andThen(Lens) = Lens`. Reach for the raw `Optic.dimap` bridge only when the pipeline is effectful and lives in `modifyF` anyway; see [Profunctor Optics](profunctor_optics.md#the-three-profunctor-operations).
 ~~~
 
 ---
@@ -25813,7 +25815,7 @@ League bonus = Traversals.modify(everyScore, score -> score + 5, league);
 ```
 
 ~~~admonish tip title="Why this matters"
-A stream pipeline that rebuilds nested records is code you write again for every operation. A composed traversal is a value: define the path once and reuse it for pure updates, for queries, and (through `modifyF`) for validating or asynchronous passes over every element. And when a path should never write, `asFold()` or a Getter says so in the type, so read-only intent is checked by the compiler rather than promised in a comment.
+A stream pipeline that rebuilds nested records is code you write again for every operation. A composed traversal is a value: define the path once and reuse it for pure updates, for queries, and (through [`modifyF`](../glossary/optics.md#modifyf)) for validating or asynchronous passes over every element. And when a path should never write, `asFold()` or a Getter says so in the type, so read-only intent is checked by the compiler rather than promised in a comment.
 ~~~
 
 A **Traversal** focuses zero or more values, and reads and writes them all. A **Fold** is its read-only cousin, for queries, searches and aggregates, so code that must not modify data says so in its type. A **Getter** reads exactly one value and never writes, and a **Setter** writes without reading. [Optic Capabilities](optic_capabilities.md) lists which operations each type declares, and where a `Traversal`'s reads and writes live instead.
@@ -32032,7 +32034,7 @@ List prisms compose naturally with other optics for deep list manipulation:
 <!-- verify -->
 ```java
 // Focus on the name of the first player in a team
-// (Lens >>> Affine and Affine >>> Lens both compose to Affine)
+// (Lens.andThen(Affine) and Affine.andThen(Lens) both compose to Affine)
 Affine<Team, String> firstPlayerName =
     TeamLenses.players()
         .andThen(ListPrisms.head())
@@ -38721,7 +38723,7 @@ Validated<String, Form> checked =
 The sample `Form` holds a `User` with two permissions, `PERM_READ` and `PERM_FLY`, and only the first is on the allowed list. `Fixture` is the compiled example's own setup, not library API.
 
 ~~~admonish tip title="Why this matters"
-Four optics of three different kinds compose into one value, and that value is reusable in both directions: run it with a plain function to update every permission, or with an `Applicative` to validate them and accumulate the failures. The prism in the middle is what makes it safe. A `Form` holding a `Guest` has nothing in focus, so the same expression returns a clean result rather than a `ClassCastException`, and no branch had to be written for that case.
+Four optics of three different kinds compose into one value, and that value is reusable in both directions: run it with a plain function to update every permission, or with an [`Applicative`](../glossary/type-classes.md#applicative) to validate them and accumulate the failures. The prism in the middle is what makes it safe. A `Form` holding a `Guest` has nothing in focus, so the same expression returns a clean result rather than a `ClassCastException`, and no branch had to be written for that case.
 ~~~
 
 ---
@@ -38734,7 +38736,7 @@ Four optics of three different kinds compose into one value, and that value is r
 4. [Plan Introspection and Guardrails](optic_batching_guardrails.md): See and bound a batch before it runs
 5. [Auditing Complex Data](auditing_complex_data_example.md): An audit trail of every change
 
-[Capstone: Effects Meet Optics](../effect/capstone_focus_effect.md) combines optics with Effect Paths in a single pipeline.
+[Capstone: Effects Meet Optics](../effect/capstone_focus_effect.md) combines optics with [Effect Paths](../glossary/effect-paths.md#effect-path) in a single pipeline.
 
 ---
 
@@ -39859,7 +39861,7 @@ See [FluentValidationExample.java](https://github.com/higher-kinded-j/higher-kin
 ~~~
 
 ~~~admonish info title="Key Takeaways"
-* **Four optics, three kinds, one value.** `Lens >>> Prism >>> Traversal >>> Lens` collapses into a single `Traversal<Form, String>` that you name once and reuse for reads, writes and validations.
+* **Four optics, three kinds, one value.** `Lens.andThen(Prism).andThen(Traversal).andThen(Lens)` collapses into a single `Traversal<Form, String>` that you name once and reuse for reads, writes and validations.
 * **`andThen` works out the result type.** Composing mixed optic kinds gives the most precise kind that covers every step, which is why the composed path is a `Traversal` rather than a `Lens`, with no conversion needed.
 * **The prism is the safety.** A `Form` holding a `Guest` puts nothing in focus, so the whole pipeline returns cleanly with no branch written for the absent case.
 * **`Validated` accumulates, `Either` keeps the first.** The optic never changes; only the `Applicative` handed to `modifyF` does, and that single choice is the whole difference between a full report and one message. Neither skips elements.
@@ -40866,7 +40868,7 @@ public static AuditReport generateAuditReport(List<AppConfig> configs, String au
 
 ---
 
-Most optic work is "update this nested field". Sometimes the problem is different: describe a sequence of optic operations as data, then decide later how to run it. The Free Monad DSL turns optic operations into a value you can pass around, inspect, and run under different strategies: production, audit, a checked run, or a test interpreter of your own. Interpreters are the strategies that turn the description into a result.
+Most optic work is "update this nested field". Sometimes the problem is different: describe a sequence of optic operations as data, then decide later how to run it. The [Free Monad](../glossary/effect-paths.md#free-monad) DSL turns optic operations into a value you can pass around, inspect, and run under different strategies: production, audit, a checked run, or a test interpreter of your own. Interpreters are the strategies that turn the description into a result.
 
 Here is the whole idea before any of the theory. One program, described once, run three different ways. Every line compiles against the real library on every build:
 
@@ -40893,7 +40895,7 @@ boolean safeToRun = check.isValid();
 // true: no nulls written, no modifier threw
 ```
 
-The account starts on 100 and the withdrawal is 30. `Fixture` is the compiled example's own setup, not library API.
+The account starts on 100 and the withdrawal is 30. Read `Free<OpticOpKind.Witness, Account>` as a program of optic operations that returns an `Account` when run; `OpticOpKind.Witness` is the [witness](../glossary/type-system.md#witness-type) that tags those operations. `Fixture` is the compiled example's own setup, not library API.
 
 ~~~admonish warning title="`validating()` is a checked run, not a dry run"
 Despite the name, `validate` **executes** the program. Its own javadoc is explicit: operations are run so that `flatMap` chaining produces the right values, and the validation is collected alongside. A `modify` modifier is applied twice, once to check it and once to perform it. So it is safe for pure modifiers over immutable data, and unsafe for anything with a side effect.
@@ -42886,7 +42888,7 @@ flowchart TD
 | "Apply over every element of a custom container" | [Each Typeclass](each_typeclass.md) |
 | "Operate on individual characters of a `String`" | [String Traversals](string_traversals.md) |
 | "Adapt a lens for a different source record type" | Compose: `outerLens.andThen(innerLens)` ([Profunctor Optics](profunctor_optics.md)) |
-| "The two shapes hold the same information" | An [`Iso`](iso.md), then compose: `Iso >>> Lens = Lens` |
+| "The two shapes hold the same information" | An [`Iso`](iso.md), then compose: `Iso.andThen(Lens) = Lens` |
 | "One-way conversion inside an effectful pipeline" | `optic.dimap(...)` ([Profunctor Optics](profunctor_optics.md)) |
 | "Match a value by a predicate, not by type" | [`Prisms.nearly`](advanced_prism_patterns.md#predicate-matching-with-prismsnearly) |
 
@@ -42998,7 +43000,7 @@ Prism<ApiResponse, Success> successPrism = Prism.of(
     s -> s
 );
 
-// Compose with lens to access data. Prism >>> Lens settles at Affine:
+// Compose with a lens to reach the data: prism.andThen(lens) returns an Affine,
 // the focus may be absent, but there is at most one of it.
 Affine<ApiResponse, Data> successData =
     successPrism.andThen(SuccessLenses.data());
@@ -43389,7 +43391,7 @@ public final class OrderOptics {
 
 <!-- verify -->
 ```java
-// Direct composition: mixed kinds settle at the weakest, so Lens >>> Prism is an Affine
+// Direct composition: lens.andThen(prism) returns an Affine, since the prism may not match
 Affine<Config, Settings> direct = configLens.andThen(settingsPrism);
 
 // Widen only where the call site actually needs a Traversal
@@ -44047,7 +44049,7 @@ These arrows rank what each optic can do; they are not `extends` edges. `Getter 
 
 ## Composition Rules Table {#composition-rules-table}
 
-Read each cell as what `first.andThen(second)` returns, with the row as `first`. A test in the examples module reads this table from the `andThen` overloads themselves, so it cannot promise a composition the library does not have:
+Read each cell as what `first.andThen(second)` returns, with the row as `first`. The rest of this page writes that as `Lens.andThen(Prism) = Affine`, a lens's `andThen` given a prism returns an `Affine`, and `Any` stands for any of the five. A test in the examples module reads this table from the `andThen` overloads themselves, so it cannot promise a composition the library does not have:
 
 | `first.andThen(second)` | Iso | Lens | Prism | Affine | Traversal |
 |---|---|---|---|---|---|
@@ -44071,7 +44073,7 @@ A composition reaches the wider of its two steps' reaches, and can build only if
 
 ---
 
-## Why Lens >>> Prism = Affine
+## Why Lens.andThen(Prism) = Affine {#why-lens--prism--affine}
 
 This is perhaps the most important composition rule to understand.
 
@@ -44100,7 +44102,7 @@ Lens<Config, Optional<DatabaseSettings>> databaseLens =
 // The Prism may or may not extract the DatabaseSettings
 Prism<Optional<DatabaseSettings>, DatabaseSettings> somePrism = Prisms.some();
 
-// Composition: Lens >>> Prism = Affine
+// Composition: Lens.andThen(Prism) = Affine
 Affine<Config, DatabaseSettings> databaseAffine =
     databaseLens.andThen(somePrism);
 
@@ -44120,7 +44122,7 @@ Config updated = databaseAffine.set(new DatabaseSettings("newhost", 3306), confi
 
 ---
 
-## Why Prism >>> Lens = Affine
+## Why Prism.andThen(Lens) = Affine {#why-prism--lens--affine}
 
 Similarly, composing a Prism first and then a Lens also yields an Affine.
 
@@ -44149,7 +44151,7 @@ Prism<Shape, Circle> circlePrism = Prism.of(
 Lens<Circle, Double> radiusLens =
     Lens.of(Circle::radius, (c, r) -> new Circle(r, c.colour()));
 
-// Composition: Prism >>> Lens = Affine
+// Composition: Prism.andThen(Lens) = Affine
 Affine<Shape, Double> circleRadiusAffine = circlePrism.andThen(radiusLens);
 
 // Usage
@@ -44178,25 +44180,25 @@ Shape unchanged = circleRadiusAffine.modify(r -> r * 2, rectangle);
 higher-kinded-j provides direct `andThen` methods that automatically return the correct type:
 
 ```java
-// Lens >>> Lens = Lens
+// Lens.andThen(Lens) = Lens
 Lens<A, C> result = lensAB.andThen(lensBC);
 
-// Lens >>> Prism = Affine
+// Lens.andThen(Prism) = Affine
 Affine<A, C> result = lensAB.andThen(prismBC);
 
-// Prism >>> Prism = Prism
+// Prism.andThen(Prism) = Prism
 Prism<A, C> result = prismAB.andThen(prismBC);
 
-// Prism >>> Lens = Affine
+// Prism.andThen(Lens) = Affine
 Affine<A, C> result = prismAB.andThen(lensBC);
 
-// Affine >>> Affine = Affine
+// Affine.andThen(Affine) = Affine
 Affine<A, C> result = affineAB.andThen(affineBC);
 
-// Affine >>> Lens = Affine
+// Affine.andThen(Lens) = Affine
 Affine<A, C> result = affineAB.andThen(lensBC);
 
-// Traversal >>> Traversal = Traversal
+// Traversal.andThen(Traversal) = Traversal
 Traversal<A, C> result = traversalAB.andThen(traversalBC);
 ```
 
@@ -44337,18 +44339,18 @@ Traversal<List<Order>, Order> activeOrders =
 
 | Composition | Result | Use Case |
 |-------------|--------|----------|
-| Lens >>> Lens | Lens | Nested product types (records) |
-| Lens >>> Prism | Affine | Product containing sum type |
-| Prism >>> Lens | Affine | Sum type containing product |
-| Prism >>> Prism | Prism | Nested sum types |
-| Affine >>> Affine | Affine | Chained optional access |
-| Affine >>> Lens | Affine | Optional then field access |
-| Affine >>> Prism | Affine | Optional then variant match |
-| Any >>> Traversal | Traversal | Collection access |
-| Iso >>> Any | Same as second | Type conversion first |
+| Lens.andThen(Lens) | Lens | Nested product types (records) |
+| Lens.andThen(Prism) | Affine | Product containing sum type |
+| Prism.andThen(Lens) | Affine | Sum type containing product |
+| Prism.andThen(Prism) | Prism | Nested sum types |
+| Affine.andThen(Affine) | Affine | Chained optional access |
+| Affine.andThen(Lens) | Affine | Optional then field access |
+| Affine.andThen(Prism) | Affine | Optional then variant match |
+| Any.andThen(Traversal) | Traversal | Collection access |
+| Iso.andThen(Any) | Same as second | Type conversion first |
 
 ~~~admonish tip title="Why this matters"
-The result type of a composition is not a convenience, it is a promise. When `Lens >>> Prism` hands you an `Affine`, the type is telling you the focus can be absent, and the compiler will not let you forget it; when a chain stays a `Lens`, totality survived every step and no absence handling is needed. That is the same discipline the mapping chapter later formalises as [truthful tiers](../mapping/tiers.md): the API only ever offers what the composition can lawfully support, so a whole class of "worked in the demo, failed in production" bugs becomes unrepresentable.
+The result type of a composition is not a convenience, it is a promise. When `Lens.andThen(Prism)` hands you an `Affine`, the type is telling you the focus can be absent, and the compiler will not let you forget it; when a chain stays a `Lens`, totality survived every step and no absence handling is needed. That is the same discipline the mapping chapter later formalises as [truthful tiers](../mapping/tiers.md): the API only ever offers what the composition can lawfully support, so a whole class of "worked in the demo, failed in production" bugs becomes unrepresentable.
 ~~~
 
 ~~~admonish tip title="See Also"
@@ -99116,7 +99118,9 @@ The Effect Path API and the Free-monad effect-handler machinery.
 
 Lenses, prisms, traversals, the Focus DSL, and record mapping.
 
-[Affine](glossary/optics.md#affine), [At](glossary/optics.md#at), [Edits](glossary/optics.md#edits), [ErrorEnvelope](glossary/optics.md#errorenvelope), [FieldError](glossary/optics.md#fielderror), [Focus DSL](glossary/optics.md#focus-dsl), [FocusPath](glossary/optics.md#focuspath), [Fold](glossary/optics.md#fold), [@GenerateAssembly](glossary/optics.md#generateassembly), [@GenerateErrorEnvelope](glossary/optics.md#generateerrorenvelope), [@GenerateMapping](glossary/optics.md#generatemapping), [@GenerateMerge](glossary/optics.md#generatemerge), [Iso (Isomorphism)](glossary/optics.md#iso-isomorphism), [Lens](glossary/optics.md#lens), [MappingLaws](glossary/optics.md#mappinglaws), [MappingSpec](glossary/optics.md#mappingspec), [Parse, Don't Validate](glossary/optics.md#parse-dont-validate), [Prism](glossary/optics.md#prism), [Setter](glossary/optics.md#setter), [StandardCodecs](glossary/optics.md#standardcodecs), [Traversal](glossary/optics.md#traversal), [UpdateSpec](glossary/optics.md#updatespec), [Validated Assembly](glossary/optics.md#validated-assembly), [ValidatedPrism](glossary/optics.md#validatedprism)
+**Optics:** [Affine](glossary/optics.md#affine), [andThen](glossary/optics.md#andthen), [At](glossary/optics.md#at), [Focus DSL](glossary/optics.md#focus-dsl), [Focus path type](glossary/optics.md#focus-path-type), [FocusPath](glossary/optics.md#focuspath), [Fold](glossary/optics.md#fold), [Iso (Isomorphism)](glossary/optics.md#iso-isomorphism), [Lens](glossary/optics.md#lens), [modifyF](glossary/optics.md#modifyf), [Navigator](glossary/optics.md#navigator), [Path widening](glossary/optics.md#path-widening), [Prism](glossary/optics.md#prism), [Setter](glossary/optics.md#setter), [Traversal](glossary/optics.md#traversal)
+
+**Validation and mapping:** [Edits](glossary/optics.md#edits), [ErrorEnvelope](glossary/optics.md#errorenvelope), [FieldError](glossary/optics.md#fielderror), [@GenerateAssembly](glossary/optics.md#generateassembly), [@GenerateErrorEnvelope](glossary/optics.md#generateerrorenvelope), [@GenerateMapping](glossary/optics.md#generatemapping), [@GenerateMerge](glossary/optics.md#generatemerge), [MappingLaws](glossary/optics.md#mappinglaws), [MappingSpec](glossary/optics.md#mappingspec), [Parse, Don't Validate](glossary/optics.md#parse-dont-validate), [StandardCodecs](glossary/optics.md#standardcodecs), [UpdateSpec](glossary/optics.md#updatespec), [Validated Assembly](glossary/optics.md#validated-assembly), [ValidatedPrism](glossary/optics.md#validatedprism)
 
 ## [Concurrency & Resilience](glossary/concurrency.md)
 
@@ -101301,6 +101305,14 @@ List<String> stillEmpty = firstElement.set("X", empty);  // [] (unchanged)
 
 ---
 
+## andThen
+
+**Definition:** The method that joins two optics end to end, named and read like `Function.andThen`: the first optic runs first, and the second focuses inside what it reaches. `UserLenses.address().andThen(AddressLenses.city())` is a `Lens<User, String>`. Every pair of `Iso`, `Lens`, `Prism`, `Affine` and `Traversal` has an overload. The result reaches as many values as the two steps allow together: a lens then a prism is an `Affine`, and any of the five then a traversal is a `Traversal`. On a Focus path the same join is spelled `.via(...)`.
+
+**Related:** [Composition Rules](../optics/composition_rules.md), [What a Path Is Made Of](../optics/optics_intro.md#composing-optics-with-andthen), [Affine](#affine)
+
+---
+
 ## At
 
 **Definition:** A type class for structures that support indexed access with insertion and deletion semantics. Provides a `Lens<S, Optional<A>>` where setting to `Optional.empty()` deletes the entry and setting to `Optional.of(value)` inserts or updates it.
@@ -101441,6 +101453,22 @@ EitherPath<AppError, String> effectfulCity = employeeService.findById(id)
 - Effect integration: Seamlessly works with Effect Paths
 
 **Related:** [FocusPath](#focuspath), [Lens](#lens), [Effect-Optics Bridge](effect-paths.md#effect-optics-bridge), [Focus DSL Documentation](../optics/focus_dsl.md)
+
+---
+
+## Focus path type
+
+**Definition:** The type of a Focus path, fixed by how many values it reaches:
+
+| Path type | Reaches | Wraps |
+|---|---|---|
+| `FocusPath` | exactly one value | `Lens` |
+| `AffinePath` | zero or one value | `Affine` |
+| `TraversalPath` | zero or more values | `Traversal` |
+
+`toLens()`, `toAffine()` and `toTraversal()` hand over the optic inside, and [Path widening](#path-widening) decides which type a generated method returns.
+
+**Related:** [FocusPath](#focuspath), [What a Path Is Made Of](../optics/optics_intro.md#each-path-type-wraps-an-optic)
 
 ---
 
@@ -101716,11 +101744,43 @@ public interface UserMapping extends MappingSpec<User, UserDto> {}
 
 ---
 
+## modifyF
+
+**Definition:** The general form of `modify`, on every optic that writes and on every Focus path. The function returns its new value inside an effect, such as a `CompletableFuture` or a `Validated`, and `modifyF` returns the whole updated structure inside that effect. It takes the effect's [Applicative](type-classes.md#applicative), the object that combines results inside that effect (a `Functor` is enough for a `Lens` or a `FocusPath`), and works in [Kind](type-system.md#kind), the library's encoding of a generic container. For a lens or a traversal, `OpticOps.modifyEither`, `modifyMaybe`, `modifyAllEither` and `modifyAllValidated` are the shorter call.
+
+**Related:** [Updates That Can Fail](../optics/fluent_api.md#part-3-arbitrary-effects-with-modifyf), [Type Class and Effect Integration](../optics/focus_effects.md), [Traversal](#traversal)
+
+---
+
+## Navigator
+
+**Definition:** A small class the Focus processor generates, under `@GenerateFocus(generateNavigators = true)`, for a field whose type is another non-generic `@GenerateFocus` record. A `Map`, an `Either` or a similar container of such a record gets one too. It wraps the field's path and adds one method per field of that record, so `UserFocus.address().city()` chains where the plain path needs `.via(AddressFocus.city())`. A navigator carries the core reads and writes of the path it wraps:
+
+| Wrapped path | Operations on the navigator |
+|---|---|
+| `FocusPath` | `get`, `set`, `modify`, `toLens`, `toPath` |
+| `AffinePath` | `getOptional`, `set`, `modify`, `matches`, `toPath` |
+| `TraversalPath` | `getAll`, `setAll`, `modifyAll`, `count`, `isEmpty`, `toPath` |
+
+`toPath()` returns the path it wraps, for everything else.
+
+**Related:** [Collections, Optionals and Sealed Types](../optics/focus_navigation.md#fluent-navigation-with-generated-navigators), [Focus DSL](#focus-dsl), [Focus path type](#focus-path-type)
+
+---
+
 ## Parse, Don't Validate
 
 **Definition:** The principle that a boundary should turn unstructured input into a typed value **once**, at the edge, and keep that guarantee in the type thereafter, rather than re-checking the same data repeatedly downstream. Higher-Kinded-J expresses it with types whose *parse* is fallible and accumulating and whose *build* is total: [ValidatedPrism](#validatedprism) for a single value, [Validated Assembly](#validated-assembly) for a whole record, and [@GenerateMapping](#generatemapping) for a record-to-DTO boundary. Failures are [FieldError](#fielderror)s, so a rejected input reports every bad field at once, each located.
 
 **Related:** [Record Mapping](../mapping/ch_intro.md), [ValidatedPrism](#validatedprism), [Validated](data-effects.md#validated)
+
+---
+
+## Path widening
+
+**Definition:** How a path's type follows the shape of the field it reaches. A field that may hold nothing, such as an `Optional` or a component with a recognised `@Nullable`, widens a path to an `AffinePath`. One that may hold many, such as a `List`, widens it to a `TraversalPath`. Composing keeps the wider of the two types. The processor settles it at compile time from the declared type, so a nullable field nobody annotated with a recognised `@Nullable` stays a `FocusPath`, and you chain `.nullable()` for it. A `Map` or an array stays a `FocusPath` too, unless the annotation sets `widenCollections = true`.
+
+**Related:** [Focus path type](#focus-path-type), [Collections, Optionals and Sealed Types](../optics/focus_navigation.md#path-widening)
 
 ---
 
@@ -102540,6 +102600,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **The Optics chapter reads in order, from a first nested update to a PATCH** ([#1034](https://github.com/higher-kinded-j/higher-kinded-j/pull/1034)). The sidebar starts with the pages a newcomer needs, then groups the rest by task, reference pages last. The introduction sets a Lombok `@With` cascade beside the Focus path that replaces it. Every page keeps its address. See [Optics](../optics/ch_intro.md).
 - **The Focus DSL page answers "what does my field give me?"** ([#1035](https://github.com/higher-kinded-j/higher-kinded-j/pull/1035)). A table keyed by the field you hold gives the generated path and what you write next, each row compiled. The Quickstart shows the lens class the processor writes, and Collections, Optionals and Sealed Types ends on its unusual cases. See [Find your field](../optics/focus_dsl.md#find-your-field).
 - **Check an update as you make it, and see the optic inside a path** ([#1036](https://github.com/higher-kinded-j/higher-kinded-j/pull/1036)). Three rewritten pages end the Optics chapter's first lane: What a Path Is Made Of, Updates That Can Fail, which reports every bad value in one call, and Many Edits at Once. Old links still land. See [Updates That Can Fail](../optics/fluent_api.md).
+- **The Optics chapter writes compositions as Java code** ([#1037](https://github.com/higher-kinded-j/higher-kinded-j/pull/1037)). The chapter and the `hkj-optics` skill spell a composition `Lens.andThen(Prism) = Affine` instead of the Haskell `>>>`. The glossary gains `andThen`, `modifyF`, navigator, Focus path type and path widening. See [Composition Rules](../optics/composition_rules.md).
 - **The Optics chapter's examples come from the build** ([#1020](https://github.com/higher-kinded-j/higher-kinded-j/pull/1020)): composed optics declare the precise type `andThen` returns, and each runnable program and its output come from the examples module. The Affines page says what `set` does on an absent focus. See [When the focus is absent](../optics/affine.md#when-the-focus-is-absent).
 - **`@PathSource` has a page of its own** ([#999](https://github.com/higher-kinded-j/higher-kinded-j/issues/999)): [Custom Paths with `@PathSource`](../effect/path_source.md) says when a generated Path is worth it over `GenericPath`, what each capability generates, and how `errorType` types recovery.
 - **`modifyAllEither` says it keeps the first error, not that it stops there** ([#1031](https://github.com/higher-kinded-j/higher-kinded-j/pull/1031)): every focused value is still validated, and the result keeps the first error in traversal order. The javadoc of `allThroughEither` and `TraversalExtensions.modifyAllEither`, and the examples, now say so too. See [`modifyAllEither`: First Error Only](../optics/optics_extensions.md#modifyalleither-first-error-only).
