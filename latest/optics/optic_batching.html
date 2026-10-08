@@ -310,10 +310,13 @@
 <p>You have a list of ids. For each one, you load the entity. The code is one line in a stream and looks blameless. In staging, with three rows, it flies. In production, with two hundred rows, it stalls, and the trace shows two hundred near-identical queries lined up in single file.</p>
 <p>This is the N+1, and optics by themselves do not save you from it. A <code>Traversal</code> is the <em>shape</em> of the problem ("every element"); it does not have an opinion about <em>how</em> the per-element work runs. Hand a sequential strategy to a traversal of N foci, you get N round-trips.</p>
 <p>The <code>org.higherkindedj.optics.fetch</code> package changes the strategy and leaves the optic alone:</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJhY2NUaXRsZSIsICJOKzEiLCAiY2FsbHMiLCAidGhlbiIsICJvbmUiLCAiYmF0Y2hlZCIsICJyb3VuZCIsICJhY2NEZXNjciIsICJXaXRob3V0IiwgImJhdGNoaW5nIiwgIm1vZGlmeUYiLCAib3ZlciIsICJOIiwgImlkcyIsICJtYWtlcyIsICJ0aGUiLCAidHJhdmVyc2FsIiwgImNhbGwiLCAidGhlIiwgImJhY2tlbmQiLCAib25jZSIsICJwZXIiLCAiaWQiLCAiTiIsICJ0aW1lcyIsICJXaXRoIiwgIkZldGNoQXBwbGljYXRpdmUiLCAiYXAiLCAibWVyZ2VzIiwgInRoZSIsICJwZW5kaW5nIiwgInJlcXVlc3QiLCAic2V0cyIsICJzbyIsICJ0aGUiLCAidHJhdmVyc2FsIiwgInNlbmRzIiwgImV2ZXJ5IiwgImlkIiwgInRvIiwgInRoZSIsICJiYXRjaCIsICJyZXNvbHZlciIsICJpbiIsICJvbmUiLCAiY2FsbCIsICJhbmQiLCAiZ2V0cyIsICJiYWNrIiwgImEiLCAibWFwIiwgIm9mIiwgImlkIiwgInRvIiwgImVudGl0eSIsICJUcmF2ZXJzYWw8YnIvPm92ZXIiLCAiaWRzLDxici8+RmV0Y2hBcHBsaWNhdGl2ZSIsICJvdmVyIiwgInBlbmRpbmc8YnIvPnJlcXVlc3QiLCAic2V0cyIsICJzbyIsICJmb2NpPGJyLz5zaGFyZSIsICJiYXRjaFJlc29sdmVyKDxici8+e2lkXzEiXQ==" data-since="v0.4.11"></div>
 <pre class="mermaid">sequenceDiagram
+    accTitle: N+1 calls, then one batched round
+    accDescr: Without batching, modifyF over N ids makes the traversal call the backend once per id, N times. With FetchApplicative, ap() merges the pending request sets, so the traversal sends every id to the batch resolver in one call and gets back a map of id to entity.
     autonumber
     participant C as Caller
-    participant T as Traversal over N ids
+    participant T as Traversal&lt;br/&gt;over N ids
     participant B as Backend
 
     Note over C,B: Without batching: N+1
@@ -325,9 +328,9 @@
     T--&gt;&gt;C: List of entities
 
     Note over C,B: With FetchApplicative: one round
-    C-&gt;&gt;T: modifyF(Fetch.fetch, ids, FetchApplicative)
-    Note right of T: ap() merges pending request sets,&lt;br/&gt;so foci share a single round
-    T-&gt;&gt;B: batchResolver({id_1 ... id_N})
+    C-&gt;&gt;T: modifyF(Fetch.fetch, ids,&lt;br/&gt;FetchApplicative)
+    Note over T: ap() merges pending&lt;br/&gt;request sets, so foci&lt;br/&gt;share a single round
+    T-&gt;&gt;B: batchResolver(&lt;br/&gt;{id_1 ... id_N})
     B--&gt;&gt;T: Map of id to entity
     T--&gt;&gt;C: List of entities
 </pre>
@@ -346,23 +349,29 @@
 </div>
 <h2 id="the-pattern-drawn"><a class="header" href="#the-pattern-drawn">The Pattern, Drawn</a></h2>
 <p>The pipeline has three pieces. The optic owns the shape. The applicative is the strategy. The runner is the boundary that actually talks to the backend:</p>
-<pre class="mermaid">flowchart LR
-    OP([&quot;Traversal&lt;br/&gt;(or any Optic)&quot;]) --&gt;|&quot;modifyF(f, s, applicative)&quot;| FA([&quot;FetchApplicative&quot;])
-    FA --&gt;|&quot;produces&quot;| F([&quot;Fetch&amp;lt;K, V, A&amp;gt;&lt;br/&gt;a value, not an action&quot;])
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyIlJXtpbml0IiwgIm5vZGVTcGFjaW5nIiwgIjMwfX19JSUiLCAiZmxvd2NoYXJ0IiwgIlREIiwgImFjY1RpdGxlIiwgIlRoZSIsICJvcHRpYyIsICJ0aGUiLCAic3RyYXRlZ3kiLCAiYW5kIiwgInRoZSIsICJydW5uZXIiLCAiYWNjRGVzY3IiLCAiQSIsICJUcmF2ZXJzYWwiLCAib3IiLCAiYW55IiwgIm9wdGljIiwgInJ1bnMiLCAibW9kaWZ5RiIsICJ3aXRoIiwgIkZldGNoQXBwbGljYXRpdmUiLCAid2hpY2giLCAicHJvZHVjZXMiLCAiYSIsICJGZXRjaCIsICJ2YWx1ZSIsICJyYXRoZXIiLCAidGhhbiIsICJhbiIsICJhY3Rpb24iLCAiRmV0Y2gucnVuQ2FjaGVkIiwgInJ1bnMiLCAiaXQiLCAic3luY2hyb25vdXNseSIsICJhZ2FpbnN0IiwgImEiLCAiZnVuY3Rpb24iLCAiZnJvbSIsICJhIiwgImtleSIsICJzZXQiLCAidG8iLCAiYSIsICJtYXAiLCAiRmV0Y2gucnVuQXN5bmMiLCAiYWdhaW5zdCIsICJhIiwgIkJhdGNoTG9hZGVyIiwgImEiLCAiU291cmNlUm91dGVyLnJvdXRlZCIsICJmYW4tb3V0IiwgIm9yIiwgImEiLCAiQmF0Y2hMb2FkZXJzLmNodW5rZWQiLCAiY2FwIiwgImFuZCIsICJTYWZlRmV0Y2gucnVuQ2FjaGVkIiwgIm9uIiwgInRoZSIsICJFaXRoZXIiLCAicmFpbHdheSIsICJPUEAiLCAic2hhcGUiLCAic3QtcmVjdCIsICJsYWJlbCIsICJUcmF2ZXJzYWw8YnIvPihvciIsICJzLDxici8+YXBwbGljYXRpdmUpXCJ8IiwgIkZBW1wiRmV0Y2hBcHBsaWNhdGl2ZSIsICJGW1wiRmV0Y2gmbHQ7SyIsICJSQ1tcIkZldGNoPGJyLz4ucnVuQ2FjaGVkIiwgIlJBW1wiRmV0Y2g8YnIvPi5ydW5Bc3luYyIsICJ8XCJyYWlsd2F5PGJyLz4oRWl0aGVyKVwifCIsICJTQ1tcIlNhZmVGZXRjaDxici8+LnJ1bkNhY2hlZCIsICJrZXlzZXQ8YnIvPnBlciIsICJGTltcIkZ1bmN0aW9uJmx0Ozxici8+U2V0Jmx0O0smZ3Q7LDxici8+TWFwJmx0O0siLCAia2V5c2V0PGJyLz5wZXIiLCAiQkxbXCJCYXRjaExvYWRlciIsICJvdXQ8YnIvPnBlciIsICJTUltcIlNvdXJjZVJvdXRlcjxici8+LnJvdXRlZCIsICJkaXNwYXRjaDxici8+c2l6ZVwifCIsICJCQ1tcIkJhdGNoTG9hZGVyczxici8+LmNodW5rZWQiLCAiY2xhc3NEZWYiLCAicnciLCAiZmlsbDojYTZkMTg5LHN0cm9rZTojNDBhMDJiLGNvbG9yOiMyMzI2MzQiLCAiZmlsbDojOGNhYWVlLHN0cm9rZTojMWU2NmY1LGNvbG9yOiMyMzI2MzQiLCAiT1AiLCAicnciLCAiY2xhc3MiLCAiRkEiXQ==" data-since="v0.4.11"></div>
+<pre class="mermaid">%%{init: {&quot;flowchart&quot;: {&quot;nodeSpacing&quot;: 30}}}%%
+flowchart TD
+    accTitle: The optic, the strategy and the runner
+    accDescr: A Traversal, or any optic, runs modifyF with FetchApplicative, which produces a Fetch value rather than an action. Fetch.runCached runs it synchronously against a function from a key set to a map, Fetch.runAsync against a BatchLoader, a SourceRouter.routed fan-out or a BatchLoaders.chunked cap, and SafeFetch.runCached on the Either railway.
+    OP@{ shape: st-rect, label: &quot;Traversal&lt;br/&gt;(or any Optic)&quot; } --&gt;|&quot;modifyF(f, s,&lt;br/&gt;applicative)&quot;| FA[&quot;FetchApplicative&quot;]
+    FA --&gt;|&quot;produces&quot;| F[&quot;Fetch&amp;lt;K, V, A&amp;gt;&lt;br/&gt;a value, not an action&quot;]
 
-    F --&gt;|&quot;sync&quot;| RC([&quot;Fetch.runCached&quot;])
-    F --&gt;|&quot;async&quot;| RA([&quot;Fetch.runAsync&quot;])
-    F --&gt;|&quot;railway (Either)&quot;| SC([&quot;SafeFetch.runCached&quot;])
+    F --&gt;|&quot;sync&quot;| RC[&quot;Fetch&lt;br/&gt;.runCached&quot;]
+    F --&gt;|&quot;async&quot;| RA[&quot;Fetch&lt;br/&gt;.runAsync&quot;]
+    F --&gt;|&quot;railway&lt;br/&gt;(Either)&quot;| SC[&quot;SafeFetch&lt;br/&gt;.runCached&quot;]
 
-    RC --&gt;|&quot;one keyset per round&quot;| FN([&quot;Function&amp;lt;Set&amp;lt;K&amp;gt;, Map&amp;lt;K, V&amp;gt;&amp;gt;&quot;])
-    RA --&gt;|&quot;one keyset per round&quot;| BL([&quot;BatchLoader&quot;])
-    RA --&gt;|&quot;fan out per source&quot;| SR([&quot;SourceRouter.routed&quot;])
-    RA --&gt;|&quot;cap dispatch size&quot;| BC([&quot;BatchLoaders.chunked&quot;])
+    RC --&gt;|&quot;one keyset&lt;br/&gt;per round&quot;| FN[&quot;Function&amp;lt;&lt;br/&gt;Set&amp;lt;K&amp;gt;,&lt;br/&gt;Map&amp;lt;K, V&amp;gt;&amp;gt;&quot;]
+    RA --&gt;|&quot;one keyset&lt;br/&gt;per round&quot;| BL[&quot;BatchLoader&quot;]
+    RA --&gt;|&quot;fan out&lt;br/&gt;per source&quot;| SR[&quot;SourceRouter&lt;br/&gt;.routed&quot;]
+    RA --&gt;|&quot;cap dispatch&lt;br/&gt;size&quot;| BC[&quot;BatchLoaders&lt;br/&gt;.chunked&quot;]
 
-    classDef shape fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef rw fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef shape fill:#8caaee,stroke:#1e66f5,color:#232634
     classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
     classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
-    class OP,FA shape
+    class OP rw
+    class FA shape
     class F,RC,RA,SC wire
     class FN,BL,SR,BC tier
 </pre>
@@ -455,19 +464,22 @@ split.failures();  // List&lt;String&gt;
 <hr />
 <h2 id="the-wall-where-batching-stops-working"><a class="header" href="#the-wall-where-batching-stops-working">The Wall: Where Batching Stops Working</a></h2>
 <p>Applicative composition collapses because the arguments are independent. <code>flatMap</code> cannot collapse, because the continuation's requests depend on the value the previous round produced. The library does not paper over this; it lays the boundary out where you can see it:</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJhY2NUaXRsZSIsICJPbmUiLCAicm91bmQiLCAiZm9yIiwgImFwIiwgImEiLCAicm91bmQiLCAicGVyIiwgImZsYXRNYXAiLCAiYWNjRGVzY3IiLCAiQSIsICJwdXJlIiwgImFwcGxpY2F0aXZlIiwgImJ1aWx0IiwgIndpdGgiLCAiYXAiLCAib3ZlciIsICJmZXRjaGVzIiwgIm9mIiwgImEiLCAiYiIsICJhbmQiLCAiYyIsICJyZWFjaGVzIiwgInRoZSIsICJiYWNrZW5kIiwgIm9uY2UiLCAid2l0aCIsICJhbGwiLCAidGhyZWUiLCAia2V5cyIsICJBIiwgImZsYXRNYXAiLCAiY2hhaW4iLCAiZmV0Y2hlcyIsICJhIiwgImxlYXJucyIsICJvbmx5IiwgInRoZW4iLCAidG8iLCAiYXNrIiwgImZvciIsICJhLm5leHQiLCAiYW5kIiwgInRoZW4iLCAiYS5uZXh0Lm5leHQiLCAiYW5kIiwgInNvIiwgInRha2VzIiwgInRocmVlIiwgInJvdW5kcyIsICJhKSw8YnIvPmZldGNoIiwgImZldGNoKGEpLmZsYXRNYXAoPGJyLz54Il0=" data-since="v0.4.11"></div>
 <pre class="mermaid">sequenceDiagram
+    accTitle: One round for ap, a round per flatMap
+    accDescr: A pure applicative built with ap over fetches of a, b and c reaches the backend once, with all three keys. A flatMap chain fetches a, learns only then to ask for a.next and then a.next.next, and so takes three rounds.
     participant P as Program
     participant R as Runner
     participant B as Backend
 
     Note over P,B: Pure applicative: N foci, 1 round
-    P-&gt;&gt;R: ap(ap(ap(f, fetch a), fetch b), fetch c)
+    P-&gt;&gt;R: ap(ap(ap(f, fetch a),&lt;br/&gt;fetch b), fetch c)
     R-&gt;&gt;B: { a, b, c }
     B--&gt;&gt;R: { a:..., b:..., c:... }
     R--&gt;&gt;P: value
 
     Note over P,B: flatMap dependency chain: 3 rounds
-    P-&gt;&gt;R: fetch(a).flatMap(x -&gt; fetch(x.next))
+    P-&gt;&gt;R: fetch(a).flatMap(&lt;br/&gt;x -&gt; fetch(x.next))
     R-&gt;&gt;B: { a }
     B--&gt;&gt;R: { a:... }
     Note right of R: only now do we know&lt;br/&gt;what to ask for next
