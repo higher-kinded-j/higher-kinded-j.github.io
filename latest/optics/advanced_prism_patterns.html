@@ -333,19 +333,23 @@
 <h2 id="pattern-1-configuration-management"><a class="header" href="#pattern-1-configuration-management">Pattern 1: Configuration Management</a></h2>
 <p>Configuration systems often deal with multiple sources (environment variables, files, defaults) and various data types. Prisms provide a type-safe way to navigate this complexity.</p>
 <h3 id="the-challenge"><a class="header" href="#the-challenge">The Challenge</a></h3>
+<!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJpbnQiLCAicG9vbFNpemUoTWFwPFN0cmluZyIsICJPYmplY3QiLCAiY29uZmlnIl0=" data-since="v0.4.11"></div>
 <pre><code class="language-java">// Traditional approach: brittle and verbose
-Object rawValue = config.get("database.connection.pool.size");
-if (rawValue instanceof Integer i) {
-    return i &gt; 0 ? i : DEFAULT_POOL_SIZE;
-} else if (rawValue instanceof String s) {
-    try {
-        int parsed = Integer.parseInt(s);
-        return parsed &gt; 0 ? parsed : DEFAULT_POOL_SIZE;
-    } catch (NumberFormatException e) {
-        return DEFAULT_POOL_SIZE;
+int poolSize(Map&lt;String, Object&gt; config) {
+    Object rawValue = config.get("database.connection.pool.size");
+    if (rawValue instanceof Integer i) {
+        return i &gt; 0 ? i : DEFAULT_POOL_SIZE;
+    } else if (rawValue instanceof String s) {
+        try {
+            int parsed = Integer.parseInt(s);
+            return parsed &gt; 0 ? parsed : DEFAULT_POOL_SIZE;
+        } catch (NumberFormatException e) {
+            return DEFAULT_POOL_SIZE;
+        }
     }
+    return DEFAULT_POOL_SIZE;
 }
-return DEFAULT_POOL_SIZE;
 </code></pre>
 <h3 id="the-prism-solution"><a class="header" href="#the-prism-solution">The Prism Solution</a></h3>
 <!-- verify -->
@@ -425,18 +429,23 @@ Optional&lt;ConfigValue&gt; connConfig = Traversals.getAll(databaseConfig, rootC
 <h2 id="pattern-2-api-response-handling"><a class="header" href="#pattern-2-api-response-handling">Pattern 2: API Response Handling</a></h2>
 <p>Modern APIs return varying response types based on status codes. Prisms provide elegant error handling and recovery strategies.</p>
 <h3 id="the-challenge-1"><a class="header" href="#the-challenge-1">The Challenge</a></h3>
+<!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJSZXN1bHQiLCAiaGFuZGxlKEh0dHBSZXNwb25zZSIsICJyZXNwb25zZSIsICJ0aHJvdyIsICJuZXciLCAiSWxsZWdhbFN0YXRlRXhjZXB0aW9uKFwiVW5oYW5kbGVkIiwgInN0YXR1cyIsICIrIiwgInJlc3BvbnNlLnN0YXR1cyJd" data-since="v0.4.11"></div>
 <pre><code class="language-java">// Traditional approach: error-prone branching
-if (response.status() == 200) {
-    return processSuccess((SuccessResponse) response);
-} else if (response.status() == 400) {
-    ValidationError err = (ValidationError) response;
-    return handleValidation(err);
-} else if (response.status() == 500) {
-    return handleServerError((ServerError) response);
-} else if (response.status() == 429) {
-    return retryWithBackoff((RateLimitError) response);
+Result handle(HttpResponse response) {
+    if (response.status() == 200) {
+        return processSuccess((SuccessResponse) response);
+    } else if (response.status() == 400) {
+        ValidationError err = (ValidationError) response;
+        return handleValidation(err);
+    } else if (response.status() == 500) {
+        return handleServerError((ServerError) response);
+    } else if (response.status() == 429) {
+        return retryWithBackoff((RateLimitError) response);
+    }
+    // What about 401, 403, 404, ...?
+    throw new IllegalStateException("Unhandled status: " + response.status());
 }
-// What about 401, 403, 404, ...?
 </code></pre>
 <h3 id="the-prism-solution-1"><a class="header" href="#the-prism-solution-1">The Prism Solution</a></h3>
 <!-- verify -->
@@ -493,7 +502,12 @@ public class ApiHandler {
 }
 </code></pre>
 <h3 id="advanced-response-pipeline-with-fallbacks"><a class="header" href="#advanced-response-pipeline-with-fallbacks">Advanced: Response Pipeline with Fallbacks</a></h3>
+<!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJwcml2YXRlIiwgInN0YXRpYyIsICJmaW5hbCIsICJQcmlzbTxBcGlSZXNwb25zZSIsICJTdWNjZXNzIiwgIlNVQ0NFU1MiLCAiPSIsICJBcGlSZXNwb25zZVByaXNtcy5zdWNjZXNzIiwgInByaXZhdGUiLCAic3RhdGljIiwgImZpbmFsIiwgIlByaXNtPEFwaVJlc3BvbnNlIiwgIlJhdGVMaW1pdEVycm9yIiwgIlJBVEVfTElNSVQiLCAiPSIsICJBcGlSZXNwb25zZVByaXNtcy5yYXRlTGltaXRFcnJvciJd" data-since="v0.4.11"></div>
 <pre><code class="language-java">public class ResilientApiClient {
+    private static final Prism&lt;ApiResponse, Success&gt; SUCCESS = ApiResponsePrisms.success();
+    private static final Prism&lt;ApiResponse, RateLimitError&gt; RATE_LIMIT = ApiResponsePrisms.rateLimitError();
+
     public CompletableFuture&lt;JsonValue&gt; fetchWithFallbacks(String endpoint) {
         return primaryApi.call(endpoint)
             .thenCompose(response -&gt;
@@ -536,16 +550,17 @@ public class ApiHandler {
 <h3 id="the-challenge-2"><a class="header" href="#the-challenge-2">The Challenge</a></h3>
 <p>ETL pipelines process heterogeneous data where validation rules depend on data types:</p>
 <!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJMaXN0PFN0cmluZyIsICJlcnJvcnMuYWRkKFwiU3RyaW5nIiwgImVycm9ycy5hZGQoXCJOZWdhdGl2ZSJd" data-since="v0.4.11"></div>
 <pre><code class="language-java">// Traditional approach: imperative branching
-List&lt;ValidationError&gt; errors = new ArrayList&lt;&gt;();
+List&lt;String&gt; errors = new ArrayList&lt;&gt;();
 for (Object value : row.values()) {
     if (value instanceof String s) {
         if (s.length() &gt; MAX_STRING_LENGTH) {
-            errors.add(new ValidationError("String too long: " + s));
+            errors.add("String too long: " + s);
         }
     } else if (value instanceof Integer i) {
         if (i &lt; 0) {
-            errors.add(new ValidationError("Negative integer: " + i));
+            errors.add("Negative integer: " + i);
         }
     }
     // ... more type checks
@@ -612,7 +627,12 @@ public class ValidationPipeline {
 </code></pre>
 <h3 id="advanced-validation-with-accumulation"><a class="header" href="#advanced-validation-with-accumulation">Advanced: Validation with Accumulation</a></h3>
 <p>Using <code>Either</code> and prisms for validation that accumulates errors:</p>
+<!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJwcml2YXRlIiwgInN0YXRpYyIsICJmaW5hbCIsICJQcmlzbTxEYXRhVmFsdWUiLCAiU3RyaW5nRGF0YSIsICJTVFJJTkciLCAiPSIsICJEYXRhVmFsdWVQcmlzbXMuc3RyaW5nRGF0YSIsICJwcml2YXRlIiwgInN0YXRpYyIsICJmaW5hbCIsICJQcmlzbTxEYXRhVmFsdWUiLCAiSW50RGF0YSIsICJJTlQiLCAiPSIsICJEYXRhVmFsdWVQcmlzbXMuaW50RGF0YSJd" data-since="v0.4.11"></div>
 <pre><code class="language-java">public class AccumulatingValidator {
+    private static final Prism&lt;DataValue, StringData&gt; STRING = DataValuePrisms.stringData();
+    private static final Prism&lt;DataValue, IntData&gt; INT = DataValuePrisms.intData();
+
     public static Either&lt;List&lt;String&gt;, List&lt;DataValue&gt;&gt; validateAll(List&lt;DataValue&gt; row) {
         List&lt;String&gt; errors = new ArrayList&lt;&gt;();
         List&lt;DataValue&gt; sanitised = new ArrayList&lt;&gt;();
@@ -687,6 +707,8 @@ public void handleEvent(DomainEvent event) {
 }
 </code></pre>
 <h3 id="the-prism-solution-3"><a class="header" href="#the-prism-solution-3">The Prism Solution</a></h3>
+<!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJCaWdEZWNpbWFsIl0=" data-since="v0.4.11"></div>
 <pre><code class="language-java">@GeneratePrisms
 sealed interface DomainEvent permits UserCreated, UserDeleted, UserUpdated,
                                      OrderPlaced, OrderCancelled, PaymentProcessed {}
@@ -696,7 +718,7 @@ record UserDeleted(String userId, Instant timestamp) implements DomainEvent {}
 record UserUpdated(String userId, Map&lt;String, String&gt; changes, Instant timestamp) implements DomainEvent {}
 record OrderPlaced(String orderId, List&lt;LineItem&gt; items, Instant timestamp) implements DomainEvent {}
 record OrderCancelled(String orderId, String reason, Instant timestamp) implements DomainEvent {}
-record PaymentProcessed(String orderId, double amount, Instant timestamp) implements DomainEvent {}
+record PaymentProcessed(String orderId, BigDecimal amount, Instant timestamp) implements DomainEvent {}
 
 public class EventRouter {
     private static final Prism&lt;DomainEvent, UserCreated&gt; USER_CREATED =
@@ -746,7 +768,13 @@ public class EventRouter {
 }
 </code></pre>
 <h3 id="advanced-event-filtering-and-transformation"><a class="header" href="#advanced-event-filtering-and-transformation">Advanced: Event Filtering and Transformation</a></h3>
+<!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJwcml2YXRlIiwgInN0YXRpYyIsICJmaW5hbCIsICJQcmlzbTxEb21haW5FdmVudCIsICJVc2VyQ3JlYXRlZCIsICJVU0VSX0NSRUFURUQiLCAiPSIsICJEb21haW5FdmVudFByaXNtcy51c2VyQ3JlYXRlZCIsICJwcml2YXRlIiwgInN0YXRpYyIsICJmaW5hbCIsICJQcmlzbTxEb21haW5FdmVudCIsICJVc2VyRGVsZXRlZCIsICJVU0VSX0RFTEVURUQiLCAiPSIsICJEb21haW5FdmVudFByaXNtcy51c2VyRGVsZXRlZCIsICJwcml2YXRlIiwgInN0YXRpYyIsICJmaW5hbCIsICJQcmlzbTxEb21haW5FdmVudCIsICJPcmRlclBsYWNlZCIsICJPUkRFUl9QTEFDRUQiLCAiPSIsICJEb21haW5FdmVudFByaXNtcy5vcmRlclBsYWNlZCIsICJ1c2VyQ3JlYXRlZC5nZXRPcHRpb25hbChlIiwgImZpbHRlcih1YyIsICJ1c2VyRGVsZXRlZC5nZXRPcHRpb25hbChlIiwgImZpbHRlcih1ZCJd" data-since="v0.4.11"></div>
 <pre><code class="language-java">public class EventProcessor {
+    private static final Prism&lt;DomainEvent, UserCreated&gt; USER_CREATED = DomainEventPrisms.userCreated();
+    private static final Prism&lt;DomainEvent, UserDeleted&gt; USER_DELETED = DomainEventPrisms.userDeleted();
+    private static final Prism&lt;DomainEvent, OrderPlaced&gt; ORDER_PLACED = DomainEventPrisms.orderPlaced();
+
     // Process only recent user events
     public List&lt;DomainEvent&gt; getRecentUserEvents(
         List&lt;DomainEvent&gt; events,
@@ -758,15 +786,13 @@ public class EventRouter {
         return events.stream()
             .filter(e -&gt;
                 // Match user events with timestamp filter
-                userCreated.mapOptional(
-                    uc -&gt; uc.timestamp().isAfter(since) ? uc : null,
-                    e
-                ).isPresent()
+                userCreated.getOptional(e)
+                    .filter(uc -&gt; uc.timestamp().isAfter(since))
+                    .isPresent()
                 ||
-                userDeleted.mapOptional(
-                    ud -&gt; ud.timestamp().isAfter(since) ? ud : null,
-                    e
-                ).isPresent()
+                userDeleted.getOptional(e)
+                    .filter(ud -&gt; ud.timestamp().isAfter(since))
+                    .isPresent()
             )
             .collect(Collectors.toList());
     }
@@ -898,9 +924,16 @@ public class OrderStateMachine {
 }
 </code></pre>
 <h3 id="advanced-transition-table"><a class="header" href="#advanced-transition-table">Advanced: Transition Table</a></h3>
+<!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJwcml2YXRlIiwgInN0YXRpYyIsICJmaW5hbCIsICJQcmlzbTxPcmRlclN0YXRlIiwgIlBlbmRpbmciLCAiUEVORElORyIsICI9IiwgIk9yZGVyU3RhdGVQcmlzbXMucGVuZGluZyIsICJwcml2YXRlIiwgInN0YXRpYyIsICJmaW5hbCIsICJQcmlzbTxPcmRlclN0YXRlIiwgIlByb2Nlc3NpbmciLCAiUFJPQ0VTU0lORyIsICI9IiwgIk9yZGVyU3RhdGVQcmlzbXMucHJvY2Vzc2luZyIsICJwcml2YXRlIiwgInN0YXRpYyIsICJmaW5hbCIsICJQcmlzbTxPcmRlckV2ZW50IiwgIlBheW1lbnRSZWNlaXZlZCIsICJQQVlNRU5UIiwgIj0iLCAiT3JkZXJFdmVudFByaXNtcy5wYXltZW50UmVjZWl2ZWQiLCAicHJpdmF0ZSIsICJzdGF0aWMiLCAiZmluYWwiLCAiUHJpc208T3JkZXJFdmVudCIsICJTaGlwcGluZ0NvbXBsZXRlZCIsICJTSElQUElORyIsICI9IiwgIk9yZGVyRXZlbnRQcmlzbXMuc2hpcHBpbmdDb21wbGV0ZWQiXQ==" data-since="v0.4.11"></div>
 <pre><code class="language-java">import org.higherkindedj.optics.indexed.Pair; // Pair record from hkj-api
 
 public class AdvancedStateMachine {
+    private static final Prism&lt;OrderState, Pending&gt; PENDING = OrderStatePrisms.pending();
+    private static final Prism&lt;OrderState, Processing&gt; PROCESSING = OrderStatePrisms.processing();
+    private static final Prism&lt;OrderEvent, PaymentReceived&gt; PAYMENT = OrderEventPrisms.paymentReceived();
+    private static final Prism&lt;OrderEvent, ShippingCompleted&gt; SHIPPING = OrderEventPrisms.shippingCompleted();
+
     // Define transitions as a declarative table
     private static final Map&lt;
         Pair&lt;Prism&lt;OrderState, ?&gt;, Prism&lt;OrderEvent, ?&gt;&gt;,
@@ -1064,12 +1097,12 @@ public class PluginExecutor {
     }
 }
 </code></pre>
-<h3 id="advanced-plugin-composition"><a class="header" href="#advanced-plugin-composition">Advanced: Plugin Composition</a></h3>
-<pre><code class="language-java">public class CompositePlugin {
-    // Combine multiple plugins into a pipeline
-    public static Plugin pipeline(List&lt;Plugin&gt; plugins) {
-        return new CompositePluginImpl(plugins);
-    }
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJCYXRjaGVzIiwgImFkdmFuY2VkLXBsdWdpbi1iYXRjaGVzIl0=" data-since="v0.4.11"></div>
+<h3 id="advanced-plugin-batches"><a class="header" href="#advanced-plugin-batches">Advanced: Plugin Batches</a></h3>
+<!-- verify -->
+<div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJQbHVnaW5CYXRjaGVzIiwgInByaXZhdGUiLCAiZmluYWwiLCAiUHJpc208UGx1Z2luIiwgIkRhdGFiYXNlUGx1Z2luIiwgIkRCIiwgIj0iLCAiUGx1Z2luUHJpc21zLmRhdGFiYXNlUGx1Z2luIl0=" data-since="v0.4.11"></div>
+<pre><code class="language-java">public class PluginBatches {
+    private static final Prism&lt;Plugin, DatabasePlugin&gt; DB = PluginPrisms.databasePlugin();
 
     // Filter plugins by type for batch operations
     public static List&lt;DatabasePlugin&gt; getAllDatabasePlugins(List&lt;Plugin&gt; plugins) {
@@ -1121,13 +1154,13 @@ public class PluginExecutor {
 <p>Every prism so far has matched on <em>type</em>: is this <code>JsonString</code>, is this <code>ShippingError</code>. Two utilities extend that to matching on a <em>condition</em>, and to expressing the negative case.</p>
 <h3 id="prismsnearly-match-a-category-of-values"><a class="header" href="#prismsnearly-match-a-category-of-values"><code>Prisms.nearly</code>: match a category of values</a></h3>
 <p><code>Prisms.only(expected)</code> matches one exact value. <code>Prisms.nearly(defaultValue, predicate)</code> is its predicate-based complement: it matches any value satisfying the predicate, and because a matched value carries no extra information, the focus is <code>Unit</code>. The default value is what <code>build</code> produces when you run the prism backwards.</p>
-<!-- verify -->
-<pre><code class="language-java">// Match any non-empty string
-Prism&lt;String, Unit&gt; nonEmpty = Prisms.nearly("default", s -&gt; !s.isEmpty());
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJpbmNsdWRlIiwgIi8uLi8uLi9oa2otZXhhbXBsZXMvc3JjL21haW4vamF2YS9vcmcvaGlnaGVya2luZGVkai9leGFtcGxlL2Jvb2svb3B0aWNzL3ByaXNtcy9BZHZhbmNlZFByaXNtUGF0dGVybnNCb29rLmphdmE6bmVhcmx5Il0=" data-since="v0.4.11"></div>
+<pre><code class="language-java">    // Match any non-empty string
+    Prism&lt;String, Unit&gt; nonEmpty = Prisms.nearly("default", s -&gt; !s.isEmpty());
 
-Optional&lt;Unit&gt; hit = nonEmpty.getOptional("hello");  // Optional.of(Unit.INSTANCE)
-Optional&lt;Unit&gt; miss = nonEmpty.getOptional("");      // Optional.empty()
-String built = nonEmpty.build(Unit.INSTANCE);        // "default"
+    Optional&lt;Unit&gt; hit = nonEmpty.getOptional("hello"); // Optional.of(Unit.INSTANCE)
+    Optional&lt;Unit&gt; miss = nonEmpty.getOptional(""); // Optional.empty()
+    String built = nonEmpty.build(Unit.INSTANCE); // "default"
 </code></pre>
 <p>The point is not the <code>Unit</code> itself but composition: a <code>nearly</code> prism drops into any chain where you would otherwise break out into an <code>if</code>. Routing a value only when it looks like an email address, for instance:</p>
 <!-- verify -->

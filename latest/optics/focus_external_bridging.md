@@ -116,21 +116,20 @@ public record Employee(String id, String name, ContactInfo contact, BigDecimal s
 
 ```
 
-Using them looks like nothing in particular, which is the point. These values come from running [FocusBridgingExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/bridge/FocusBridgingExample.java) against a sample `Acme Corp` whose headquarters is in New York and whose two departments sit in Boston and Chicago:
+Using them looks like nothing in particular, which is the point. The values shown are for a sample `Acme Corp`, the one [FocusBridgingExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/bridge/FocusBridgingExample.java) runs against. Its headquarters is in New York and its two departments sit in Boston and Chicago, and a test holds each value:
 
-<!-- verify -->
-```java
-String city = CompanyBridge.HEADQUARTERS_CITY.get(acme);
-// "New York": read straight through the Immutables Address
+``` java
+    String city = CompanyBridge.HEADQUARTERS_CITY.get(acme);
+    // "New York": read straight through the Immutables Address
 
-Company moved = CompanyBridge.HEADQUARTERS_CITY.set("Seattle", acme);
-// headquarters.city is "Seattle"; every other Address field, and acme itself, is untouched
+    Company moved = CompanyBridge.HEADQUARTERS_CITY.set("Seattle", acme);
+    // headquarters.city is "Seattle"; every other Address field, and acme itself, is untouched
 
-List<String> emails = CompanyBridge.allCompanyEmails().getAll(acme);
-// [alice@acme.com, bob@acme.com, carol@acme.com]: three records deep, across the boundary
+    List<String> emails = CompanyBridge.allCompanyEmails().getAll(acme);
+    // [alice@acme.com, bob@acme.com, carol@acme.com]: three records deep, across the boundary
 
-List<String> phones = CompanyBridge.allCompanyPhones().getAll(acme);
-// [617-555-0101, 617-555-0102, 312-555-0201]
+    List<String> phones = CompanyBridge.allCompanyPhones().getAll(acme);
+    // [617-555-0101, 617-555-0102, 312-555-0201]
 ```
 
 ~~~admonish tip title="Why this matters"
@@ -187,6 +186,7 @@ Each library differs only in which copy strategy its generated code exposes.
 
 **Lombok `@Builder(toBuilder = true)`:**
 
+<!-- verify -->
 ```java
 @ImportOptics
 interface LombokPersonOpticsSpec extends OpticsSpec<LombokPerson> {
@@ -198,6 +198,7 @@ interface LombokPersonOpticsSpec extends OpticsSpec<LombokPerson> {
 
 **AutoValue:**
 
+<!-- verify -->
 ```java
 @ImportOptics
 interface AutoPersonOpticsSpec extends OpticsSpec<AutoPerson> {
@@ -207,14 +208,15 @@ interface AutoPersonOpticsSpec extends OpticsSpec<AutoPerson> {
 }
 ```
 
-**Protocol Buffers:**
+**Protocol Buffers**, over the `CustomerMessage` that protoc generates for [Bean-Shaped Wires](../mapping/beans.md#protobuf-java-messages):
 
+<!-- verify -->
 ```java
 @ImportOptics
-interface PersonProtoOpticsSpec extends OpticsSpec<PersonProto> {
+interface CustomerMessageOpticsSpec extends OpticsSpec<CustomerMessage> {
 
   @ViaBuilder(getter = "getName", setter = "setName")
-  Lens<PersonProto, String> name();
+  Lens<CustomerMessage, String> name();
 }
 ```
 

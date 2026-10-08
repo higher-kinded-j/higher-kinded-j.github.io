@@ -2952,19 +2952,17 @@ A question counts when every part of your answer was right before you opened it,
 
 That ends the everyday pages. This group and the ones after it are On demand: read a page when a task needs it, and skip it until then.
 
-Every Focus path is built from optics, and this group gives each single-value optic a page of its own. Read one when a path does something you want to understand, or when you need an optic the Focus DSL does not generate for you. Here is the destination, before any theory: a reusable path from a `User` down to the name of the street they live on, composed by hand from generated lenses, and two one-line updates through it. Every line compiles against the real library on every build:
+Every Focus path is built from optics, and this group gives each single-value optic a page of its own. Read one when a path does something you want to understand, or when you need an optic the Focus DSL does not generate for you. Here is the destination, before any theory: a reusable path from an `Order` down to its customer's email address, composed by hand from generated lenses, and two one-line updates through it. The build compiles and runs it, and a test holds each value the comments show:
 
-<!-- verify -->
-```java
-var streetName = UserLenses.address()
-    .andThen(AddressLenses.street())
-    .andThen(StreetLenses.name());
+``` java
+    var email =
+        OrderLenses.customer().andThen(CustomerLenses.email()).andThen(EmailAddressLenses.value());
 
-User moved = streetName.set("Baker Street", user);
-User shouted = streetName.modify(String::toUpperCase, user);
-// moved.address().street().name()   -> "Baker Street"
-// shouted.address().street().name() -> "FLEET STREET"
-// the whole graph is rebuilt for you; user itself is untouched
+    Order changed = email.set("ada@example.org", order);
+    Order shouted = email.modify(String::toUpperCase, order);
+    // email.get(changed) -> "ada@example.org"
+    // email.get(shouted) -> "ADA@EXAMPLE.COM"
+    // each record on the path is rebuilt for you and the lines are reused; order is untouched
 ```
 
 A **Lens** focuses a field that is always there. A **Prism** focuses one variant of a sealed type, which might not match. An **Affine** focuses a value that may be absent, such as an `Optional` field. An **Iso** converts between two shapes of the same information. [Decision Trees](decision_trees.md#tree-1-which-optic-do-i-need) picks one for your data, and [Composition Rules](composition_rules.md) says what type two of them compose to.
@@ -3111,15 +3109,21 @@ A generated lens's `set`, and the `with*` helper built on it, copies the record 
 
 Another constructor the record declares is never the one called, even one taking as many parameters:
 
-```java
-public record Money(long cents, String currency) {
-  public Money(Number major, String currency) {
+``` java
+@GenerateLenses
+record Money(long cents, String currency) {
+  Money(Number major, String currency) {
     this(Math.round(major.doubleValue() * 100), currency);
   }
 }
 
-// 1234 cents, through Money(long, String); never the Number constructor
-Money updated = MoneyLenses.cents().set(1234L, money);
+```
+
+A write through its generated lens:
+
+``` java
+    // 1234 cents, through Money(long, String); never the Number constructor
+    Money updated = MoneyLenses.cents().set(1234L, money);
 ```
 
 The setters and Focus paths that `@GenerateSetters` and `@GenerateFocus` generate write the same way, as do the lenses `@ImportOptics` generates for a record.
@@ -3217,9 +3221,9 @@ Understanding when to use each approach will help you write cleaner, more mainta
 
 ### Use `with*` Helpers When
 
-* **Simple, top-level field updates** - Direct field replacement on the immediate object
-* **One-off updates** - You don't need to reuse the update logic
-* **API clarity** - You want the most discoverable, IDE-friendly approach
+* **Simple, top-level field updates**: Direct field replacement on the immediate object
+* **One-off updates**: You don't need to reuse the update logic
+* **API clarity**: You want the most discoverable, IDE-friendly approach
 
 
 <!-- verify -->
@@ -3230,10 +3234,10 @@ var promotedEmployee = EmployeeLenses.withName(employee, "Senior " + employee.na
 
 ### Use Composed Lenses When
 
-* **Deep updates** - Navigating multiple levels of nesting
-* **Reusable paths** - The same update pattern will be used multiple times
-* **Complex transformations** - Using `modify()` with functions
-* **Conditional updates** - Part of larger optic compositions
+* **Deep updates**: Navigating multiple levels of nesting
+* **Reusable paths**: The same update pattern will be used multiple times
+* **Complex transformations**: Using `modify()` with functions
+* **Conditional updates**: Part of larger optic compositions
 
 
 <!-- verify -->
@@ -3465,10 +3469,11 @@ This means you can use the same `employeeToStreet` lens to perform a street name
 This is the point where these lenses part company with hand-rolled `withX` helpers and reflective mappers: the *path* and the *effect* are independent. You define `employeeToStreet` once; whether an update through it is pure, validated with every error accumulated, or awaited from an async call is decided at the call site by the `Applicative` you hand to `modifyF`. No second path to maintain, and no way for the effectful variant to drift from the pure one.
 ~~~
 
+<!-- verify -->
 ```java
 // Example: Street validation that might fail
-Function<String, Kind<ValidatedKind.Witness<String>, String>> validateStreet = 
-    street -> street.length() > 0 && street.length() < 100 
+Function<String, Kind<ValidatedKind.Witness<String>, String>> validateStreet =
+    street -> street.length() > 0 && street.length() < 100
         ? VALIDATED.widen(Validated.valid(street))
         : VALIDATED.widen(Validated.invalid("Street name must be between 1 and 100 characters"));
 
@@ -3594,35 +3599,33 @@ Lens<Range, Integer> hiLens =
 
 Now let us try to shift the range up by 10:
 
-<!-- verify -->
-```java
-Range range = new Range(1, 2);
+``` java
+    Range range = new Range(1, 2);
 
-// Goal: Range(1, 2) → Range(11, 12)
+    // Goal: Range(1, 2) → Range(11, 12)
 
-// Attempt 1: Update lo first
-Range step1 = loLens.set(11, range);  // Range(11, 2)
-// THROWS: "lo (11) must be <= hi (2)"
+    // Attempt 1: update lo first, which asks for Range(11, 2)
+    Range step1 = loLens.set(11, range);
+    // THROWS: "lo (11) must be <= hi (2)"
 ```
 
 The update failed because the intermediate state `Range(11, 2)` violates the invariant.
 
 What if we update `hi` first?
 
-<!-- verify -->
-```java
-Range step1 = hiLens.set(12, range);  // Range(1, 12) - OK!
-Range step2 = loLens.set(11, step1);  // Range(11, 12) - OK!
+``` java
+    Range step1 = hiLens.set(12, range); // Range(1, 12) - OK!
+    Range step2 = loLens.set(11, step1); // Range(11, 12) - OK!
 ```
 
 That works! But now try shifting *down* by 10 from `Range(10, 11)`:
 
-<!-- verify -->
-```java
-Range narrow = new Range(10, 11);
+``` java
+    Range narrow = new Range(10, 11);
 
-// If we update hi first: Range(10, 1) - THROWS!
-// If we update lo first: Range(0, 11) → Range(0, 1) - OK
+    // If we update hi first: Range(10, 1) - THROWS!
+    // If we update lo first: Range(0, 11) → Range(0, 1) - OK
+    Range shiftedDown = hiLens.set(1, loLens.set(0, narrow));
 ```
 
 The "correct" order depends on the direction of change!
@@ -3677,16 +3680,12 @@ Lens<Range, Pair<Integer, Integer>> boundsLens =
 
 Now we can shift safely:
 
-<!-- verify -->
-```java
-Range range = new Range(1, 2);
+``` java
+    Range range = new Range(1, 2);
 
-// Shift up by 10 - both values updated atomically
-Range shifted = boundsLens.modify(
-    p -> Pair.of(p.first() + 10, p.second() + 10),
-    range
-);
-// Result: Range(11, 12)
+    // Shift up by 10 - both values updated atomically
+    Range shifted = boundsLens.modify(p -> Pair.of(p.first() + 10, p.second() + 10), range);
+    // Result: Range(11, 12)
 ```
 
 The transformation happens in a single step:
@@ -3908,8 +3907,10 @@ If you need single-field access, use the original individual lens directly.
 
 <!-- verify -->
 ```java
+import org.higherkindedj.optics.annotations.GenerateLenses;
 import org.higherkindedj.optics.util.CoupledLenses;
 
+@GenerateLenses
 record Triple(int lo, int mid, int hi) {
     Triple {
         if (!(lo <= mid && mid <= hi)) {
@@ -3929,7 +3930,7 @@ Lens<Triple, Tuple3<Integer, Integer, Integer>> bounds =
 Triple shifted = bounds.modify(
     t -> new Tuple3<>(t._1() + 10, t._2() + 10, t._3() + 10),
     new Triple(1, 5, 10));
-// Triple(11, 15, 20) - constructor only ever sees the new, valid value.
+// The constructor only ever sees the new triple, never a half-shifted one.
 ```
 
 The ladder runs `coupled3` through `coupled9` and each method has two overloads, mirroring `Lens.paired` exactly:
@@ -3939,16 +3940,19 @@ The ladder runs `coupled3` through `coupled9` and each method has two overloads,
 | Preserving | `(S, A, B, C, ...) -> S` | the source has other fields the rebuild needs to keep |
 | Simple | `(A, B, C, ...) -> S` (constructor reference) | the focused fields fully determine the source |
 
+Both records here carry `@GenerateLenses`: the `Triple` already shown, and a `Trade(String currency, BigDecimal amount, int precision)` whose `withMoney` method sets all three.
+
+<!-- verify -->
 ```java
 // Preserving form: receives the original source so other fields can be carried over.
 Lens<Trade, Tuple3<String, BigDecimal, Integer>> money =
     CoupledLenses.coupled3(
-        currencyLens, amountLens, precisionLens,
+        TradeLenses.currency(), TradeLenses.amount(), TradeLenses.precision(),
         (trade, ccy, amt, prec) -> trade.withMoney(ccy, amt, prec));
 
 // Simple form: constructor reference when nothing else needs preserving.
 Lens<Triple, Tuple3<Integer, Integer, Integer>> bounds =
-    CoupledLenses.coupled3(loLens, midLens, hiLens, Triple::new);
+    CoupledLenses.coupled3(TripleLenses.lo(), TripleLenses.mid(), TripleLenses.hi(), Triple::new);
 ```
 
 ~~~admonish note title="Why CoupledLenses, not Lens.coupled3?"
@@ -4169,10 +4173,10 @@ This composed `Traversal` now represents a safe, deep path that will only succee
 
 ### Use Prisms When
 
-* **Type-safe variant handling** - Working with `sealed interface` or `enum` cases
-* **Optional data extraction** - You need to safely "try" to get a specific type
-* **Composable type checking** - Building reusable type-safe paths
-* **Functional pattern matching** - Avoiding `instanceof` chains
+* **Type-safe variant handling**: Working with `sealed interface` or `enum` cases
+* **Optional data extraction**: You need to safely "try" to get a specific type
+* **Composable type checking**: Building reusable type-safe paths
+* **Functional pattern matching**: Avoiding `instanceof` chains
 
 <!-- verify -->
 ```java
@@ -4184,9 +4188,9 @@ Optional<String> errorMessage = DomainErrorPrisms.validationError()
 
 ### Use Traditional instanceof When
 
-* **One-off type checks** - Not building reusable logic
-* **Imperative control flow** - You need if/else branching
-* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+* **One-off type checks**: Not building reusable logic
+* **Imperative control flow**: You need if/else branching
+* **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -4201,9 +4205,9 @@ String shout(JsonValue jsonValue) {
 
 ### Use Pattern Matching When
 
-* **Exhaustive case handling** - You need to handle all variants
-* **Complex extraction logic** - Multiple levels of pattern matching
-* **Modern codebases** - Using recent Java features
+* **Exhaustive case handling**: You need to handle all variants
+* **Complex extraction logic**: Multiple levels of pattern matching
+* **Modern codebases**: Using recent Java features
 
 <!-- verify -->
 ```java
@@ -5110,20 +5114,23 @@ Configuration systems often deal with multiple sources (environment variables, f
 
 ### The Challenge
 
+<!-- verify -->
 ```java
 // Traditional approach: brittle and verbose
-Object rawValue = config.get("database.connection.pool.size");
-if (rawValue instanceof Integer i) {
-    return i > 0 ? i : DEFAULT_POOL_SIZE;
-} else if (rawValue instanceof String s) {
-    try {
-        int parsed = Integer.parseInt(s);
-        return parsed > 0 ? parsed : DEFAULT_POOL_SIZE;
-    } catch (NumberFormatException e) {
-        return DEFAULT_POOL_SIZE;
+int poolSize(Map<String, Object> config) {
+    Object rawValue = config.get("database.connection.pool.size");
+    if (rawValue instanceof Integer i) {
+        return i > 0 ? i : DEFAULT_POOL_SIZE;
+    } else if (rawValue instanceof String s) {
+        try {
+            int parsed = Integer.parseInt(s);
+            return parsed > 0 ? parsed : DEFAULT_POOL_SIZE;
+        } catch (NumberFormatException e) {
+            return DEFAULT_POOL_SIZE;
+        }
     }
+    return DEFAULT_POOL_SIZE;
 }
-return DEFAULT_POOL_SIZE;
 ```
 
 ### The Prism Solution
@@ -5204,19 +5211,23 @@ Modern APIs return varying response types based on status codes. Prisms provide 
 
 ### The Challenge
 
+<!-- verify -->
 ```java
 // Traditional approach: error-prone branching
-if (response.status() == 200) {
-    return processSuccess((SuccessResponse) response);
-} else if (response.status() == 400) {
-    ValidationError err = (ValidationError) response;
-    return handleValidation(err);
-} else if (response.status() == 500) {
-    return handleServerError((ServerError) response);
-} else if (response.status() == 429) {
-    return retryWithBackoff((RateLimitError) response);
+Result handle(HttpResponse response) {
+    if (response.status() == 200) {
+        return processSuccess((SuccessResponse) response);
+    } else if (response.status() == 400) {
+        ValidationError err = (ValidationError) response;
+        return handleValidation(err);
+    } else if (response.status() == 500) {
+        return handleServerError((ServerError) response);
+    } else if (response.status() == 429) {
+        return retryWithBackoff((RateLimitError) response);
+    }
+    // What about 401, 403, 404, ...?
+    throw new IllegalStateException("Unhandled status: " + response.status());
 }
-// What about 401, 403, 404, ...?
 ```
 
 ### The Prism Solution
@@ -5278,8 +5289,12 @@ public class ApiHandler {
 
 ### Advanced: Response Pipeline with Fallbacks
 
+<!-- verify -->
 ```java
 public class ResilientApiClient {
+    private static final Prism<ApiResponse, Success> SUCCESS = ApiResponsePrisms.success();
+    private static final Prism<ApiResponse, RateLimitError> RATE_LIMIT = ApiResponsePrisms.rateLimitError();
+
     public CompletableFuture<JsonValue> fetchWithFallbacks(String endpoint) {
         return primaryApi.call(endpoint)
             .thenCompose(response ->
@@ -5321,15 +5336,15 @@ ETL pipelines process heterogeneous data where validation rules depend on data t
 <!-- verify -->
 ```java
 // Traditional approach: imperative branching
-List<ValidationError> errors = new ArrayList<>();
+List<String> errors = new ArrayList<>();
 for (Object value : row.values()) {
     if (value instanceof String s) {
         if (s.length() > MAX_STRING_LENGTH) {
-            errors.add(new ValidationError("String too long: " + s));
+            errors.add("String too long: " + s);
         }
     } else if (value instanceof Integer i) {
         if (i < 0) {
-            errors.add(new ValidationError("Negative integer: " + i));
+            errors.add("Negative integer: " + i);
         }
     }
     // ... more type checks
@@ -5402,8 +5417,12 @@ public class ValidationPipeline {
 
 Using `Either` and prisms for validation that accumulates errors:
 
+<!-- verify -->
 ```java
 public class AccumulatingValidator {
+    private static final Prism<DataValue, StringData> STRING = DataValuePrisms.stringData();
+    private static final Prism<DataValue, IntData> INT = DataValuePrisms.intData();
+
     public static Either<List<String>, List<DataValue>> validateAll(List<DataValue> row) {
         List<String> errors = new ArrayList<>();
         List<DataValue> sanitised = new ArrayList<>();
@@ -5477,6 +5496,7 @@ public void handleEvent(DomainEvent event) {
 
 ### The Prism Solution
 
+<!-- verify -->
 ```java
 @GeneratePrisms
 sealed interface DomainEvent permits UserCreated, UserDeleted, UserUpdated,
@@ -5487,7 +5507,7 @@ record UserDeleted(String userId, Instant timestamp) implements DomainEvent {}
 record UserUpdated(String userId, Map<String, String> changes, Instant timestamp) implements DomainEvent {}
 record OrderPlaced(String orderId, List<LineItem> items, Instant timestamp) implements DomainEvent {}
 record OrderCancelled(String orderId, String reason, Instant timestamp) implements DomainEvent {}
-record PaymentProcessed(String orderId, double amount, Instant timestamp) implements DomainEvent {}
+record PaymentProcessed(String orderId, BigDecimal amount, Instant timestamp) implements DomainEvent {}
 
 public class EventRouter {
     private static final Prism<DomainEvent, UserCreated> USER_CREATED =
@@ -5539,8 +5559,13 @@ public class EventRouter {
 
 ### Advanced: Event Filtering and Transformation
 
+<!-- verify -->
 ```java
 public class EventProcessor {
+    private static final Prism<DomainEvent, UserCreated> USER_CREATED = DomainEventPrisms.userCreated();
+    private static final Prism<DomainEvent, UserDeleted> USER_DELETED = DomainEventPrisms.userDeleted();
+    private static final Prism<DomainEvent, OrderPlaced> ORDER_PLACED = DomainEventPrisms.orderPlaced();
+
     // Process only recent user events
     public List<DomainEvent> getRecentUserEvents(
         List<DomainEvent> events,
@@ -5552,15 +5577,13 @@ public class EventProcessor {
         return events.stream()
             .filter(e ->
                 // Match user events with timestamp filter
-                userCreated.mapOptional(
-                    uc -> uc.timestamp().isAfter(since) ? uc : null,
-                    e
-                ).isPresent()
+                userCreated.getOptional(e)
+                    .filter(uc -> uc.timestamp().isAfter(since))
+                    .isPresent()
                 ||
-                userDeleted.mapOptional(
-                    ud -> ud.timestamp().isAfter(since) ? ud : null,
-                    e
-                ).isPresent()
+                userDeleted.getOptional(e)
+                    .filter(ud -> ud.timestamp().isAfter(since))
+                    .isPresent()
             )
             .collect(Collectors.toList());
     }
@@ -5694,10 +5717,16 @@ public class OrderStateMachine {
 
 ### Advanced: Transition Table
 
+<!-- verify -->
 ```java
 import org.higherkindedj.optics.indexed.Pair; // Pair record from hkj-api
 
 public class AdvancedStateMachine {
+    private static final Prism<OrderState, Pending> PENDING = OrderStatePrisms.pending();
+    private static final Prism<OrderState, Processing> PROCESSING = OrderStatePrisms.processing();
+    private static final Prism<OrderEvent, PaymentReceived> PAYMENT = OrderEventPrisms.paymentReceived();
+    private static final Prism<OrderEvent, ShippingCompleted> SHIPPING = OrderEventPrisms.shippingCompleted();
+
     // Define transitions as a declarative table
     private static final Map<
         Pair<Prism<OrderState, ?>, Prism<OrderEvent, ?>>,
@@ -5862,14 +5891,12 @@ public class PluginExecutor {
 }
 ```
 
-### Advanced: Plugin Composition
+### Advanced: Plugin Batches {#advanced-plugin-batches}
 
+<!-- verify -->
 ```java
-public class CompositePlugin {
-    // Combine multiple plugins into a pipeline
-    public static Plugin pipeline(List<Plugin> plugins) {
-        return new CompositePluginImpl(plugins);
-    }
+public class PluginBatches {
+    private static final Prism<Plugin, DatabasePlugin> DB = PluginPrisms.databasePlugin();
 
     // Filter plugins by type for batch operations
     public static List<DatabasePlugin> getAllDatabasePlugins(List<Plugin> plugins) {
@@ -5918,14 +5945,13 @@ Every prism so far has matched on *type*: is this `JsonString`, is this `Shippin
 
 `Prisms.only(expected)` matches one exact value. `Prisms.nearly(defaultValue, predicate)` is its predicate-based complement: it matches any value satisfying the predicate, and because a matched value carries no extra information, the focus is `Unit`. The default value is what `build` produces when you run the prism backwards.
 
-<!-- verify -->
-```java
-// Match any non-empty string
-Prism<String, Unit> nonEmpty = Prisms.nearly("default", s -> !s.isEmpty());
+``` java
+    // Match any non-empty string
+    Prism<String, Unit> nonEmpty = Prisms.nearly("default", s -> !s.isEmpty());
 
-Optional<Unit> hit = nonEmpty.getOptional("hello");  // Optional.of(Unit.INSTANCE)
-Optional<Unit> miss = nonEmpty.getOptional("");      // Optional.empty()
-String built = nonEmpty.build(Unit.INSTANCE);        // "default"
+    Optional<Unit> hit = nonEmpty.getOptional("hello"); // Optional.of(Unit.INSTANCE)
+    Optional<Unit> miss = nonEmpty.getOptional(""); // Optional.empty()
+    String built = nonEmpty.build(Unit.INSTANCE); // "default"
 ```
 
 The point is not the `Unit` itself but composition: a `nearly` prism drops into any chain where you would otherwise break out into an `if`. Routing a value only when it looks like an email address, for instance:
@@ -6220,26 +6246,22 @@ An Affine is defined by two operations:
 * **`getOptional(source)`**: Returns `Optional<A>` containing the focus if present
 * **`set(value, source)`**: Returns a new source with the focus updated
 
-<!-- verify -->
-```java
-import org.higherkindedj.optics.Affine;
-import java.util.Optional;
+``` java
+    // Affine for accessing the value inside an Optional field
+    Affine<Optional<String>, String> someAffine =
+        Affine.of(
+            Function.identity(), // getOptional: Optional<String> -> Optional<String>
+            (opt, value) -> Optional.of(value)); // set: always wrap in Optional.of
 
-// Affine for accessing the value inside an Optional field
-Affine<Optional<String>, String> someAffine = Affine.of(
-    Function.identity(),                    // getOptional: Optional<String> -> Optional<String>
-    (opt, value) -> Optional.of(value)      // set: always wrap in Optional.of
-);
+    // Usage
+    Optional<String> present = Optional.of("hello");
+    Optional<String> result = someAffine.getOptional(present); // Optional.of("hello")
 
-// Usage
-Optional<String> present = Optional.of("hello");
-Optional<String> result = someAffine.getOptional(present);  // Optional.of("hello")
+    Optional<String> empty = Optional.empty();
+    Optional<String> noMatch = someAffine.getOptional(empty); // Optional.empty()
 
-Optional<String> empty = Optional.empty();
-Optional<String> noMatch = someAffine.getOptional(empty);   // Optional.empty()
-
-// Setting always wraps the value
-Optional<String> updated = someAffine.set("world", empty);  // Optional.of("world")
+    // Setting always wraps the value
+    Optional<String> updated = someAffine.set("world", empty); // Optional.of("world")
 ```
 
 ### Step 2: Using the Affines Utility Class
@@ -6269,39 +6291,33 @@ Affine<List<String>, String> thirdAffine = Affines.listAt(2);
 
 The most common way to obtain an Affine is through composition:
 
-<!-- verify -->
-```java
-import org.higherkindedj.optics.Lens;
-import org.higherkindedj.optics.Prism;
-import org.higherkindedj.optics.util.Prisms;
+``` java
+    // Domain model
+    record DatabaseSettings(String host, int port) {}
+    record Config(Optional<DatabaseSettings> database) {}
 
-// Domain model
-record Config(Optional<DatabaseSettings> database) {}
-record DatabaseSettings(String host, int port) {}
+    // The lens always reaches the Optional<DatabaseSettings> field
+    Lens<Config, Optional<DatabaseSettings>> databaseLens =
+        Lens.of(Config::database, (c, db) -> new Config(db));
 
-// Lens to the Optional field
-Lens<Config, Optional<DatabaseSettings>> databaseLens =
-    Lens.of(Config::database, (c, db) -> new Config(db));
+    // The prism may or may not find DatabaseSettings inside the Optional
+    Prism<Optional<DatabaseSettings>, DatabaseSettings> somePrism = Prisms.some();
 
-// Prism to extract from Optional
-Prism<Optional<DatabaseSettings>, DatabaseSettings> somePrism = Prisms.some();
+    // Composition: Lens.andThen(Prism) = Affine
+    Affine<Config, DatabaseSettings> databaseAffine = databaseLens.andThen(somePrism);
 
-// Composition: Lens.andThen(Prism) = Affine
-Affine<Config, DatabaseSettings> databaseAffine =
-    databaseLens.andThen(somePrism);
+    // Usage
+    Config config1 = new Config(Optional.of(new DatabaseSettings("localhost", 5432)));
+    Optional<DatabaseSettings> result1 = databaseAffine.getOptional(config1);
+    // result1 = Optional[DatabaseSettings[host=localhost, port=5432]]
 
-// Usage
-Config config1 = new Config(Optional.of(new DatabaseSettings("localhost", 5432)));
-Optional<DatabaseSettings> result1 = databaseAffine.getOptional(config1);
-// result1 = Optional[DatabaseSettings[host=localhost, port=5432]]
+    Config config2 = new Config(Optional.empty());
+    Optional<DatabaseSettings> result2 = databaseAffine.getOptional(config2);
+    // result2 = Optional.empty, since the prism found nothing
 
-Config config2 = new Config(Optional.empty());
-Optional<DatabaseSettings> result2 = databaseAffine.getOptional(config2);
-// result2 = Optional.empty()
-
-// Setting through the affine
-Config updated = databaseAffine.set(new DatabaseSettings("newhost", 3306), config2);
-// updated = Config[database=Optional[DatabaseSettings[host=newhost, port=3306]]]
+    // Setting through the affine: some() can build the Optional, so the empty one is filled
+    Config updated = databaseAffine.set(new DatabaseSettings("newhost", 3306), config2);
+    // updated = Config[database=Optional[DatabaseSettings[host=newhost, port=3306]]]
 ```
 
 The affine's path ends inside an `Optional` that may hold nothing:
@@ -6342,13 +6358,14 @@ Both Affine and Prism focus on zero-or-one elements, but they differ in what the
 
 A **Prism** can *construct* a complete structure from just the focused part (via `build`). An **Affine** cannot; it writes into a structure you already have.
 
+<!-- verify -->
 ```java
 // Prism: can build from scratch
-Prism<Shape, Circle> circlePrism = ...;
-Shape newCircle = circlePrism.build(new Circle(5.0, "red"));  // Works!
+Prism<Shape, Circle> circlePrism = ShapePrisms.circle();
+Shape newCircle = circlePrism.build(new Circle(5.0, "red"));
 
 // Affine: cannot build, only update
-Affine<Config, DatabaseSettings> dbAffine = ...;
+Affine<Config, DatabaseSettings> dbAffine = databaseLens.andThen(somePrism);
 // No build() method available; must have an existing Config to work with
 Config updated = dbAffine.set(newSettings, existingConfig);
 ```
@@ -6378,33 +6395,26 @@ The `Affine` interface provides several convenience methods for common operation
 
 ### Checking for Presence
 
-<!-- verify -->
-```java
-Affine<Optional<String>, String> someAffine = Affines.some();
+``` java
+    Affine<Optional<String>, String> someAffine = Affines.some();
 
-Optional<String> present = Optional.of("hello");
-Optional<String> empty = Optional.empty();
+    Optional<String> present = Optional.of("hello");
+    Optional<String> empty = Optional.empty();
 
-// Using matches()
-if (someAffine.matches(present)) {
-    System.out.println("Value present");
-}
+    // Using matches()
+    if (someAffine.matches(present)) {
+      System.out.println("Value present");
+    }
 
-// Using doesNotMatch()
-if (someAffine.doesNotMatch(empty)) {
-    System.out.println("No value");
-}
+    // Using doesNotMatch()
+    if (someAffine.doesNotMatch(empty)) {
+      System.out.println("No value");
+    }
 
-// Useful in streams
-List<Optional<String>> values = List.of(
-    Optional.of("a"),
-    Optional.empty(),
-    Optional.of("b")
-);
+    // Useful in streams
+    List<Optional<String>> values = List.of(Optional.of("a"), Optional.empty(), Optional.of("b"));
 
-long presentCount = values.stream()
-    .filter(someAffine::matches)
-    .count();  // 2
+    long presentCount = values.stream().filter(someAffine::matches).count(); // 2
 ```
 
 ### Default Values
@@ -6421,41 +6431,32 @@ Config config = configAffine.getOrElse(Config.DEFAULT, maybeConfig);
 
 ### Conditional Modification
 
-<!-- verify -->
-```java
-Affine<Optional<String>, String> someAffine = Affines.some();
+``` java
+    Affine<Optional<String>, String> someAffine = Affines.some();
 
-Optional<String> value = Optional.of("hello world");
+    Optional<String> value = Optional.of("hello world");
 
-// Only modify if predicate is satisfied
-Optional<String> result = someAffine.modifyWhen(
-    s -> s.length() > 5,
-    String::toUpperCase,
-    value
-);
-// result = Optional.of("HELLO WORLD")
+    // Only modify if predicate is satisfied
+    Optional<String> result =
+        someAffine.modifyWhen(s -> s.length() > 5, String::toUpperCase, value);
+    // result = Optional.of("HELLO WORLD")
 
-// Set only when condition is met
-Optional<String> guarded = someAffine.setWhen(
-    s -> s.startsWith("hello"),
-    "goodbye",
-    value
-);
-// guarded = Optional.of("goodbye")
+    // Set only when condition is met
+    Optional<String> guarded = someAffine.setWhen(s -> s.startsWith("hello"), "goodbye", value);
+    // guarded = Optional.of("goodbye")
 ```
 
 ### Removal Support
 
 Some affines support the `remove` operation to clear the focused element:
 
-<!-- verify -->
-```java
-// Create an affine that supports removal
-Affine<Optional<String>, String> removableAffine = Affines.someWithRemove();
+``` java
+    // Create an affine that supports removal
+    Affine<Optional<String>, String> removableAffine = Affines.someWithRemove();
 
-Optional<String> present = Optional.of("hello");
-Optional<String> cleared = removableAffine.remove(present);
-// cleared = Optional.empty()
+    Optional<String> present = Optional.of("hello");
+    Optional<String> cleared = removableAffine.remove(present);
+    // cleared = Optional.empty()
 ```
 
 ~~~admonish warning title="Remove Support"
@@ -6468,62 +6469,61 @@ Not all affines support the `remove` operation. Calling `remove` on an affine th
 
 Affines compose with other optics following precise rules:
 
+<!-- verify -->
 ```java
 // Affine.andThen(Affine) = Affine
-Affine<A, C> result = affineAB.andThen(affineBC);
+Affine<A, C> withAffine = affineAB.andThen(affineBC);
 
 // Affine.andThen(Lens) = Affine
-Affine<A, C> result = affineAB.andThen(lensBC);
+Affine<A, C> withLens = affineAB.andThen(lensBC);
 
 // Affine.andThen(Prism) = Affine
-Affine<A, C> result = affineAB.andThen(prismBC);
+Affine<A, C> withPrism = affineAB.andThen(prismBC);
 
 // Affine.andThen(Iso) = Affine
-Affine<A, C> result = affineAB.andThen(isoBC);
+Affine<A, C> withIso = affineAB.andThen(isoBC);
 
 // Affine.andThen(Traversal) = Traversal
-Traversal<A, C> result = affineAB.andThen(traversalBC);
+Traversal<A, C> withTraversal = affineAB.andThen(traversalBC);
 ```
 
 ### Deep Optional Access Example
 
-<!-- verify -->
-```java
-record User(String name, Optional<Address> address) {}
-record Address(String street, Optional<String> postcode) {}
+``` java
+    record Address(String street, Optional<String> postcode) {}
+    record User(String name, Optional<Address> address) {}
 
-// Build affines for each optional field
-Lens<User, Optional<Address>> addressLens =
-    Lens.of(User::address, (u, a) -> new User(u.name(), a));
+    // Build affines for each optional field
+    Lens<User, Optional<Address>> addressLens =
+        Lens.of(User::address, (u, a) -> new User(u.name(), a));
 
-Lens<Address, Optional<String>> postcodeLens =
-    Lens.of(Address::postcode, (a, p) -> new Address(a.street(), p));
+    Lens<Address, Optional<String>> postcodeLens =
+        Lens.of(Address::postcode, (a, p) -> new Address(a.street(), p));
 
-Prism<Optional<Address>, Address> addressPrism = Prisms.some();
-Prism<Optional<String>, String> postcodePrism = Prisms.some();
+    Prism<Optional<Address>, Address> addressPrism = Prisms.some();
+    Prism<Optional<String>, String> postcodePrism = Prisms.some();
 
-// Compose to access nested optional
-Affine<User, String> userPostcode =
-    addressLens
-        .andThen(addressPrism)           // Lens.andThen(Prism) = Affine
-        .andThen(postcodeLens)           // Affine.andThen(Lens) = Affine
-        .andThen(postcodePrism);         // Affine.andThen(Prism) = Affine
+    // Compose to access nested optional
+    Affine<User, String> userPostcode =
+        addressLens
+            .andThen(addressPrism) // Lens.andThen(Prism) = Affine
+            .andThen(postcodeLens) // Affine.andThen(Lens) = Affine
+            .andThen(postcodePrism); // Affine.andThen(Prism) = Affine
 
-// Usage
-User user1 = new User("Alice", Optional.of(
-    new Address("123 Main St", Optional.of("SW1A 1AA"))
-));
-User user2 = new User("Bob", Optional.empty());
+    // Usage
+    User user1 =
+        new User("Alice", Optional.of(new Address("123 Main St", Optional.of("SW1A 1AA"))));
+    User user2 = new User("Bob", Optional.empty());
 
-Optional<String> postcode1 = userPostcode.getOptional(user1);
-// Optional.of("SW1A 1AA")
+    Optional<String> postcode1 = userPostcode.getOptional(user1);
+    // Optional.of("SW1A 1AA")
 
-Optional<String> postcode2 = userPostcode.getOptional(user2);
-// Optional.empty()
+    Optional<String> postcode2 = userPostcode.getOptional(user2);
+    // Optional.empty()
 
-// Update deeply nested optional
-User updated = userPostcode.set("EC1A 1BB", user1);
-// User[name=Alice, address=Optional[Address[street=123 Main St, postcode=Optional[EC1A 1BB]]]]
+    // Update deeply nested optional
+    User updated = userPostcode.set("EC1A 1BB", user1);
+    // User[name=Alice, address=Optional[Address[street=123 Main St, postcode=Optional[EC1A 1BB]]]]
 ```
 
 ---
@@ -6534,6 +6534,7 @@ The `Affine` interface provides factory methods for common construction patterns
 
 ### From Getter and Setter
 
+<!-- verify -->
 ```java
 // Basic construction
 Affine<S, A> affine = Affine.of(
@@ -6551,17 +6552,18 @@ Affine<S, A> removable = Affine.of(
 
 ### From Lens and Prism
 
+<!-- verify -->
 ```java
 // Compose a Lens and Prism into an Affine
-Affine<S, B> affine = Affine.fromLensAndPrism(
-    lensAB,   // Lens<S, A>
-    prismBC   // Prism<A, B>
+Affine<A, C> fromLens = Affine.fromLensAndPrism(
+    lensAB,   // Lens<A, B>
+    prismBC   // Prism<B, C>
 );
 
 // Compose a Prism and Lens into an Affine
-Affine<S, B> affine = Affine.fromPrismAndLens(
-    prismAB,  // Prism<S, A>
-    lensBC    // Lens<A, B>
+Affine<A, C> fromPrism = Affine.fromPrismAndLens(
+    prismAB,  // Prism<A, B>
+    lensBC    // Lens<B, C>
 );
 ```
 
@@ -6606,11 +6608,14 @@ Lens<Point, Integer> xLens = Lens.of(Point::x, (p, x) -> new Point(x, p.y()));
 * You need to **construct** the whole from a part
 * Type-safe **variant matching**
 
+<!-- verify -->
 ```java
 // Sum type handling
+@GeneratePrisms
 sealed interface Shape permits Circle, Rectangle {}
-Prism<Shape, Circle> circlePrism = ...;
-Shape circle = circlePrism.build(new Circle(5.0));  // Can construct!
+
+Prism<Shape, Circle> circlePrism = ShapePrisms.circle();
+Shape circle = circlePrism.build(new Circle(5.0, "red"));  // Can construct!
 ```
 
 ### Use Traversal When
@@ -6631,6 +6636,7 @@ List<String> upper = Traversals.modify(listTraversal, String::toUpperCase, names
 
 ### Don't Do This
 
+<!-- verify -->
 ```java
 // Overly complex: manual Optional handling
 Optional<String> getNestedValue(Config config) {
@@ -6641,11 +6647,16 @@ Optional<String> getNestedValue(Config config) {
 }
 
 // Unsafe: assuming presence without checking
-String value = config.database().get().host();  // NoSuchElementException!
+String hostOf(Config config) {
+    return config.database().get().host();  // NoSuchElementException!
+}
 
-// Verbose: repeated null checks
-if (user.address() != null && user.address().postcode() != null) {
-    return user.address().postcode();
+// Verbose: repeated null checks, on a legacy model whose fields may be null
+String postcodeOf(LegacyUser user) {
+    if (user.address() != null && user.address().postcode() != null) {
+        return user.address().postcode();
+    }
+    return "";
 }
 ```
 
@@ -7038,10 +7049,10 @@ For the full range of optics operations within comprehensions (including travers
 
 ### Use Isos When
 
-* **Data format conversion** - Converting between equivalent representations
-* **Legacy system integration** - Bridging old and new data formats
-* **Library interoperability** - Adapting your types to work with external libraries
-* **Composable adapters** - Building reusable conversion components
+* **Data format conversion**: Converting between equivalent representations
+* **Legacy system integration**: Bridging old and new data formats
+* **Library interoperability**: Adapting your types to work with external libraries
+* **Composable adapters**: Building reusable conversion components
 
 <!-- verify -->
 ```java
@@ -7055,9 +7066,9 @@ Lens<Account, Long> rawAccountId = AccountLenses.id().andThen(userIdIso);
 
 ### Use Direct Conversion Methods When
 
-* **One-way conversion** - You do not need the reverse operation
-* **Non-lossless conversion** - Information is lost in the conversion
-* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+* **One-way conversion**: You do not need the reverse operation
+* **Non-lossless conversion**: Information is lost in the conversion
+* **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -7067,9 +7078,9 @@ String pointDescription = point.x() + "," + point.y();
 
 ### Use Manual Adapters When
 
-* **Complex conversion logic** - Multi-step or conditional conversions
-* **Validation required** - Conversion might fail
-* **Side effects needed** - Logging, caching, etc.
+* **Complex conversion logic**: Multi-step or conditional conversions
+* **Validation required**: Conversion might fail
+* **Side effects needed**: Logging, caching, etc.
 
 <!-- verify -->
 ```java
@@ -7822,18 +7833,16 @@ This adaptability is what lets you keep well-tested optics through data-format c
 
 Read this group when you want to know what the Focus DSL's `.each()` does underneath, or need a traversal the generated paths do not give you. Until then, you can skip it.
 
-Single values are straightforward enough. The challenge arrives when you need to handle *many* of them: a discount on every price in an order means a stream, a map, a collector, and the suspicion that there must be a better way. There is. Here is the destination, before any theory: one reusable path from a league to every player's score, and a bulk update through it. Every line compiles against the real library on every build:
+Single values are straightforward enough. The challenge arrives when you need to handle *many* of them: a discount on every price in an order means a stream, a map, a collector, and the suspicion that there must be a better way. There is. Here is the destination, before any theory: one reusable path from a league to every player's score, and a bulk update through it. The build compiles and runs it, and a test holds each value the comments show:
 
-<!-- verify -->
-```java
-var everyScore = LeagueTraversals.teams()
-    .andThen(TeamTraversals.players())
-    .andThen(PlayerLenses.score());
+``` java
+    var everyScore =
+        LeagueTraversals.teams().andThen(TeamTraversals.players()).andThen(PlayerLenses.score());
 
-League bonus = Traversals.modify(everyScore, score -> score + 5, league);
-// Traversals.getAll(everyScore, league) -> [100, 90, 110, 120]
-// Traversals.getAll(everyScore, bonus)  -> [105, 95, 115, 125]
-// every team and player is rebuilt for you; league itself is untouched
+    League bonus = Traversals.modify(everyScore, score -> score + 5, league);
+    // Traversals.getAll(everyScore, league) -> [100, 90, 110, 120]
+    // Traversals.getAll(everyScore, bonus)  -> [105, 95, 115, 125]
+    // every team and player is rebuilt for you; league itself is untouched
 ```
 
 ~~~admonish tip title="Why this matters"
@@ -8109,10 +8118,10 @@ In words: reach for a traversal when the structure keeps its shape and only its 
 
 ### Use Traversals When
 
-* **Bulk operations on nested collections** - Applying the same operation to many items
-* **Type-safe collection manipulation** - Working with collections inside immutable structures
-* **Reusable bulk logic** - Creating operations that can be applied across different instances
-* **Effectful operations** - Using `modifyF` for operations that might fail or have side effects
+* **Bulk operations on nested collections**: Applying the same operation to many items
+* **Type-safe collection manipulation**: Working with collections inside immutable structures
+* **Reusable bulk logic**: Creating operations that can be applied across different instances
+* **Effectful operations**: Using `modifyF` for operations that might fail or have side effects
 
 <!-- verify -->
 ```java
@@ -8126,9 +8135,9 @@ Company withNormalisedEmails = Traversals.modify(allEmails, String::toLowerCase,
 
 ### Use Streams When
 
-* **Complex transformations** - Multiple operations that don't map cleanly to traversals
-* **Filtering and collecting** - You need to change the collection structure
-* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+* **Complex transformations**: Multiple operations that don't map cleanly to traversals
+* **Filtering and collecting**: You need to change the collection structure
+* **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -8143,9 +8152,9 @@ List<String> activePlayerNames = league.teams().stream()
 
 ### Use Manual Loops When
 
-* **Early termination needed** - You might want to stop processing early
-* **Complex control flow** - Multiple conditions and branches
-* **Imperative mindset** - The operation is inherently procedural
+* **Early termination needed**: You might want to stop processing early
+* **Complex control flow**: Multiple conditions and branches
+* **Imperative mindset**: The operation is inherently procedural
 
 
 <!-- verify -->
@@ -9844,11 +9853,11 @@ Each fold in a `plus` combination makes its own pass over the source, which `Fol
 
 ### Use Fold When
 
-* **Read-only queries** - You only need to extract or check data
-* **Intent matters** - You want to express "this is a query, not a modification"
-* **Composable searches** - Building reusable query paths
-* **Aggregations** - Using monoids for custom combining logic
-* **CQRS patterns** - Separating queries from commands
+* **Read-only queries**: You only need to extract or check data
+* **Intent matters**: You want to express "this is a query, not a modification"
+* **Composable searches**: Building reusable query paths
+* **Aggregations**: Using monoids for custom combining logic
+* **CQRS patterns**: Separating queries from commands
 
 <!-- verify -->
 ```java
@@ -9865,9 +9874,9 @@ boolean hasElectronics = allProducts.exists(
 
 ### Use Traversal When
 
-* **Modifications needed** - You need to update the data
-* **Effectful updates** - Using `modifyF` for validation or async operations
-* **Bulk transformations** - Changing multiple values at once
+* **Modifications needed**: You need to update the data
+* **Effectful updates**: Using `modifyF` for validation or async operations
+* **Bulk transformations**: Changing multiple values at once
 
 <!-- verify -->
 ```java
@@ -9882,10 +9891,10 @@ Order discountedOrder = Traversals.modify(
 
 ### Use Stream API When
 
-* **Complex filtering** - Multiple filter/map/reduce operations
-* **Parallel processing** - Taking advantage of parallel streams
-* **Standard Java collections** - Working with flat collections
-* **Stateful operations** - Operations that require maintaining state
+* **Complex filtering**: Multiple filter/map/reduce operations
+* **Parallel processing**: Taking advantage of parallel streams
+* **Standard Java collections**: Working with flat collections
+* **Stateful operations**: Operations that require maintaining state
 
 <!-- verify -->
 ```java
@@ -9900,9 +9909,9 @@ List<String> topExpensiveItems = order.items().stream()
 
 ### Use Direct Field Access When
 
-* **Simple cases** - Single, straightforward field read
-* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
-* **One-off operations** - Not building reusable logic
+* **Simple cases**: Single, straightforward field read
+* **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+* **One-off operations**: Not building reusable logic
 
 <!-- verify -->
 ```java
@@ -12504,11 +12513,11 @@ BoundingBox scaled = Traversals.modify(topLeftCoords, coord -> coord * 2, box);
 
 ### Use Structure Traversals When
 
-* **Reusable transformations** - Define once, compose with other optics
-* **Nested optionals** - Avoiding `.map().map().map()` chains
-* **Bulk map updates** - Transforming all values whilst preserving keys
-* **Parallel tuple operations** - Same transformation to both elements
-* **Immutable updates** - Structure preserved, only focused elements transformed
+* **Reusable transformations**: Define once, compose with other optics
+* **Nested optionals**: Avoiding `.map().map().map()` chains
+* **Bulk map updates**: Transforming all values whilst preserving keys
+* **Parallel tuple operations**: Same transformation to both elements
+* **Immutable updates**: Structure preserved, only focused elements transformed
 
 <!-- verify -->
 ```java
@@ -12524,9 +12533,9 @@ ServiceConfig increased = Traversals.modify(allTimeouts, t -> t + 1000, serviceC
 
 ### Use Direct Access When
 
-* **Single Optional** - Simple `map()` or `orElse()` is clearer
-* **Specific Map key** - `map.get(key)` is more direct
-* **Type-specific logic** - Different transformations per tuple element
+* **Single Optional**: Simple `map()` or `orElse()` is clearer
+* **Specific Map key**: `map.get(key)` is more direct
+* **Type-specific logic**: Different transformations per tuple element
 
 <!-- verify -->
 ```java
@@ -12545,9 +12554,9 @@ Tuple2<Integer, String> result = new Tuple2<>(
 
 ### Use Stream API When
 
-* **Complex filtering** - Multiple conditions
-* **Aggregations** - Collecting to new structures
-* **No structural preservation** - Extracting or transforming to different shape
+* **Complex filtering**: Multiple conditions
+* **Aggregations**: Collecting to new structures
+* **No structural preservation**: Extracting or transforming to different shape
 
 <!-- verify -->
 ```java
@@ -13119,11 +13128,11 @@ List<Order> processed = Traversals.modify(
 
 ### Use Limiting Traversals When
 
-* **Positional focus** - You need to operate on elements by index position
-* **Structural preservation** - Non-focused elements must remain in the list
-* **Composable pipelines** - Building complex optic chains with lenses and prisms
-* **Immutable updates** - Transforming portions whilst keeping data immutable
-* **Reusable logic** - Define once, compose everywhere
+* **Positional focus**: You need to operate on elements by index position
+* **Structural preservation**: Non-focused elements must remain in the list
+* **Composable pipelines**: Building complex optic chains with lenses and prisms
+* **Immutable updates**: Transforming portions whilst keeping data immutable
+* **Reusable logic**: Define once, compose everywhere
 
 <!-- verify -->
 ```java
@@ -13138,10 +13147,10 @@ Catalogue updated = Traversals.modify(first10Prices, p -> p * 0.9, catalogue);
 
 ### Use Stream API When
 
-* **Terminal operations** - Counting, finding, collecting to new structures
-* **Complex transformations** - Multiple chained operations with sorting/grouping
-* **No structural preservation needed** - You're extracting data, not updating in place
-* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+* **Terminal operations**: Counting, finding, collecting to new structures
+* **Complex transformations**: Multiple chained operations with sorting/grouping
+* **No structural preservation needed**: You're extracting data, not updating in place
+* **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -13154,9 +13163,9 @@ int totalStock = products.stream()
 
 ### Use Manual Loops When
 
-* **Early termination with side effects** - Need to break out of loop
-* **Index-dependent logic** - Processing depends on knowing the exact index
-* **Imperative control flow** - Complex branching based on position
+* **Early termination with side effects**: Need to break out of loop
+* **Index-dependent logic**: Processing depends on knowing the exact index
+* **Imperative control flow**: Complex branching based on position
 
 <!-- verify -->
 ```java
@@ -13856,18 +13865,19 @@ Practise list decomposition patterns in [Tutorial 15: List Prisms](https://githu
 
 ---
 
-Sometimes you don't want *all* the elements. You want the expensive ones, or the ones at certain indices, or the value at one key of a map. Filtering and indexing narrow a traversal's focus to exactly that subset. Here is the destination, before any theory: a bulk update narrowed to only the items that cost more than £100. Every line compiles against the real library on every build:
+Sometimes you don't want *all* the elements. You want the expensive ones, or the ones at certain indices, or the value at one key of a map. Filtering and indexing narrow a traversal's focus to exactly that subset. Here is the destination, before any theory: a bulk update to the chapter's `Order`, narrowed to only the lines that cost more than £10. The build compiles and runs it, and a test holds each value the comments show:
 
-<!-- verify -->
-```java
-var pricey = OrderTraversals.items()
-    .andThen(ItemLenses.price())
-    .filtered(price -> price > 100.0);
+``` java
+    var pricey =
+        OrderTraversals.lines()
+            .andThen(LineItemLenses.price())
+            .filtered(price -> price.compareTo(new BigDecimal("10.00")) > 0);
 
-Order discounted = Traversals.modify(pricey, price -> price - 50.0, order);
-// Traversals.getAll(pricey, order)      -> [500.0, 200.0]
-// Traversals.getAll(pricey, discounted) -> [450.0, 150.0]
-// the £25 mouse is untouched, and so is order itself
+    Order discounted =
+        Traversals.modify(pricey, price -> price.subtract(new BigDecimal("5.00")), order);
+    // Traversals.getAll(pricey, order)      -> [40.00]
+    // Traversals.getAll(pricey, discounted) -> [35.00]
+    // the £2.50 bulbs are untouched, and so is order itself
 ```
 
 ~~~admonish tip title="Why this matters"
@@ -14217,11 +14227,11 @@ This behaviour is intentional: it allows you to **transform selectively** whilst
 
 ### Use Filtered Optics When
 
-* **Declarative composition** - You want filtering to be part of the optic's definition
-* **Selective modifications** - Modify only elements matching criteria
-* **Reusable filters** - Define once, compose everywhere
-* **Type-safe pipelines** - Filter as part of a larger optic chain
-* **Intent clarity** - Express "active users" as a single concept
+* **Declarative composition**: You want filtering to be part of the optic's definition
+* **Selective modifications**: Modify only elements matching criteria
+* **Reusable filters**: Define once, compose everywhere
+* **Type-safe pipelines**: Filter as part of a larger optic chain
+* **Intent clarity**: Express "active users" as a single concept
 
 <!-- verify -->
 ```java
@@ -14236,10 +14246,10 @@ Platform updated = Traversals.modify(activeEnterpriseUsers, User::grantBonus, pl
 
 ### Use Stream API When
 
-* **Complex transformations** - Multiple map/filter/reduce operations
-* **Collecting to different structures** - Need to change the collection type
-* **Statistical operations** - Sorting, limiting, grouping
-* **One-off queries** - Not building reusable logic
+* **Complex transformations**: Multiple map/filter/reduce operations
+* **Collecting to different structures**: Need to change the collection type
+* **Statistical operations**: Sorting, limiting, grouping
+* **One-off queries**: Not building reusable logic
 
 <!-- verify -->
 ```java
@@ -14254,9 +14264,9 @@ List<String> topActiveUserNames = users.stream()
 
 ### Use Conditional Logic When
 
-* **Control flow** - Early returns, exceptions, complex branching
-* **Side effects** - Logging, metrics, external calls based on conditions
-* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+* **Control flow**: Early returns, exceptions, complex branching
+* **Side effects**: Logging, metrics, external calls based on conditions
+* **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 <!-- verify -->
 ```java
@@ -15019,12 +15029,12 @@ Understanding when indexed optics add value is crucial for writing clear, mainta
 
 #### Use Indexed Optics When
 
-* **Position-based logic** - Different behaviour for even/odd indices, first/last elements
-* **Numbering or labelling** - Adding sequence numbers, prefixes, or position markers
-* **Map operations** - Both key and value are needed during transformation
-* **Audit trails** - Recording which field or position was modified
-* **Debugging complex updates** - Tracking the path to each change
-* **Index-based filtering** - Operating on specific positions or key patterns
+* **Position-based logic**: Different behaviour for even/odd indices, first/last elements
+* **Numbering or labelling**: Adding sequence numbers, prefixes, or position markers
+* **Map operations**: Both key and value are needed during transformation
+* **Audit trails**: Recording which field or position was modified
+* **Debugging complex updates**: Tracking the path to each change
+* **Index-based filtering**: Operating on specific positions or key patterns
 
 <!-- verify -->
 ```java
@@ -15045,9 +15055,9 @@ List<Product> prioritised = IndexedTraversals.imodify(
 
 #### Use Standard Optics When
 
-* **Position irrelevant** - Pure value transformations
-* **Simpler code** - Index tracking adds unnecessary complexity
-* **No positional logic** - All elements treated identically
+* **Position irrelevant**: Pure value transformations
+* **Simpler code**: Index tracking adds unnecessary complexity
+* **No positional logic**: All elements treated identically
 
 <!-- verify -->
 ```java
@@ -15979,70 +15989,62 @@ Each<Validated<List<AppError>, Value>, Value> validatedEach = EachExtensions.val
 
 ### Traversing All Elements
 
-<!-- verify -->
-```java
-Each<List<String>, String> listEach = EachInstances.listEach();
-Traversal<List<String>, String> traversal = listEach.each();
+``` java
+    Each<List<String>, String> listEach = EachInstances.listEach();
+    Traversal<List<String>, String> traversal = listEach.each();
 
-List<String> names = List.of("alice", "bob", "charlie");
+    List<String> names = List.of("alice", "bob", "charlie");
 
-// Get all elements
-List<String> all = Traversals.getAll(traversal, names);
-// Result: ["alice", "bob", "charlie"]
+    // Get all elements
+    List<String> all = Traversals.getAll(traversal, names);
+    // Result: ["alice", "bob", "charlie"]
 
-// Modify all elements
-List<String> upper = Traversals.modify(traversal, String::toUpperCase, names);
-// Result: ["ALICE", "BOB", "CHARLIE"]
+    // Modify all elements
+    List<String> upper = Traversals.modify(traversal, String::toUpperCase, names);
+    // Result: ["ALICE", "BOB", "CHARLIE"]
 
-// Set all elements to the same value (set is modify with a constant)
-List<String> same = Traversals.modify(traversal, _ -> "anonymous", names);
-// Result: ["anonymous", "anonymous", "anonymous"]
+    // Set all elements to the same value (set is modify with a constant)
+    List<String> same = Traversals.modify(traversal, _ -> "anonymous", names);
+    // Result: ["anonymous", "anonymous", "anonymous"]
 ```
 
 ### Using Indexed Traversal
 
 When position matters, type the instance as `EachIndexed` and call `indexedTraversal()`. The index type (`Integer` for lists) is fixed at compile time:
 
-<!-- verify -->
-```java
-EachIndexed<Integer, List<String>, String> listEach = EachInstances.listEach();
-IndexedTraversal<Integer, List<String>, String> indexed = listEach.indexedTraversal();
+``` java
+    EachIndexed<Integer, List<String>, String> listEach = EachInstances.listEach();
+    IndexedTraversal<Integer, List<String>, String> indexed = listEach.indexedTraversal();
 
-List<String> items = List.of("apple", "banana", "cherry");
+    List<String> items = List.of("apple", "banana", "cherry");
 
-// Number each element
-List<String> numbered = IndexedTraversals.imodify(
-    indexed,
-    (index, value) -> (index + 1) + ". " + value,
-    items
-);
-// Result: ["1. apple", "2. banana", "3. cherry"]
+    // Number each element
+    List<String> numbered =
+        IndexedTraversals.imodify(indexed, (index, value) -> (index + 1) + ". " + value, items);
+    // Result: ["1. apple", "2. banana", "3. cherry"]
 ```
 
 ### Map Key as Index
 
 For maps, the index is the key, so the `EachIndexed` index type is `K`:
 
-<!-- verify -->
-```java
-EachIndexed<String, Map<String, Integer>, Integer> mapEach = EachInstances.mapValuesEach();
-IndexedTraversal<String, Map<String, Integer>, Integer> indexed = mapEach.indexedTraversal();
+``` java
+    EachIndexed<String, Map<String, Integer>, Integer> mapEach = EachInstances.mapValuesEach();
+    IndexedTraversal<String, Map<String, Integer>, Integer> indexed = mapEach.indexedTraversal();
 
-Map<String, Integer> scores = Map.of("alice", 100, "bob", 85, "charlie", 92);
+    Map<String, Integer> scores = Map.of("alice", 100, "bob", 85, "charlie", 92);
 
-// Award a bonus point to one particular entrant, by key
-Map<String, Integer> adjusted = IndexedTraversals.imodify(
-    indexed,
-    (key, value) -> key.equals("bob") ? value + 5 : value,
-    scores
-);
-// Result: {"alice": 100, "bob": 90, "charlie": 92}
+    // Award a five-point bonus to one particular entrant, by key
+    Map<String, Integer> adjusted =
+        IndexedTraversals.imodify(
+            indexed, (key, value) -> key.equals("bob") ? value + 5 : value, scores);
+    // Result: {"alice": 100, "bob": 90, "charlie": 92}
 
-// A traversal cannot change the value type: imodify takes A -> A and returns the
-// same map type. To build a differently-typed map, extract the pairs and collect:
-Map<String, String> labelled =
-    IndexedTraversals.toIndexedList(indexed, scores).stream()
-        .collect(toMap(Pair::first, pair -> pair.first() + ": " + pair.second()));
+    // A traversal cannot change the value type: imodify takes A -> A and returns the
+    // same map type. To build a differently-typed map, extract the pairs and collect:
+    Map<String, String> labelled =
+        IndexedTraversals.toIndexedList(indexed, scores).stream()
+            .collect(toMap(Pair::first, pair -> pair.first() + ": " + pair.second()));
 ```
 
 ---
@@ -16128,22 +16130,27 @@ public static <A> Each<Tree<A>, A> treeEach() {
 
 If you already have a `Traversal`, wrap it:
 
+<!-- verify -->
 ```java
-Traversal<MyContainer<A>, A> existingTraversal = ...;
-Each<MyContainer<A>, A> each = Each.fromTraversal(existingTraversal);
+<A> Each<MyContainer<A>, A> eachOf(Traversal<MyContainer<A>, A> existingTraversal) {
+    return Each.fromTraversal(existingTraversal);
+}
 ```
 
 ### From IndexedTraversal
 
 If you have an `IndexedTraversal`, `Each.fromIndexedTraversal` returns an `EachIndexed`, so you get both the element and indexed traversals with the index type preserved:
 
+<!-- verify -->
 ```java
-IndexedTraversal<Integer, MyList<A>, A> indexed = ...;
-EachIndexed<Integer, MyList<A>, A> each = Each.fromIndexedTraversal(indexed);
+<A> EachIndexed<Integer, MyList<A>, A> eachOf(IndexedTraversal<Integer, MyList<A>, A> indexed) {
+    EachIndexed<Integer, MyList<A>, A> each = Each.fromIndexedTraversal(indexed);
 
-// Both work
-Traversal<MyList<A>, A> trav = each.each();
-IndexedTraversal<Integer, MyList<A>, A> iTrav = each.indexedTraversal();
+    // Both work
+    Traversal<MyList<A>, A> trav = each.each();
+    IndexedTraversal<Integer, MyList<A>, A> iTrav = each.indexedTraversal();
+    return each;
+}
 ```
 
 ---
@@ -16191,7 +16198,7 @@ IndexedTraversal<Integer, List<Product>, Product> indexed = productEach.indexedT
 List<Product> discounted = IndexedTraversals.imodify(
     indexed,
     (index, product) -> index % 2 == 0
-        ? product.withPrice(product.price() * 0.9)
+        ? product.withPrice(product.price().multiply(new BigDecimal("0.9")))
         : product,
     products
 );
@@ -16612,11 +16619,11 @@ String normalised = Traversals.modify(
 
 ### Use String Traversals When
 
-* **Reusable text transformations** - Define once, apply across multiple strings
-* **Composable pipelines** - Building complex optic chains with lenses and prisms
-* **Type-safe operations** - Character/word/line transformations with compile-time safety
-* **Immutable updates** - Transforming text whilst keeping data immutable
-* **Declarative intent** - Express "what" without "how" (no manual indexing)
+* **Reusable text transformations**: Define once, apply across multiple strings
+* **Composable pipelines**: Building complex optic chains with lenses and prisms
+* **Type-safe operations**: Character/word/line transformations with compile-time safety
+* **Immutable updates**: Transforming text whilst keeping data immutable
+* **Declarative intent**: Express "what" without "how" (no manual indexing)
 
 <!-- verify -->
 ```java
@@ -16631,10 +16638,10 @@ Config trimmed = Traversals.modify(allPropertyValues, String::trim, config);
 
 ### Use Stream API When
 
-* **Complex filtering** - Multiple conditions with short-circuiting
-* **Aggregations** - Counting, collecting to new structures
-* **No structural preservation needed** - Extracting data, not updating in place
-* **One-time operations** - Not reused across different contexts
+* **Complex filtering**: Multiple conditions with short-circuiting
+* **Aggregations**: Counting, collecting to new structures
+* **No structural preservation needed**: Extracting data, not updating in place
+* **One-time operations**: Not reused across different contexts
 
 <!-- verify -->
 ```java
@@ -16647,9 +16654,9 @@ long wordCount = text.lines()
 
 ### Use Regular Expressions When
 
-* **Complex pattern matching** - Extracting structured data (emails, URLs, dates)
-* **Search and replace** - Simple find-and-replace operations
-* **Validation** - Checking format compliance (phone numbers, postal codes)
+* **Complex pattern matching**: Extracting structured data (emails, URLs, dates)
+* **Search and replace**: Simple find-and-replace operations
+* **Validation**: Checking format compliance (phone numbers, postal codes)
 
 <!-- verify -->
 ```java
@@ -17181,28 +17188,26 @@ Config result = value.modify(String::trim, config);
 
 ---
 
-The [Focus DSL](focus_dsl.md) and [Collections, Optionals and Sealed Types](focus_navigation.md) cover the paths most code needs. This group covers what those pages leave out: running a path under an effect, containers the processor does not know, and record fields typed `Kind<F, A>`. It also has the prisms and extension methods that join optics to the library's core types. Read a page when one of those comes up, and skip the group until then. As a reminder of where the everyday pages left off, here are a deep read and a bulk update over a company graph whose records carry `@GenerateFocus(generateNavigators = true)`. Every line compiles against the real library and the real annotation processor on every build:
+The [Focus DSL](focus_dsl.md) and [Collections, Optionals and Sealed Types](focus_navigation.md) cover the paths most code needs. This group covers what those pages leave out: running a path under an effect, containers the processor does not know, and record fields typed `Kind<F, A>`. It also has the prisms and extension methods that join optics to the library's core types. Read a page when one of those comes up, and skip the group until then. As a reminder of where the everyday pages left off, here are a deep read and a bulk update over the chapter's order, where `Order` and `Customer` carry `@GenerateFocus(generateNavigators = true)`. The build compiles and runs it, and a test holds each value the comments show:
 
-<!-- verify -->
-```java
-// Company -> headquarters -> city: a single field access, generated
-String hq = CompanyFocus.headquarters().city().get(acme);
-// "London"
+``` java
+    // Order -> customer -> email -> value: chained hops, generated
+    String email = OrderFocus.customer().email().value().get(order);
+    // "ada@example.com"
 
-// Company -> departments[] -> staff[] -> salary: every salary, in one expression
-Company afterRise =
-    CompanyFocus.departments()
-        .via(DepartmentFocus.staff())
-        .via(EmployeeFocus.salary())
-        .modifyAll(s -> s.multiply(new BigDecimal("1.10")), acme);
-// every salary is 10% higher; acme itself is untouched
+    // Order -> lines[] -> price: every price, in one expression
+    Order afterRise =
+        OrderFocus.lines()
+            .via(LineItemFocus.price())
+            .modifyAll(price -> price.multiply(new BigDecimal("1.10")), order);
+    // every price is 10% higher; order itself is untouched
 ```
 
 ~~~admonish tip title="Why this matters"
-That chain is not a string, a reflective path expression, or a runtime lookup. `headquarters()`, `city()`, `staff()` and `salary()` are ordinary methods generated at compile time, so a renamed field is a compilation error rather than a `NullPointerException` in production, and the IDE autocompletes each step. It is also a *value*: store the path in a static field, pass it to a method, reuse it. The chain reads like a field access and behaves like an optic.
+That chain is not a string, a reflective path expression, or a runtime lookup. `customer()`, `email()`, `lines()` and `price()` are ordinary methods generated at compile time, so a renamed field is a compilation error rather than a `NullPointerException` in production, and the IDE autocompletes each step. It is also a *value*: store the path in a static field, pass it to a method, reuse it. The chain reads like a field access and behaves like an optic.
 ~~~
 
-`headquarters` chains `.city()` straight off a generated *navigator*, while `departments` is a `List`, which the processor unwraps to a `TraversalPath` over its elements, so its next hop is spelled `.via(...)`. [Collections, Optionals and Sealed Types](focus_navigation.md#fluent-navigation-with-generated-navigators) sets out which fields get which. A path hands its underlying optic to `OpticOps` through `toLens()`, `toAffine()` or `toTraversal()`, so starting with the Focus DSL never locks the other APIs out.
+`customer` chains `.email()` straight off a generated *navigator*, while `lines` is a `List`, which the processor unwraps to a `TraversalPath` over its elements, so its next hop is spelled `.via(...)`. [Collections, Optionals and Sealed Types](focus_navigation.md#fluent-navigation-with-generated-navigators) sets out which fields get which. A path hands its underlying optic to `OpticOps` through `toLens()`, `toAffine()` or `toTraversal()`, so starting with the Focus DSL never locks the other APIs out.
 
 ---
 
@@ -17539,6 +17544,7 @@ The Focus DSL never asks you which path type you want. It reads the field's type
 
 Given a record with one field of each interesting shape:
 
+<!-- verify -->
 ```java
 @GenerateLenses
 @GenerateFocus
@@ -17840,6 +17846,7 @@ Team levelled =
 
 Without automatic detection, every `Kind` field would need its `Traverse` instance threaded in by hand at each use site:
 
+<!-- verify -->
 ```java
 // What you would otherwise write, once per field, per call site
 TraversalPath<Team, Member> memberPath =
@@ -17939,15 +17946,15 @@ The same fallback applies to a witness that names no `Traverse` instance, whethe
 
 `headOption()` turns a `TraversalPath` into an `AffinePath`. Its read is the first focused element; its **write goes to every focused element**, because that is what the underlying traversal does:
 
-<!-- verify -->
-```java
-TraversalPath<Member, Skill> skills = MemberFocus.skills();
+``` java
+    TraversalPath<Member, Skill> skills = MemberFocus.skills();
 
-AffinePath<Member, Skill> firstSkill = skills.headOption();
-Optional<Skill> first = firstSkill.getOptional(alice);   // Optional[Skill[name=Java, proficiency=95]]
+    AffinePath<Member, Skill> firstSkill = skills.headOption();
+    Optional<Skill> first = firstSkill.getOptional(alice);
+    // Optional[Skill[name=Java, proficiency=95]]
 
-Member flattened = firstSkill.set(new Skill("Go", 50), alice);
-// BOTH skills are now Skill[name=Go, proficiency=50]: the set is setAll underneath
+    Member flattened = firstSkill.set(new Skill("Go", 50), alice);
+    // BOTH skills are now Skill[name=Go, proficiency=50]: the set is setAll underneath
 ```
 
 ~~~admonish warning title="The set is a `setAll`"
@@ -19019,7 +19026,7 @@ The processor analyses `LocalDate`, finds the *wither* methods it can pair with 
 // orderDate() is ours (@GenerateLenses); year() is the JDK's (@ImportOptics)
 Order nextYear =
     OrderLenses.orderDate().andThen(LocalDateLenses.year()).modify(y -> y + 1, order);
-// 2026-03-14 becomes 2027-03-14
+// the same order, dated a year later
 
 int year = OrderLenses.orderDate().andThen(LocalDateLenses.year()).get(order);
 ```
@@ -19059,34 +19066,37 @@ In words: records and classes with withers get lenses, sealed interfaces and enu
 
 ### Records to Lenses
 
+<!-- verify -->
 ```java
 // The external library has:
 public record Coordinate(double lat, double lon) {}
 
 // You get:
-CoordinateLenses.lat()   // Lens<Coordinate, Double>
-CoordinateLenses.lon()   // Lens<Coordinate, Double>
+Lens<Coordinate, Double> lat = CoordinateLenses.lat();
+Lens<Coordinate, Double> lon = CoordinateLenses.lon();
 ```
 
 Records are the easy case: the canonical constructor is the copy mechanism.
 
 ### Sealed Types to Prisms
 
+<!-- verify -->
 ```java
 public sealed interface PaymentMethod permits CreditCard, BankTransfer, Crypto {}
 
-PaymentMethodPrisms.creditCard()    // Prism<PaymentMethod, CreditCard>
-PaymentMethodPrisms.bankTransfer()  // Prism<PaymentMethod, BankTransfer>
-PaymentMethodPrisms.crypto()        // Prism<PaymentMethod, Crypto>
+Prism<PaymentMethod, CreditCard> creditCard = PaymentMethodPrisms.creditCard();
+Prism<PaymentMethod, BankTransfer> bankTransfer = PaymentMethodPrisms.bankTransfer();
+Prism<PaymentMethod, Crypto> crypto = PaymentMethodPrisms.crypto();
 ```
 
 ### Enums to Prisms
 
+<!-- verify -->
 ```java
 public enum OrderStatus { PENDING, SHIPPED, DELIVERED, CANCELLED }
 
-OrderStatusPrisms.pending()    // Prism<OrderStatus, OrderStatus>
-OrderStatusPrisms.shipped()    // and so on, one per constant
+Prism<OrderStatus, OrderStatus> pending = OrderStatusPrisms.pending();
+Prism<OrderStatus, OrderStatus> shipped = OrderStatusPrisms.shipped(); // and so on, one per constant
 ```
 
 ### Wither Classes to Lenses
@@ -19105,14 +19115,15 @@ An inner class of a generic class is imported under its enclosing class's type p
 
 When an imported record has a collection field, you get both a lens to the collection and a traversal into its elements, named `<field>Traversal`:
 
+<!-- verify -->
 ```java
 // External:
 public record Department(String name, List<Employee> staff) {}
 
 // Generated:
-DepartmentLenses.name()            // Lens<Department, String>
-DepartmentLenses.staff()           // Lens<Department, List<Employee>>
-DepartmentLenses.staffTraversal()  // Traversal<Department, Employee>
+Lens<Department, String> name = DepartmentLenses.name();
+Lens<Department, List<Employee>> staff = DepartmentLenses.staff();
+Traversal<Department, Employee> eachMember = DepartmentLenses.staffTraversal();
 ```
 
 An element type written as a wildcard is focused as the type it stands for, as `@GenerateTraversals` does: `List<? extends Employee>` gives a `Traversal<Department, Employee>`, and `List<?>` a `Traversal<Department, Object>`. See [Wildcard Element Types](traversals.md#wildcard-element-types).
@@ -19731,9 +19742,9 @@ interface CustomerOpticsSpec extends OpticsSpec<Customer> {
 ```java
 Customer promoted =
     CustomerOptics.creditLimit().modify(limit -> limit.multiply(new BigDecimal("1.1")), alice);
-// creditLimit 1000 becomes 1100.0; alice itself is unchanged
+// a copy of alice with her credit limit raised by a tenth; alice itself is unchanged
 
-String name = CustomerOptics.name().get(alice);   // "Alice"
+String name = CustomerOptics.name().get(alice);
 ```
 
 ~~~admonish tip title="Why this matters"
@@ -19786,7 +19797,7 @@ interface OrderOpticsSpec extends OpticsSpec<Order> {
 List<BigDecimal> limits =
     Traversals.getAll(
         OrderOptics.eachCustomer().andThen(CustomerOptics.creditLimit()), order);
-// [1000, 500]
+// one limit per customer, in the order's list order
 
 // Raise all of them by 5%
 Order raised =
@@ -19924,18 +19935,20 @@ The name is a plain string, so it is not resolved against the interface's import
 
 ## When You Need No Strategy at All
 
-JOOQ's `Result<R>` implements `List<R>`, and standard collections are already covered by the standard traversals:
+JOOQ's `into(Customer.class)` maps a `Result`'s rows into a plain `List` of the POJOs, and a plain `List` needs no strategy: the standard traversals already cover it.
 
+<!-- verify -->
 ```java
-Result<CustomerRecord> customers = ctx.selectFrom(CUSTOMER).where(CUSTOMER.ACTIVE.isTrue()).fetch();
+Result<CustomerRecord> rows = ctx.selectFrom(CUSTOMER).where(CUSTOMER.ACTIVE.isTrue()).fetch();
+List<Customer> customers = rows.into(Customer.class);
 
 // Read straight through the list traversal
 List<BigDecimal> limits =
     Traversals.getAll(
-        Traversals.<CustomerRecord>forList().andThen(CustomerOptics.creditLimit()), customers);
+        Traversals.<Customer>forList().andThen(CustomerOptics.creditLimit()), customers);
 ```
 
-Reading is free. Writing is where the shortcut ends: `Traversals.forList()` is a `Traversal<List<A>, A>`, so a modification rebuilds a plain `List`, not a `Result`. When you need the container type preserved, use `Traversals.forIterableCollecting(collector)` and supply the rebuild.
+Writing through the same traversal gives back a new `List<Customer>`. To write into the `Result` itself, traverse its `CustomerRecord`s with `Traversals.forIterableCollecting(rebuild)`, which takes the rebuild as a function from the new list to the container.
 
 ---
 
@@ -20138,21 +20151,20 @@ public record Employee(String id, String name, ContactInfo contact, BigDecimal s
 
 ```
 
-Using them looks like nothing in particular, which is the point. These values come from running [FocusBridgingExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/bridge/FocusBridgingExample.java) against a sample `Acme Corp` whose headquarters is in New York and whose two departments sit in Boston and Chicago:
+Using them looks like nothing in particular, which is the point. The values shown are for a sample `Acme Corp`, the one [FocusBridgingExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/bridge/FocusBridgingExample.java) runs against. Its headquarters is in New York and its two departments sit in Boston and Chicago, and a test holds each value:
 
-<!-- verify -->
-```java
-String city = CompanyBridge.HEADQUARTERS_CITY.get(acme);
-// "New York": read straight through the Immutables Address
+``` java
+    String city = CompanyBridge.HEADQUARTERS_CITY.get(acme);
+    // "New York": read straight through the Immutables Address
 
-Company moved = CompanyBridge.HEADQUARTERS_CITY.set("Seattle", acme);
-// headquarters.city is "Seattle"; every other Address field, and acme itself, is untouched
+    Company moved = CompanyBridge.HEADQUARTERS_CITY.set("Seattle", acme);
+    // headquarters.city is "Seattle"; every other Address field, and acme itself, is untouched
 
-List<String> emails = CompanyBridge.allCompanyEmails().getAll(acme);
-// [alice@acme.com, bob@acme.com, carol@acme.com]: three records deep, across the boundary
+    List<String> emails = CompanyBridge.allCompanyEmails().getAll(acme);
+    // [alice@acme.com, bob@acme.com, carol@acme.com]: three records deep, across the boundary
 
-List<String> phones = CompanyBridge.allCompanyPhones().getAll(acme);
-// [617-555-0101, 617-555-0102, 312-555-0201]
+    List<String> phones = CompanyBridge.allCompanyPhones().getAll(acme);
+    // [617-555-0101, 617-555-0102, 312-555-0201]
 ```
 
 ~~~admonish tip title="Why this matters"
@@ -20209,6 +20221,7 @@ Each library differs only in which copy strategy its generated code exposes.
 
 **Lombok `@Builder(toBuilder = true)`:**
 
+<!-- verify -->
 ```java
 @ImportOptics
 interface LombokPersonOpticsSpec extends OpticsSpec<LombokPerson> {
@@ -20220,6 +20233,7 @@ interface LombokPersonOpticsSpec extends OpticsSpec<LombokPerson> {
 
 **AutoValue:**
 
+<!-- verify -->
 ```java
 @ImportOptics
 interface AutoPersonOpticsSpec extends OpticsSpec<AutoPerson> {
@@ -20229,14 +20243,15 @@ interface AutoPersonOpticsSpec extends OpticsSpec<AutoPerson> {
 }
 ```
 
-**Protocol Buffers:**
+**Protocol Buffers**, over the `CustomerMessage` that protoc generates for [Bean-Shaped Wires](../mapping/beans.md#protobuf-java-messages):
 
+<!-- verify -->
 ```java
 @ImportOptics
-interface PersonProtoOpticsSpec extends OpticsSpec<PersonProto> {
+interface CustomerMessageOpticsSpec extends OpticsSpec<CustomerMessage> {
 
   @ViaBuilder(getter = "getName", setter = "setName")
-  Lens<PersonProto, String> name();
+  Lens<CustomerMessage, String> name();
 }
 ```
 
@@ -20736,10 +20751,10 @@ This single `formToPermissionNameTraversal` object now encapsulates the entire c
 
 ### Use Optic Composition When
 
-* **Complex nested validation** - Multiple levels of data structure with conditional logic
-* **Reusable validation paths** - The same validation logic applies to multiple scenarios
-* **Type-safe bulk operations** - You need to ensure compile-time safety for collection operations
-* **Error accumulation** - You want to collect all errors, not stop at the first failure
+* **Complex nested validation**: Multiple levels of data structure with conditional logic
+* **Reusable validation paths**: The same validation logic applies to multiple scenarios
+* **Type-safe bulk operations**: You need to ensure compile-time safety for collection operations
+* **Error accumulation**: You want to collect all errors, not stop at the first failure
 
 <!-- verify -->
 ```java
@@ -20753,9 +20768,9 @@ Validated<String, Form> rechecked = validatePermissions(updatedForm);
 
 ### Use Direct Validation When
 
-* **Simple, flat structures** - No deep nesting or conditional access needed
-* **One-off validation** - Logic won't be reused elsewhere
-* **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+* **Simple, flat structures**: No deep nesting or conditional access needed
+* **One-off validation**: Logic won't be reused elsewhere
+* **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
 
 
 <!-- verify -->
@@ -20771,9 +20786,9 @@ public Validated<String, User> validateUser(User user) {
 
 ### Use Stream Processing When
 
-* **Complex transformations** - Multiple operations that don't map to optic patterns
-* **Aggregation logic** - Computing statistics or summaries
-* **Filtering and collecting** - Changing the structure of collections
+* **Complex transformations**: Multiple operations that don't map to optic patterns
+* **Aggregation logic**: Computing statistics or summaries
+* **Filtering and collecting**: Changing the structure of collections
 
 
 <!-- verify -->
@@ -21356,13 +21371,13 @@ It is all-or-nothing on that one focus, not a per-element filter. For "modify wh
 * Building **generic abstractions**
 * Using effects **beyond validation** (IO, Future, etc.)
 
+<!-- verify -->
 ```java
-// Still valuable for generic effectful operations
-Kind<F, Form> result = FORM_TO_PERMISSION_NAMES.modifyF(
-    effectfulValidation,
-    form,
-    customApplicative
-);
+// Still valuable for generic effectful operations: one method for any applicative F
+<F extends WitnessArity<TypeArity.Unary>> Kind<F, Form> checkNames(
+    Function<String, Kind<F, String>> effectfulValidation, Applicative<F> customApplicative) {
+    return FORM_TO_PERMISSION_NAMES.modifyF(effectfulValidation, form, customApplicative);
+}
 ```
 
 ### Real-World Example: Simplified Validation
@@ -22027,10 +22042,10 @@ A `Traversal` lets us operate on zero or more targets within a larger structure.
 
 ### Use Optic Composition When
 
-- **Complex conditional filtering** - Multiple levels of filtering based on different criteria
-- **Reusable audit logic** - The same audit pattern applies to different config types
-- **Type-safe data extraction** - Ensuring compile-time safety for complex transformations
-- **Declarative data processing** - Building self-documenting processing pipelines
+- **Complex conditional filtering**: Multiple levels of filtering based on different criteria
+- **Reusable audit logic**: The same audit pattern applies to different config types
+- **Type-safe data extraction**: Ensuring compile-time safety for complex transformations
+- **Declarative data processing**: Building self-documenting processing pipelines
 
 <!-- verify -->
 ```java
@@ -22046,9 +22061,9 @@ Traversal<ServerConfig, byte[]> sensitiveDataAuditor =
 
 ### Use Stream Processing When
 
-- **Simple filtering** - Basic collection operations without complex nesting
-- **A hot loop you have measured** - [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
-- **Aggregation logic** - Computing statistics or summaries
+- **Simple filtering**: Basic collection operations without complex nesting
+- **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+- **Aggregation logic**: Computing statistics or summaries
 
 <!-- verify -->
 ```java
@@ -22061,9 +22076,9 @@ List<String> allConfigNames = configs.stream()
 
 ### Use Manual Iteration When
 
-- **Early termination** - You might want to stop processing on first match
-- **Complex business logic** - Multiple conditions and branches that don't map cleanly
-- **Legacy integration** - Working with existing imperative codebases
+- **Early termination**: You might want to stop processing on first match
+- **Complex business logic**: Multiple conditions and branches that don't map cleanly
+- **Legacy integration**: Working with existing imperative codebases
 
 <!-- verify -->
 ```java
@@ -25417,35 +25432,33 @@ Result: **zero-or-one** focuses, which is an **Affine** optic.
 
 ### Example
 
-<!-- verify -->
-```java
-// Domain model
-record Config(Optional<DatabaseSettings> database) {}
-record DatabaseSettings(String host, int port) {}
+``` java
+    // Domain model
+    record DatabaseSettings(String host, int port) {}
+    record Config(Optional<DatabaseSettings> database) {}
 
-// The Lens always gets the Optional<DatabaseSettings>
-Lens<Config, Optional<DatabaseSettings>> databaseLens =
-    Lens.of(Config::database, (c, db) -> new Config(db));
+    // The lens always reaches the Optional<DatabaseSettings> field
+    Lens<Config, Optional<DatabaseSettings>> databaseLens =
+        Lens.of(Config::database, (c, db) -> new Config(db));
 
-// The Prism may or may not extract the DatabaseSettings
-Prism<Optional<DatabaseSettings>, DatabaseSettings> somePrism = Prisms.some();
+    // The prism may or may not find DatabaseSettings inside the Optional
+    Prism<Optional<DatabaseSettings>, DatabaseSettings> somePrism = Prisms.some();
 
-// Composition: Lens.andThen(Prism) = Affine
-Affine<Config, DatabaseSettings> databaseAffine =
-    databaseLens.andThen(somePrism);
+    // Composition: Lens.andThen(Prism) = Affine
+    Affine<Config, DatabaseSettings> databaseAffine = databaseLens.andThen(somePrism);
 
-// Usage
-Config config1 = new Config(Optional.of(new DatabaseSettings("localhost", 5432)));
-Optional<DatabaseSettings> result1 = databaseAffine.getOptional(config1);
-// result1 = Optional[DatabaseSettings[host=localhost, port=5432]]
+    // Usage
+    Config config1 = new Config(Optional.of(new DatabaseSettings("localhost", 5432)));
+    Optional<DatabaseSettings> result1 = databaseAffine.getOptional(config1);
+    // result1 = Optional[DatabaseSettings[host=localhost, port=5432]]
 
-Config config2 = new Config(Optional.empty());
-Optional<DatabaseSettings> result2 = databaseAffine.getOptional(config2);
-// result2 = Optional.empty() (the prism didn't match)
+    Config config2 = new Config(Optional.empty());
+    Optional<DatabaseSettings> result2 = databaseAffine.getOptional(config2);
+    // result2 = Optional.empty, since the prism found nothing
 
-// Setting always succeeds
-Config updated = databaseAffine.set(new DatabaseSettings("newhost", 3306), config2);
-// updated = Config[database=Optional[DatabaseSettings[host=newhost, port=3306]]]
+    // Setting through the affine: some() can build the Optional, so the empty one is filled
+    Config updated = databaseAffine.set(new DatabaseSettings("newhost", 3306), config2);
+    // updated = Config[database=Optional[DatabaseSettings[host=newhost, port=3306]]]
 ```
 
 ---
@@ -25462,41 +25475,44 @@ Result: **zero-or-one** focuses, depending on whether the Prism matched.
 
 ### Example
 
-<!-- verify -->
-```java
-// Domain model with sealed interface
+``` java
+// Domain model with a sealed interface
 sealed interface Shape permits Circle, Rectangle {}
+
 record Circle(double radius, String colour) implements Shape {}
+
 record Rectangle(double width, double height, String colour) implements Shape {}
 
-// The Prism may or may not match Circle
-Prism<Shape, Circle> circlePrism = Prism.of(
-    shape -> shape instanceof Circle c ? Optional.of(c) : Optional.empty(),
-    c -> c
-);
+```
 
-// The Lens always gets the radius from a Circle
-Lens<Circle, Double> radiusLens =
-    Lens.of(Circle::radius, (c, r) -> new Circle(r, c.colour()));
+A prism onto the circles, a lens onto a circle's radius, and the affine they compose to:
 
-// Composition: Prism.andThen(Lens) = Affine
-Affine<Shape, Double> circleRadiusAffine = circlePrism.andThen(radiusLens);
+``` java
+    // The Prism may or may not match Circle
+    Prism<Shape, Circle> circlePrism =
+        Prism.of(shape -> shape instanceof Circle c ? Optional.of(c) : Optional.empty(), c -> c);
 
-// Usage
-Shape circle = new Circle(5.0, "red");
-Optional<Double> radius = circleRadiusAffine.getOptional(circle);
-// radius = Optional[5.0]
+    // The Lens always gets the radius from a Circle
+    Lens<Circle, Double> radiusLens = Lens.of(Circle::radius, (c, r) -> new Circle(r, c.colour()));
 
-Shape rectangle = new Rectangle(10.0, 20.0, "blue");
-Optional<Double> empty = circleRadiusAffine.getOptional(rectangle);
-// empty = Optional.empty() (prism didn't match)
+    // Composition: Prism.andThen(Lens) = Affine
+    Affine<Shape, Double> circleRadiusAffine = circlePrism.andThen(radiusLens);
 
-// Modification only affects circles
-Shape modified = circleRadiusAffine.modify(r -> r * 2, circle);
-// modified = Circle[radius=10.0, colour=red]
+    // Usage
+    Shape circle = new Circle(5.0, "red");
+    Optional<Double> radius = circleRadiusAffine.getOptional(circle);
+    // radius = Optional[5.0]
 
-Shape unchanged = circleRadiusAffine.modify(r -> r * 2, rectangle);
-// unchanged = Rectangle[width=10.0, height=20.0, colour=blue] (unchanged)
+    Shape rectangle = new Rectangle(10.0, 20.0, "blue");
+    Optional<Double> empty = circleRadiusAffine.getOptional(rectangle);
+    // empty = Optional.empty, since the prism did not match
+
+    // Modification only affects circles
+    Shape modified = circleRadiusAffine.modify(r -> r * 2, circle);
+    // modified = Circle[radius=10.0, colour=red]
+
+    Shape unchanged = circleRadiusAffine.modify(r -> r * 2, rectangle);
+    // unchanged = Rectangle[width=10.0, height=20.0, colour=blue], as it was
 ```
 
 ---
@@ -25507,33 +25523,35 @@ Shape unchanged = circleRadiusAffine.modify(r -> r * 2, rectangle);
 
 higher-kinded-j provides direct `andThen` methods that automatically return the correct type:
 
+<!-- verify -->
 ```java
 // Lens.andThen(Lens) = Lens
-Lens<A, C> result = lensAB.andThen(lensBC);
+Lens<A, C> lensLens = lensAB.andThen(lensBC);
 
 // Lens.andThen(Prism) = Affine
-Affine<A, C> result = lensAB.andThen(prismBC);
+Affine<A, C> lensPrism = lensAB.andThen(prismBC);
 
 // Prism.andThen(Prism) = Prism
-Prism<A, C> result = prismAB.andThen(prismBC);
+Prism<A, C> prismPrism = prismAB.andThen(prismBC);
 
 // Prism.andThen(Lens) = Affine
-Affine<A, C> result = prismAB.andThen(lensBC);
+Affine<A, C> prismLens = prismAB.andThen(lensBC);
 
 // Affine.andThen(Affine) = Affine
-Affine<A, C> result = affineAB.andThen(affineBC);
+Affine<A, C> affineAffine = affineAB.andThen(affineBC);
 
 // Affine.andThen(Lens) = Affine
-Affine<A, C> result = affineAB.andThen(lensBC);
+Affine<A, C> affineLens = affineAB.andThen(lensBC);
 
 // Traversal.andThen(Traversal) = Traversal
-Traversal<A, C> result = traversalAB.andThen(traversalBC);
+Traversal<A, C> traversalTraversal = traversalAB.andThen(traversalBC);
 ```
 
 ### Via asTraversal (Universal Fallback)
 
 Every pair of the five optics composes directly, so you rarely need this. Convert to `Traversal` when you want to hold optics of different kinds as one type, such as in a list of paths:
 
+<!-- verify -->
 ```java
 // Any optic composition via Traversal
 Traversal<A, D> result =

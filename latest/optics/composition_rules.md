@@ -113,35 +113,33 @@ Result: **zero-or-one** focuses, which is an **Affine** optic.
 
 ### Example
 
-<!-- verify -->
-```java
-// Domain model
-record Config(Optional<DatabaseSettings> database) {}
-record DatabaseSettings(String host, int port) {}
+``` java
+    // Domain model
+    record DatabaseSettings(String host, int port) {}
+    record Config(Optional<DatabaseSettings> database) {}
 
-// The Lens always gets the Optional<DatabaseSettings>
-Lens<Config, Optional<DatabaseSettings>> databaseLens =
-    Lens.of(Config::database, (c, db) -> new Config(db));
+    // The lens always reaches the Optional<DatabaseSettings> field
+    Lens<Config, Optional<DatabaseSettings>> databaseLens =
+        Lens.of(Config::database, (c, db) -> new Config(db));
 
-// The Prism may or may not extract the DatabaseSettings
-Prism<Optional<DatabaseSettings>, DatabaseSettings> somePrism = Prisms.some();
+    // The prism may or may not find DatabaseSettings inside the Optional
+    Prism<Optional<DatabaseSettings>, DatabaseSettings> somePrism = Prisms.some();
 
-// Composition: Lens.andThen(Prism) = Affine
-Affine<Config, DatabaseSettings> databaseAffine =
-    databaseLens.andThen(somePrism);
+    // Composition: Lens.andThen(Prism) = Affine
+    Affine<Config, DatabaseSettings> databaseAffine = databaseLens.andThen(somePrism);
 
-// Usage
-Config config1 = new Config(Optional.of(new DatabaseSettings("localhost", 5432)));
-Optional<DatabaseSettings> result1 = databaseAffine.getOptional(config1);
-// result1 = Optional[DatabaseSettings[host=localhost, port=5432]]
+    // Usage
+    Config config1 = new Config(Optional.of(new DatabaseSettings("localhost", 5432)));
+    Optional<DatabaseSettings> result1 = databaseAffine.getOptional(config1);
+    // result1 = Optional[DatabaseSettings[host=localhost, port=5432]]
 
-Config config2 = new Config(Optional.empty());
-Optional<DatabaseSettings> result2 = databaseAffine.getOptional(config2);
-// result2 = Optional.empty() (the prism didn't match)
+    Config config2 = new Config(Optional.empty());
+    Optional<DatabaseSettings> result2 = databaseAffine.getOptional(config2);
+    // result2 = Optional.empty, since the prism found nothing
 
-// Setting always succeeds
-Config updated = databaseAffine.set(new DatabaseSettings("newhost", 3306), config2);
-// updated = Config[database=Optional[DatabaseSettings[host=newhost, port=3306]]]
+    // Setting through the affine: some() can build the Optional, so the empty one is filled
+    Config updated = databaseAffine.set(new DatabaseSettings("newhost", 3306), config2);
+    // updated = Config[database=Optional[DatabaseSettings[host=newhost, port=3306]]]
 ```
 
 ---
@@ -158,41 +156,44 @@ Result: **zero-or-one** focuses, depending on whether the Prism matched.
 
 ### Example
 
-<!-- verify -->
-```java
-// Domain model with sealed interface
+``` java
+// Domain model with a sealed interface
 sealed interface Shape permits Circle, Rectangle {}
+
 record Circle(double radius, String colour) implements Shape {}
+
 record Rectangle(double width, double height, String colour) implements Shape {}
 
-// The Prism may or may not match Circle
-Prism<Shape, Circle> circlePrism = Prism.of(
-    shape -> shape instanceof Circle c ? Optional.of(c) : Optional.empty(),
-    c -> c
-);
+```
 
-// The Lens always gets the radius from a Circle
-Lens<Circle, Double> radiusLens =
-    Lens.of(Circle::radius, (c, r) -> new Circle(r, c.colour()));
+A prism onto the circles, a lens onto a circle's radius, and the affine they compose to:
 
-// Composition: Prism.andThen(Lens) = Affine
-Affine<Shape, Double> circleRadiusAffine = circlePrism.andThen(radiusLens);
+``` java
+    // The Prism may or may not match Circle
+    Prism<Shape, Circle> circlePrism =
+        Prism.of(shape -> shape instanceof Circle c ? Optional.of(c) : Optional.empty(), c -> c);
 
-// Usage
-Shape circle = new Circle(5.0, "red");
-Optional<Double> radius = circleRadiusAffine.getOptional(circle);
-// radius = Optional[5.0]
+    // The Lens always gets the radius from a Circle
+    Lens<Circle, Double> radiusLens = Lens.of(Circle::radius, (c, r) -> new Circle(r, c.colour()));
 
-Shape rectangle = new Rectangle(10.0, 20.0, "blue");
-Optional<Double> empty = circleRadiusAffine.getOptional(rectangle);
-// empty = Optional.empty() (prism didn't match)
+    // Composition: Prism.andThen(Lens) = Affine
+    Affine<Shape, Double> circleRadiusAffine = circlePrism.andThen(radiusLens);
 
-// Modification only affects circles
-Shape modified = circleRadiusAffine.modify(r -> r * 2, circle);
-// modified = Circle[radius=10.0, colour=red]
+    // Usage
+    Shape circle = new Circle(5.0, "red");
+    Optional<Double> radius = circleRadiusAffine.getOptional(circle);
+    // radius = Optional[5.0]
 
-Shape unchanged = circleRadiusAffine.modify(r -> r * 2, rectangle);
-// unchanged = Rectangle[width=10.0, height=20.0, colour=blue] (unchanged)
+    Shape rectangle = new Rectangle(10.0, 20.0, "blue");
+    Optional<Double> empty = circleRadiusAffine.getOptional(rectangle);
+    // empty = Optional.empty, since the prism did not match
+
+    // Modification only affects circles
+    Shape modified = circleRadiusAffine.modify(r -> r * 2, circle);
+    // modified = Circle[radius=10.0, colour=red]
+
+    Shape unchanged = circleRadiusAffine.modify(r -> r * 2, rectangle);
+    // unchanged = Rectangle[width=10.0, height=20.0, colour=blue], as it was
 ```
 
 ---
@@ -203,33 +204,35 @@ Shape unchanged = circleRadiusAffine.modify(r -> r * 2, rectangle);
 
 higher-kinded-j provides direct `andThen` methods that automatically return the correct type:
 
+<!-- verify -->
 ```java
 // Lens.andThen(Lens) = Lens
-Lens<A, C> result = lensAB.andThen(lensBC);
+Lens<A, C> lensLens = lensAB.andThen(lensBC);
 
 // Lens.andThen(Prism) = Affine
-Affine<A, C> result = lensAB.andThen(prismBC);
+Affine<A, C> lensPrism = lensAB.andThen(prismBC);
 
 // Prism.andThen(Prism) = Prism
-Prism<A, C> result = prismAB.andThen(prismBC);
+Prism<A, C> prismPrism = prismAB.andThen(prismBC);
 
 // Prism.andThen(Lens) = Affine
-Affine<A, C> result = prismAB.andThen(lensBC);
+Affine<A, C> prismLens = prismAB.andThen(lensBC);
 
 // Affine.andThen(Affine) = Affine
-Affine<A, C> result = affineAB.andThen(affineBC);
+Affine<A, C> affineAffine = affineAB.andThen(affineBC);
 
 // Affine.andThen(Lens) = Affine
-Affine<A, C> result = affineAB.andThen(lensBC);
+Affine<A, C> affineLens = affineAB.andThen(lensBC);
 
 // Traversal.andThen(Traversal) = Traversal
-Traversal<A, C> result = traversalAB.andThen(traversalBC);
+Traversal<A, C> traversalTraversal = traversalAB.andThen(traversalBC);
 ```
 
 ### Via asTraversal (Universal Fallback)
 
 Every pair of the five optics composes directly, so you rarely need this. Convert to `Traversal` when you want to hold optics of different kinds as one type, such as in a list of paths:
 
+<!-- verify -->
 ```java
 // Any optic composition via Traversal
 Traversal<A, D> result =
