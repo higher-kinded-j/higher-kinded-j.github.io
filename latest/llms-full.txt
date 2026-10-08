@@ -80169,7 +80169,8 @@ Practise Scope patterns in [TutorialScope](https://github.com/higher-kinded-j/hi
 - Using `Resource` for safe resource management in concurrent computations
 - Creating resources from `AutoCloseable`, explicit acquire/release, and pure values
 - Composing multiple resources with `flatMap` and `and`
-- Adding finalisers for cleanup actions
+- Using one `Resource` many times, nested or at once
+- Adding finalisers, and cleanup that runs only when the use fails
 - Integrating resources with `Scope` for concurrent resource management
 ~~~
 
@@ -80235,13 +80236,17 @@ Resource<Config> configResource = Resource.pure(loadedConfig);
 ```
 ~~~
 
-### Factory Methods
+### Factory Methods {#factory-methods}
 
 | Method | Description | Use Case |
 |--------|-------------|----------|
-| `fromAutoCloseable(supplier)` | Wraps an `AutoCloseable` | Database connections, streams, channels |
+| `fromAutoCloseable(supplier)` | Wraps an `AutoCloseable`, ignoring an exception from `close()` | Database connections, streams, channels |
 | `make(acquire, release)` | Explicit acquire and release functions | Custom resources, locks, external handles |
 | `pure(value)` | Wraps a value with no cleanup | Configuration, constants, pre-initialised values |
+
+A `Resource` never holds null. An `acquire` that returns null, `pure(null)`, or a `map` function that returns null fails the use with `NullPointerException`. Hold a value that may be absent as a `Maybe`, and acquire it with `make`.
+
+To see a failed `close()`, use `make` with a release that calls `close()` and handles its exception.
 
 ---
 
@@ -80272,7 +80277,7 @@ VTask<Integer> count = connResource.use(conn ->
 int userCount = count.run();
 ```
 
-### Exception Safety
+### Exception Safety {#exception-safety}
 
 If the use function throws, the resource is still released:
 
@@ -80293,11 +80298,35 @@ Try<String> result = riskyOperation.runSafe();
 // connection is closed
 ```
 
+If the release throws as well, the use's exception is still the one reported. The release's exception is added to it as a suppressed exception, as try-with-resources does. A `Resource` from `fromAutoCloseable` ignores an exception from `close()`, so this applies to a release written with `make`.
+
+### Using One Resource Many Times {#using-one-resource-many-times}
+
+A `Resource` holds nothing itself. Each `use` acquires its own resource and releases exactly that one. So build a `Resource` once and use it wherever it is needed: once per request, on several threads at once, or one use nested inside another. This holds however the `Resource` was composed.
+
+```java
+    List<String> closed = new ArrayList<>();
+    AtomicInteger opened = new AtomicInteger();
+    Resource<String> connection =
+        Resource.make(() -> "conn-" + opened.incrementAndGet(), closed::add)
+            .map(String::toUpperCase);
+
+    List<String> both =
+        connection
+            .use(outer -> connection.use(inner -> VTask.succeed(List.of(outer, inner))))
+            .run();
+    // [CONN-1, CONN-2]
+    List<String> closedInOrder = List.copyOf(closed);
+    // [conn-2, conn-1]
+```
+
+The nested use opens a second connection, and each use closes the one it opened, innermost first. The `map` makes this a composed `Resource`, and its release still receives the value `acquire` returned.
+
 ---
 
 ## Composing Resources
 
-Resources compose naturally, acquiring in order and releasing in reverse (LIFO):
+Resources compose naturally, acquiring in order and releasing in reverse (LIFO). A composed `Resource` can be used many times too, as [Using One Resource Many Times](#using-one-resource-many-times) shows.
 
 <!-- verify -->
 ```java
@@ -80378,24 +80407,22 @@ Resource<Lock> lockResource = Resource.make(
 
 ### Finaliser Behaviour {#finalizer-behaviour}
 
-- Finalisers run after the primary release function
-- Multiple finalisers can be added (they run in reverse order of addition)
-- If the primary release throws, finalisers still run
-- If a finaliser throws, subsequent finalisers still run
-- All exceptions are collected and suppressed on the original exception
+- **Finalisers run after the primary release.**
+- **Finalisers run in the order they were added.**
+- **A finaliser runs even when the release throws.**
+- **A finaliser runs even when an earlier finaliser throws.**
+- **When the release and a finaliser both throw, the release's exception is reported.** The finaliser's exception is suppressed onto it.
 
-<!-- verify -->
 ```java
-Resource<Handle> robust = Resource.make(acquire, release)
-    .withFinalizer(() -> cleanupStep1())
-    .withFinalizer(() -> cleanupStep2())
-    .withFinalizer(() -> cleanupStep3());
+    List<String> steps = new ArrayList<>();
+    Resource<String> handle =
+        Resource.make(() -> "handle", _ -> steps.add("release"))
+            .withFinalizer(() -> steps.add("log the release"))
+            .withFinalizer(() -> steps.add("record metrics"));
 
-// Execution order:
-// 1. release()
-// 2. cleanupStep3()  (most recently added)
-// 3. cleanupStep2()
-// 4. cleanupStep1()  (first added)
+    handle.useSync(String::length).run();
+    List<String> ranInOrder = List.copyOf(steps);
+    // [release, log the release, record metrics]
 ```
 
 ---
@@ -80432,10 +80459,11 @@ Resource<Connection> connResource = Resource.make(
         return conn;
     },
     conn -> {
-        try { conn.rollback(); } catch (Exception e) { /* ignore */ }
         try { conn.close(); } catch (Exception e) { /* ignore */ }
     }
-);
+).onFailure(conn -> {
+    try { conn.rollback(); } catch (Exception e) { /* ignore */ }
+});
 
 VTask<OrderResult> processOrder = connResource.use(conn ->
     Scope.<Void>allSucceed()
@@ -80451,7 +80479,7 @@ VTask<OrderResult> processOrder = connResource.use(conn ->
 
 // If any step fails:
 // 1. Scope cancels remaining tasks
-// 2. Connection release triggers rollback
+// 2. onFailure rolls the transaction back
 // 3. Connection is closed
 Try<OrderResult> result = processOrder.runSafe();
 ```
@@ -80460,18 +80488,29 @@ Try<OrderResult> result = processOrder.runSafe();
 
 ## Error Handling in Resources
 
-### onFailure Callback
+### onFailure Callback {#onfailure-callback}
 
-Execute a callback when the use computation fails:
+`onFailure` adds an action that runs when the use fails, before the release. It receives the acquired resource, so it can undo partial work, such as rolling back a transaction. When the use succeeds, only the release runs.
 
-<!-- verify -->
 ```java
-Resource<Connection> connWithCleanup = connResource
-    .onFailure(conn -> {
-        // Clean up any partial state on the connection
-        try { conn.rollback(); } catch (Exception e) { /* ignore */ }
-    });
+    List<String> log = new ArrayList<>();
+    AtomicInteger begun = new AtomicInteger();
+    Resource<String> transaction =
+        Resource.make(() -> "tx-" + begun.incrementAndGet(), tx -> log.add("close " + tx))
+            .onFailure(tx -> log.add("rollback " + tx));
+
+    transaction.useSync(String::length).run();
+    transaction.use(_ -> VTask.fail(new IllegalStateException("insert failed"))).runSafe();
+    List<String> whatRan = List.copyOf(log);
+    // [close tx-1, rollback tx-2, close tx-2]
 ```
+
+The first use succeeds, so it only closes `tx-1`. The second fails, so `tx-2` is rolled back and then closed. The use fails when the function given to `use` throws, or the task it returns fails. A cancelled task fails too. A step composed after `onFailure` counts as well, when it fails while the resource is held:
+
+- **`map`'s or `flatMap`'s function throws.**
+- **The next acquire in `flatMap` or `and` fails.**
+
+The action runs before its `Resource`'s release and before the finalisers added to it. Actions added one after another run most recently added first. If an action throws, the release still runs, and the use's failure is still the one reported.
 
 ### Combining with VTask Error Handling
 
@@ -80493,6 +80532,8 @@ VTask<Data> robust = connResource.use(conn ->
 * **Resource** implements the bracket pattern: acquire-use-release with guaranteed cleanup
 * **fromAutoCloseable** wraps standard Java resources; **make** handles custom acquire/release
 * **Composition** with `flatMap` and `and` maintains proper release ordering (LIFO)
+* **Each use acquires its own resource**, so one `Resource` can be used many times, nested or at once
+* **onFailure** runs an action before the release when the use fails
 * **Finalisers** add cleanup actions that run even if release throws
 * **Scope integration** enables concurrent computations with safe resource management
 * **Exception safety** ensures resources are released even when computations fail
@@ -102627,7 +102668,7 @@ VTask<Result> result = connResource.use(conn ->
 
 ## Resource (VTask)
 
-**Definition:** A type in Higher-Kinded-J that implements the bracket pattern for safe resource management in VTask computations. Resources encapsulate acquisition and release logic, guaranteeing cleanup even when computations fail or are cancelled.
+**Definition:** A type in Higher-Kinded-J that implements the bracket pattern for safe resource management in VTask computations. Resources encapsulate acquisition and release logic, guaranteeing cleanup even when computations fail or are cancelled. Each use acquires its own resource, so one `Resource` can be used many times, nested or at once.
 
 **Factory Methods:**
 | Method | Use Case |
@@ -102644,6 +102685,7 @@ VTask<Result> result = connResource.use(conn ->
 | `and(other)` | Combine two resources (releases in LIFO order) |
 | `and(r2, r3)` | Combine three resources |
 | `withFinalizer(action)` | Add cleanup that runs after release |
+| `onFailure(action)` | Add cleanup that runs before release when the use fails |
 
 **Example:**
 <!-- verify -->
@@ -103118,6 +103160,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`@PathSource` points an effect algebra to `FreePath`** ([#1008](https://github.com/higher-kinded-j/higher-kinded-j/issues/1008)): a Path over a witness that `@EffectAlgebra` generates now draws a note at the witness. The algebra has a `Functor` and no `Monad` to pass to the Path's `of` and `pure`, so the note shows how to wrap its programs in a `FreePath`. See [A witness another processor writes](../effect/path_source.md#a-witness-another-processor-writes).
 - **`TrampolineUtils.traverseListStackSafe` is stack-safe under every applicative** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): it combines the effects as a balanced tree, so a million-element traversal under `IO` no longer overflows the stack. It builds the result in linear time instead of copying the list at every element, and a `Validated` collecting its errors in a list is no longer quadratic in the failures. See [Core Components](../monads/trampoline_monad.md#core-components).
 - **A `VStream` releases its resources when it stops early or fails** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): closing reaches every finaliser upstream that the stream has started reading, through any operator, innermost first. `takeWhile`, `zipWith`, `headOption`, `find`, `exists`, `forAll` and a failing terminal operation close what they leave unread. So `bracket(...).map(f).headOption()` releases at once. `VStream.closeAfterFailure` closes a failed manual pull. See [onFinalize: Lightweight Cleanup](../monads/vstream_resources.md#onfinalize-lightweight-cleanup).
+- **One `Resource` can serve overlapping uses** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): each `use` releases exactly what it acquired, however the `Resource` was composed. So a `Resource` built once with `map` or `flatMap` and used nested, or once per concurrent request, no longer releases one resource twice and leaks the other. See [Using One Resource Many Times](../monads/vtask_resource.md#using-one-resource-many-times).
 - **`VStreamReactive` passes cancellation across the bridge** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): a `toPublisher` subscription closes the rest of its stream when it cancels or the stream fails, once it has requested elements. Closing a `fromPublisher` stream cancels its subscription, so `take(n)` stops the publisher. See [Reactive Interop: Flow.Publisher Bridge](../monads/vstream_advanced.md#reactive-interop-flowpublisher-bridge).
 
 ---
@@ -103163,6 +103206,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **The rest of the Optics chapter's code is compiled and checked** ([#1048](https://github.com/higher-kinded-j/higher-kinded-j/pull/1048)). The collection, extension, iso, interpreter and batching pages now include tested code for every value they state, and the Iso page checks its round trips with `IsoLaws`. The Focus pages now say that only `maxNavigatorDepth = 1` changes the generated navigators. See [Isomorphisms](../optics/iso.md).
 - **The Optics chapter's examples come from the build** ([#1020](https://github.com/higher-kinded-j/higher-kinded-j/pull/1020)): composed optics declare the precise type `andThen` returns, and each runnable program and its output come from the examples module. The Affines page says what `set` does on an absent focus. See [When the focus is absent](../optics/affine.md#when-the-focus-is-absent).
 - **`@PathSource` has a page of its own** ([#999](https://github.com/higher-kinded-j/higher-kinded-j/issues/999)): [Custom Paths with `@PathSource`](../effect/path_source.md) says when a generated Path is worth it over `GenericPath`, what each capability generates, and how `errorType` types recovery.
+- **The Resource page gives the order finalisers run in** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): the order they were added, where it said the reverse. It also says which exception is reported when a release and a finaliser both throw. See [Finaliser Behaviour](../monads/vtask_resource.md#finalizer-behaviour).
 - **`modifyAllEither` says it keeps the first error, not that it stops there** ([#1031](https://github.com/higher-kinded-j/higher-kinded-j/pull/1031)): every focused value is still validated, and the result keeps the first error in traversal order. The javadoc of `allThroughEither` and `TraversalExtensions.modifyAllEither`, and the examples, now say so too. See [`modifyAllEither`: First Error Only](../optics/optics_extensions.md#modifyalleither-first-error-only).
 
 ---
@@ -103200,6 +103244,12 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A finaliser that used to be skipped now runs** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): when a `VStream` stops early, a terminal operation fails, or a function given to an operator such as `map`, `filter` or `mapTask` throws. A finaliser that throws then fails the operation that stopped, such as `take` or `headOption`. Closing runs the innermost finaliser first, as completing does.
 - **`VStreamPar.merge` starts a producer for each run of its pulled `VTask`** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): not when `pull()` is called. Closing it stops that run's producer and closes each unfinished source. `close()` used to stop the producer when called; now it works when its `VTask` runs, as every stream's does, so run that `VTask`. See [merge: Concurrent Multi-Source Consumption](../monads/vstream_parallel.md#merge-concurrent-multi-source-consumption).
 - **Cancelling a `toPublisher` subscription runs the stream's finalisers** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): once the subscriber has requested elements. It used to leave the stream open.
+- **`Resource.onFailure` runs its action when the use fails** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): it used to do nothing. The action runs before the release, both when the use fails and when a step composed after it fails while the resource is held, such as `map`'s function throwing. See [onFailure Callback](../monads/vtask_resource.md#onfailure-callback).
+- **`Resource.map` releases the resource when its function throws** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): it used to leave the resource acquired.
+- **A `Resource` rejects a null value** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): an `acquire` given to `make` or `fromAutoCloseable` that returns null, a null passed to `pure`, and a function given to `map` that returns null now fail with `NullPointerException`. A null used to be passed on to the use function. Hold an absent value as a `Maybe` instead. See [Factory Methods](../monads/vtask_resource.md#factory-methods).
+- **A failing use keeps its own exception when cleanup fails too** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): the exception from a release, a finaliser or an `onFailure` action is kept among its suppressed exceptions. When a release and a finaliser both throw, the release's exception is reported. The last exception thrown used to replace the others. See [Exception Safety](../monads/vtask_resource.md#exception-safety).
+- **`and(second, third)` releases its first resource when two releases throw one exception** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): the same exception instance from both used to fail with `IllegalArgumentException` and leave the first resource acquired.
+- **Cleanup after a failed or cancelled use runs with the interrupt status cleared** ([#1019](https://github.com/higher-kinded-j/higher-kinded-j/issues/1019)): releases, finalisers and `onFailure` actions, so a blocking close is not cut short. The status is restored afterwards.
 - **A `bracket` whose `use` function throws releases the resource** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): before the failure reaches the caller. It used to leave the resource acquired.
 
 #### Testing {#runtime-testing}
