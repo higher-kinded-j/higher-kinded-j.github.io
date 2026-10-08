@@ -71,8 +71,8 @@ Start from what you came for.
 |---|---|
 | A nested record updated, with the least reading | [Quickstart](quickstart.md), then the [Focus DSL](focus_dsl.md) |
 | The everyday API, learned properly | The pages under **Ship** in the [Chapter Contents](#chapter-contents), read in order |
-| An update that can fail, with every bad value reported | [Fluent API](fluent_api.md) |
-| A PATCH endpoint, or several edits applied as one | [Multi-Edit and Sparse Updates](multi_edit.md) |
+| An update that can fail, with every bad value reported | [Updates That Can Fail](fluent_api.md) |
+| A PATCH endpoint, or several edits applied as one | [Many Edits at Once](multi_edit.md) |
 | A lens, prism, affine or iso explained in depth | [The Optic Types](ch1_intro.md) |
 | A traversal, fold, getter or setter explained in depth | [Collections](ch2_intro.md) |
 | To judge whether optics fit your codebase | [Production Readiness](production_readiness.md) |
@@ -119,10 +119,9 @@ The [Optics Tutorial Track](../tutorials/optics/ch_intro.md) (202 exercises) pra
 1. [Quickstart](quickstart.md): Three runnable examples in 100 lines
 2. [Focus DSL](focus_dsl.md): Generated paths through your own records
 3. [Collections, Optionals and Sealed Types](focus_navigation.md): Step into lists, maps, optionals and variants
-4. [What Are Optics?](optics_intro.md): The optics a path is made of
-5. [Fluent API](fluent_api.md): Updates that can fail, every error reported
-   - [Fluent API Field Guide](fluent_api_field_guide.md): Style, idioms and pitfalls
-6. [Multi-Edit and Sparse Updates](multi_edit.md): Several edits as one, and REST PATCH
+4. [What a Path Is Made Of](optics_intro.md): The optics a path wraps, and when you need one
+5. [Updates That Can Fail](fluent_api.md): Validated updates, every error reported
+6. [Many Edits at Once](multi_edit.md): Several edits as one, and REST PATCH
 
 **On demand**, when a task calls for it:
 
@@ -431,7 +430,7 @@ For one read like this, Jackson's own `response.at("/items/0/name")` is shorter.
 - [Annotations at a Glance](annotations_at_a_glance.md): every `@Generate*` and spec hint, with its target and what it produces
 - [Focus DSL](focus_dsl.md): the path-based API this page previews, in full
 - [Decision Trees](decision_trees.md#tree-2-which-api-style): choosing between the Focus DSL, the Fluent API and the Free Monad DSL
-- [What Are Optics?](optics_intro.md): the conceptual introduction, if you would rather start with the idea
+- [What a Path Is Made Of](optics_intro.md): the optics a path wraps, and when you need one
 - [Record Mapping](../mapping/ch_intro.md): the domain to wire boundary, which needs none of this chapter first
 ~~~
 
@@ -1239,395 +1238,514 @@ Beyond three levels, compose the rest with `.via()`.
 ---
 
 **Previous:** [Focus DSL](focus_dsl.md)
-**Next:** [What Are Optics?](optics_intro.md)
+**Next:** [What a Path Is Made Of](optics_intro.md)
 
 <!-- Source: optics/optics_intro.md -->
 
-# What Are Optics?
+# What a Path Is Made Of
 
-![Diagram showing optics as composable lenses focusing on nested data structures](../images/optics.jpg)
+_Every path wraps an optic: take it out, compose it with `andThen`, and know when you need it._
 
-~~~admonish info title="Hands-On Learning"
-Ready to master optics through practice? The **[Optics Tutorial Track](../tutorials/optics/ch_intro.md)** (202 exercises) offers six interactive journeys covering Lenses, Prisms, Traversals, the Fluent and Free DSLs, the Focus DSL, batching, and the generated DTO boundary.
-~~~
+![A camera lens, close up against a dark background](../images/optics.jpg)
 
 ~~~admonish info title="What You'll Learn"
-- What optics are and how they solve the nested immutable data update problem in Java
-- The six core optic types: Lens, Iso, Prism, Affine, Traversal, and Fold, and when to use each
-- How to compose optics to navigate and modify deeply nested structures
-- Using annotation-driven code generation to create type-safe optics automatically
-- Performing effectful modifications with Higher-Kinded Types using `modifyF` and Applicatives
+- Name the optic each path type wraps, and take it out
+- Write a lens by hand, and see that it is an accessor and a copy
+- Compose optics with `andThen`, and predict the type it returns
+- Choose an optic by how many values it reaches and whether it writes
+- Know when to hand over the optic rather than the path
 ~~~
 
-As Java developers, we appreciate the safety and predictability of immutable objects, especially with the introduction of records. However, this safety comes at a cost: updating nested immutable data is verbose and error-prone.
+~~~admonish example title="See Example Code"
+**The code on this page is [PathPartsBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/parts/PathPartsBook.java) and its [PathPartsBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/optics/parts/PathPartsBookTest.java)**: the page includes them, so the build compiles and runs them.
+~~~
 
-Consider a simple nested record structure:
+Nearly every update so far has been a path, such as `UserFocus.address().street().name()`. A path is a thin wrapper around an *optic*: an object that reads one or more parts of a structure, and rebuilds the structure with them replaced. Most code never opens the wrapper. This page opens it for the few jobs that need it. [When you need the optic](#when-you-need-the-optic) lists them: an API that takes an optic, a type the processor cannot reach, an optic with no path type, and a compiler message that names an optic type.
 
-<!-- verify -->
-```java
-record Street(String name, int number) {}
-record Address(Street street, String city) {}
-record User(String name, Address address) {}
-```
+---
 
-How do you update the user's street name? In standard Java, you're forced into a "copy-and-update" cascade:
+## Each path type wraps an optic {#each-path-type-wraps-an-optic}
 
-<!-- verify -->
-```java
-// What most Java developers actually write
-public User updateStreetName(User user, String newStreetName) {
-    var address = user.address();
-    var street = address.street();
-    var newStreet = new Street(newStreetName, street.number());
-    var newAddress = new Address(newStreet, address.city());
-    return new User(user.name(), newAddress);
-}
-```
+Each of the [three path types](focus_dsl.md#the-three-path-types) wraps the optic of the same reach: a `FocusPath` a `Lens`, an `AffinePath` an `Affine`, and a `TraversalPath` a `Traversal`. Each hands its optic over with one call. The records are the Quickstart's, and an order with a sealed payment:
 
-This is tedious, hard to read, and grows by another rebuild with every level of nesting. What if there was a way to "zoom in" on the data you want to change, update it, and get a new copy of the top-level object back, all in one clean operation?
-
-This is the problem that **Optics** solve.
-
-## The Core Idea
-
-At their core, optics are simply **composable, functional getters and setters** for immutable data structures.
-
-Think of an optic as a *zoom lens* for your data. It's a first-class object that represents a path from a whole structure (like `User`) to a specific part (like the street `name`). Because it's an object, you can pass it around, compose it with other optics, and use it to perform functional updates.
-
-## Think of Optics Like...
-
-* **Lens**: A magnifying glass that focuses on one specific part
-* **Prism**: A tool that splits light, but only works with certain types of light
-* **Affine**: A magnifying glass for a slot that may be empty
-* **Iso**: A universal translator between equivalent languages
-* **Traversal**: A spotlight that can illuminate many targets at once
-* **Fold**: A read-only query tool that extracts and aggregates data
-
-Every optic answers two questions about a structure `S` and a part `A` inside it:
-
-1. **How many parts does it reach?** A Lens or an Iso reaches exactly one, a Prism or an Affine zero or one, and a Traversal or a Fold any number. Each reads accordingly: with `get`, with `getOptional`, or as a list of them all.
-2. **Can it write?** Lens, Prism, Affine, Iso and Traversal can: give them new parts and you get back a new `S` with those parts updated. A write never mutates; a new copy of `S` is returned. The read-only `Fold` and `Getter` are the exceptions: they query but never write.
-
-The real power comes from their **composability**. You can chain optics together to peer deeply into nested structures and perform targeted updates with ease.
-
-## The Optics Family in Higher-Kinded-J
-
-Higher-Kinded-J builds its optics around six core types, each designed for a specific kind of data access problem. Two specialists complete the family of eight that the [chapter introduction](ch_intro.md#how-the-optic-types-relate) draws: the read-only Getter and the write-only Setter, covered in [Collections](ch2_intro.md).
-
-### 1. Lens: For "Has-A" Relationships
-
-A **Lens** is the most common optic. It focuses on a single, required piece of data within a larger "product type" (a `record` or class with fields). It's for data that is guaranteed to exist.
-
-* **Problem it solves**: Getting and setting a field within an object, especially a deeply nested one.
-* **Generated Code**: Annotating a record with `@GenerateLenses` produces a companion class (e.g., `UserLenses`) that contains:
-
-  1. A **lens** for each field (e.g., `UserLenses.address()`).
-  2. Convenient **`with*` helper methods** for easy updates (e.g., `UserLenses.withAddress(...)`).
-* **Example (Deep Update with Lenses)**:
-
-  * To solve our initial problem of updating the user's street name (the same path the chapter opened with), we compose lenses:
-
-<!-- verify -->
-```java
-    // Compose lenses to create a direct path to the nested data
-    var userToStreetName = UserLenses.address()
-        .andThen(AddressLenses.street())
-        .andThen(StreetLenses.name());
-  
-    // Perform the deep update in a single, readable line
-    User updatedUser = userToStreetName.set("New Street", user);
-```
-
-* **Example (Shallow Update with `with*` Helpers)**:
-
-  * For simple, top-level updates, the `with*` methods are more direct and discoverable.
-
-<!-- verify -->
-```java
-// Before: Using the lens directly
-User userWithNewName = UserLenses.name().set("Bob", user);
-
-// After: Using the generated helper method
-User renamedUser = UserLenses.withName(user, "Bob");
-```
-
-### 2. Iso: For "Is-Equivalent-To" Relationships
-
-An **Iso** (Isomorphism) is a special, reversible optic. It represents a lossless, two-way conversion between two types that hold the exact same information. Think of it as a type-safe, composable adapter.
-
-* **Problem it solves**: Swapping between different representations of the same data, such as a wrapper class and its raw value, or between two structurally different but informationally equivalent records.
-* **Example**: Suppose you have a `Point` record and a `Tuple2<Integer, Integer>`, which are structurally different but hold the same data.
-
-<!-- verify -->
-  ```java
-  public record Point(int x, int y) {}
-  ```
-
-  You can define an `Iso` to convert between them:
-
-<!-- verify -->
-  ```java
-  @GenerateIsos
-  public static Iso<Point, Tuple2<Integer, Integer>> pointToTuple() {
-    return Iso.of(
-        point -> Tuple.of(point.x(), point.y()), // get
-        tuple -> new Point(tuple._1(), tuple._2())  // reverseGet
-    );
-  }
-  ```
-
-  This `Iso` can now be composed with other optics to, for example, create a `Lens` that goes from a `Point` directly to its first element inside a `Tuple` representation.
-
-### 3. Prism: For "Is-A" Relationships
-
-A **Prism** is like a Lens, but for "sum types" (`sealed interface` or `enum`). It focuses on a single, *possible case* of a type. A Prism's `get` operation can fail (it returns an `Optional`), because the data might not be the case you're looking for. Think of it as a type-safe, functional `instanceof` and cast.
-
-* **Problem it solves**: Safely operating on one variant of a sealed interface.
-* **Example**: Instead of using an `if-instanceof` chain to handle a specific `DomainError`:
-
-<!-- verify -->
-```java
-// Using a generated Prism for a sealed interface
-DomainErrorPrisms.shippingError()
-   .getOptional(error) // Safely gets a ShippingError if it matches
-   .filter(ShippingError::isRecoverable)
-   .ifPresent(this::handleRecovery); // Perform action only if it's the right type
-```
-
-### 4. Affine: For "Might-Be-There" Relationships
-
-An **Affine** focuses on **zero or one** value: an optional field, a nullable property, or any path where the target may be absent but can never occur twice. It behaves like a Lens whose focus is not guaranteed, and it is exactly what you get when you compose a Lens with a Prism.
-
-* **Problem it solves**: Safely reading and updating a value inside an `Optional` field without unwrapping it by hand.
-* **Example**: To reach a phone number stored as `Optional<String>`:
-
-<!-- verify -->
-```java
+``` java
 @GenerateLenses
-record ContactInfo(String email, Optional<String> phone) {}
+@GenerateFocus(generateNavigators = true)
+record Street(String name, int number) {}
 
-ContactInfo contact = new ContactInfo("ada@example.com", Optional.of("020 7946 0958"));
+@GenerateLenses
+@GenerateFocus(generateNavigators = true)
+record Address(Street street, String city) {}
 
-// Lens into the Optional field, then Affines.some() into its content
-Affine<ContactInfo, String> contactToPhone =
-    ContactInfoLenses.phone().andThen(Affines.some());
+@GenerateLenses
+@GenerateFocus(generateNavigators = true)
+record User(String name, Address address) {}
 
-Optional<String> phone = contactToPhone.getOptional(contact);       // empty when absent
-ContactInfo updated = contactToPhone.modify(String::trim, contact); // no-op when absent
 ```
 
-### 5. Traversal: For "Has-Many" Relationships
+``` java
+@GeneratePrisms
+sealed interface Payment permits Payment.Card, Payment.Invoice {
+  record Card(String last4) implements Payment {}
 
-A **Traversal** is an optic that can focus on multiple targets at once, typically all the items within a collection inside a larger structure.
+  record Invoice(String terms) implements Payment {}
+}
 
-* **Problem it solves**: Applying an operation to every element in a `List`, `Set`, or other collection that is a field within an object.
-* **Example**: To validate every promo code in an order, collecting every bad one rather than stopping at the first:
+@GenerateLenses
+@GenerateFocus
+record LineItem(String sku, int quantity) {}
 
-  <!-- verify -->
-  ```java
-  @GenerateTraversals
-  record OrderData(String id, List<String> promoCodes) {}
-
-  Function<String, Validated<String, String>> checkCode = code ->
-      code.matches("[A-Z0-9]{6}")
-          ? Validated.valid(code)
-          : Validated.invalid("not a promo code: " + code);
-
-  // Every invalid code is reported, in order; an all-valid order comes back unchanged.
-  Validated<List<String>, OrderData> result =
-      OpticOps.modifyAllValidated(orderData, OrderDataTraversals.promoCodes(), checkCode);
-  ```
-
-### 6. Fold: For "Has-Many" Queries
-
-A **Fold** is a read-only optic designed specifically for querying and extracting data without modification. Think of it as a `Traversal` that has given up the ability to modify in exchange for a clearer expression of intent and additional query-focused operations.
-
-* **Problem it solves**: Extracting information from complex data structures: finding items, checking conditions, aggregating values, or collecting data without modifying the original structure.
-* **Generated Code**: Annotating a record with `@GenerateFolds` produces a companion class (e.g., `OrderFolds`) with a `Fold` for each field.
-* **Example (Querying Product Catalogue)**:
-
-  * To find all products in an order that cost more than £50:
-
-<!-- verify -->
-```java
-    // Get the generated fold
-    Fold<Order, Product> orderToProducts = OrderFolds.items();
-
-    // Find all matching products
-    List<Product> expensiveItems = orderToProducts.getAll(order).stream()
-        .filter(product -> product.price() > 50.00)
-        .collect(toList());
-
-    // Or check if any exist
-    boolean hasExpensiveItems = orderToProducts.exists(
-        product -> product.price() > 50.00,
-        order
-    );
+@GenerateLenses
+@GenerateFocus
+@GenerateTraversals
+record Order(String id, Payment payment, List<LineItem> lines) {}
 ```
 
-* **Key Operations**:
-  * `getAll(source)`: Extract all focused values into a `List`
-  * `preview(source)`: Get the first value as an `Optional`
-  * `find(predicate, source)`: Find first matching value
-  * `exists(predicate, source)`: Check if any value matches
-  * `all(predicate, source)`: Check if all values match
-  * `isEmpty(source)`: Check if there are zero focused values
-  * `length(source)`: Count the number of focused values
+Each path gives up its optic:
 
-**Why Fold is Important**: While `Traversal` can do everything `Fold` can do, using `Fold` makes your code's intent crystal clear: "I'm only reading this data, not modifying it." This is valuable for code reviewers, for preventing accidental mutations, and for expressing domain logic where queries should be separated from commands ([CQRS pattern](https://martinfowler.com/bliki/CQRS.html)).
+``` java
+    FocusPath<User, String> streetPath = UserFocus.address().street().name();
+    Lens<User, String> streetName = streetPath.toLens();
 
-## Advanced Capabilities: Profunctor Adaptations
+    AffinePath<Order, Payment.Card> cardPath = OrderFocus.payment().via(PaymentPrisms.card());
+    Affine<Order, Payment.Card> card = cardPath.toAffine();
 
-Every optic is fundamentally an `Optic<S, T, A, B>`, and that interface carries the **profunctor** operations `contramap`, `map`, and `dimap`, which adapt the types an optic works between: where it reads from, and what an update produces.
-
-In practice most adaptation is done by composing (when the new source contains the old) or by bridging through an [Iso](iso.md) (when two shapes hold the same information), both of which keep the full optic API. The raw profunctor operations return an `Optic`, and come into their own in effectful `modifyF` pipelines. The [Profunctor Optics Guide](profunctor_optics.md) works through which route fits which job.
-
-## How `higher-kinded-j` Provides Optics
-
-This brings us to the unique advantages `higher-kinded-j` offers for optics in Java.
-
-1. **An Annotation-Driven Workflow**: Manually writing optics is boilerplate. The `higher-kinded-j` approach automates this. By simply adding an annotation (`@GenerateLenses`, `@GeneratePrisms`, etc.) to your data classes, you get fully-functional, type-safe optics for free. That removes the boilerplate that keeps most Java code away from optics.
-2. **Higher-Kinded Types for Effectful Updates**: Because `higher-kinded-j` provides an HKT abstraction (`Kind<F, A>`) and type classes like `Functor` and `Applicative`, the optics can perform *effectful* modifications. The `modifyF` method is generic over an `Applicative` effect `F`. This means you can perform an update within the context of any data type that has an `Applicative` instance:
-   * Want to perform an update that might fail? Use `Optional` or `Either` as your `F`.
-   * Want to perform an asynchronous update? Use `CompletableFuture` as your `F`.
-   * Want to accumulate validation errors? Use `Validated` as your `F`.
-3. **Adaptable to other types**: an optic can be adapted with `contramap`, `map` and `dimap` to work over different source and target types, which helps when integrating with external systems, legacy data formats and strongly-typed wrappers.
-
-## Common Patterns
-
-### When to Use `with*` Helpers vs Manual Lenses
-
-* **Use `with*` helpers** for simple, top-level field updates
-* **Use composed lenses** for deep updates or when you need to reuse the path
-* **Use manual lens creation** for a type you cannot annotate, and test it with `LensLaws`: see [Use Manual Lens Creation When](lenses.md#use-manual-lens-creation-when)
-
-### Decision Guide
-
-The [first decision tree](decision_trees.md#tree-1-which-optic-do-i-need) routes the core choices; two further tools complete the family:
-
-* **Need to query or extract data without modification?** → **Fold**
-* **Need to adapt existing optics to other types?** → **Profunctor operations**
-
-## Common Pitfalls
-
-**Don't do this:**
-
-<!-- verify -->
-```java
-// Get-then-set repeats the path and leaves a gap between the read and the write
-var street = userToStreetName.get(user);
-var updatedUser = userToStreetName.set(street.toUpperCase(), user);
+    TraversalPath<Order, Integer> quantityPath = OrderFocus.lines().via(LineItemFocus.quantity());
+    Traversal<Order, Integer> quantities = quantityPath.toTraversal();
 ```
 
-**Do this instead:**
+The optic reads and writes exactly what its path does: setting the street name through `streetName` gives the same `User` as setting it through `streetPath`. `FocusPath.of(lens)` goes the other way, and wraps an optic you already hold in a path.
 
-<!-- verify -->
-```java
-// Use modify() for transformations
-var updatedUser = userToStreetName.modify(String::toUpperCase, user);
+---
+
+## What a lens is {#what-a-lens-is}
+
+A `Lens<S, A>` is the pair you would write by hand for one record component: the accessor, and a copy that replaces that component. `Lens.of` takes exactly those two functions:
+
+``` java
+    Lens<User, Address> address =
+        Lens.of(User::address, (user, newAddress) -> new User(user.name(), newAddress));
 ```
+
+`UserLenses.address()` is this lens, generated, and a generated lens class holds one per component, as the Quickstart's [What the processor wrote](quickstart.md#1-annotate-then-update) shows. A lens is a wither you can pass around, and it does what a wither cannot: compose. [Why a lens, when you have `@With`?](lenses.md#lens-or-wither) makes that case in full.
+
+---
+
+## Composing optics with `andThen` {#composing-optics-with-andthen}
+
+`andThen` joins two optics end to end, as `.via(...)` joins a path to its next hop. The result reaches as many values as the two steps allow together. A lens then a lens is a `Lens`. A lens then a zero-or-one step is an `Affine`, even when that step is a `Prism`. Any of the five read-write optics followed by a `Traversal` is a `Traversal`. An `Iso` takes the type of whatever follows it:
+
+``` java
+    // exactly one, then exactly one: still exactly one
+    Lens<User, String> streetName =
+        UserLenses.address().andThen(AddressLenses.street()).andThen(StreetLenses.name());
+
+    // exactly one, then one variant: zero or one
+    Affine<Order, Payment.Card> card = OrderLenses.payment().andThen(PaymentPrisms.card());
+
+    // zero or more, then exactly one: zero or more
+    Traversal<Order, Integer> quantities =
+        OrderTraversals.lines().andThen(LineItemLenses.quantity());
+```
+
+`.via(...)` on a path is `andThen` on the optic inside, so `OrderFocus.payment().via(PaymentPrisms.card())` and `OrderLenses.payment().andThen(PaymentPrisms.card())` find the same card. The composed `streetName` is the copy-and-rebuild cascade written once: a set through it rebuilds the `Street`, the `Address` and the `User`, and reuses every value off the path. [Composition Rules](composition_rules.md#composition-rules-table) gives the result type for every pair.
+
+---
+
+## Choosing an optic {#choosing-an-optic}
+
+Two questions pick the optic: how many values it reaches, and whether you may write through it.
+
+| | exactly one | zero or one | zero or more |
+|---|---|---|---|
+| **read and write** | [Lens](lenses.md), or an [Iso](iso.md) when it converts both ways | [Affine](affine.md), or a [Prism](prisms.md) when it picks a variant of a sealed type | [Traversal](traversals.md) |
+| **read only** | [Getter](getters.md) | a [Fold](folds.md) that finds at most one | [Fold](folds.md) |
+| **write only** | | | [Setter](setters.md) |
+
+Each plays the part of a Java idiom you already write:
+
+| Optic | Plays the part of | What it adds |
+|---|---|---|
+| Lens | an accessor and a `withX` copy, as one value | composes through nested records |
+| Affine | an accessor that returns `Optional`, with a copy that writes the value | composes, and `modify` leaves an absent value alone |
+| Prism | an `instanceof` pattern, and the variant's constructor | composes, and builds the variant back |
+| Iso | a wrapper record's constructor and accessor, such as `new Sku(text)` and `sku.text()`, which lose nothing | composes, and turns around with `reverse()` |
+| Traversal | `replaceAll` over a list inside a record, returning a new record | reaches every element in one pass, through nested lists |
+| Fold | a `Stream` over the same values, which only reads | composes, and says in its type that it never writes |
+| Getter | a derived accessor, such as a `fullName()` computed from two fields | composes with other getters, and with any optic through `asFold()` |
+| Setter | `replaceAll` with nothing to read back | composes, for a value you change without reading |
+
+The [chapter introduction](ch_intro.md#how-the-optic-types-relate) draws how the eight types relate, and [Decision Trees](decision_trees.md#tree-1-which-optic-do-i-need) asks the same two questions as a tree.
+
+---
+
+## Using an optic directly {#using-an-optic-directly}
+
+A raw optic carries the operations its type allows. A `Traversal` is the exception that surprises people: its reads and writes live in the `Traversals` utility rather than on the traversal itself, and it reads as a `Fold` through `asFold()`:
+
+``` java
+    Order doubled = Traversals.modify(quantities, quantity -> quantity * 2, order);
+
+    int totalQuantity =
+        quantities.asFold().foldMap(Monoids.integerAddition(), quantity -> quantity, order);
+
+    Optional<Payment.Card> paidByCard = card.getOptional(order);
+```
+
+For an order of quantities 1 and 2 paid by card, `doubled` holds 2 and 4, `totalQuantity` is 3, and `paidByCard` holds the card. A `TraversalPath` has `modifyAll` and `getAll` of its own, which is one reason to stay on the path. Mind the argument order, which differs by home: a path's methods take the source last, `path.modify(f, source)`; `Traversals.modify(traversal, f, source)` puts the optic first; and `OpticOps`, on the next page, puts the source first.
+
+---
+
+## When you need the optic, not the path {#when-you-need-the-optic}
+
+Stay on the path by default. It has every read and write, its field names locate a validation error, and it can hand its value on to an [Effect Path](../effect/ch_intro.md). Take the optic out when one of these is true:
+
+| When | What to do |
+|---|---|
+| An API takes an optic: `OpticOps`, which [Updates That Can Fail](fluent_api.md) uses, or hkj-test's `LensLaws`, which checks that a hand-written lens behaves | Hand it `path.toLens()`, `toAffine()` or `toTraversal()` |
+| The processor cannot reach the type, because you cannot annotate the class | Write the lens with `Lens.of`, as in [What a lens is](#what-a-lens-is), and check it with `LensLaws`; or generate the optics with `@ImportOptics`, which [Optics for External Types](importing_optics.md) covers, and [when to write a lens by hand](lenses.md#use-manual-lens-creation-when) compares |
+| The optic has no path type: an `Iso`, a `Getter`, a `Fold` or a `Setter` | Use it directly. An iso still joins a path through `.via(iso)`, and every path gives you its fold with `asFold()` |
+| A compiler message names an optic type, such as `Affine<Order, Card>` | Read it as the optic inside the matching path type; the grid says what that optic can do, and [Compiler Errors](compiler_errors.md) lists the common messages |
+
+---
 
 ~~~admonish info title="Key Takeaways"
-* **Optics are composable, reusable paths**: first-class getter/setter objects you chain with `andThen` to reach any depth, replacing the copy-and-update cascade
-* **Six core types, one decision**: Lens (always there), Prism (might match), Affine (might be there), Iso (same information, different shape), Traversal (many targets), Fold (read-only queries)
-* **The annotations write the boilerplate**: `@GenerateLenses`, `@GeneratePrisms`, `@GenerateIsos`, `@GenerateTraversals`, and `@GenerateFolds` keep the optics in sync with your records
-* **`modifyF` makes any settable path effect-ready**: failable, accumulating, or asynchronous updates through the same optic; [Lenses](lenses.md) shows it in action
+* **A path is an optic with a friendlier API.** `FocusPath` wraps a `Lens`, `AffinePath` an `Affine` and `TraversalPath` a `Traversal`; `toLens()`, `toAffine()` and `toTraversal()` take it out.
+* **A lens is an accessor and a copy.** `Lens.of(getter, setter)` is the whole definition, and the processor writes one per record component.
+* **`andThen` is `.via()` for optics.** The result reaches as many values as both steps allow together, an `Iso` takes the type of what follows it, and Composition Rules tabulates every pair.
+* **Two questions pick the optic.** How many values it reaches, and whether it may write.
+* **Stay on the path until an API, a type or a message needs the optic.**
+~~~
+
+~~~admonish info title="Hands-On Learning"
+- [Tutorial01_LensBasics.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial01_LensBasics.java) (7 exercises): lenses by hand and generated
+- [Tutorial06_OpticsComposition.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial06_OpticsComposition.java) (7 exercises): composing different optic types
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Decision Trees](decision_trees.md#tree-2-which-api-style): Three Java-native ways to use optics: the Focus DSL for path-based navigation, the Fluent API for validation-aware updates, and the Free Monad DSL for programs-as-data.
+- [The Optic Types](ch1_intro.md): each optic type in depth
+- [Composition Rules](composition_rules.md): the type `andThen` returns for every pair
+- [Optic Capabilities](optic_capabilities.md): which operations each optic type declares
+- [Profunctor Optics](profunctor_optics.md): changing the types an optic works between
 ~~~
 
 ---
 
 **Previous:** [Collections, Optionals and Sealed Types](focus_navigation.md)
-**Next:** [Fluent API](fluent_api.md)
+**Next:** [Updates That Can Fail](fluent_api.md)
 
 <!-- Source: optics/fluent_api.md -->
 
-# Fluent API for Optics: Java-Friendly Optic Operations
+# Updates That Can Fail
 
-![Illustration of fluent API patterns for Java-friendly optic operations](../images/lens2.jpg)
+_Check a value as you update it, and choose whether the caller hears the first error or every one._
+
+![A black-and-white photograph of a child in oversized goggles with spiral lenses](../images/lens2.jpg)
 
 ~~~admonish info title="What You'll Learn"
-- Two styles of optic operation: static methods and fluent builders
-- Reading, writing and querying through any optic with `OpticOps`
-- Four validation strategies, and which one each situation wants
-- Effectful modification with `modifyF`, and when the dedicated methods replace it
+- Update a field through a check that may reject the new value
+- Check every element of a list, and report every failure at once
+- Choose between the first error, every error, or no detail at all
+- Reach for `modifyF` when the effect is something else, such as an asynchronous call
 ~~~
 
 ~~~admonish example title="See Example Code"
-[FluentOpticOpsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/fluent/FluentOpticOpsExample.java) | [FluentValidationExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/fluent/FluentValidationExample.java)
+**The code on this page is [FluentBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/fluent/FluentBook.java) and its [FluentBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/optics/fluent/FluentBookTest.java)**: the page includes them, so the build compiles and runs them.
 ~~~
 
-Optics arrived in Java from Haskell, and the traditional names came with them: `view`, `over`, `preview`, with the value before the source. `OpticOps` restates the same operations in the order and vocabulary a Java developer expects, and adds the thing plain optics do not have: a modification that is allowed to fail.
-
-Here is the payoff first, an update that validates every element and reports *all* the failures:
-
-<!-- verify -->
-```java
-Validated<List<String>, Order> checked =
-    OpticOps.modifyAllValidated(order, Fixture.orderPrices, Fixture::validatePrice);
-// Invalid(["Price cannot be negative: -10.00", "Price exceeds maximum: 15000.00"])
-```
-
-`Fixture` is the compiled example's own setup: sample records, hand-written optics and validators. Nothing in it is library API.
-
-One call, both bad prices named. No `Applicative` wiring, no `Kind` in sight.
+A path's `modify` takes a function that always succeeds. A real update often has to check the new value first: an email must contain `@`, and a price must not be negative. `OpticOps`, the library's fluent API, runs the check through an optic and hands back the outcome as a value. That value is an `Either`, which holds the first error or the updated record; a `Validated`, which holds every error or the updated record; or a `Maybe`, the library's `Optional`. `OpticOps` takes the optic, which a path hands over with `toLens()` or `toTraversal()`, as [What a Path Is Made Of](optics_intro.md#each-path-type-wraps-an-optic) showed.
 
 ---
 
-## The Two Styles
+## Every element, every error {#every-element-every-error}
+
+The records are an order of priced line items and a user:
+
+``` java
+@GenerateFocus
+record LineItem(String sku, BigDecimal price) {}
+
+@GenerateFocus
+record Order(String id, List<LineItem> items) {}
+
+@GenerateFocus
+record User(String username, String email) {}
+
+```
+
+Checking every price on an order by hand is a loop that collects the errors:
+
+``` java
+    List<String> errors = new ArrayList<>();
+    for (LineItem item : order.items()) {
+      if (item.price().signum() < 0) {
+        errors.add("Price cannot be negative: " + item.price());
+      } else if (item.price().compareTo(MAXIMUM) > 0) {
+        errors.add("Price exceeds maximum: " + item.price());
+      }
+    }
+```
+
+That loop works. It knows the order's shape, though, and it ends in a list you still have to turn into an answer, by throwing or by returning the order. Written once as a method that returns its verdict, the check goes through the optic instead:
+
+``` java
+  static final BigDecimal MAXIMUM = new BigDecimal("10000");
+
+  static Validated<String, BigDecimal> checkPrice(BigDecimal price) {
+    if (price.signum() < 0) {
+      return Validated.invalid("Price cannot be negative: " + price);
+    }
+    return price.compareTo(MAXIMUM) > 0
+        ? Validated.invalid("Price exceeds maximum: " + price)
+        : Validated.valid(price);
+  }
+
+```
+
+``` java
+    Traversal<Order, BigDecimal> prices =
+        OrderFocus.items().via(LineItemFocus.price()).toTraversal();
+
+    Validated<List<String>, Order> checked =
+        OpticOps.modifyAllValidated(order, prices, FluentBook::checkPrice);
+
+    String report =
+        checked.fold(
+            errors -> errors.size() + " invalid prices: " + String.join("; ", errors),
+            _ -> "all prices accepted");
+```
+
+For an order priced at -10.00, 25.00 and 15000.00, `checked` is `Invalid(["Price cannot be negative: -10.00", "Price exceeds maximum: 15000.00"])`, and `report` reads `"2 invalid prices: Price cannot be negative: -10.00; Price exceeds maximum: 15000.00"`. An order whose prices all pass comes back as `Valid`, holding the order. One call names both bad prices, and the answer is a value, which goes on to combine with other checks rather than end in a throw.
+
+The check returns `Validated<String, BigDecimal>`, one error at most, and the result collects them as `Validated<List<String>, Order>`. The lifting into a list is done for you. `OpticOps` takes the source first, as a static utility method does.
+
+---
+
+## Four ways to fail {#part-2-validation-aware-modification}
+
+Four methods differ only in what they tell the caller when a check fails:
+
+| Method | Result | Behaviour | Best for |
+|--------|--------|-----------|----------|
+| `modifyEither` | `Either<E, S>` | First error wins | Sequential validation, fail fast |
+| `modifyMaybe` | `Maybe<S>` | Success or nothing, no detail | Optional enrichment |
+| `modifyAllValidated` | `Validated<List<E>, S>` | Accumulates every error | Forms, imports, user feedback |
+| `modifyAllEither` | `Either<E, S>` | First error wins (every element is still evaluated) | A batch job that reports one error |
+
+```mermaid
+flowchart TD
+    accTitle: Which validation method to use
+    accDescr: If the caller needs to know why an update failed as soon as it failed, use modifyEither. If only whether it worked, modifyMaybe. If everything that is wrong in one pass, modifyAllValidated. If a batch job needs one error to report, modifyAllEither.
+    Q{"What does the caller<br/>need to know?"}
+    Q -->|"why it failed,<br/>as soon as it failed"| E(["modifyEither<br/>Either, first error"])
+    Q -->|"only whether<br/>it worked"| M(["modifyMaybe<br/>Maybe, no detail"])
+    Q -->|"everything that is wrong,<br/>in one pass"| V(["modifyAllValidated<br/>Validated, all errors"])
+    Q -->|"one error for<br/>a batch job to report"| A(["modifyAllEither<br/>Either, first error only"])
+
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class Q decision
+    class E,M,V,A tier
+```
+
+The rest of this section uses three more checks, each as short as `checkPrice`:
+
+~~~admonish example title="The other checks" collapsible=true
+``` java
+  static Either<String, BigDecimal> checkPriceEither(BigDecimal price) {
+    return checkPrice(price).toEither();
+  }
+
+  static Either<String, String> checkEmail(String email) {
+    return email.contains("@") ? Either.right(email) : Either.left("Invalid email: " + email);
+  }
+
+  static Maybe<String> normaliseUsername(String username) {
+    String trimmed = username.strip();
+    return trimmed.length() >= 3 && trimmed.length() <= 20 ? Maybe.just(trimmed) : Maybe.nothing();
+  }
+
+```
+~~~
+
+### One field, fail fast {#one-field-fail-fast}
+
+``` java
+    Lens<User, String> email = UserFocus.email().toLens();
+
+    Either<String, User> result = OpticOps.modifyEither(user, email, FluentBook::checkEmail);
+
+    String message = result.fold(error -> "rejected: " + error, u -> "accepted: " + u.email());
+```
+
+For `alice@example.com`, `message` is `"accepted: alice@example.com"`; for `bob.example.com`, `result` is `Left("Invalid email: bob.example.com")`.
+
+### One field, no detail {#one-field-silent-failure}
+
+``` java
+    Maybe<User> normalised =
+        OpticOps.modifyMaybe(user, UserFocus.username().toLens(), FluentBook::normaliseUsername);
+
+    User safe = normalised.orElse(user);
+```
+
+A username of `"  alice  "` comes back trimmed in a `Just`; one of two letters gives `Nothing`, and `safe` falls back to the user as they were. `modifyMaybe` has the shape of `modifyEither`, minus the explanation, so use it when the caller's next move is a fallback rather than a message.
+
+### Every element, first error only {#every-element-first-error-only}
+
+``` java
+    Either<String, Order> firstFailure =
+        OpticOps.modifyAllEither(order, prices, FluentBook::checkPriceEither);
+```
+
+For the order with two bad prices, `firstFailure` is `Left("Price cannot be negative: -10.00")`.
+
+~~~admonish tip title="Why this matters"
+The difference between `modifyAllValidated` and `modifyAllEither` is a product decision, not a technical one. A user filling in a form wants every problem at once; a batch job wants one error and no report. Both are one method call, and the type you get back tells the next reader which decision was made. `Either` keeps only the first error in its *result*, but the traversal still applies your check to every element before the results are combined, so it does not save the work.
+~~~
+
+### Sequential validation {#sequential-validation}
+
+`Either` chains, so a fail-fast registration is a `flatMap` per field:
+
+``` java
+    Either<String, User> registered =
+        OpticOps.modifyEither(user, UserFocus.email().toLens(), FluentBook::checkEmail)
+            .flatMap(
+                checked ->
+                    OpticOps.modifyEither(
+                        checked,
+                        UserFocus.username().toLens(),
+                        name ->
+                            name.length() >= 3
+                                ? Either.right(name)
+                                : Either.left("Username must be at least 3 characters")));
+```
+
+A bad email stops the chain with `Left("Invalid email: ...")` before the username is looked at; a good email and a two-letter username give `Left("Username must be at least 3 characters")`.
+
+~~~admonish tip title="You can ship now"
+You can now check a field or every element of a list as you update it, and choose whether the caller hears the first error or every one. The rest of this page is for an effect other than these three, and for code that holds an optic rather than a path.
+~~~
+
+---
+
+## Any other effect: `modifyF` {#part-3-arbitrary-effects-with-modifyf}
+
+The four methods cover `Either`, `Maybe` and `Validated`. For any other effect, such as fetching a bonus asynchronously, every optic that writes and every path has `modifyF`. It takes an `Applicative`, the object that knows how to combine results inside that effect, and it speaks `Kind`, the library's encoding of a generic container such as `CompletableFuture<A>`. That makes it the mechanism behind `modifyAllValidated` and `modifyAllEither`, at the price of some ceremony at the call site:
+
+~~~admonish example title="Bonuses fetched asynchronously, with `modifyF`" collapsible=true
+``` java
+@GenerateLenses
+record Person(String name, int age, String status) {}
+
+@GenerateLenses
+@GenerateFocus
+record Player(String name, int score, String status) {}
+
+@GenerateFocus
+@GenerateTraversals
+record Team(String name, List<Player> players) {}
+```
+
+``` java
+  static CompletableFuture<Integer> fetchBonus(int score) {
+    return CompletableFuture.completedFuture(score + 10);
+  }
+
+```
+
+``` java
+    Applicative<CompletableFutureKind.Witness> futures = Instances.applicative(completableFuture());
+
+    TraversalPath<Team, Integer> scores = TeamFocus.players().via(PlayerFocus.score());
+
+    Kind<CompletableFutureKind.Witness, Team> pending =
+        scores.modifyF(score -> FUTURE.widen(fetchBonus(score)), team, futures);
+
+    CompletableFuture<Team> withBonuses = FUTURE.narrow(pending);
+```
+
+For scores of 100 and 85, the future completes with scores of 110 and 95. `FUTURE.widen` and `FUTURE.narrow` convert between `CompletableFuture` and its `Kind`. `modifyAllValidated` is the same call with a `Validated` applicative over a list of errors, each check's error wrapped in a list, and it does that conversion out of sight.
+~~~
+
+Reach for `modifyF` for an effect beyond the three, such as `IO`, `CompletableFuture`, `VTask` or your own. Reach for it too for a check that is itself an effect, such as a lookup over the network, and anywhere you already hold an `Applicative`. `OpticOps.modifyF` and `OpticOps.modifyAllF` take the same arguments, source first, for a raw optic. [Type Class and Effect Integration](focus_effects.md) has more.
+
+---
+
+## Field notes {#field-notes}
+
+The rest of this page is for code that holds an optic rather than a path, and for the idioms that recur around `OpticOps`.
+
+### Reads, writes and queries {#part-1-reading-writing-querying}
+
+`OpticOps` restates every read and write, source first, and is overloaded on the optic type, so the same names work whatever you hand them. If you know optics from Haskell or Scala, `get` is `view`, `modify` is `over`, and `preview` keeps its name. These examples use generated `Lenses` and `Traversals` classes:
+
+``` java
+@GenerateLenses
+record Person(String name, int age, String status) {}
+
+@GenerateLenses
+@GenerateFocus
+record Player(String name, int score, String status) {}
+
+@GenerateFocus
+@GenerateTraversals
+record Team(String name, List<Player> players) {}
+```
+
+``` java
+    Traversal<Team, Integer> playerScores = TeamTraversals.players().andThen(PlayerLenses.score());
+
+    // Read
+    String name = OpticOps.get(alice, PersonLenses.name());
+    List<Integer> scores = OpticOps.getAll(team, playerScores);
+    Optional<Integer> firstScore = OpticOps.preview(team, playerScores);
+
+    // Write
+    Person updated = OpticOps.set(alice, PersonLenses.age(), 30);
+    Team doubled = OpticOps.modifyAll(team, playerScores, score -> score * 2);
+
+    // Query, without modifying anything
+    boolean hasHighScorer = OpticOps.exists(team, playerScores, score -> score > 90);
+    boolean allPassed = OpticOps.all(team, playerScores, score -> score >= 50);
+    int playerCount = OpticOps.count(team, TeamTraversals.players());
+    boolean noPlayers = OpticOps.isEmpty(team, TeamTraversals.players());
+    Optional<Player> top =
+        OpticOps.find(team, TeamTraversals.players(), player -> player.score() > 90);
+```
+
+### Static methods or builders {#the-two-styles}
 
 Nearly every operation exists as a concise static method and as a fluent builder. They compile to the same thing; pick per call site:
 
-<!-- verify -->
-```java
-// Static style
-int age = OpticOps.get(alice, PersonLenses.age());
-Person older = OpticOps.modify(alice, PersonLenses.age(), a -> a + 1);
+``` java
+    // Static style
+    int age = OpticOps.get(alice, PersonLenses.age());
+    Person older = OpticOps.modify(alice, PersonLenses.age(), a -> a + 1);
 
-// Builder style
-int sameAge = OpticOps.getting(alice).through(PersonLenses.age());
-Person alsoOlder = OpticOps.modifying(alice).through(PersonLenses.age(), a -> a + 1);
+    // Builder style
+    int sameAge = OpticOps.getting(alice).through(PersonLenses.age());
+    Person alsoOlder = OpticOps.modifying(alice).through(PersonLenses.age(), a -> a + 1);
 ```
 
-The static form is shorter; the builder form reads better when the optic expression is long, and the IDE's completion list after `OpticOps.modifying(order).` is a decent map of what is possible.
+The static form is shorter, for a one-off operation where naming it twice would be noise. The builder reads better when the optic expression is long, and the IDE's completion list after `OpticOps.modifying(order).` is a decent map of what is possible. Four builders cover reading, setting, modifying and querying:
 
----
-
-## Part 1: Reading, Writing, Querying
-
-`OpticOps` is overloaded on the optic type, so the same names work whatever you hand them:
-
-<!-- verify -->
-```java
-// Read
-String name = OpticOps.get(alice, PersonLenses.name());
-List<Integer> scores = OpticOps.getAll(team, Fixture.playerScores);
-Optional<Integer> firstScore = OpticOps.preview(team, Fixture.playerScores);
-
-// Write
-Person updated = OpticOps.set(alice, PersonLenses.age(), 30);
-Team flattened = OpticOps.setAll(team, Fixture.playerScores, 100);
-Team doubled = OpticOps.modifyAll(team, Fixture.playerScores, score -> score * 2);
-
-// Query, without modifying anything
-boolean hasHighScorer = OpticOps.exists(team, Fixture.playerScores, score -> score > 90);
-boolean allPassed = OpticOps.all(team, Fixture.playerScores, score -> score >= 50);
-int playerCount = OpticOps.count(team, TeamTraversals.players());
-boolean empty = OpticOps.isEmpty(team, TeamTraversals.players());
-Optional<Player> top = OpticOps.find(team, TeamTraversals.players(), p -> p.score() > 90);
+``` java
+    List<Integer> allScores = OpticOps.getting(team).allThrough(playerScores);
+    Team reset = OpticOps.setting(team).allThrough(playerScores, 0);
+    Team bumped = OpticOps.modifying(team).allThrough(playerScores, score -> score + 5);
+    boolean any = OpticOps.querying(team).anyMatch(playerScores, score -> score > 90);
 ```
 
-The builders cover the same ground under four verbs:
+The validation methods have a builder too:
 
-<!-- verify -->
-```java
-List<Integer> allScores = OpticOps.getting(team).allThrough(Fixture.playerScores);
-Team reset = OpticOps.setting(team).allThrough(Fixture.playerScores, 0);
-Team bumped = OpticOps.modifying(team).allThrough(Fixture.playerScores, s -> s + 5);
-boolean any = OpticOps.querying(team).anyMatch(Fixture.playerScores, s -> s > 90);
+``` java
+    Either<String, User> checkedEmail =
+        OpticOps.modifyingWithValidation(user).throughEither(email, FluentBook::checkEmail);
+
+    Validated<List<String>, Order> checkedPrices =
+        OpticOps.modifyingWithValidation(order).allThroughValidated(prices, FluentBook::checkPrice);
 ```
 
 | Builder | Verbs |
@@ -1638,179 +1756,83 @@ boolean any = OpticOps.querying(team).anyMatch(Fixture.playerScores, s -> s > 90
 | `querying(source)` | `anyMatch`, `allMatch`, `findFirst`, `count`, `isEmpty` |
 | `modifyingWithValidation(source)` | `throughEither`, `throughMaybe`, `allThroughValidated`, `allThroughEither` |
 
----
+`getting(...)` reads values out, so it is the builder that returns a `List` you can stream. `querying(...)` answers questions, and never hands you the whole collection: `findFirst` is the only verb that returns a focused element, and at most one.
 
-## Part 2: Validation-Aware Modification
+### Idioms {#idioms}
 
-An ordinary `modify` assumes the transformation succeeds. Real updates often cannot:
+**A conditional update.** When the decision depends on one field and the write targets another, read once, decide, then write. `modify` is not the tool here:
 
-```java
-// The problem: no way to reject the new value
-Person updated = OpticOps.modify(alice, PersonLenses.age(), age -> age + 1);
-// What if the result is out of range? modify has nowhere to put that.
+``` java
+    Person classified =
+        OpticOps.get(alice, PersonLenses.age()) >= 18
+            ? OpticOps.set(alice, PersonLenses.status(), "ADULT")
+            : alice;
 ```
 
-Four methods close the gap, differing only in what they do with failure:
+**An update narrowed by a predicate.** `filtered` narrows the traversal itself, so the update reaches only the elements that qualify, and no membership test leaks into the function:
 
-| Method | Result | Behaviour | Best for |
-|--------|--------|-----------|----------|
-| `modifyEither` | `Either<E, S>` | First error wins | Sequential validation, fail fast |
-| `modifyMaybe` | `Maybe<S>` | Success or nothing, no detail | Optional enrichment |
-| `modifyAllValidated` | `Validated<List<E>, S>` | Accumulates every error | Forms, imports, user feedback |
-| `modifyAllEither` | `Either<E, S>` | First error wins (every element is still evaluated) | Large collections, one error is enough |
+``` java
+    Traversal<Team, Player> topPerformers =
+        TeamTraversals.players().filtered(player -> player.score() >= 90);
 
-```mermaid
-flowchart TD
-    Q{"What does the caller<br/>need to know?"}
-    Q -->|"why it failed,<br/>as soon as it failed"| E(["modifyEither<br/>Either, first error"])
-    Q -->|"only whether<br/>it worked"| M(["modifyMaybe<br/>Maybe, no detail"])
-    Q -->|"everything that is wrong,<br/>in one pass"| V(["modifyAllValidated<br/>Validated, all errors"])
-    Q -->|"that something is wrong,<br/>over a large collection"| A(["modifyAllEither<br/>Either, first error only"])
+    Team starred = OpticOps.setAll(team, topPerformers.andThen(PlayerLenses.status()), "STAR");
 
-    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
-    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
-    class Q decision
-    class E,M,V,A tier
+    List<Player> stars = OpticOps.getAll(starred, topPerformers);
 ```
 
-### One Field, Fail Fast
+For Alice on 100 and Bob on 85, only Alice is starred, and reading `topPerformers` back from `starred` finds her alone.
 
-<!-- verify -->
-```java
-Either<String, User> result =
-    OpticOps.modifyEither(user, UserLenses.email(), Fixture::validateEmail);
+**An aggregate.** A `Fold` collapses every focused value through a `Monoid`, and a `Traversal` reads as a `Fold` through `asFold()`. For a one-off, `getAll(...).stream()` reads as well; a fold earns its place when the aggregate is itself a value you pass around:
 
-String message = result.fold(error -> "rejected: " + error, u -> "accepted: " + u.email());
+``` java
+    int total =
+        TeamTraversals.players()
+            .andThen(PlayerLenses.score())
+            .asFold()
+            .foldMap(Monoids.integerAddition(), score -> score, team);
 ```
 
-### One Field, Silent Failure
+**A stream.** Optics get the values out, and the Stream API does the rest:
 
-<!-- verify -->
-```java
-Maybe<User> normalised =
-    OpticOps.modifyMaybe(user, UserLenses.username(), Fixture::normaliseUsername);
-// Just(user with a trimmed username), or Nothing when it is the wrong length
-
-User safe = normalised.orElse(user);
+``` java
+    List<String> highScorerNames =
+        OpticOps.getting(team).allThrough(TeamTraversals.players()).stream()
+            .filter(player -> player.score() > 90)
+            .map(Player::name)
+            .toList();
 ```
 
-`modifyMaybe` has the same shape as `modifyEither`, minus the explanation. Use it when the caller's next move is a fallback rather than a message.
+A multi-step transformation is a sequence of named locals, each stage taking the previous result, rather than one long expression.
 
-### Every Element, Every Error
+### Performance {#performance}
 
-<!-- verify -->
-```java
-Validated<List<String>, Order> accumulated =
-    OpticOps.modifyAllValidated(order, Fixture.orderPrices, Fixture::validatePrice);
+A builder adds one short-lived object to what the operation allocates anyway, which is almost never the reason code is slow. Each `andThen` allocates a small wrapper optic, so compose once, before the loop, and the optic is built once:
 
-String report =
-    accumulated.fold(
-        errors -> errors.size() + " invalid prices: " + String.join("; ", errors),
-        valid -> "all prices accepted");
-// "2 invalid prices: Price cannot be negative: -10.00; Price exceeds maximum: 15000.00"
+``` java
+    // Compose once, before the loop
+    Traversal<Team, Integer> scores = TeamTraversals.players().andThen(PlayerLenses.score());
+
+    List<List<Integer>> allScores = new ArrayList<>();
+    for (Team team : teams) {
+      allScores.add(OpticOps.getAll(team, scores));
+    }
 ```
 
-Note the error type: your validator returns `Validated<E, A>` and the result collects them as `Validated<List<E>, S>`. The lifting into a list is done for you.
+### Pitfalls {#pitfalls}
 
-### Every Element, First Error Only
-
-<!-- verify -->
-```java
-Either<String, Order> firstFailure =
-    OpticOps.modifyAllEither(order, Fixture.orderPrices, Fixture::validatePriceEither);
-// Left("Price cannot be negative: -10.00"): the first failure wins, though every price is validated
-```
-
-~~~admonish tip title="Why this matters"
-The difference between these two is a product decision, not a technical one. A user filling in a form wants every problem at once; a batch job wants one error and no report. Both are one method call, and the type you get back tells the next reader which decision was made. Note what `Either` does and does not buy you: the *result* keeps only the first error, but the traversal still applies your function to every element before the applicative combines them, so this is not a way to avoid the work.
-~~~
-
-### The Same Four, as Builders
-
-<!-- verify -->
-```java
-Either<String, User> a =
-    OpticOps.modifyingWithValidation(user).throughEither(UserLenses.email(), Fixture::validateEmail);
-
-Validated<List<String>, Order> b =
-    OpticOps.modifyingWithValidation(order)
-        .allThroughValidated(Fixture.orderPrices, Fixture::validatePrice);
-
-Either<String, Order> c =
-    OpticOps.modifyingWithValidation(order)
-        .allThroughEither(Fixture.orderPrices, Fixture::validatePriceEither);
-```
-
-### Sequential Validation
-
-`Either` chains, so a fail-fast registration flow is a `flatMap` per field:
-
-<!-- verify -->
-```java
-Either<String, User> registered =
-    OpticOps.modifyEither(user, UserLenses.email(), Fixture::validateEmail)
-        .flatMap(
-            u ->
-                OpticOps.modifyEither(
-                    u,
-                    UserLenses.username(),
-                    name ->
-                        name.length() >= 3
-                            ? Either.right(name)
-                            : Either.left("Username must be at least 3 characters")));
-```
-
----
-
-## Part 3: Arbitrary Effects with `modifyF`
-
-The four validation methods cover `Either`, `Maybe` and `Validated`. For anything else, `modifyF` takes the effect's `Applicative` and speaks `Kind`:
-
-<!-- verify -->
-```java
-Applicative<CompletableFutureKind.Witness> futures = Instances.applicative(completableFuture());
-
-Kind<CompletableFutureKind.Witness, Team> pending =
-    OpticOps.modifyAllF(
-        team, Fixture.playerScores, score -> FUTURE.widen(Fixture.fetchBonus(score)), futures);
-
-CompletableFuture<Team> withBonuses = FUTURE.narrow(pending);
-```
-
-The same call with a `Validated` applicative is what `modifyAllValidated` does for you, widening and narrowing included:
-
-<!-- verify -->
-```java
-// The long way round, for comparison
-Applicative<ValidatedKind.Witness<List<String>>> validated =
-    Instances.validated(Semigroups.<String>list());
-
-Kind<ValidatedKind.Witness<List<String>>, Order> kind =
-    OpticOps.modifyAllF(
-        order,
-        Fixture.orderPrices,
-        price -> VALIDATED.widen(Fixture.validatePrice(price).mapError(List::of)),
-        validated);
-
-Validated<List<String>, Order> sameAsBefore = VALIDATED.narrow(kind);
-```
-
-~~~admonish note title="When `modifyF` is still the right tool"
-- Effects beyond `Either`, `Maybe` and `Validated`: `IO`, `CompletableFuture`, `VTask`, your own
-- Asynchronous validation, where the check itself is an effect
-- Anywhere you already hold an `Applicative` and want the optic to use it
-
-For the three common cases, the dedicated methods say the same thing with less ceremony and no `Kind` at the call site.
-~~~
+- **Reading, then setting, when you mean `modify`.** `OpticOps.modify(person, PersonLenses.age(), a -> a + 1)` names the path once, and keeps the read and the write in one expression.
+- **Recomposing an optic in a loop.** Hoist the composition, as [Performance](#performance) shows.
+- **Asking `querying` for the elements.** It answers questions; `getting(...).allThrough(...)` returns the values.
+- **Expecting `modify` on a bare `Traversal`.** Its reads and writes go through the `Traversals` utility or `OpticOps`, as [Using an optic directly](optics_intro.md#using-an-optic-directly) shows. A `TraversalPath` carries `getAll` and `modifyAll` itself.
 
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **Two styles, one implementation.** Static methods for short call sites, builders when the optic expression is long or discoverability matters.
-* **`OpticOps` is overloaded on the optic.** `get`, `getAll`, `preview`, `set`, `setAll`, `modify`, `modifyAll` and the query family all take whichever optic fits.
-* **Four validation strategies, chosen by what the caller needs to hear.** Accumulate every error for humans, keep only the first for machines; neither skips evaluating an element.
-* **The validation methods do the widening.** Your function returns `Either`, `Maybe` or `Validated`; no `Kind` appears at the call site.
-* **`modifyF` remains the general case.** Any `Applicative`, at the price of `widen` and `narrow` around the edges.
+* **A check returns its verdict, and `OpticOps` threads it through the optic.** The answer is a value, so it goes on to combine with other checks instead of ending in a throw.
+* **Four methods, chosen by what the caller needs to hear.** Every error for a person filling in a form, the first for a batch job, no detail when the next move is a fallback; none of them skips evaluating an element.
+* **The validation methods need no extra plumbing.** Your check returns `Either`, `Maybe` or `Validated`, and that is all the call site sees.
+* **`modifyF` is the general case.** It handles any other effect, such as a `CompletableFuture`, at the price of converting the effect at the edges.
+* **`OpticOps` takes the source first, and works on raw optics.** Static methods for short call sites, builders when the optic expression is long.
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -1818,204 +1840,9 @@ Practise the fluent API in [Tutorial 09: Fluent Optics API](https://github.com/h
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Fluent API Field Guide](fluent_api_field_guide.md): style choice, idioms, performance notes, and pitfalls
-- [Focus DSL](focus_dsl.md): path-based navigation, which produces the optics `OpticOps` consumes
+- [Many Edits at Once](multi_edit.md): several edits, validated together, as one REST `PATCH`
 - [Validated](../monads/validated_monad.md): the accumulating type behind `modifyAllValidated`
-~~~
-
----
-
-**Previous:** [What Are Optics?](optics_intro.md)
-**Next:** [Fluent API Field Guide](fluent_api_field_guide.md)
-
-<!-- Source: optics/fluent_api_field_guide.md -->
-
-# Fluent API Field Guide
-
-## _Style choice, idiom catalogue, performance notes, and pitfalls_
-
-~~~admonish info title="What You'll Learn"
-- When to reach for the static-method style and when for the fluent builders
-- The idioms that recur: pipelines, conditional updates, filtered bulk operations
-- How optics and the Stream API fit together
-- The performance rule that actually matters, and the pitfalls worth knowing
-~~~
-
-This page is the lookup shelf for the Fluent API. The narrative, the side-by-side comparison and the worked validation examples live in [Fluent API](fluent_api.md); come here when you already know the style choices and want a quick answer.
-
----
-
-## Which Style?
-
-**Static methods** for short, one-off operations, where naming the operation twice would be noise:
-
-<!-- verify -->
-```java
-String name = OpticOps.get(alice, PersonLenses.name());
-Person older = OpticOps.modify(alice, PersonLenses.age(), a -> a + 1);
-```
-
-**Fluent builders** when the optic expression is long, when the call site is teaching material, or when you want the IDE to enumerate what is possible:
-
-<!-- verify -->
-```java
-List<String> bigOrders =
-    OpticOps.getting(order).allThrough(OrderTraversals.items()).stream()
-        .filter(item -> item.quantity() > 10)
-        .map(OrderItem::productId)
-        .collect(toList());
-```
-
-Note which builder that is: `getting(...)` reads values out, so it is the one that returns a `List` you can stream. `querying(...)` answers questions (`anyMatch`, `count`, `findFirst`) and never hands you the whole collection, though `findFirst` returns at most one element.
-
----
-
-## Idioms
-
-### Pipeline Transformations
-
-Each stage takes the previous result, so a multi-step transformation is a sequence of named locals rather than one unreadable expression:
-
-<!-- verify -->
-```java
-Order discounted =
-    OpticOps.modifying(order).allThrough(Fixture.itemPrices, price -> price.multiply(new BigDecimal("0.9")));
-
-Order rounded =
-    OpticOps.modifying(discounted)
-        .allThrough(Fixture.itemPrices, price -> price.setScale(2, java.math.RoundingMode.HALF_UP));
-```
-
-`Fixture` is the compiled example's own setup: sample records, hand-written optics and validators. Nothing in it is library API.
-
-### Conditional Updates
-
-Read once, decide, then write. `modify` is not the tool when the *decision* depends on the value and the update targets a different field:
-
-<!-- verify -->
-```java
-Person classified =
-    OpticOps.get(alice, PersonLenses.age()) >= 18
-        ? OpticOps.set(alice, PersonLenses.status(), "ADULT")
-        : alice;
-```
-
-### Bulk Operations, Narrowed by a Predicate
-
-`filtered` narrows the traversal itself, so the update only reaches the elements that qualify and no membership test leaks into the modification function:
-
-<!-- verify -->
-```java
-Traversal<Team, Player> topPerformers =
-    TeamTraversals.players().filtered(player -> player.score() >= 90);
-
-Team starred =
-    Traversals.modify(
-        topPerformers.andThen(PlayerLenses.status()), status -> "STAR", team);
-
-List<Player> stars = OpticOps.getAll(starred, topPerformers);
-// read back from `starred`: the same players, now carrying status "STAR"
-```
-
-### Aggregation
-
-A `Fold` collapses every focused element through a `Monoid`, which is usually clearer than collecting to a list and reducing. A `Traversal` is not itself a `Fold`, so it converts with `asFold()`:
-
-<!-- verify -->
-```java
-int totalQuantity =
-    OrderTraversals.items()
-        .andThen(OrderItemLenses.quantity())
-        .asFold()
-        .foldMap(Monoids.integerAddition(), q -> q, order);
-// 15
-```
-
----
-
-## Working with Existing Java Code
-
-### Streams
-
-Optics get the values out; the Stream API does the rest:
-
-<!-- verify -->
-```java
-List<String> highScorerNames =
-    OpticOps.getting(team).allThrough(TeamTraversals.players()).stream()
-        .filter(p -> p.score() > 90)
-        .map(p -> OpticOps.get(p, PlayerLenses.name()))
-        .collect(toList());
-```
-
-### Optional
-
-<!-- verify -->
-```java
-Optional<Person> maybePerson = Fixture.findPerson("alice");
-
-Optional<Integer> age = maybePerson.map(p -> OpticOps.get(p, PersonLenses.age()));
-
-Person updated =
-    maybePerson
-        .map(p -> OpticOps.modify(p, PersonLenses.age(), a -> a + 1))
-        .orElse(new Person("Unknown", 0, "UNKNOWN"));
-```
-
----
-
-## Performance
-
-**Object allocation.** Static methods allocate only the result. Builders allocate one short-lived builder as well. The difference is real and almost never the reason your code is slow; avoid builders in a tight inner loop and stop thinking about it.
-
-**Optic composition is the one that counts.** Composing an optic walks the chain and builds new objects, so composing inside a loop repeats that work per iteration:
-
-<!-- verify -->
-```java
-// Compose once, above the loop
-Traversal<Order, BigDecimal> prices =
-    OrderTraversals.items().andThen(OrderItemLenses.price());
-
-for (Order o : Fixture.orders) {
-  List<BigDecimal> values = OpticOps.getAll(o, prices);
-}
-```
-
----
-
-## Pitfalls
-
-**Do not `get` then `set` when you mean `modify`.** Two traversals where one would do, and a race between them if anything else can touch the structure:
-
-<!-- verify -->
-```java
-// Instead of get-then-set
-Person older = OpticOps.modify(alice, PersonLenses.age(), a -> a + 1);
-```
-
-**Do not recompose optics in a loop.** As above: hoist the composition.
-
-**Do not reach for `querying` when you want the elements.** `querying` answers `anyMatch`, `allMatch`, `findFirst`, `count` and `isEmpty`; `findFirst` is the only one that hands back a focused element, and at most one. To get them all, use `getting(...).allThrough(...)`.
-
-**Do not expect an instance `modify` on a bare `Traversal`.** Reads and writes go through the `Traversals` utility, or through `OpticOps`, or through a `TraversalPath` from the [Focus DSL](focus_dsl.md), which does carry `getAll` and `modifyAll` directly.
-
----
-
-~~~admonish info title="Key Takeaways"
-* **Static for short, builders for long.** They compile to the same operations, so the choice is about the reader.
-* **`getting` returns values, `querying` returns answers.** Reaching for `querying` when you wanted the elements is the mistake this page exists to prevent.
-* **Compose optics once.** Hoisting the composition out of a loop is the performance rule that matters; builder allocation is not.
-* **`filtered` belongs on the optic, not in the function.** The predicate then travels with the path and cannot be forgotten at a call site.
-* **Aggregate with a `Monoid`.** `asFold().foldMap(...)` beats collecting a list and reducing it.
-~~~
-
-~~~admonish info title="Hands-On Learning"
-Practise the fluent API in [Tutorial 09: Fluent Optics API](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial09_FluentOpticsAPI.java) (7 exercises).
-~~~
-
-~~~admonish tip title="See Also"
-- [Fluent API](fluent_api.md): the narrative version, with the four validation strategies
-- [Composing Optics](composing_optics.md): building the optics this page consumes
+- [Composing Optics for Deep Validation](composing_optics.md): validating a nested structure in one pass
 - [Free Monad DSL](free_monad_dsl.md): when the plan itself is the artefact
 ~~~
 
@@ -2025,34 +1852,31 @@ Practise the fluent API in [Tutorial 09: Fluent Optics API](https://github.com/h
 
 ---
 
-**Previous:** [Fluent API](fluent_api.md)
-**Next:** [Multi-Edit and Sparse Updates](multi_edit.md)
+**Previous:** [What a Path Is Made Of](optics_intro.md)
+**Next:** [Many Edits at Once](multi_edit.md)
 
 <!-- Source: optics/multi_edit.md -->
 
-# Multi-Edit and Sparse Updates
+# Many Edits at Once
 
-## _N Edits in One Operation, and the REST PATCH Shape_
-
-~~~admonish example title="See Example Code"
-**The code on this page is [MultiEditBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/MultiEditBook.java)** - the page includes it directly, so it is compiled and run by the build.
-~~~
-
-
-_Apply N independent edits at different paths in one reusable operation, including the sparse, all-errors-at-once REST `PATCH` shape._
+_Apply several edits as one update, or check a REST `PATCH` and report every bad field at once._
 
 ~~~admonish info title="What You'll Learn"
-- Combining several edits at different paths into one reusable operation with `Edits.combine`
-- Writing sparse updates where a `null` field means "leave it alone", with no `if` per field
-- Building a REST `PATCH` with `Edits.accumulate` that validates every field and reports all the bad ones at once, not just the first
-- The two-phase model: validate everything first, then apply the writes only if all of them passed
-- Editing fields a record's constructor checks together, so it sees only the values the edits end on
-- How the pure and validating edits are kept apart at compile time, and when overlapping paths need one atomic edit instead
+- Combine edits at different paths into one reusable update with `Edits.combine`
+- Write a sparse update, where a `null` field means "leave it alone", with no `if` per field
+- Check every field of a REST `PATCH` with `Edits.accumulate`, and report all the bad ones together
+- Edit fields a record's constructor checks together, so it sees only the final values
 ~~~
+
+~~~admonish example title="See Example Code"
+**The code on this page is [MultiEditBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/MultiEditBook.java)**: the page includes it directly, so the build compiles and runs it.
+~~~
+
+---
 
 ## The problem
 
-An optic edits one path at a time (`FocusPath.set`, `Setter.modify`). But the everyday case is applying **several** edits at once, the classic example being a REST `PATCH` that tidies the email, trims the SKU, and bumps the quantity. By hand that means threading the value through every step, guarding each optional field with an `if`, and (if you validate at all) throwing on the first bad field:
+A path makes one edit at a time. The everyday case is several edits at once, and the classic one is a REST `PATCH` that tidies the email, trims the SKU, and bumps the quantity. By hand that means threading the value through every step, guarding each optional field with an `if`, and, if you validate at all, throwing on the first bad field:
 
 ``` java
     Order updated = order;
@@ -2068,7 +1892,9 @@ An optic edits one path at a time (`FocusPath.set`, `Setter.modify`). But the ev
     // And if the email was malformed? You throw on the first bad field and never see the rest.
 ```
 
-Three pains recur: one `if` per optional field, the value re-threaded by hand at every step, and validation that stops at the first error instead of collecting them all.
+Three pains recur: one `if` per optional field, the value re-threaded by hand at every step, and validation that stops at the first error instead of collecting them all. If you use MapStruct for this, its answer is `@MappingTarget` with `NullValuePropertyMappingStrategy.IGNORE`, and [Coming from MapStruct](../mapping/from_mapstruct.md#from-mapstruct) sets the two side by side.
+
+---
 
 ## The solution: two entry points
 
@@ -2083,9 +1909,9 @@ Those are the whole API, with one more form of `accumulate` for [fields a constr
 
 ---
 
-## Pure multi-edit: `Edits.combine`
+## Edits that cannot fail: `Edits.combine` {#pure-multi-edit-editscombine}
 
-Each `Edit` factory pairs an optic (a `FocusPath` or a `Setter`) with a value or function. `combine` folds them (via the [`Update` monoid](../functional/semigroup_and_monoid.md)) into one named, reusable transformation:
+Each `Edit` factory pairs an optic (a `FocusPath` or a `Setter`) with a value or function. `combine` joins them, in order, into one `Update<Order>`: a function from order to order that you can name and reuse.
 
 ``` java
 import static org.higherkindedj.optics.edit.Edit.*;
@@ -2106,7 +1932,7 @@ Only pure `Edit`s fit `combine`'s signature; a fallible edit is rejected **at co
 
 ## Sparse updates: absent means "leave it alone"
 
-The `…IfPresent` factories treat `null` as *absent*: the edit contributes the identity update, so a sparse request DTO lands one-to-one with no `if` ceremony:
+The `…IfPresent` factories treat `null` as *absent*: the edit changes nothing, so a sparse request DTO lands one-to-one with no `if` ceremony:
 
 ``` java
     Edit<Order> number = setIfPresent(ORDER_NUMBER, req.orderNumber()); // null -> no-op
@@ -2117,9 +1943,11 @@ Each request field maps to exactly one slot; an absent field simply contributes 
 
 ```mermaid
 flowchart TD
+    accTitle: A sparse request, field by field
+    accDescr: A request with an email, no SKU and a quantity delta of 3. The email is written, the absent SKU changes nothing, and the quantity grows by 3, so the order comes back with its email and quantity changed and its SKU untouched.
     Req(["PatchRequest<br/>email: a@b.example, sku: null, qtyDelta: 3"])
     Req --> E(["email present<br/>write it"])
-    Req --> S(["sku absent<br/>identity, no change"])
+    Req --> S(["sku absent<br/>no change"])
     Req --> Q(["qtyDelta present<br/>qty += 3"])
     E --> Out(["order': email and quantity changed,<br/>sku untouched"])
     S --> Out
@@ -2139,29 +1967,54 @@ A sparse edit cannot *clear* a field: `setIfPresent(path, null)` means "no chang
 
 ## Validated PATCH: `Edits.accumulate`
 
-`parseIfPresent` parses the incoming value first, and a generated path locates any failure **automatically** from its own label (`.at(label)` prepends further context, exactly as `FieldError.at` composes paths). The parser you hand it has exactly the shape of a [`ValidatedPrism`](validated_prism.md)'s `parse`: define the boundary once as a prism (gaining the total render-back and the round-trip laws) and pass `Email::parse` here. `accumulate` validates **every** edit independently and reports **all** bad fields at once:
+`parseIfPresent` parses the incoming value first, and a generated path locates any failure **automatically** from its own label. The parser you hand it has exactly the shape of a [`ValidatedPrism`](validated_prism.md)'s `parse`, so a boundary defined once as a prism passes its `parse` here. This request's order number and email are both bad:
+
+~~~admonish example title="The two parsers" collapsible=true
+``` java
+/** The boundary parsers the page hands to {@code parseIfPresent}. */
+final class OrderNumber {
+  static Validated<NonEmptyList<FieldError>, String> parse(String raw) {
+    return raw.matches("ORD-\\d+")
+        ? Validated.validNel(raw)
+        : Validated.invalidNel(FieldError.of("not an order number"));
+  }
+
+  private OrderNumber() {}
+}
+
+final class Email {
+  static Validated<NonEmptyList<FieldError>, String> parse(String raw) {
+    return raw.contains("@")
+        ? Validated.validNel(raw)
+        : Validated.invalidNel(FieldError.of("not an address"));
+  }
+
+  private Email() {}
+}
+```
+~~~
 
 ``` java
     Validated<NonEmptyList<FieldError>, Order> patched =
         Edits.accumulate(
-                setIfPresent(ORDER_NUMBER, req.orderNumber()),
+                parseIfPresent(ORDER_NUMBER, req.orderNumber(), OrderNumber::parse),
                 parseIfPresent(EMAIL, req.email(), Email::parse),
                 modifyIfPresent(QUANTITY, req.qtyDelta(), (delta, qty) -> qty + delta))
             .apply(order);
-    // Invalid(NonEmptyList[email: not an address])
+    // Invalid(NonEmptyList[orderNumber: not an order number, email: not an address])
     //   <- or Valid(order) with only the present fields changed
 ```
 
-Errors accumulate in edit order on the `NonEmptyList` channel, exactly like the [accumulating assembly](../monads/validated_assembly.md), but as a homogeneous fold, so there is **no arity ceiling**.
+`accumulate` checks **every** edit independently and reports **all** the bad fields at once, each named by its path. The errors arrive in edit order on the `NonEmptyList`, as in the [accumulating assembly](../monads/validated_assembly.md), and one patch can hold any number of edits.
 
 ~~~admonish tip title="Generated paths label themselves"
-A path from a `@GenerateFocus` companion carries its record-component name as a **segment** (`OrderFocus.email()` → `"email"`); composing paths concatenates segments (`customer.via(address).via(zip)` → `"customer.address.zip"`, surfaced by `segments()`/`pathString()`), and `parseIfPresent` locates failures with them **automatically**: no `.at(...)` needed for generated paths. An explicit `.at(label)` still prepends outward, for hand-written optics or extra context.
+A path from a `@GenerateFocus` companion carries its record-component name as a **segment**: `OrderFocus.email()` is labelled `"email"`. Composing paths joins the segments, so `customer.via(address).via(zip)` is `"customer.address.zip"`, which `segments()` and `pathString()` return. `parseIfPresent` locates failures with them **automatically**, so a generated path needs no `.at(...)`. An explicit `.at(label)` still prepends outward, for a hand-written optic or extra context, as `FieldError.at` does.
 ~~~
 
-For the railway, `applyPath(order)` is the `ValidationPath` twin of `apply(order)`, and `toValidated()` exposes the folded `Update` itself for reuse.
+To carry on in an Effect Path, `applyPath(order)` is the `ValidationPath` twin of `apply(order)`, and `toValidated()` exposes the folded `Update` itself for reuse.
 
 ~~~admonish tip title="Generate this when the shape is regular"
-When the request DTO's fields line up one-to-one with a domain record (the common REST PATCH case), you need not hand-write the fold at all: `@GenerateMapping` on an [`UpdateSpec<Domain, Wire>`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) generates this `Edits.accumulate` over the present fields, in its [construct-once form](#fields-a-constructor-checks-together), as `updateFrom(wire) : Edits.Accumulated<Domain>` (the same `apply`/`applyPath`/`toValidated` surface). Reach for the hand-written `Edits` here when the edits are irregular (a `qtyDelta` that *modifies*, coupled fields, a computed target); reach for `UpdateSpec` when each present field maps to one slot.
+When the request DTO's fields line up one-to-one with a domain record, the common REST PATCH case, you need not hand-write the fold at all. `@GenerateMapping` on an [`UpdateSpec<Domain, Wire>`](../mapping/beans_patch.md#sparse-patch-write-back-updatespec) generates this `Edits.accumulate` over the present fields, in its [construct-once form](#fields-a-constructor-checks-together). It returns `updateFrom(wire) : Edits.Accumulated<Domain>`, with the same `apply`, `applyPath` and `toValidated`. Reach for the hand-written `Edits` here when the edits are irregular (a `qtyDelta` that *modifies*, coupled fields, a computed target); reach for `UpdateSpec` when each present field maps to one slot.
 ~~~
 
 ---
@@ -2172,6 +2025,8 @@ When the request DTO's fields line up one-to-one with a domain record (the commo
 
 ```mermaid
 flowchart TD
+    accTitle: How combine and accumulate tell the edits apart
+    accDescr: parseIfPresent makes a FallibleEdit, which may fail. set, modify and the IfPresent forms make an Edit, which cannot fail, and every Edit is also a FallibleEdit. Edits.combine takes only Edits, so a FallibleEdit there is a compile error; Edits.accumulate takes both.
     FE(["FallibleEdit&lt;S&gt;<br/>may fail: carries Validated&lt;NEL&lt;FieldError&gt;, Update&lt;S&gt;&gt;"])
     ED(["Edit&lt;S&gt;<br/>cannot fail: carries the Update&lt;S&gt; directly"])
     P(["FallibleEdit.Parsed<br/>from parseIfPresent"]) --> FE
@@ -2195,14 +2050,16 @@ flowchart TD
 
 An accumulated patch works in two phases:
 
-1. **Validate**: each edit's incoming value is checked independently. Validation never sees a source, which is what makes accumulation sound *and* lets one patch apply to many sources.
+1. **Validate**: each edit's incoming value is checked independently. Validation never sees a source, so every check runs, and one patch applies to many sources.
 2. **Apply**: only if every edit validated, the writes run as a single left-to-right fold.
 
 ```mermaid
 flowchart TD
+    accTitle: Validate everything, then write once
+    accDescr: In phase 1 each edit is checked on its own, with no source: an absent SKU is a valid no-op, the email is parsed, and a present quantity delta is a valid write. If every edit is valid, phase 2 runs the writes as one left-to-right fold; otherwise the result is Invalid with every bad field located.
     subgraph one["Phase 1: validate each edit independently, no source involved"]
         direction TB
-        S1(["setIfPresent(SKU, null)<br/>absent → identity"]) --> V1(["Valid, a no-op"])
+        S1(["setIfPresent(SKU, null)<br/>absent, so no change"]) --> V1(["Valid, a no-op"])
         S2(["parseIfPresent(EMAIL, raw)<br/>the parser runs"]) --> V2(["Valid(write)<br/>or Invalid(errors)"])
         S3(["modifyIfPresent(QTY, 3)<br/>present → write"]) --> V3(["Valid(write)"])
     end
@@ -2226,7 +2083,7 @@ Application order is observable only when paths overlap: disjoint paths commute;
 
 ## Fields a constructor checks together {#fields-a-constructor-checks-together}
 
-Each write through a record's path builds a new record, so the constructor sees every value the fold passes through. A range whose constructor refuses `lo > hi` cannot move from `Range(1, 3)` to `Range(5, 10)` one end at a time: writing `lo` first builds `Range(5, 3)`, and the constructor throws before `hi` is written, although the final range is valid.
+Each write through a record's path builds a new record, so the constructor sees every value the fold passes through. Take a range whose constructor refuses `lo > hi`. It cannot move from `Range(1, 3)` to `Range(5, 10)` one end at a time: writing `lo` first builds `Range(5, 3)`, and the constructor throws before `hi` is written, although the final range is valid.
 
 `Edits.accumulate(focus, edits...)` takes a `Lens` to a value carrying the fields the edits set, with no check of its own. The edits write onto that value, and the lens sets it back once, so the constructor sees only the final values:
 
@@ -2261,6 +2118,8 @@ record Ends(int lo, int hi) {} // the fields the edits set, with no check of the
 
 ```mermaid
 flowchart LR
+    accTitle: One record per edit, or one record in all
+    accDescr: With plain accumulate, setting lo to 5 on Range(1, 3) builds Range(5, 3), which the constructor refuses. With accumulate onto the Ends focus, lo and hi are written onto Ends(1, 3) in turn, giving Ends(5, 10), and the lens sets it back once as Range(5, 10).
     subgraph each["accumulate(edits…): one record per edit"]
         direction LR
         A1(["Range(1, 3)"]) -->|"lo = 5"| A2(["Range(5, 3)<br/>the constructor throws"])
@@ -2276,21 +2135,39 @@ flowchart LR
     class A2 bad
 ```
 
-The edits validate exactly as they do in `accumulate`, and their errors are reported alone: the record is constructed only once every edit validated. A `RuntimeException` that setting the focus back throws is the constructor refusing the final values, and `apply` reports it as an unlabelled `FieldError` carrying the exception's message; an exception without a message, or with a blank one, reads `not a valid Range`. Only that call is guarded: an exception from an edit's own function, or from reading the focus, still propagates. When every edit is absent, the source comes back as it is and the focus is never set. `toValidated()` hands back an `Update` that writes onto the focus and sets it back once, and since an `Update` has no error channel, a refusal throws from it.
+`@GenerateMapping` on an [`UpdateSpec`](../mapping/beans_patch.md#fields-a-constructor-checks-together) generates exactly this: its `updateFrom` writes onto the components a PATCH can set and constructs the domain record once.
+
+~~~admonish tip title="You can ship now"
+You can now update nested records, check what you write, and apply a PATCH that reports every bad field. The On demand groups that follow are for when a task needs them, and [When the constructor refuses](#when-the-constructor-refuses) is the fine print of this page.
+~~~
+
+---
+
+## The fine print {#the-fine-print}
+
+### When the constructor refuses {#when-the-constructor-refuses}
+
+The edits validate exactly as they do in `accumulate`, and their errors are reported alone: the record is constructed only once every edit validated. After that, `apply` treats each kind of exception its own way:
+
+| What happens | What `apply` returns |
+|---|---|
+| Setting the focus back throws a `RuntimeException`: the constructor refusing the final values | An unlabelled `FieldError` carrying the exception's message, or `not a valid Range` when the message is missing or blank |
+| An edit's own function, or reading the focus, throws | Nothing: the exception propagates, since only setting the focus back is guarded |
+| Every edit is absent | The source as it is, without setting the focus |
+
+`toValidated()` hands back an `Update` that writes onto the focus and sets it back once. An `Update` has no error channel, so a refusal throws from it.
 
 The edits' errors are located relative to the focus. Where the focus is a nested component rather than the source's own fields, add the component's name to each edit with `.at("range")`, so their errors and the source agree on where they are.
-
-`@GenerateMapping` on an [`UpdateSpec`](../mapping/beans_patch.md#fields-a-constructor-checks-together) generates exactly this: its `updateFrom` writes onto the components a PATCH can set and constructs the domain record once.
 
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **`Edits.combine`** folds pure edits into one reusable `Update<S>`; compile-time purity
-* **`…IfPresent` + null-as-absent** gives sparse updates with no `if` ceremony: absent contributes the monoid identity
-* **`Edits.accumulate`** validates every edit independently and reports all located failures at once, in edit order, with no arity ceiling
-* **Two phases**: validation is source-independent; writes run left-to-right only when everything validated
-* **Overlapping paths see earlier writes**; coupled fields should be one atomic edit (`Lens.paired`)
-* **`Edits.accumulate(focus, …)`** writes onto one focus and sets it back once, so a constructor checking fields against each other sees only the final values, and its refusal is an `Invalid`
+* **`Edits.combine` joins edits that cannot fail into one reusable `Update<S>`.** A fallible edit does not compile there.
+* **An absent value changes nothing.** The `…IfPresent` forms take a sparse request field by field, with no `if`.
+* **`Edits.accumulate` checks every edit and reports every bad field.** The errors arrive located and in edit order, and a patch holds any number of edits.
+* **A patch validates first, then writes once.** Validation never sees the source, and the writes run left to right only when every edit passed.
+* **Overlapping paths see earlier writes.** Fields that must change together belong in one atomic edit, such as `Lens.paired`.
+* **`Edits.accumulate(focus, …)` builds the record once.** A constructor that checks fields against each other sees only the final values, and its refusal is an `Invalid`.
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -2298,6 +2175,7 @@ Practise the whole model in [Tutorial 24: Multi-Edit and Sparse Updates](https:/
 ~~~
 
 ~~~admonish tip title="See Also"
+- [Updates That Can Fail](fluent_api.md): one field or one list at a time, through `OpticOps`
 - [Semigroup and Monoid](../functional/semigroup_and_monoid.md): the `Update` monoid that powers `combine`
 - [Accumulating Assembly](../monads/validated_assembly.md): the same all-errors-at-once model for *constructing* values
 - [Coupled Fields](coupled_fields.md): atomic updates of interdependent fields
@@ -2306,7 +2184,7 @@ Practise the whole model in [Tutorial 24: Multi-Edit and Sparse Updates](https:/
 
 ---
 
-**Previous:** [Fluent API Field Guide](fluent_api_field_guide.md)
+**Previous:** [Updates That Can Fail](fluent_api.md)
 **Next:** [The Optic Types](ch1_intro.md)
 
 <!-- Source: optics/ch1_intro.md -->
@@ -2365,7 +2243,7 @@ Practise this group in the [Lens & Prism Journey](../tutorials/optics/lens_prism
 
 ---
 
-**Previous:** [Multi-Edit and Sparse Updates](multi_edit.md)
+**Previous:** [Many Edits at Once](multi_edit.md)
 **Next:** [Lenses](lenses.md)
 
 <!-- Source: optics/lenses.md -->
@@ -17147,7 +17025,7 @@ Kind<IOKind.Witness, Agency> deferred =
 ```
 
 ~~~admonish warning title="`modifyF` speaks `Kind`, not the concrete type"
-The function must return `Kind<F, A>` and the result is `Kind<F, S>`, so an `IO` goes in through `IO_OP.widen(...)` and a `Validated` comes out through `VALIDATED.narrow(...)`. The [Fluent API](fluent_api.md#part-2-validation-aware-modification)'s four validation methods do that widening for you for `Either`, `Maybe` and `Validated`; reach for `modifyF` when the effect is something else, or when you already hold the `Applicative`.
+The function must return `Kind<F, A>` and the result is `Kind<F, S>`, so an `IO` goes in through `IO_OP.widen(...)` and a `Validated` comes out through `VALIDATED.narrow(...)`. The four validation methods on [Updates That Can Fail](fluent_api.md#part-2-validation-aware-modification) do that widening for you for `Either`, `Maybe` and `Validated`; reach for `modifyF` when the effect is something else, or when you already hold the `Applicative`.
 ~~~
 
 Accumulating validation is the same call with a `Validated` applicative, and shows the one piece of ceremony worth knowing about: the witness has to be written out, because nothing in the argument list mentions `List<String>`.
@@ -17389,7 +17267,7 @@ EitherPath<String, Integer> salary =
 - [Effect Path Overview](../effect/effect_path_overview.md): railway model and effect composition
 - [Focus-Effect Integration](../effect/focus_integration.md): the complete bridging guide
 - [Capability Interfaces](../effect/capabilities.md): the powers behind effect operations
-- [Fluent API](fluent_api.md): validation-aware modification without hand-wiring an `Applicative`
+- [Updates That Can Fail](fluent_api.md): validation-aware modification without hand-wiring an `Applicative`
 ~~~
 
 ---
@@ -18349,7 +18227,7 @@ import static org.higherkindedj.optics.extensions.LensExtensions.*;
 ```
 
 ~~~admonish note title="Alternative: Fluent API"
-These extension methods are also available through the [Fluent API](fluent_api.md), which provides method chaining and a more discoverable interface.
+These extension methods are also available through the [Fluent API](fluent_api.md#the-two-styles), which provides method chaining and a more discoverable interface.
 ~~~
 
 ### Safe Access Methods
@@ -18826,7 +18704,7 @@ Maybe<String> safeBio = maybeProfile.flatMap(p -> getMaybe(bioLens, p));
 
 ~~~admonish tip title="See Also"
 - [Core Type Integration](core_type_integration.md): the prisms and traversals for the `Maybe`/`Either`/`Validated`/`Try` these methods return
-- [Fluent API](fluent_api.md): the same validation strategies as `OpticOps` statics and builders
+- [Updates That Can Fail](fluent_api.md): the same validation strategies as `OpticOps` statics and builders
 - [Composing Optics](composing_optics.md): the capstone these operations shorten
 ~~~
 
@@ -20176,7 +20054,7 @@ void headquartersCityBridgeIsLawful() {
 
 ---
 
-This group covers the edges of a service, and you can skip it until one of them comes up. A value is parsed at a boundary, an update is checked by a validating effect, a batch of reads goes out as one call, and a record keeps what changed. The everyday versions are among the chapter's first pages: [Fluent API](fluent_api.md) for an update that can fail, and [Multi-Edit and Sparse Updates](multi_edit.md) for a PATCH. Here is the mechanism under the first of those, before any theory. One path runs from a form, through a sealed principal, across a list of permissions, down to each permission's name; one call validates every one of them and collects the failures. Every line compiles against the real library on every build:
+This group covers the edges of a service, and you can skip it until one of them comes up. A value is parsed at a boundary, an update is checked by a validating effect, a batch of reads goes out as one call, and a record keeps what changed. The everyday versions are among the chapter's first pages: [Updates That Can Fail](fluent_api.md) for one checked update, and [Many Edits at Once](multi_edit.md) for a PATCH. Here is the mechanism under the first of those, before any theory. One path runs from a form, through a sealed principal, across a list of permissions, down to each permission's name; one call validates every one of them and collects the failures. Every line compiles against the real library on every build:
 
 <!-- verify -->
 ```java
@@ -20427,7 +20305,7 @@ Practise the boundary in [Tutorial 25: ValidatedPrism](https://github.com/higher
 ~~~admonish tip title="See Also"
 - [Prisms](prisms.md): the yes/no match this type upgrades
 - [Accumulating Assembly](../monads/validated_assembly.md): sibling-field accumulation for multi-field parses
-- [Multi-Edit and Sparse Updates](multi_edit.md): the update-side counterpart
+- [Many Edits at Once](multi_edit.md): the update-side counterpart
 - [Record Mapping](../mapping/ch_intro.md): `@GenerateMapping` derives whole-record `parse`/`build` from these leaves
 ~~~
 
@@ -21343,7 +21221,7 @@ See [FluentValidationExample.java](https://github.com/higher-kinded-j/higher-kin
 ~~~
 
 ~~~admonish tip title="See Also"
-- [Fluent API for Optics](fluent_api.md#part-2-validation-aware-modification): the four validation strategies, the builders, and when to drop to `modifyF`
+- [Updates That Can Fail](fluent_api.md#part-2-validation-aware-modification): the four validation strategies, the builders, and when to drop to `modifyF`
 - [Composition Rules](composition_rules.md): why a chain of mixed optics widens to a `Traversal`
 - [Core Type Integration](core_type_integration.md): the prisms that let a core type sit mid-path
 ~~~
@@ -23099,7 +22977,7 @@ Practise the Free Monad DSL in [Tutorial 11: Advanced Optics DSL](https://github
 
 ~~~admonish tip title="See Also"
 - [Interpreters](interpreters.md): the execution strategies these programs are handed to
-- [Fluent API](fluent_api.md): the direct-execution counterpart, when a description buys you nothing
+- [Updates That Can Fail](fluent_api.md): the direct-execution counterpart through `OpticOps`, when a description buys you nothing
 - [Composing Optics](composing_optics.md): the optics these programs navigate with
 ~~~
 
@@ -23909,7 +23787,7 @@ public Order processOrder(Order order) {
 
 ~~~admonish tip title="See Also"
 - [Free Monad DSL](free_monad_dsl.md): building the programs these interpreters consume
-- [Fluent API](fluent_api.md): direct execution, when no description is needed
+- [Updates That Can Fail](fluent_api.md): direct execution through `OpticOps`, when no description is needed
 - [Effect Handlers](../effect/effect_handlers_intro.md): the same idea applied to computations rather than optics
 ~~~
 
@@ -24328,8 +24206,8 @@ flowchart TD
 |---|---|
 | Update a nested record field | [Focus DSL](focus_dsl.md) |
 | Compose optics across types you own | [Focus DSL](focus_dsl.md) |
-| Validate as you modify (`Either`, `Validated`, `Maybe`) | [Fluent API](fluent_api.md) |
-| Fan out an effect across a collection | [Fluent API `modifyAllF`](fluent_api.md) |
+| Validate as you modify (`Either`, `Validated`, `Maybe`) | [Updates That Can Fail](fluent_api.md) |
+| Fan out an effect across a collection | [`modifyF`](fluent_api.md#part-3-arbitrary-effects-with-modifyf) |
 | Build optic operations as data, run later | [Free Monad DSL](free_monad_dsl.md) |
 | Audit trail of every optic operation | [Free Monad DSL with logging interpreter](interpreters.md) |
 | Reuse an optic for a type you cannot annotate | [`@ImportOptics`](importing_optics.md) or an [`OpticsSpec`](optics_spec_interfaces.md) interface |
@@ -24660,7 +24538,7 @@ public Validated<NonEmptyList<FieldError>, Registration> validateRegistration(Re
 ```
 
 ~~~admonish warning title="Why not flatMap?"
-Chaining per-field `Validated` results with `flatMap` short-circuits: the first failure hides all the others, and earlier writes are discarded. `Edits.accumulate` validates every field independently and applies every write in one pass: see [Multi-Edit and Sparse Updates](multi_edit.md).
+Chaining per-field `Validated` results with `flatMap` short-circuits: the first failure hides all the others, and earlier writes are discarded. `Edits.accumulate` validates every field independently and applies every write in one pass: see [Many Edits at Once](multi_edit.md).
 ~~~
 
 ---
@@ -25382,7 +25260,7 @@ Bulk operations on `Traversal` values typically live on the `Traversals` utility
 | `Traversals.forOptional()` | Traversal that focuses zero or one elements of an `Optional` |
 | `Traversals.forArray()` | Traversal over the elements of an array |
 
-Stay in the static-method utility for one-off bulk operations; reach for the [Fluent API](fluent_api.md) when you want method-chaining on a builder.
+Stay in the static-method utility for one-off bulk operations; reach for the [Fluent API](fluent_api.md#the-two-styles) when you want method-chaining on a builder.
 
 ---
 
@@ -26116,7 +25994,7 @@ Focus paths are designed for compile-time type safety. When the path is only kno
 ~~~admonish tip title="See Also"
 - [Focus DSL](focus_dsl.md): core concepts and path types
 - [Lenses](lenses.md): the optic underneath a `FocusPath`
-- [Fluent API](fluent_api.md): validation-aware modification through `OpticOps`
+- [Updates That Can Fail](fluent_api.md): validation-aware modification through `OpticOps`
 - [Free Monad DSL](free_monad_dsl.md): optic programs and interpreters
 ~~~
 
