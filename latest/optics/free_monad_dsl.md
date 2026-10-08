@@ -80,38 +80,45 @@ For optics specifically, this means you can build complex data transformation wo
 
 ### Simple Programs: Get, Set, Modify
 
-Let's start with the basics:
+Let's start with the basics, a person with a name, an age and a status:
 
-<!-- verify -->
-```java
+``` java
 @GenerateLenses
-public record Person(String name, int age, String status) {}
+record Person(String name, int age, String status) {}
 
-Person person = new Person("Alice", 25, "ACTIVE");
+```
 
-// Build a program that gets the age
-Free<OpticOpKind.Witness, Integer> getProgram =
-    OpticPrograms.get(person, PersonLenses.age());
+Each builder describes one operation on that person, and returns it as a program:
 
-// Build a program that sets the age
-Free<OpticOpKind.Witness, Person> setProgram =
-    OpticPrograms.set(person, PersonLenses.age(), 30);
+``` java
+    Person person = new Person("Alice", 25, "ACTIVE");
 
-// Build a program that modifies the age
-Free<OpticOpKind.Witness, Person> modifyProgram =
-    OpticPrograms.modify(person, PersonLenses.age(), age -> age + 1);
+    // Build a program that gets the age
+    Free<OpticOpKind.Witness, Integer> getProgram = OpticPrograms.get(person, PersonLenses.age());
+
+    // Build a program that sets the age
+    Free<OpticOpKind.Witness, Person> setProgram =
+        OpticPrograms.set(person, PersonLenses.age(), 30);
+
+    // Build a program that modifies the age
+    Free<OpticOpKind.Witness, Person> modifyProgram =
+        OpticPrograms.modify(person, PersonLenses.age(), age -> age + 1);
 ```
 
 At this point, **nothing has executed**. We've just built descriptions of operations. To actually run them:
 
-<!-- verify -->
-```java
-// Execute with direct interpreter
-DirectOpticInterpreter interpreter = OpticInterpreters.direct();
+``` java
+    // Execute with direct interpreter
+    DirectOpticInterpreter interpreter = OpticInterpreters.direct();
 
-Integer age = interpreter.run(getProgram);           // 25
-Person updated = interpreter.run(setProgram);         // age is now 30
-Person modified = interpreter.run(modifyProgram);     // age is now 26
+    Integer age = interpreter.run(getProgram);
+    // 25
+
+    Person updated = interpreter.run(setProgram);
+    // age is now 30
+
+    Person modified = interpreter.run(modifyProgram);
+    // age is now 26
 ```
 
 ---
@@ -154,88 +161,97 @@ Let's break down what's happening:
 
 ### Multi-Step programs: Complex Workflows
 
-You can chain multiple `flatMap` calls to build sophisticated workflows:
+You can chain multiple `flatMap` calls to build sophisticated workflows. An employee has a salary and a status:
 
-<!-- verify -->
-```java
+``` java
 @GenerateLenses
-public record Employee(String name, int salary, EmployeeStatus status) {}
+record Employee(String name, int salary, EmployeeStatus status) {}
 
-enum EmployeeStatus { JUNIOR, SENIOR, PROBATION, RETIRED }
-
-// Program: Annual review and potential promotion
-Free<OpticOpKind.Witness, Employee> annualReviewProgram(Employee employee) {
-    return OpticPrograms.get(employee, EmployeeLenses.salary())
-        .flatMap(currentSalary -> {
-            // Step 1: Give a 10% raise
-            int newSalary = currentSalary + (currentSalary / 10);
-            return OpticPrograms.set(employee, EmployeeLenses.salary(), newSalary);
-        })
-        .flatMap(raisedEmployee ->
-            // Step 2: Check if salary justifies promotion
-            OpticPrograms.get(raisedEmployee, EmployeeLenses.salary())
-                .flatMap(salary -> {
-                    if (salary > 100_000) {
-                        return OpticPrograms.set(
-                            raisedEmployee,
-                            EmployeeLenses.status(),
-                            EmployeeStatus.SENIOR
-                        );
-                    } else {
-                        return OpticPrograms.pure(raisedEmployee);
-                    }
-                })
-        );
+enum EmployeeStatus {
+  JUNIOR,
+  SENIOR,
+  PROBATION,
+  RETIRED
 }
 
-// Execute for an employee
-Employee alice = new Employee("Alice", 95_000, EmployeeStatus.JUNIOR);
-Free<OpticOpKind.Witness, Employee> program = annualReviewProgram(alice);
+```
 
-Employee promoted = OpticInterpreters.direct().run(program);
-// Result: Employee("Alice", 104_500, SENIOR)
+The review program raises the salary by 10%, then reads it back to decide on a promotion:
+
+``` java
+  // Program: Annual review and potential promotion
+  static Free<OpticOpKind.Witness, Employee> annualReviewProgram(Employee employee) {
+    return OpticPrograms.get(employee, EmployeeLenses.salary())
+        .flatMap(
+            currentSalary -> {
+              // Step 1: Give a 10% raise
+              int newSalary = currentSalary + (currentSalary / 10);
+              return OpticPrograms.set(employee, EmployeeLenses.salary(), newSalary);
+            })
+        .flatMap(
+            raisedEmployee ->
+                // Step 2: Check if salary justifies promotion
+                OpticPrograms.get(raisedEmployee, EmployeeLenses.salary())
+                    .flatMap(
+                        salary -> {
+                          if (salary > 100_000) {
+                            return OpticPrograms.set(
+                                raisedEmployee, EmployeeLenses.status(), EmployeeStatus.SENIOR);
+                          } else {
+                            return OpticPrograms.pure(raisedEmployee);
+                          }
+                        }));
+  }
+
+```
+
+Running it for an employee on 95,000 gives the raise and the promotion:
+
+``` java
+    // Execute for an employee
+    Employee alice = new Employee("Alice", 95_000, EmployeeStatus.JUNIOR);
+    Free<OpticOpKind.Witness, Employee> program = annualReviewProgram(alice);
+
+    Employee promoted = OpticInterpreters.direct().run(program);
+    // Employee[name=Alice, salary=104500, status=SENIOR]
 ```
 
 ---
 
 ## Part 3: Working with Collections (Traversals and Folds)
 
-The DSL supports batch operations through traversals:
+The DSL supports batch operations through traversals. A team holds a list of players, each with a score:
 
-<!-- verify -->
-```java
+``` java
 @GenerateLenses
 @GenerateTraversals
-public record Team(String name, List<Player> players) {}
+record Team(String name, List<Player> players) {}
 
 @GenerateLenses
-public record Player(String name, int score) {}
+record Player(String name, int score) {}
 
-Team team = new Team("Wildcats",
-    List.of(
-        new Player("Alice", 80),
-        new Player("Bob", 90)
-    ));
+```
 
-// Program: Double all scores and check if everyone passes
-Free<OpticOpKind.Witness, Boolean> scoreUpdateProgram =
-    OpticPrograms.modifyAll(
-        team,
-        TeamTraversals.players().andThen(PlayerLenses.score()),
-        score -> score * 2
-    )
-    .flatMap(updatedTeam ->
-        // Now check if all players have passing scores
-        OpticPrograms.all(
-            updatedTeam,
-            TeamTraversals.players().andThen(PlayerLenses.score()),
-            score -> score >= 100
-        )
-    );
+One program doubles every score, then asks whether every player now passes:
 
-// Execute
-Boolean allPass = OpticInterpreters.direct().run(scoreUpdateProgram);
-// Result: true (Alice: 160, Bob: 180)
+``` java
+    Team team = new Team("Wildcats", List.of(new Player("Alice", 80), new Player("Bob", 90)));
+
+    // Program: Double all scores and check if everyone passes
+    Free<OpticOpKind.Witness, Boolean> scoreUpdateProgram =
+        OpticPrograms.modifyAll(
+                team, TeamTraversals.players().andThen(PlayerLenses.score()), score -> score * 2)
+            .flatMap(
+                updatedTeam ->
+                    // Now check if all players have passing scores
+                    OpticPrograms.all(
+                        updatedTeam,
+                        TeamTraversals.players().andThen(PlayerLenses.score()),
+                        score -> score >= 100));
+
+    // Execute
+    Boolean allPass = OpticInterpreters.direct().run(scoreUpdateProgram);
+    // true: every doubled score is at least 100
 ```
 
 ### Querying with programs
@@ -313,55 +329,58 @@ By building the migration as a program, you can:
 
 ### Scenario 2: Audit Trail for Financial Transactions
 
-<!-- verify -->
-```java
+A transaction moves an amount from one account to another:
+
+``` java
 @GenerateLenses
-public record Account(String accountId, BigDecimal balance) {}
+record Account(String accountId, BigDecimal balance) {}
 
 @GenerateLenses
-public record Transaction(Account from, Account to, BigDecimal amount) {}
+record Transaction(Account from, Account to, BigDecimal amount) {}
+```
 
-// Program: Transfer money between accounts
-Free<OpticOpKind.Witness, Transaction> transferProgram(
-    Transaction transaction
-) {
+The transfer program reads the amount, then debits the source and credits the destination:
+
+``` java
+  // Program: Transfer money between accounts
+  static Free<OpticOpKind.Witness, Transaction> transferProgram(Transaction transaction) {
     return OpticPrograms.get(transaction, TransactionLenses.amount())
-        .flatMap(amount ->
-            // Deduct from source account
-            OpticPrograms.modify(
-                transaction,
-                TransactionLenses.from().andThen(AccountLenses.balance()),
-                balance -> balance.subtract(amount)
-            )
-        )
-        .flatMap(txn ->
-            // Add to destination account
-            OpticPrograms.modify(
-                txn,
-                TransactionLenses.to().andThen(AccountLenses.balance()),
-                balance -> balance.add(txn.amount())
-            )
-        );
-}
+        .flatMap(
+            amount ->
+                // Deduct from source account
+                OpticPrograms.modify(
+                    transaction,
+                    TransactionLenses.from().andThen(AccountLenses.balance()),
+                    balance -> balance.subtract(amount)))
+        .flatMap(
+            txn ->
+                // Add to destination account
+                OpticPrograms.modify(
+                    txn,
+                    TransactionLenses.to().andThen(AccountLenses.balance()),
+                    balance -> balance.add(txn.amount())));
+  }
+```
 
-// Execute with logging for audit trail
-Account acc1 = new Account("ACC001", new BigDecimal("1000.00"));
-Account acc2 = new Account("ACC002", new BigDecimal("500.00"));
-Transaction txn = new Transaction(acc1, acc2, new BigDecimal("100.00"));
+The logging interpreter runs it and keeps one line per operation:
 
-Free<OpticOpKind.Witness, Transaction> program = transferProgram(txn);
+``` java
+    // Execute with logging for audit trail
+    Account acc1 = new Account("ACC001", new BigDecimal("1000.00"));
+    Account acc2 = new Account("ACC002", new BigDecimal("500.00"));
+    Transaction txn = new Transaction(acc1, acc2, new BigDecimal("100.00"));
 
-// Use logging interpreter to record every operation
-LoggingOpticInterpreter logger = OpticInterpreters.logging();
-Transaction result = logger.run(program);
+    Free<OpticOpKind.Witness, Transaction> program = transferProgram(txn);
 
-// Review audit trail
-logger.getLog().forEach(System.out::println);
-/* Output:
-GET: OpticPrograms$$Lambda/0x... -> 100.00
-MODIFY: Lens$3 from 1000.00 to 900.00
-MODIFY: TransactionLenses.to().andThen(AccountLenses.balance()) from 500.00 to 600.00
-*/
+    // Use logging interpreter to record every operation
+    LoggingOpticInterpreter logger = OpticInterpreters.logging();
+    Transaction result = logger.run(program);
+
+    // Review the audit trail: one line per operation, each naming the optic's class
+    //   GET: ... -> 100.00
+    //   MODIFY: ... from 1000.00 to 900.00
+    //   MODIFY: ... from 500.00 to 600.00
+    logger.getLog().forEach(System.out::println);
 ```
 
 ---
@@ -627,12 +646,13 @@ Person mockResult = mock.run(program);
 
 ### Don't: Forget that programs are immutable
 
+<!-- verify -->
 ```java
-// Wrong - trying to "modify" a program
-Free<OpticOpKind.Witness, Person> program = OpticPrograms.get(person, PersonLenses.age());
-program.flatMap(age -> ...);  // This returns a NEW program!
+// Wrong: flatMap returns a NEW program, and this line throws it away
+Free<OpticOpKind.Witness, Integer> program = OpticPrograms.get(person, PersonLenses.age());
+program.flatMap(age -> OpticPrograms.set(person, PersonLenses.age(), age + 1));
 
-// The original program is unchanged
+// The original program is unchanged: it still only reads the age
 ```
 
 ### Do: Assign the result of `flatMap`

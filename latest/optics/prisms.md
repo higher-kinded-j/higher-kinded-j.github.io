@@ -42,7 +42,9 @@ import java.util.Map;
 @GeneratePrisms // Generates Prisms for each case of the sealed interface
 public sealed interface JsonValue {}
 
+@GenerateLenses // Step 3 reaches the string's value through JsonStringLenses
 public record JsonString(String value) implements JsonValue {}
+
 public record JsonNumber(double value) implements JsonValue {}
 public record JsonBoolean(boolean value) implements JsonValue {}
 
@@ -88,20 +90,19 @@ A `Prism` is defined by two unique, failable operations:
 * **`getOptional(source)`**: Attempts to focus on the target. It returns an `Optional` which is non-empty only if the `source` matches the Prism's specific case. This is the safe alternative to an `instanceof` check and cast.
 * **`build(value)`**: Constructs the top-level type from a part. This is the reverse operation, used to put a value of the specific case back into the sum type (e.g., taking a `JsonString` and returning it as a `JsonValue`).
 
-<!-- verify -->
-```java
-Prism<JsonValue, JsonString> jsonStringPrism = JsonValuePrisms.jsonString();
+``` java
+    Prism<JsonValue, JsonString> jsonStringPrism = JsonValuePrisms.jsonString();
 
-// --- Using getOptional (the safe "cast") ---
-Optional<JsonString> result1 = jsonStringPrism.getOptional(new JsonString("hello"));
-// -> Optional[JsonString[value=hello]]
+    // --- Using getOptional (the safe "cast") ---
+    Optional<JsonString> result1 = jsonStringPrism.getOptional(new JsonString("hello"));
+    // -> Optional[JsonString[value=hello]]
 
-Optional<JsonString> result2 = jsonStringPrism.getOptional(new JsonNumber(123));
-// -> Optional.empty
+    Optional<JsonString> result2 = jsonStringPrism.getOptional(new JsonNumber(123));
+    // -> Optional.empty
 
-// --- Using build (construct the sum type from a part) ---
-JsonValue result3 = jsonStringPrism.build(new JsonString("world"));
-// -> JsonString[value=world], typed as a JsonValue
+    // --- Using build (construct the sum type from a part) ---
+    JsonValue result3 = jsonStringPrism.build(new JsonString("world"));
+    // -> JsonString[value=world], typed as a JsonValue
 ```
 
 The prism picks one case of the sealed type, and every other case passes through it untouched:

@@ -39,11 +39,9 @@ flowchart LR
 | `parse("ada@corp.example")` | `Valid(EmailAddress)` |
 | `build(addr)` | `"ada@corp.example"`, never fails |
 
-In code:
+In code, with `ValidatedPrism` from `org.higherkindedj.optics.validated`:
 
 ``` java
-import org.higherkindedj.optics.validated.ValidatedPrism;
-
   static final ValidatedPrism<String, EmailAddress> EMAIL =
       ValidatedPrism.of(
           EmailAddress::parse, // String -> Validated<NonEmptyList<FieldError>, EmailAddress>

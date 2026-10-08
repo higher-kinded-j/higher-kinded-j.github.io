@@ -22,7 +22,7 @@ _Update the first or last few elements of a list, or a slice, and leave the rest
 [PredicateListTraversalsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PredicateListTraversalsExample.java)
 ~~~
 
-In our journey through optics, we've seen how **Traversal** handles bulk operations on all elements of a collection (and the next chapter's [Filtered Optics](filtered_optics.md) will focus on elements matching a predicate). But what about focusing on elements by *position*: the first few items, the last few, or a specific slice?
+In our journey through optics, we've seen how **Traversal** handles bulk operations on all elements of a collection (and the Precision and Filtering group's [Filtered Optics](filtered_optics.md) will focus on elements matching a predicate). But what about focusing on elements by *position*: the first few items, the last few, or a specific slice?
 
 Traditionally, working with list portions requires breaking out of your optic composition to use streams or manual index manipulation. **Limiting traversals** solve this elegantly by making positional focus a first-class part of your optic composition.
 
@@ -42,9 +42,11 @@ Imagine you're building an e-commerce platform where you need to:
 <!-- verify -->
 ```java
 @GenerateLenses
-public record Product(String sku, String name, double price, int stock) {
-    Product applyDiscount(double percentage) {
-        return new Product(sku, name, price * (1 - percentage), stock);
+public record Product(String sku, String name, BigDecimal price, int stock) {
+    Product applyDiscount(int percent) {
+        BigDecimal factor = BigDecimal.valueOf(100 - percent, 2); // 10 percent off is 0.90
+        BigDecimal discounted = price.multiply(factor).setScale(2, RoundingMode.HALF_EVEN);
+        return new Product(sku, name, discounted, stock);
     }
 }
 
@@ -58,7 +60,7 @@ public record Order(String id, List<LineItem> items, LocalDateTime created) {}
 public record LineItem(Product product, int quantity) {}
 
 @GenerateLenses
-public record SalesMetric(LocalDate date, double revenue, int transactions) {}
+public record SalesMetric(LocalDate date, BigDecimal revenue, int transactions) {}
 ```
 
 **The Traditional Approach:**
@@ -68,7 +70,7 @@ public record SalesMetric(LocalDate date, double revenue, int transactions) {}
 // Verbose: Manual slicing breaks optic composition
 List<Product> firstTen = catalogue.products().subList(0, Math.min(10, catalogue.products().size()));
 List<Product> discounted = firstTen.stream()
-    .map(p -> p.applyDiscount(0.1))
+    .map(p -> p.applyDiscount(10))
     .collect(Collectors.toList());
 // Now reconstruct the full list... tedious!
 List<Product> fullList = new ArrayList<>(discounted);
@@ -106,31 +108,39 @@ Each serves different needs, and they can be combined with other optics for powe
 
 ### Step 1: Basic Usage with `taking(int n)`
 
-The most intuitive method: focus on at most the first `n` elements.
+The most intuitive method: focus on at most the first `n` elements. The examples on this page use these imports:
 
-<!-- verify -->
-```java
+``` java
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.List;
+import org.higherkindedj.optics.Traversal;
 import org.higherkindedj.optics.util.ListTraversals;
 import org.higherkindedj.optics.util.Traversals;
 
-// Create a traversal for first 3 products
-Traversal<List<Product>, Product> first3 = ListTraversals.taking(3);
+```
 
-List<Product> products = List.of(
-    new Product("SKU001", "Widget", 10.0, 100),
-    new Product("SKU002", "Gadget", 25.0, 50),
-    new Product("SKU003", "Gizmo", 15.0, 75),
-    new Product("SKU004", "Doohickey", 30.0, 25),
-    new Product("SKU005", "Thingamajig", 20.0, 60)
-);
+`taking(3)` then focuses on the first three of five products:
 
-// Apply 10% discount to ONLY first 3 products
-List<Product> result = Traversals.modify(first3, p -> p.applyDiscount(0.1), products);
-// First 3 discounted; last 2 preserved unchanged
+``` java
+    // Create a traversal for first 3 products
+    Traversal<List<Product>, Product> first3 = ListTraversals.taking(3);
 
-// Extract ONLY first 3 products
-List<Product> firstThree = Traversals.getAll(first3, products);
-// Returns: [Widget, Gadget, Gizmo]
+    List<Product> products =
+        List.of(
+            new Product("SKU001", "Widget", new BigDecimal("10.00"), 100),
+            new Product("SKU002", "Gadget", new BigDecimal("25.00"), 50),
+            new Product("SKU003", "Gizmo", new BigDecimal("15.00"), 75),
+            new Product("SKU004", "Doohickey", new BigDecimal("30.00"), 25),
+            new Product("SKU005", "Thingamajig", new BigDecimal("20.00"), 60));
+
+    // Apply 10% discount to ONLY first 3 products
+    List<Product> result = Traversals.modify(first3, p -> p.applyDiscount(10), products);
+    // First 3 discounted; last 2 preserved unchanged
+
+    // Extract ONLY first 3 products
+    List<Product> firstThree = Traversals.getAll(first3, products);
+    // Widget, Gadget and Gizmo
 ```
 
 **Critical Semantic**: During **modification**, non-focused elements are *preserved unchanged* in the structure. During **queries** (like `getAll`), they are *excluded* from the results. This preserves the overall structure whilst focusing operations on the subset you care about.
@@ -139,64 +149,60 @@ List<Product> firstThree = Traversals.getAll(first3, products);
 
 Focus on all elements *after* skipping the first `n`:
 
-<!-- verify -->
-```java
-// Skip first 2, focus on the rest
-Traversal<List<Product>, Product> afterFirst2 = ListTraversals.dropping(2);
+``` java
+    // Skip first 2, focus on the rest
+    Traversal<List<Product>, Product> afterFirst2 = ListTraversals.dropping(2);
 
-List<Product> result = Traversals.modify(afterFirst2, p -> p.applyDiscount(0.15), products);
-// First 2 unchanged; last 3 get 15% discount
+    List<Product> result = Traversals.modify(afterFirst2, p -> p.applyDiscount(15), products);
+    // First 2 unchanged; last 3 get 15% discount
 
-List<Product> skipped = Traversals.getAll(afterFirst2, products);
-// Returns: [Gizmo, Doohickey, Thingamajig]
+    List<Product> skipped = Traversals.getAll(afterFirst2, products);
+    // Gizmo, Doohickey and Thingamajig
 ```
 
 ### Step 3: Focusing on the End with `takingLast(int n)`
 
 Focus on the last `n` elements, perfect for "most recent" scenarios:
 
-<!-- verify -->
-```java
-// Focus on last 2 products
-Traversal<List<Product>, Product> last2 = ListTraversals.takingLast(2);
+``` java
+    // Focus on last 2 products
+    Traversal<List<Product>, Product> last2 = ListTraversals.takingLast(2);
 
-List<Product> result = Traversals.modify(last2, p -> p.applyDiscount(0.2), products);
-// First 3 unchanged; last 2 get 20% discount
+    List<Product> result = Traversals.modify(last2, p -> p.applyDiscount(20), products);
+    // First 3 unchanged; last 2 get 20% discount
 
-List<Product> lastTwo = Traversals.getAll(last2, products);
-// Returns: [Doohickey, Thingamajig]
+    List<Product> lastTwo = Traversals.getAll(last2, products);
+    // Doohickey and Thingamajig
 ```
 
 ### Step 4: Excluding from the End with `droppingLast(int n)`
 
 Focus on all elements *except* the last `n`:
 
-<!-- verify -->
-```java
-// Focus on all except last 2
-Traversal<List<Product>, Product> exceptLast2 = ListTraversals.droppingLast(2);
+``` java
+    // Focus on all except last 2
+    Traversal<List<Product>, Product> exceptLast2 = ListTraversals.droppingLast(2);
 
-List<Product> result = Traversals.modify(exceptLast2, p -> p.applyDiscount(0.05), products);
-// First 3 get 5% discount; last 2 unchanged
+    List<Product> result = Traversals.modify(exceptLast2, p -> p.applyDiscount(5), products);
+    // First 3 get 5% discount; last 2 unchanged
 
-List<Product> allButLastTwo = Traversals.getAll(exceptLast2, products);
-// Returns: [Widget, Gadget, Gizmo]
+    List<Product> allButLastTwo = Traversals.getAll(exceptLast2, products);
+    // Widget, Gadget and Gizmo
 ```
 
 ### Step 5: Precise Slicing with `slicing(int from, int to)`
 
 Focus on elements within a half-open range `[from, to)`, exactly like `List.subList()`:
 
-<!-- verify -->
-```java
-// Focus on indices 1, 2, 3 (0-indexed, exclusive end)
-Traversal<List<Product>, Product> slice = ListTraversals.slicing(1, 4);
+``` java
+    // Focus on indices 1, 2, 3 (0-indexed, exclusive end)
+    Traversal<List<Product>, Product> slice = ListTraversals.slicing(1, 4);
 
-List<Product> result = Traversals.modify(slice, p -> p.applyDiscount(0.12), products);
-// Index 0 unchanged; indices 1-3 discounted; index 4 unchanged
+    List<Product> result = Traversals.modify(slice, p -> p.applyDiscount(12), products);
+    // Index 0 unchanged; indices 1-3 discounted; index 4 unchanged
 
-List<Product> sliced = Traversals.getAll(slice, products);
-// Returns: [Gadget, Gizmo, Doohickey]
+    List<Product> sliced = Traversals.getAll(slice, products);
+    // Gadget, Gizmo and Doohickey
 ```
 
 ---
@@ -217,30 +223,25 @@ These methods enable **runtime-determined focusing**: the number of elements in 
 
 The `takingWhile()` method focuses on the **longest prefix** of elements satisfying a predicate. Once an element fails the test, traversal stops, even if later elements would pass.
 
-<!-- verify -->
-```java
-// Focus on products whilst price < 20
-Traversal<List<Product>, Product> affordablePrefix =
-    ListTraversals.takingWhile(p -> p.price() < 20.0);
+``` java
+    // Focus on products whilst price < 20
+    Traversal<List<Product>, Product> affordablePrefix =
+        ListTraversals.takingWhile(p -> p.price().compareTo(new BigDecimal("20")) < 0);
 
-List<Product> products = List.of(
-    new Product("SKU001", "Widget", 10.0, 100),
-    new Product("SKU002", "Gadget", 15.0, 50),
-    new Product("SKU003", "Gizmo", 25.0, 75),   // Stops here
-    new Product("SKU004", "Thing", 12.0, 25)    // Not included despite < 20
-);
+    List<Product> products =
+        List.of(
+            new Product("SKU001", "Widget", new BigDecimal("10.00"), 100),
+            new Product("SKU002", "Gadget", new BigDecimal("15.00"), 50),
+            new Product("SKU003", "Gizmo", new BigDecimal("25.00"), 75), // Stops here
+            new Product("SKU004", "Thing", new BigDecimal("12.00"), 25)); // Not included
 
-// Apply discount only to initial affordable items
-List<Product> result = Traversals.modify(
-    affordablePrefix,
-    p -> p.applyDiscount(0.1),
-    products
-);
-// Widget and Gadget discounted; Gizmo and Thing unchanged
+    // Apply discount only to initial affordable items
+    List<Product> result = Traversals.modify(affordablePrefix, p -> p.applyDiscount(10), products);
+    // Widget and Gadget discounted; Gizmo and Thing unchanged
 
-// Extract the affordable prefix
-List<Product> affordable = Traversals.getAll(affordablePrefix, products);
-// Returns: [Widget, Gadget]  (stops at first expensive item)
+    // Extract the affordable prefix
+    List<Product> affordable = Traversals.getAll(affordablePrefix, products);
+    // Widget and Gadget: it stops at Gizmo, the first expensive item, so Thing is left out
 ```
 
 **Key Semantic**: Unlike `filtered()`, which tests all elements, `takingWhile()` is **sequential and prefix-oriented**. It's the optics equivalent of Stream's `takeWhile()`.
@@ -269,29 +270,26 @@ List<Transaction> processed = Traversals.modify(
 
 The `droppingWhile()` method is the complement to `takingWhile()`: it **skips the prefix** whilst the predicate holds, then focuses on all remaining elements.
 
-<!-- verify -->
-```java
-// Skip low-stock products, focus on well-stocked ones
-Traversal<List<Product>, Product> wellStocked =
-    ListTraversals.droppingWhile(p -> p.stock() < 50);
+``` java
+    // Skip low-stock products, focus on well-stocked ones
+    Traversal<List<Product>, Product> wellStocked =
+        ListTraversals.droppingWhile(p -> p.stock() < 50);
 
-List<Product> products = List.of(
-    new Product("SKU001", "Widget", 10.0, 20),
-    new Product("SKU002", "Gadget", 25.0, 30),
-    new Product("SKU003", "Gizmo", 15.0, 75),   // First to pass
-    new Product("SKU004", "Thing", 12.0, 25)    // Included despite < 50
-);
+    List<Product> products =
+        List.of(
+            new Product("SKU001", "Widget", new BigDecimal("10.00"), 20),
+            new Product("SKU002", "Gadget", new BigDecimal("25.00"), 30),
+            new Product("SKU003", "Gizmo", new BigDecimal("15.00"), 75), // First to pass
+            new Product("SKU004", "Thing", new BigDecimal("12.00"), 25)); // Included despite < 50
 
-// Restock only well-stocked items (and everything after)
-List<Product> restocked = Traversals.modify(
-    wellStocked,
-    p -> new Product(p.sku(), p.name(), p.price(), p.stock() + 50),
-    products
-);
-// Widget and Gadget unchanged; Gizmo and Thing restocked
+    // Restock only well-stocked items (and everything after)
+    List<Product> restocked =
+        Traversals.modify(
+            wellStocked, p -> new Product(p.sku(), p.name(), p.price(), p.stock() + 50), products);
+    // Widget and Gadget unchanged; Gizmo and Thing restocked
 
-List<Product> focused = Traversals.getAll(wellStocked, products);
-// Returns: [Gizmo, Thing]
+    List<Product> focused = Traversals.getAll(wellStocked, products);
+    // Gizmo and Thing
 ```
 
 **Real-World Use Cases**:
@@ -300,56 +298,49 @@ List<Product> focused = Traversals.getAll(wellStocked, products);
 - **Pagination**: Skip already-processed records in batch jobs
 - **Protocol parsing**: Discard handshake, process payload
 
-<!-- verify -->
-```java
-// Skip the leading configuration block in a log
-Traversal<List<String>, String> runtimeLogs =
-    ListTraversals.droppingWhile(line -> line.startsWith("[CONFIG]"));
+``` java
+    // Skip the leading configuration block in a log
+    Traversal<List<String>, String> runtimeLogs =
+        ListTraversals.droppingWhile(line -> line.startsWith("[CONFIG]"));
 
-// Apply to log data
-List<String> logs = List.of(
-    "[CONFIG] Database URL", "[CONFIG] Port",
-    "INFO: System started", "ERROR: Connection failed");
-List<String> result = Traversals.modify(runtimeLogs, String::toUpperCase, logs);
-// Result: ["[CONFIG] Database URL", "[CONFIG] Port",
-//          "INFO: SYSTEM STARTED", "ERROR: CONNECTION FAILED"]
-// Note: a [CONFIG] line appearing AFTER runtime lines would be modified too;
-// droppingWhile only skips the leading prefix
+    // Apply to log data
+    List<String> logs =
+        List.of(
+            "[CONFIG] Database URL",
+            "[CONFIG] Port",
+            "INFO: System started",
+            "ERROR: Connection failed");
+    List<String> result = Traversals.modify(runtimeLogs, String::toUpperCase, logs);
+    // [[CONFIG] Database URL, [CONFIG] Port, INFO: SYSTEM STARTED, ERROR: CONNECTION FAILED]
+    // Note: a [CONFIG] line appearing AFTER runtime lines would be modified too;
+    // droppingWhile only skips the leading prefix
 ```
 
 ### Step 8: Single Element Access with `element(int)`
 
 The `element()` method creates an **affine traversal** (0-1 cardinality) focusing on a single element at the given index. Unlike direct array access, it never throws `IndexOutOfBoundsException`.
 
-<!-- verify -->
-```java
-// Focus on element at index 2
-Traversal<List<Product>, Product> thirdProduct = ListTraversals.element(2);
+``` java
+    // Focus on element at index 2
+    Traversal<List<Product>, Product> thirdProduct = ListTraversals.element(2);
 
-List<Product> products = List.of(
-    new Product("SKU001", "Widget", 10.0, 100),
-    new Product("SKU002", "Gadget", 25.0, 50),
-    new Product("SKU003", "Gizmo", 15.0, 75)
-);
+    List<Product> products =
+        List.of(
+            new Product("SKU001", "Widget", new BigDecimal("10.00"), 100),
+            new Product("SKU002", "Gadget", new BigDecimal("25.00"), 50),
+            new Product("SKU003", "Gizmo", new BigDecimal("15.00"), 75));
 
-// Modify only the third product
-List<Product> updated = Traversals.modify(
-    thirdProduct,
-    p -> p.applyDiscount(0.2),
-    products
-);
-// Only Gizmo discounted
+    // Modify only the third product
+    List<Product> updated = Traversals.modify(thirdProduct, p -> p.applyDiscount(20), products);
+    // Only Gizmo discounted
 
-// Extract the element (if present)
-List<Product> element = Traversals.getAll(thirdProduct, products);
-// Returns: [Gizmo]
+    // Extract the element (if present)
+    List<Product> element = Traversals.getAll(thirdProduct, products);
+    // Gizmo alone
 
-// Out of bounds: gracefully returns empty
-List<Product> outOfBounds = Traversals.getAll(
-    ListTraversals.element(10),
-    products
-);
-// Returns: [] (no exception)
+    // Out of bounds: gracefully returns empty
+    List<Product> outOfBounds = Traversals.getAll(ListTraversals.element(10), products);
+    // an empty list, and no exception
 ```
 
 **When to Use `element()` vs `Ixed`**:
@@ -363,7 +354,7 @@ Traversal<List<List<Product>>, Product> secondListThirdProduct =
     ListTraversals.<List<Product>>element(1)  // Second list
         .andThen(ListTraversals.element(2));  // Third product in that list
 
-// Ixed for dynamic access (see Indexed Access, next chapter)
+// Ixed for dynamic access (see Indexed Access, in the Precision and Filtering group)
 Optional<Product> chosen =
     IxedInstances.get(IxedInstances.listIx(), userProvidedIndex, products);
 ```
@@ -382,7 +373,7 @@ List<Product> steadyPrefix =
 
 // A slice does compose with element-level optics: filter within the first ten
 Traversal<List<Product>, Product> affordableOfFirstTen =
-    ListTraversals.<Product>taking(10).filtered(p -> p.price() < 30.0);
+    ListTraversals.<Product>taking(10).filtered(p -> p.price().compareTo(new BigDecimal("30")) < 0);
 ```
 
 ---
@@ -399,27 +390,26 @@ All limiting traversal methods handle edge cases gracefully and consistently:
 | **`from >= to` in slicing** | Empty traversal (no focus) | Empty range semantics |
 | **Negative `from` in slicing** | Clamped to 0 | Start from beginning |
 
-<!-- verify -->
-```java
-// Examples of edge case handling
-List<Integer> numbers = List.of(1, 2, 3);
+``` java
+    // Examples of edge case handling
+    List<Integer> numbers = List.of(1, 2, 3);
 
-// n > size: focuses on all elements
-List<Integer> result1 = Traversals.getAll(ListTraversals.taking(100), numbers);
-// Returns: [1, 2, 3]
+    // n > size: focuses on all elements
+    List<Integer> result1 = Traversals.getAll(ListTraversals.taking(100), numbers);
+    // [1, 2, 3]
 
-// Negative n with taking: treated as 0, so no focus
-List<Integer> result2 = Traversals.getAll(ListTraversals.taking(-5), numbers);
-// Returns: []
-// (dropping(-5) is also treated as dropping(0), which focuses on EVERY element)
+    // Negative n with taking: treated as 0, so no focus
+    List<Integer> result2 = Traversals.getAll(ListTraversals.taking(-5), numbers);
+    // []
+    // (dropping(-5) is also treated as dropping(0), which focuses on EVERY element)
 
-// Inverted range: no focus
-List<Integer> result3 = Traversals.getAll(ListTraversals.slicing(3, 1), numbers);
-// Returns: []
+    // Inverted range: no focus
+    List<Integer> result3 = Traversals.getAll(ListTraversals.slicing(3, 1), numbers);
+    // []
 
-// Empty list: safe operation
-List<Integer> result4 = Traversals.modify(ListTraversals.taking(3), x -> x * 2, List.of());
-// Returns: []
+    // Empty list: safe operation
+    List<Integer> result4 = Traversals.modify(ListTraversals.taking(3), x -> x * 2, List.of());
+    // []
 ```
 
 This philosophy ensures **no runtime exceptions** from index bounds, making limiting traversals safe for dynamic data.
@@ -435,14 +425,17 @@ The real power emerges when you compose limiting traversals with other optics:
 <!-- verify -->
 ```java
 Traversal<List<Product>, Product> first5 = ListTraversals.taking(5);
-Lens<Product, Double> priceLens = ProductLenses.price();
+Lens<Product, BigDecimal> priceLens = ProductLenses.price();
 
 // Compose: first 5 products → their prices
-Traversal<List<Product>, Double> first5Prices =
+Traversal<List<Product>, BigDecimal> first5Prices =
     first5.andThen(priceLens);
 
-// Increase prices of first 5 products by 10%
-List<Product> result = Traversals.modify(first5Prices, price -> price * 1.1, products);
+// Increase prices of first 5 products by 10%, rounded back to pence
+List<Product> result = Traversals.modify(
+    first5Prices,
+    price -> price.multiply(new BigDecimal("1.1")).setScale(2, RoundingMode.HALF_EVEN),
+    products);
 ```
 
 ### With Filtered Traversals – Conditional Slicing
@@ -475,7 +468,7 @@ Traversal<List<Order>, LineItem> first50OrderItems =
 // Apply bulk discount to items in first 50 orders
 List<Order> processed = Traversals.modify(
     first50OrderItems,
-    item -> new LineItem(item.product().applyDiscount(0.05), item.quantity()),
+    item -> new LineItem(item.product().applyDiscount(5), item.quantity()),
     orders
 );
 ```
@@ -495,12 +488,13 @@ List<Order> processed = Traversals.modify(
 <!-- verify -->
 ```java
 // Perfect: Declarative, composable, reusable
-Traversal<Catalogue, Double> first10Prices =
+Traversal<Catalogue, BigDecimal> first10Prices =
     CatalogueLenses.products()
         .andThen(ListTraversals.taking(10))
         .andThen(ProductLenses.price());
 
-Catalogue updated = Traversals.modify(first10Prices, p -> p * 0.9, catalogue);
+Catalogue updated = Traversals.modify(
+    first10Prices, p -> p.multiply(new BigDecimal("0.9")).setScale(2, RoundingMode.HALF_EVEN), catalogue);
 ```
 
 ### Use Stream API When
@@ -558,7 +552,7 @@ List<Product> result = Traversals.getAll(ListTraversals.<Product>taking(5), prod
 
 // Wrong expectation: Thinking it removes elements
 Traversal<List<Product>, Product> first3 = ListTraversals.taking(3);
-List<Product> modified = Traversals.modify(first3, p -> p.applyDiscount(0.1), products);
+List<Product> modified = Traversals.modify(first3, p -> p.applyDiscount(10), products);
 // modified.size() == products.size()! Structure preserved, not truncated
 
 // Over-engineering: Using slicing for single element
@@ -583,7 +577,7 @@ List<Product> firstFive = Traversals.getAll(ListTraversals.taking(5), products);
 
 // Correct expectation: Use getAll for extraction, modify for transformation
 List<Product> onlyFirst5 = Traversals.getAll(first5, products);  // Extracts subset
-List<Product> allWithFirst5Updated = Traversals.modify(first5, p -> p.applyDiscount(0.1), products);  // Updates in place
+List<Product> allWithFirst5Updated = Traversals.modify(first5, p -> p.applyDiscount(10), products);  // Updates in place
 
 // Right tool: Use Ixed for single indexed access
 Optional<Product> fifth = IxedInstances.get(IxedInstances.listIx(), 4, products);
@@ -597,13 +591,20 @@ Optional<Product> fifth = IxedInstances.get(IxedInstances.listIx(), 4, products)
 
 ``` java
   public record Product(
-      String sku, String name, double price, int stock, boolean featured, String badge) {
+      String sku, String name, BigDecimal price, int stock, boolean featured, String badge) {
     Product withBadge(String newBadge) {
       return new Product(sku, name, price, stock, featured, newBadge);
     }
 
-    Product applyDiscount(double percentage) {
-      return new Product(sku, name, price * (1 - percentage), stock, featured, badge);
+    Product applyDiscount(int percent) {
+      BigDecimal factor = BigDecimal.valueOf(100 - percent, 2); // 30 percent off is 0.70
+      return new Product(
+          sku,
+          name,
+          price.multiply(factor).setScale(2, RoundingMode.HALF_EVEN),
+          stock,
+          featured,
+          badge);
     }
 
     Product markFeatured() {
@@ -655,7 +656,7 @@ The hero section is the first three products. `taking(3)` marks them as featured
                     "  ⭐ %s [%s] - Featured: %s%n", p.name(), p.badge(), p.featured()));
 
     // Apply special 15% discount to hero products
-    Lens<Product, Double> priceLens =
+    Lens<Product, BigDecimal> priceLens =
         Lens.of(
             Product::price,
             (prod, newPrice) ->
@@ -667,9 +668,13 @@ The hero section is the first three products. `taking(3)` marks them as featured
                     prod.featured(),
                     prod.badge()));
 
-    Traversal<List<Product>, Double> heroPrices = heroProducts.andThen(priceLens);
+    Traversal<List<Product>, BigDecimal> heroPrices = heroProducts.andThen(priceLens);
 
-    List<Product> discountedHero = Traversals.modify(heroPrices, price -> price * 0.85, catalogue);
+    List<Product> discountedHero =
+        Traversals.modify(
+            heroPrices,
+            price -> price.multiply(new BigDecimal("0.85")).setScale(2, RoundingMode.HALF_EVEN),
+            catalogue);
 
     System.out.println("\nAfter 15% hero discount:");
     for (int i = 0; i < 5; i++) {
@@ -701,7 +706,7 @@ The clearance section is the last four. `takingLast(4)` discounts them, and `dro
     // Apply 30% clearance discount
     List<Product> withClearance =
         Traversals.modify(
-            clearanceItems, p -> p.applyDiscount(0.3).withBadge("CLEARANCE"), catalogue);
+            clearanceItems, p -> p.applyDiscount(30).withBadge("CLEARANCE"), catalogue);
 
     System.out.println("\nAfter 30% clearance discount:");
     Traversals.getAll(clearanceItems, withClearance)

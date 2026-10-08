@@ -376,22 +376,22 @@ flowchart TD
     class FN,BL,SR,BC tier
 </pre>
 <p>Everything else on this page is a variation on those three pieces.</p>
-<!-- verify -->
-<pre><code class="language-java">// 1. The optic describes the shape (a list-traversal here).
-Traversal&lt;List&lt;Integer&gt;, Integer&gt; ids = FocusPaths.listElements();
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJpbmNsdWRlIiwgIi8uLi8uLi9oa2otZXhhbXBsZXMvc3JjL21haW4vamF2YS9vcmcvaGlnaGVya2luZGVkai9leGFtcGxlL2Jvb2svb3B0aWNzL2JhdGNoaW5nL0JhdGNoaW5nQm9vay5qYXZhOnBpcGVsaW5lIl0=" data-since="v0.4.11"></div>
+<pre><code class="language-java">    // 1. The optic describes the shape (a list-traversal here).
+    Traversal&lt;List&lt;Integer&gt;, Integer&gt; ids = FocusPaths.listElements();
 
-// 2. The applicative is the strategy: FetchApplicative batches.
-var program = ids.modifyF(
-    id -&gt; FETCH.widen(Fetch.&lt;Integer, Integer&gt;fetch(id)),
-    List.of(1, 2, 3, 4, 5),
-    FetchApplicative.&lt;Integer, Integer&gt;instance());
+    // 2. The applicative is the strategy: FetchApplicative batches.
+    var program =
+        ids.modifyF(
+            id -&gt; FETCH.widen(Fetch.&lt;Integer, Integer&gt;fetch(id)),
+            List.of(1, 2, 3, 4, 5),
+            FetchApplicative.&lt;Integer, Integer&gt;instance());
 
-// 3. The runner hands a whole round's keyset to the resolver in one call.
-Fetch.RunResult&lt;Integer, List&lt;Integer&gt;&gt; result =
-    Fetch.runCached(FETCH.narrow(program), backend::loadAll);
+    // 3. The runner hands a whole round's keyset to the resolver in one call.
+    Fetch.RunResult&lt;Integer, List&lt;Integer&gt;&gt; result =
+        Fetch.runCached(FETCH.narrow(program), backend::loadAll);
 
-assertThat(result.rounds()).isEqualTo(1);          // one round
-assertThat(result.backendCalls()).isEqualTo(1);    // one batched call
+    // result.rounds() and result.backendCalls() are both 1: one round, one batched call
 </code></pre>
 <p>The trick is in step 2. <code>FetchApplicative.ap</code> merges the pending request sets of its two independent arguments. The optic walks the foci, applicative composition stacks them up, and the runner sees a single keyset by the time the dust settles.</p>
 <div id="admonition-what-just-happened" class="admonition admonish-note" role="note" aria-labelledby="admonition-what-just-happened-title">
@@ -430,17 +430,27 @@ Fetch.RunResult&lt;UserId, EnrichedTeam&gt; result =
 <hr />
 <h2 id="when-keys-come-from-several-backends"><a class="header" href="#when-keys-come-from-several-backends">When Keys Come From Several Backends</a></h2>
 <p>Real rounds are not tidy. You ask for a list of identifiers, and half of them are user ids and half are product skus, served by two different services. The naive shape is a switch statement inside the loader; the result is per-key calls again.</p>
-<p><code>SourceRouter.routed</code> composes per-source <code>BatchLoader</code>s with a classifier into one loader the runner can call. Each backend sees its own keys; the round is still one round; the per-source dispatches run concurrently:</p>
-<pre><code class="language-java">BatchLoader&lt;String, String&gt; users    = /* user-directory loader   */;
-BatchLoader&lt;String, String&gt; products = /* product-catalog loader  */;
+<div class="hkj-ct-mark" data-kind="modified" data-run="start" data-words="WyJhbmQiLCAiRWFjaCIsICJzb3VyY2UncyIsICJkaXNwYXRjaCIsICJzdGFydHMiLCAiYmVmb3JlIiwgImFueSIsICJpcyIsICJhd2FpdGVkIiwgInNvIiwgImFzeW5jaHJvbm91cyIsICJsb2FkZXJzIiwgIm92ZXJsYXAiXQ==" data-since="v0.4.11"></div>
+<p><code>SourceRouter.routed</code> composes per-source <code>BatchLoader</code>s with a classifier into one loader the runner can call. Each backend sees its own keys, and the round is still one round. Each source's dispatch starts before any is awaited, so asynchronous loaders overlap:</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="end" data-words="WyJpbmNsdWRlIiwgIi8uLi8uLi9oa2otZXhhbXBsZXMvc3JjL21haW4vamF2YS9vcmcvaGlnaGVya2luZGVkai9leGFtcGxlL2Jvb2svb3B0aWNzL2JhdGNoaW5nL0JhdGNoaW5nQm9vay5qYXZhOnJvdXRlZCJd" data-since="v0.4.11"></div>
+<pre><code class="language-java">    // Each backend answers only the keys it serves
+    BatchLoader&lt;String, String&gt; users =
+        ids -&gt;
+            CompletableFuture.completedFuture(
+                ids.stream().collect(Collectors.toMap(id -&gt; id, id -&gt; "user " + id.substring(2))));
+    BatchLoader&lt;String, String&gt; products =
+        skus -&gt;
+            CompletableFuture.completedFuture(
+                skus.stream()
+                    .collect(Collectors.toMap(sku -&gt; sku, sku -&gt; "product " + sku.substring(2))));
 
-BatchLoader&lt;String, String&gt; routed =
-    SourceRouter.routed(
-        key -&gt; key.startsWith("u:") ? "users" : "products",
-        Map.of("users", users, "products", products));
+    BatchLoader&lt;String, String&gt; routed =
+        SourceRouter.routed(
+            key -&gt; key.startsWith("u:") ? "users" : "products",
+            Map.of("users", users, "products", products));
 
-Fetch.RunResult&lt;String, List&lt;String&gt;&gt; result =
-    Fetch.runAsync(FETCH.narrow(program), routed, new ConcurrentHashMap&lt;&gt;()).get();
+    Fetch.RunResult&lt;String, List&lt;String&gt;&gt; result =
+        Fetch.runAsync(FETCH.narrow(program), routed, new ConcurrentHashMap&lt;&gt;()).get();
 </code></pre>
 <p><code>BatchLoaders.chunked(loader, maxSize)</code> caps a single dispatch's size if a downstream backend enforces a per-request limit (an <code>$in</code> clause cap, an HTTP query-string ceiling, a GraphQL batch limit). The substrate still sees one round; the loader splits the keyset into chunks behind the curtain.</p>
 <hr />
@@ -451,14 +461,17 @@ Fetch.RunResult&lt;String, List&lt;String&gt;&gt; result =
     SafeFetch.runCached(program, failingResolver);
 </code></pre>
 <p>When a backend can report per-key failure without poisoning the whole round, the value type is <code>Either&lt;E, V&gt;</code> and <code>SafeFetch.partition</code> splits the result into successes and failures:</p>
-<pre><code class="language-java">Function&lt;Set&lt;UserId&gt;, Map&lt;UserId, Either&lt;String, User&gt;&gt;&gt; partial = /* per-key Either */;
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJpbmNsdWRlIiwgIi8uLi8uLi9oa2otZXhhbXBsZXMvc3JjL21haW4vamF2YS9vcmcvaGlnaGVya2luZGVkai9leGFtcGxlL2Jvb2svb3B0aWNzL2JhdGNoaW5nL0JhdGNoaW5nQm9vay5qYXZhOnBhcnRpdGlvbiJd" data-since="v0.4.11"></div>
+<pre><code class="language-java">    // The backend reports each key on its own: a User, or the reason there is none
+    Function&lt;Set&lt;UserId&gt;, Map&lt;UserId, Either&lt;String, User&gt;&gt;&gt; partial =
+        ids -&gt; ids.stream().collect(Collectors.toMap(id -&gt; id, BatchingBook::lookUp));
 
-Fetch.RunResult&lt;UserId, List&lt;Either&lt;String, User&gt;&gt;&gt; result =
-    Fetch.runCached(FETCH.narrow(program), partial);
+    Fetch.RunResult&lt;UserId, List&lt;Either&lt;String, User&gt;&gt;&gt; result =
+        Fetch.runCached(FETCH.narrow(program), partial);
 
-SafeFetch.Partitioned&lt;String, User&gt; split = SafeFetch.partition(result.value());
-split.successes(); // List&lt;User&gt;
-split.failures();  // List&lt;String&gt;
+    SafeFetch.Partitioned&lt;String, User&gt; split = SafeFetch.partition(result.value());
+    List&lt;User&gt; found = split.successes();
+    List&lt;String&gt; reasons = split.failures();
 </code></pre>
 <p>A backend that returns no entry for a requested key is surfaced as <code>MissingKeyException</code>. This is on purpose: a silent <code>null</code> in the result list would be a worse signal than a typed failure.</p>
 <hr />

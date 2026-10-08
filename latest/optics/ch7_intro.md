@@ -20,24 +20,21 @@ The pages a returning reader comes back to, holding a question rather than readi
 | A Focus DSL question: a pattern, a pitfall, the FAQ | [Focus DSL Reference](focus_reference.md) |
 | A compiler message from a generated optic | [Common Compiler Errors](compiler_errors.md) |
 
-Most lookups resolve to one distinction: an optic either declares an operation or it does not, and when it does not, a conversion usually reaches it anyway:
+Most lookups resolve to one distinction: an optic either declares an operation or it does not, and when it does not, a conversion usually reaches it anyway. Here a lens and its fold read the customer's name for Ada's order:
 
-<!-- verify -->
-```java
-Lens<Order, String> customer = OrderLenses.customer();
+``` java
+    Lens<Order, String> customerName = OrderLenses.customer().andThen(CustomerLenses.name());
 
-String name = customer.get(Fixture.order);
-// "Alice": get is declared on Lens
+    String name = customerName.get(order);
+    // "Ada": get is declared on Lens
 
-// customer.getAll(Fixture.order);
-// will not compile: getAll is on Fold, not Lens
+    // customerName.getAll(order);
+    // will not compile: getAll is on Fold, not Lens
 
-Fold<Order, String> asFold = customer.asFold();
-List<String> all = asFold.getAll(Fixture.order);
-// ["Alice"]: the same access, one conversion later
+    Fold<Order, String> asFold = customerName.asFold();
+    List<String> all = asFold.getAll(order);
+    // ["Ada"]: the same access, one conversion later
 ```
-
-`Fixture` is the compiled example's own setup: sample records, hand-written optics and validators. Nothing in it is library API.
 
 [Optic Capabilities](optic_capabilities.md) is the table of what each optic declares, and [Conversions](conversions.md) the table of how to get from one to another.
 

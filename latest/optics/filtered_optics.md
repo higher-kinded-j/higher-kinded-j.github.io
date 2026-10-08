@@ -41,7 +41,7 @@ public record User(String name, boolean active, int score, SubscriptionTier tier
 
 @GenerateLenses
 @GenerateFolds
-public record Invoice(String id, double amount, boolean overdue) {}
+public record Invoice(String id, BigDecimal amount, boolean overdue) {}
 
 @GenerateLenses
 @GenerateFolds
@@ -133,40 +133,45 @@ Fold<Customer, Invoice> invoicesFold = CustomerFolds.invoices();
 // Filter to overdue invoices only
 Fold<Customer, Invoice> overdueInvoices = invoicesFold.filtered(Invoice::overdue);
 
+// Monoids has no BigDecimal sum, so write one: zero, and add
+Monoid<BigDecimal> sum = new Monoid<>() {
+    public BigDecimal empty() { return BigDecimal.ZERO; }
+    public BigDecimal combine(BigDecimal a, BigDecimal b) { return a.add(b); }
+};
+
 // Query operations work on the filtered subset
 int count = overdueInvoices.length(customer);             // Count overdue invoices
 List<Invoice> overdue = overdueInvoices.getAll(customer); // Get overdue invoices
-double owed = overdueInvoices.foldMap(
-    Monoids.doubleAddition(), Invoice::amount, customer); // Sum overdue amounts
-boolean allLarge = overdueInvoices.all(inv -> inv.amount() > 100, customer);
+BigDecimal owed = overdueInvoices.foldMap(sum, Invoice::amount, customer); // Sum overdue amounts
+boolean allLarge = overdueInvoices.all(
+    inv -> inv.amount().compareTo(new BigDecimal("100")) > 0, customer);
 ```
 
 ### Step 2: Composing Filtered Traversals
 
 The real power emerges when you compose filtered optics with other optics:
 
-<!-- verify -->
-```java
-// Compose: list → filtered users → user name
-Traversal<List<User>, String> activeUserNames =
-    Traversals.<User>forList()
-        .filtered(User::active)
-        .andThen(UserLenses.name());
+``` java
+    // Compose: list → filtered users → user name
+    Traversal<List<User>, String> activeUserNames =
+        Traversals.<User>forList().filtered(User::active).andThen(UserLenses.name());
 
-List<User> users = List.of(
-    new User("alice", true, 100, SubscriptionTier.PREMIUM),
-    new User("bob", false, 200, SubscriptionTier.FREE),
-    new User("charlie", true, 150, SubscriptionTier.BASIC)
-);
+    List<User> users =
+        List.of(
+            new User("alice", true, 100, SubscriptionTier.PREMIUM),
+            new User("bob", false, 200, SubscriptionTier.FREE),
+            new User("charlie", true, 150, SubscriptionTier.BASIC));
 
-// Get only active user names
-List<String> names = Traversals.getAll(activeUserNames, users);
-// Result: ["alice", "charlie"]
+    // Get only active user names
+    List<String> names = Traversals.getAll(activeUserNames, users);
+    // [alice, charlie]
 
-// Uppercase only active user names
-List<User> result = Traversals.modify(activeUserNames, String::toUpperCase, users);
-// Result: [User("ALICE", true, 100), User("bob", false, 200), User("CHARLIE", true, 150)]
-// Notice: bob remains unchanged because he's inactive
+    // Uppercase only active user names
+    List<User> result = Traversals.modify(activeUserNames, String::toUpperCase, users);
+    // [User[name=ALICE, active=true, score=100, tier=PREMIUM],
+    //  User[name=bob, active=false, score=200, tier=FREE],
+    //  User[name=CHARLIE, active=true, score=150, tier=BASIC]]
+    // bob is unchanged because he is inactive
 ```
 
 ### Step 3: Chaining Multiple Filters
@@ -254,12 +259,12 @@ List<Customer> updated = Traversals.modify(
 Traversal<List<Customer>, Customer> allCustomers = Traversals.forList();
 
 // Fold from Customer to every invoice amount
-Fold<Customer, Double> invoiceAmounts =
+Fold<Customer, BigDecimal> invoiceAmounts =
     CustomerFolds.invoices().andThen(InvoiceLenses.amount().asFold());
 
 // Customers with any invoice over £1,000
 Traversal<List<Customer>, Customer> keyAccounts =
-    allCustomers.filterBy(invoiceAmounts, amount -> amount > 1_000);
+    allCustomers.filterBy(invoiceAmounts, amount -> amount.compareTo(new BigDecimal("1000")) > 0);
 
 // Tag them in the name
 Traversal<List<Customer>, String> keyAccountNames =
@@ -287,26 +292,27 @@ A crucial aspect of filtered optics is understanding what happens to non-matchin
 
 **Visual Example:**
 
-<!-- verify -->
-```java
-List<User> users = List.of(
-    new User("Alice", true, 100, SubscriptionTier.PREMIUM),  // active
-    new User("Bob", false, 200, SubscriptionTier.FREE),      // inactive
-    new User("Charlie", true, 150, SubscriptionTier.BASIC)   // active
-);
+``` java
+    List<User> users =
+        List.of(
+            new User("Alice", true, 100, SubscriptionTier.PREMIUM),
+            new User("Bob", false, 200, SubscriptionTier.FREE),
+            new User("Charlie", true, 150, SubscriptionTier.BASIC));
 
-Traversal<List<User>, User> activeUsers =
-    Traversals.<User>forList().filtered(User::active);
+    Traversal<List<User>, User> activeUsers = Traversals.<User>forList().filtered(User::active);
 
-// MODIFY: Structure preserved, only matching modified
-List<User> modified = Traversals.modify(activeUsers, User::grantBonus, users);
-// [User(Alice, true, 200, PREMIUM), User(Bob, false, 200, FREE), User(Charlie, true, 250, BASIC)]
-//  ^ modified                        ^ UNCHANGED                  ^ modified
+    // MODIFY: the structure is preserved, and only the matching users change
+    List<User> modified = Traversals.modify(activeUsers, User::grantBonus, users);
+    // [User[name=Alice, active=true, score=200, tier=PREMIUM],
+    //  User[name=Bob, active=false, score=200, tier=FREE],
+    //  User[name=Charlie, active=true, score=250, tier=BASIC]]
+    // Alice and Charlie gain 100 points; Bob, inactive, keeps his place unchanged
 
-// QUERY: Only matching elements returned
-List<User> gotten = Traversals.getAll(activeUsers, users);
-// [User(Alice, true, 100, PREMIUM), User(Charlie, true, 150, BASIC)]
-// Bob is EXCLUDED entirely
+    // QUERY: only the matching users are returned
+    List<User> gotten = Traversals.getAll(activeUsers, users);
+    // [User[name=Alice, active=true, score=100, tier=PREMIUM],
+    //  User[name=Charlie, active=true, score=150, tier=BASIC]]
+    // Bob is left out entirely
 ```
 
 This behaviour is intentional: it allows you to **transform selectively** whilst maintaining referential integrity, and **query selectively** without polluting results.
@@ -427,8 +433,9 @@ boolean isActive = user.active();
 Here's a comprehensive example demonstrating filtered optics in a business context:
 
 ``` java
+import java.math.BigDecimal;
 import java.util.List;
-import org.higherkindedj.hkt.Monoids;
+import org.higherkindedj.hkt.Monoid;
 import org.higherkindedj.optics.Fold;
 import org.higherkindedj.optics.Getter;
 import org.higherkindedj.optics.Lens;
@@ -438,9 +445,9 @@ import org.higherkindedj.optics.util.Traversals;
 
 public class CustomerAnalytics {
 
-  public record Item(String name, int price, String category, boolean premium) {}
+  public record Item(String name, BigDecimal price, String category, boolean premium) {}
 
-  public record Order(String id, List<Item> items, double total) {}
+  public record Order(String id, List<Item> items, BigDecimal total) {}
 
   public record Customer(String name, List<Order> orders, boolean vip) {}
 
@@ -449,6 +456,20 @@ public class CustomerAnalytics {
   private static final Fold<Order, Item> ORDER_ITEMS = Fold.of(Order::items);
   private static final Fold<Customer, Item> ALL_CUSTOMER_ITEMS =
       CUSTOMER_ORDERS.andThen(ORDER_ITEMS);
+
+  // Monoids has no BigDecimal sum, so the dashboard writes its own
+  private static final Monoid<BigDecimal> MONEY =
+      new Monoid<>() {
+        @Override
+        public BigDecimal empty() {
+          return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal combine(BigDecimal a, BigDecimal b) {
+          return a.add(b);
+        }
+      };
 
   public static void main(String[] args) {
     List<Customer> customers = createSampleData();
@@ -459,11 +480,12 @@ public class CustomerAnalytics {
     System.out.println("--- Analysis 1: High-Value Customers ---");
 
     Traversal<List<Customer>, Customer> allCustomers = Traversals.forList();
-    Fold<Customer, Double> orderTotals = CUSTOMER_ORDERS.andThen(Getter.of(Order::total).asFold());
+    Fold<Customer, BigDecimal> orderTotals =
+        CUSTOMER_ORDERS.andThen(Getter.of(Order::total).asFold());
 
     // Customers with any order over £500
     Traversal<List<Customer>, Customer> bigSpenders =
-        allCustomers.filterBy(orderTotals, total -> total > 500);
+        allCustomers.filterBy(orderTotals, total -> total.compareTo(new BigDecimal("500")) > 0);
 
     List<Customer> highValue = Traversals.getAll(bigSpenders, customers);
     System.out.println(
@@ -477,8 +499,7 @@ public class CustomerAnalytics {
     for (Customer customer : customers) {
       int premiumCount = premiumItems.length(customer);
       if (premiumCount > 0) {
-        double premiumSpend =
-            premiumItems.foldMap(Monoids.doubleAddition(), item -> (double) item.price(), customer);
+        BigDecimal premiumSpend = premiumItems.foldMap(MONEY, Item::price, customer);
         System.out.printf(
             "%s: %d premium items, £%.2f total%n", customer.name(), premiumCount, premiumSpend);
       }
@@ -491,10 +512,8 @@ public class CustomerAnalytics {
         ALL_CUSTOMER_ITEMS.filtered(item -> "Electronics".equals(item.category()));
 
     for (Customer customer : customers) {
-      double electronicsSpend =
-          electronicsItems.foldMap(
-              Monoids.doubleAddition(), item -> (double) item.price(), customer);
-      if (electronicsSpend > 0) {
+      BigDecimal electronicsSpend = electronicsItems.foldMap(MONEY, Item::price, customer);
+      if (electronicsSpend.signum() > 0) {
         System.out.printf("%s spent £%.2f on Electronics%n", customer.name(), electronicsSpend);
       }
     }
@@ -506,7 +525,7 @@ public class CustomerAnalytics {
     Traversal<List<Customer>, Customer> potentialVIPs =
         allCustomers
             .filterBy(ALL_CUSTOMER_ITEMS, Item::premium) // Has premium items
-            .filterBy(orderTotals, total -> total > 300); // Has high-value orders
+            .filterBy(orderTotals, total -> total.compareTo(new BigDecimal("300")) > 0);
 
     Lens<Customer, Boolean> vipLens =
         Lens.of(Customer::vip, (c, v) -> new Customer(c.name(), c.orders(), v));
@@ -526,13 +545,15 @@ public class CustomerAnalytics {
     Fold<List<Customer>, Customer> customerFold = Fold.of(list -> list);
     Fold<List<Customer>, Item> allItems = customerFold.andThen(ALL_CUSTOMER_ITEMS);
 
-    Fold<List<Customer>, Item> expensiveItems = allItems.filtered(i -> i.price() > 100);
-    Fold<List<Customer>, Item> cheapItems = allItems.filtered(i -> i.price() <= 100);
+    BigDecimal threshold = new BigDecimal("100");
+    Fold<List<Customer>, Item> expensiveItems =
+        allItems.filtered(i -> i.price().compareTo(threshold) > 0);
+    Fold<List<Customer>, Item> cheapItems =
+        allItems.filtered(i -> i.price().compareTo(threshold) <= 0);
 
     int totalExpensive = expensiveItems.length(customers);
     int totalCheap = cheapItems.length(customers);
-    double expensiveRevenue =
-        expensiveItems.foldMap(Monoids.doubleAddition(), i -> (double) i.price(), customers);
+    BigDecimal expensiveRevenue = expensiveItems.foldMap(MONEY, Item::price, customers);
 
     System.out.printf(
         "Expensive items (>£100): %d items, £%.2f revenue%n", totalExpensive, expensiveRevenue);
@@ -549,10 +570,13 @@ public class CustomerAnalytics {
                 new Order(
                     "A1",
                     List.of(
-                        new Item("Laptop", 999, "Electronics", true),
-                        new Item("Mouse", 25, "Electronics", false)),
-                    1024.0),
-                new Order("A2", List.of(new Item("Desk", 350, "Furniture", false)), 350.0)),
+                        new Item("Laptop", new BigDecimal("999.00"), "Electronics", true),
+                        new Item("Mouse", new BigDecimal("25.00"), "Electronics", false)),
+                    new BigDecimal("1024.00")),
+                new Order(
+                    "A2",
+                    List.of(new Item("Desk", new BigDecimal("350.00"), "Furniture", false)),
+                    new BigDecimal("350.00"))),
             false),
         new Customer(
             "Bob",
@@ -560,9 +584,9 @@ public class CustomerAnalytics {
                 new Order(
                     "B1",
                     List.of(
-                        new Item("Book", 20, "Books", false),
-                        new Item("Pen", 5, "Stationery", false)),
-                    25.0)),
+                        new Item("Book", new BigDecimal("20.00"), "Books", false),
+                        new Item("Pen", new BigDecimal("5.00"), "Stationery", false)),
+                    new BigDecimal("25.00"))),
             false),
         new Customer(
             "Charlie",
@@ -570,10 +594,13 @@ public class CustomerAnalytics {
                 new Order(
                     "C1",
                     List.of(
-                        new Item("Phone", 800, "Electronics", true),
-                        new Item("Case", 50, "Accessories", false)),
-                    850.0),
-                new Order("C2", List.of(new Item("Headphones", 250, "Electronics", true)), 250.0)),
+                        new Item("Phone", new BigDecimal("800.00"), "Electronics", true),
+                        new Item("Case", new BigDecimal("50.00"), "Accessories", false)),
+                    new BigDecimal("850.00")),
+                new Order(
+                    "C2",
+                    List.of(new Item("Headphones", new BigDecimal("250.00"), "Electronics", true)),
+                    new BigDecimal("250.00"))),
             false));
   }
 }

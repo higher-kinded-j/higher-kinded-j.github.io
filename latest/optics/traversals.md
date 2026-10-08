@@ -162,18 +162,17 @@ A component declared as some *other* `Collection` subtype (`Deque<Task>`, `Sorte
 
 Just like other optics, `Traversal`s can be composed with `andThen`. We can chain them together to create a single, deep traversal from the `League` all the way down to each player's `score`.
 
-<!-- verify -->
-```java
-// Get generated optics
-Traversal<League, Team> leagueToTeams = LeagueTraversals.teams();
-Traversal<Team, Player> teamToPlayers = TeamTraversals.players();
-Lens<Player, Integer> playerToScore = PlayerLenses.score();
+``` java
+    // Get generated optics
+    Traversal<League, Team> leagueToTeams = LeagueTraversals.teams();
+    Traversal<Team, Player> teamToPlayers = TeamTraversals.players();
+    Lens<Player, Integer> playerToScore = PlayerLenses.score();
 
-// Compose them to create a single, deep traversal.
-Traversal<League, Integer> leagueToAllPlayerScores =
-    leagueToTeams
-        .andThen(teamToPlayers)
-        .andThen(playerToScore); // a Lens after a Traversal: still a Traversal
+    // Compose them to create a single, deep traversal.
+    Traversal<League, Integer> leagueToAllPlayerScores =
+        leagueToTeams
+            .andThen(teamToPlayers)
+            .andThen(playerToScore); // a Lens after a Traversal: still a Traversal
 ```
 
 The result is a single `Traversal<League, Integer>` that declaratively represents the path to all player scores.
@@ -184,10 +183,9 @@ The `Traversals` utility class provides convenient helper methods to perform the
 
 * **`Traversals.modify(traversal, function, source)`**: Applies a pure function to all targets of a traversal.
 
-<!-- verify -->
-```java
-  // Use the composed traversal to add 5 bonus points to every score.
-  League updatedLeague = Traversals.modify(leagueToAllPlayerScores, score -> score + 5, league);
+``` java
+    // Use the composed traversal to add 5 bonus points to every score.
+    League updatedLeague = Traversals.modify(leagueToAllPlayerScores, score -> score + 5, league);
 ```
 
 The traversal reaches every score in every team, and the update rebuilds each record it passes through:
@@ -212,11 +210,10 @@ League ●
 
 * **`Traversals.getAll(traversal, source)`**: Extracts all targets of a traversal into a `List`.
 
-<!-- verify -->
-```java
-  // Get a flat list of all player scores in the league.
-  List<Integer> allScores = Traversals.getAll(leagueToAllPlayerScores, league);
-  // Result: [100, 90, 110, 120]
+``` java
+    // Get a flat list of all player scores in the league.
+    List<Integer> allScores = Traversals.getAll(leagueToAllPlayerScores, league);
+    // Result: [100, 90, 110, 120]
 ```
 
 ## When to Use Traversals vs Other Approaches
@@ -480,7 +477,7 @@ Consider this scenario: you have a catalogue of products across multiple categor
 <!-- verify -->
 ```java
 // This doesn't work - modify operates on each element independently
-Traversal<Catalogue, Double> allPrices = CatalogueTraversals.categories()
+Traversal<Catalogue, BigDecimal> allPrices = CatalogueTraversals.categories()
     .andThen(CategoryTraversals.products())
     .andThen(ProductLenses.price());
 
@@ -499,22 +496,41 @@ The `partsOf` combinator transforms a `Traversal<S, A>` into a `Lens<S, List<A>>
 2. **Manipulate**: Apply any list operation (sort, reverse, filter, etc.)
 3. **Set**: Distribute the modified elements back to their original positions
 
-<!-- verify -->
-```java
-// Convert traversal to a lens on the list of all prices
-Lens<Catalogue, List<Double>> pricesLens = Traversals.partsOf(allPrices);
+Here it sorts the prices of a spring catalogue whose six products sit in two categories:
 
-// Get all prices as a list
-List<Double> allPricesList = pricesLens.get(catalogue);
-// Result: [999.99, 499.99, 799.99, 29.99, 49.99, 19.99]
+``` java
+    // Two categories of three products, priced in no particular order
+    Catalogue spring =
+        new Catalogue(
+            "Spring",
+            List.of(
+                new Category(
+                    "Electronics",
+                    List.of(
+                        new Product("Laptop", new BigDecimal("999.99"), "computers", 3),
+                        new Product("Tablet", new BigDecimal("499.99"), "computers", 8),
+                        new Product("Phone", new BigDecimal("799.99"), "phones", 5))),
+                new Category(
+                    "Accessories",
+                    List.of(
+                        new Product("Case", new BigDecimal("29.99"), "phones", 40),
+                        new Product("Charger", new BigDecimal("49.99"), "phones", 25),
+                        new Product("Cable", new BigDecimal("19.99"), "computers", 60)))));
 
-// Sort the list
-List<Double> sortedPrices = new ArrayList<>(allPricesList);
-Collections.sort(sortedPrices);
-// Result: [19.99, 29.99, 49.99, 499.99, 799.99, 999.99]
+    // Convert traversal to a lens on the list of all prices
+    Lens<Catalogue, List<BigDecimal>> pricesLens = Traversals.partsOf(allPrices);
 
-// Set the sorted prices back
-Catalogue sortedCatalogue = pricesLens.set(sortedPrices, catalogue);
+    // Get all prices as a list
+    List<BigDecimal> allPricesList = pricesLens.get(spring);
+    // Result: [999.99, 499.99, 799.99, 29.99, 49.99, 19.99]
+
+    // Sort the list
+    List<BigDecimal> sortedPrices = new ArrayList<>(allPricesList);
+    Collections.sort(sortedPrices);
+    // Result: [19.99, 29.99, 49.99, 499.99, 799.99, 999.99]
+
+    // Set the sorted prices back
+    Catalogue sortedCatalogue = pricesLens.set(sortedPrices, spring);
 ```
 
 **The Magic**: The sorted prices are distributed back to the *original positions* in the structure. The first product gets the lowest price, the second product gets the second-lowest, and so on, regardless of which category they belong to.
@@ -527,7 +543,7 @@ The `Traversals` utility class provides convenience methods that combine `partsO
 
 <!-- verify -->
 ```java
-Traversal<List<Product>, Double> priceTraversal =
+Traversal<List<Product>, BigDecimal> priceTraversal =
     Traversals.<Product>forList().andThen(ProductLenses.price());
 
 // Sort prices in ascending order
@@ -586,29 +602,34 @@ A crucial aspect of `partsOf` is how it handles size mismatches between the new 
 
 **Fewer elements than positions**: Original values are preserved in remaining positions.
 
-<!-- verify -->
-```java
-Lens<List<Product>, List<Double>> productPrices = Traversals.partsOf(priceTraversal);
+``` java
+    Lens<List<Product>, List<BigDecimal>> productPrices = Traversals.partsOf(priceTraversal);
 
-// Original: 5 products with prices [100, 200, 300, 400, 500]
-List<Double> partialPrices = List.of(10.0, 20.0, 30.0); // Only 3 values
+    // Original: 5 products with prices [100.00, 200.00, 300.00, 400.00, 500.00]
+    List<BigDecimal> partialPrices =
+        List.of(new BigDecimal("10.00"), new BigDecimal("20.00"), new BigDecimal("30.00"));
 
-List<Product> result = productPrices.set(partialPrices, products);
-// Result prices: [10.0, 20.0, 30.0, 400, 500]
-// First 3 updated, last 2 unchanged
+    List<Product> result = productPrices.set(partialPrices, products);
+    // Result prices: [10.00, 20.00, 30.00, 400.00, 500.00]
+    // First 3 updated, last 2 unchanged
 ```
 
 **More elements than positions**: Extra elements are ignored.
 
-<!-- verify -->
-```java
-// A three-product source, prices [100, 200, 300]
-List<Product> threeProducts = products.subList(0, 3);
-List<Double> extraPrices = List.of(10.0, 20.0, 30.0, 40.0, 50.0); // 5 values
+``` java
+    // A three-product source, prices [100.00, 200.00, 300.00]
+    List<Product> threeProducts = products.subList(0, 3);
+    List<BigDecimal> extraPrices =
+        List.of(
+            new BigDecimal("10.00"),
+            new BigDecimal("20.00"),
+            new BigDecimal("30.00"),
+            new BigDecimal("40.00"),
+            new BigDecimal("50.00"));
 
-List<Product> trimmed = productPrices.set(extraPrices, threeProducts);
-// Result prices: [10.0, 20.0, 30.0]
-// Only the first 3 values are consumed; 40.0 and 50.0 are never read
+    List<Product> trimmed = productPrices.set(extraPrices, threeProducts);
+    // Result prices: [10.00, 20.00, 30.00]
+    // Only the first 3 values are consumed; 40.00 and 50.00 are never read
 ```
 
 This graceful degradation makes `partsOf` safe to use even when you're not certain about the exact number of targets.
@@ -632,7 +653,7 @@ Filtered optics are covered properly in [Filtered Optics](filtered_optics.md); h
 <!-- verify -->
 ```java
 // Sort only in-stock product prices
-Traversal<List<Product>, Double> inStockPrices =
+Traversal<List<Product>, BigDecimal> inStockPrices =
     Traversals.<Product>forList()
         .filtered(p -> p.stockLevel() > 0)
         .andThen(ProductLenses.price());
@@ -645,14 +666,14 @@ List<Product> result = Traversals.sorted(inStockPrices, products);
 
 <!-- verify -->
 ```java
-Lens<Catalogue, List<Double>> pricesLens = Traversals.partsOf(allPrices);
-List<Double> prices = new ArrayList<>(pricesLens.get(catalogue));
+Lens<Catalogue, List<BigDecimal>> pricesLens = Traversals.partsOf(allPrices);
+List<BigDecimal> prices = new ArrayList<>(pricesLens.get(catalogue));
 
 // Apply any list algorithm:
-Collections.shuffle(prices);              // Randomise
-Collections.rotate(prices, 3);            // Circular rotation
-prices.sort(Comparator.reverseOrder());   // Descending sort
-prices.removeIf(p -> p < 10.0);          // Filter (with caveats)
+Collections.shuffle(prices);                         // Randomise
+Collections.rotate(prices, 3);                       // Circular rotation
+prices.sort(Comparator.reverseOrder());              // Descending sort
+prices.removeIf(p -> p.compareTo(BigDecimal.TEN) < 0); // Filter (with caveats)
 ```
 
 ### Common Pitfalls with partsOf
@@ -663,9 +684,9 @@ prices.removeIf(p -> p < 10.0);          // Filter (with caveats)
 ```java
 // Expecting distinct to reduce structure size
 List<Product> products = List.of(
-    new Product("Widget", 25.99, "tools", 5),
-    new Product("Gadget", 49.99, "tools", 3),
-    new Product("Widget", 30.00, "toys", 1)  // Duplicate name
+    new Product("Widget", new BigDecimal("25.99"), "tools", 5),
+    new Product("Gadget", new BigDecimal("49.99"), "tools", 3),
+    new Product("Widget", new BigDecimal("30.00"), "toys", 1)  // Duplicate name
 );
 
 // This doesn't remove the third product!
@@ -673,8 +694,8 @@ List<Product> result = Traversals.distinct(nameTraversal, products);
 // The new list of distinct names is shorter, so the third product keeps its original name.
 
 // Wrong: Using partsOf when you need element-wise operations
-Lens<List<Product>, List<Double>> lens = Traversals.partsOf(priceTraversal);
-List<Double> prices = lens.get(products);
+Lens<List<Product>, List<BigDecimal>> lens = Traversals.partsOf(priceTraversal);
+List<BigDecimal> prices = lens.get(products);
 prices.forEach(p -> System.out.println(p)); // Just use Traversals.getAll()!
 ```
 
@@ -687,8 +708,8 @@ List<Product> result = Traversals.distinct(nameTraversal, products);
 // The distinct names fill the first positions; the third product keeps its original name
 
 // Use partsOf when you need list-level operations
-Lens<List<Product>, List<Double>> lens = Traversals.partsOf(priceTraversal);
-List<Double> prices = new ArrayList<>(lens.get(products));
+Lens<List<Product>, List<BigDecimal>> lens = Traversals.partsOf(priceTraversal);
+List<BigDecimal> prices = new ArrayList<>(lens.get(products));
 Collections.sort(prices); // True list operation
 lens.set(prices, products);
 
@@ -944,7 +965,6 @@ public class TraversalUsageExample {
     printLeagueScores(league);
     System.out.println("\nAfter branching bonuses (experts +100, others +20):");
     printLeagueScores(ID.narrow(updated).value());
-    System.out.println();
   }
 
   private static void printLeagueScores(League league) {

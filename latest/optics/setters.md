@@ -37,7 +37,7 @@ public record UserSettings(
     String theme, boolean notifications, int fontSize, Map<String, String> preferences) {}
 
 @GenerateSetters
-public record Product(String name, double price, int stock, List<String> tags) {}
+public record Product(String name, BigDecimal price, int stock, List<String> tags) {}
 
 @GenerateSetters
 public record Inventory(List<Product> products, String warehouseId) {}
@@ -125,71 +125,74 @@ Setter<Map<String, Double>, Double> mapValuesSetter = Setter.forMapValues();
 
 Applies a function to modify the focused element:
 
-<!-- verify -->
-```java
-Setter<User, String> usernameSetter = Setter.fromGetSet(
-    User::username,
-    (u, name) -> new User(name, u.email(), u.loginCount(), u.settings()));
+``` java
+    Setter<User, String> usernameSetter =
+        Setter.fromGetSet(
+            User::username, (u, name) -> new User(name, u.email(), u.loginCount(), u.settings()));
 
-User user = new User("JOHN_DOE", "john@example.com", 10, settings);
+    User user = new User("JOHN_DOE", "john@example.com", 10, settings);
 
-// Transform username to lowercase
-User normalised = usernameSetter.modify(String::toLowerCase, user);
-// Result: User("john_doe", "john@example.com", 10, settings)
+    // Transform username to lowercase
+    User normalised = usernameSetter.modify(String::toLowerCase, user);
+    // User[username=john_doe, email=john@example.com, loginCount=10, settings=...]
 
-// Append suffix
-User suffixed = usernameSetter.modify(name -> name + "_admin", user);
-// Result: User("JOHN_DOE_admin", "john@example.com", 10, settings)
+    // Append suffix
+    User suffixed = usernameSetter.modify(name -> name + "_admin", user);
+    // User[username=JOHN_DOE_admin, email=john@example.com, loginCount=10, settings=...]
 ```
 
 #### **`set(value, source)`**: Replace the Focused Value
 
 Sets all focused elements to a specific value:
 
-<!-- verify -->
-```java
-Setter<User, Integer> loginCountSetter = Setter.fromGetSet(
-    User::loginCount,
-    (u, count) -> new User(u.username(), u.email(), count, u.settings()));
+``` java
+    Setter<User, Integer> loginCountSetter =
+        Setter.fromGetSet(
+            User::loginCount, (u, count) -> new User(u.username(), u.email(), count, u.settings()));
 
-User user = new User("john", "john@example.com", 10, settings);
-User reset = loginCountSetter.set(0, user);
-// Result: User("john", "john@example.com", 0, settings)
+    User user = new User("john", "john@example.com", 10, settings);
+    User reset = loginCountSetter.set(0, user);
+    // User[username=john, email=john@example.com, loginCount=0, settings=...]
 ```
 
 ### Step 3: Composing Setters
 
 Chain Setters together for deep modifications:
 
-<!-- verify -->
-```java
-Setter<User, UserSettings> settingsSetter = Setter.fromGetSet(
-    User::settings,
-    (u, s) -> new User(u.username(), u.email(), u.loginCount(), s));
+``` java
+    Setter<User, UserSettings> settingsSetter =
+        Setter.fromGetSet(
+            User::settings, (u, s) -> new User(u.username(), u.email(), u.loginCount(), s));
 
-Setter<UserSettings, String> themeSetter = Setter.fromGetSet(
-    UserSettings::theme,
-    (s, theme) -> new UserSettings(theme, s.notifications(), s.fontSize(), s.preferences()));
+    Setter<UserSettings, String> themeSetter =
+        Setter.fromGetSet(
+            UserSettings::theme,
+            (s, theme) ->
+                new UserSettings(theme, s.notifications(), s.fontSize(), s.preferences()));
 
-// Compose: User → UserSettings → String
-Setter<User, String> userThemeSetter = settingsSetter.andThen(themeSetter);
+    // Compose: User → UserSettings → String
+    Setter<User, String> userThemeSetter = settingsSetter.andThen(themeSetter);
 
-User user = new User("john", "john@example.com", 10,
-    new UserSettings("light", true, 14, Map.of()));
+    User user =
+        new User("john", "john@example.com", 10, new UserSettings("light", true, 14, Map.of()));
 
-User darkModeUser = userThemeSetter.set("dark", user);
-// Result: User with settings.theme = "dark"
+    User darkModeUser = userThemeSetter.set("dark", user);
+    // the settings now hold the theme "dark"; everything else is unchanged
 ```
 
 #### Deep Composition Chain
 
-<!-- verify -->
-```java
-// settingsSetter and fontSizeSetter, built with fromGetSet as above
-Setter<User, Integer> userFontSizeSetter = settingsSetter.andThen(fontSizeSetter);
+``` java
+    Setter<UserSettings, Integer> fontSizeSetter =
+        Setter.fromGetSet(
+            UserSettings::fontSize,
+            (s, size) -> new UserSettings(s.theme(), s.notifications(), size, s.preferences()));
 
-User largerFont = userFontSizeSetter.modify(size -> size + 2, user);
-// Result: User with settings.fontSize increased by 2
+    // Compose: User → UserSettings → Integer, reusing settingsSetter
+    Setter<User, Integer> userFontSizeSetter = settingsSetter.andThen(fontSizeSetter);
+
+    User largerFont = userFontSizeSetter.modify(size -> size + 2, user);
+    // the font size is now 16, two points larger than the 14 it was
 ```
 
 ### Step 4: Collection Setters
@@ -198,144 +201,145 @@ Higher-Kinded-J provides built-in Setters for collections:
 
 #### **`forList()`**: Modify All List Elements
 
-<!-- verify -->
-```java
-Setter<List<Integer>, Integer> listSetter = Setter.forList();
+``` java
+    Setter<List<Integer>, Integer> listSetter = Setter.forList();
 
-List<Integer> numbers = List.of(1, 2, 3, 4, 5);
+    List<Integer> numbers = List.of(1, 2, 3, 4, 5);
 
-// Double all values
-List<Integer> doubled = listSetter.modify(x -> x * 2, numbers);
-// Result: [2, 4, 6, 8, 10]
+    // Double all values
+    List<Integer> doubled = listSetter.modify(x -> x * 2, numbers);
+    // [2, 4, 6, 8, 10]
 
-// Set all to same value
-List<Integer> allZeros = listSetter.set(0, numbers);
-// Result: [0, 0, 0, 0, 0]
+    // Set all to same value
+    List<Integer> allZeros = listSetter.set(0, numbers);
+    // [0, 0, 0, 0, 0]
 ```
 
 #### **`forMapValues()`**: Modify All Map Values
 
-<!-- verify -->
-```java
-Setter<Map<String, Integer>, Integer> mapSetter = Setter.forMapValues();
+``` java
+    Setter<Map<String, Integer>, Integer> mapSetter = Setter.forMapValues();
 
-Map<String, Integer> scores = Map.of("Alice", 85, "Bob", 90, "Charlie", 78);
+    // a TreeMap, so the scores come back in key order
+    Map<String, Integer> scores = new TreeMap<>(Map.of("Alice", 85, "Bob", 90, "Charlie", 78));
 
-// Add 5 points to all scores
-Map<String, Integer> curved = mapSetter.modify(score -> Math.min(100, score + 5), scores);
-// Result: {Alice=90, Bob=95, Charlie=83}
+    // Add 5 points to all scores
+    Map<String, Integer> curved = mapSetter.modify(score -> Math.min(100, score + 5), scores);
+    // {Alice=90, Bob=95, Charlie=83}
 
-// Reset all scores
-Map<String, Integer> reset = mapSetter.set(0, scores);
-// Result: {Alice=0, Bob=0, Charlie=0}
+    // Reset all scores
+    Map<String, Integer> reset = mapSetter.set(0, scores);
+    // {Alice=0, Bob=0, Charlie=0}
 ```
 
 ### Step 5: Nested Collection Setters
 
 Compose Setters for complex nested modifications:
 
-<!-- verify -->
-```java
-Setter<Inventory, List<Product>> productsSetter = Setter.fromGetSet(
-    Inventory::products,
-    (inv, prods) -> new Inventory(prods, inv.warehouseId()));
+``` java
+    Setter<Inventory, List<Product>> productsSetter =
+        Setter.fromGetSet(
+            Inventory::products, (inv, prods) -> new Inventory(prods, inv.warehouseId()));
 
-Setter<List<Product>, Product> productListSetter = Setter.forList();
+    Setter<List<Product>, Product> productListSetter = Setter.forList();
 
-Setter<Product, Double> priceSetter = Setter.fromGetSet(
-    Product::price,
-    (p, price) -> new Product(p.name(), price, p.stock(), p.tags()));
+    Setter<Product, BigDecimal> priceSetter =
+        Setter.fromGetSet(
+            Product::price, (p, price) -> new Product(p.name(), price, p.stock(), p.tags()));
 
-// Compose: Inventory → List<Product> → Product
-Setter<Inventory, Product> allProductsSetter = productsSetter.andThen(productListSetter);
+    // Compose: Inventory → List<Product> → Product
+    Setter<Inventory, Product> allProductsSetter = productsSetter.andThen(productListSetter);
 
-Inventory inventory = new Inventory(
-    List.of(
-        new Product("Laptop", 999.99, 50, List.of("electronics")),
-        new Product("Keyboard", 79.99, 100, List.of("accessories")),
-        new Product("Monitor", 299.99, 30, List.of("displays"))),
-    "WH-001");
+    Inventory inventory =
+        new Inventory(
+            List.of(
+                new Product("Laptop", new BigDecimal("999.99"), 50, List.of("electronics")),
+                new Product("Keyboard", new BigDecimal("79.99"), 100, List.of("accessories")),
+                new Product("Monitor", new BigDecimal("299.99"), 30, List.of("displays"))),
+            "WH-001");
 
-// Apply 10% discount to all products
-Inventory discounted = allProductsSetter.modify(
-    product -> priceSetter.modify(price -> price * 0.9, product),
-    inventory);
-// Result: All product prices reduced by 10%
+    // Apply 10% discount to all products, rounded to the penny
+    Function<BigDecimal, BigDecimal> tenPercentOff =
+        price -> price.multiply(new BigDecimal("0.9")).setScale(2, RoundingMode.HALF_EVEN);
 
-// Restock all products
-Setter<Product, Integer> stockSetter = Setter.fromGetSet(
-    Product::stock,
-    (p, stock) -> new Product(p.name(), p.price(), stock, p.tags()));
+    Inventory discounted =
+        allProductsSetter.modify(product -> priceSetter.modify(tenPercentOff, product), inventory);
+    // the prices are now 899.99, 71.99 and 269.99
 
-Inventory restocked = allProductsSetter.modify(
-    product -> stockSetter.modify(stock -> stock + 10, product),
-    inventory);
-// Result: All product stock increased by 10
+    // Restock all products
+    Setter<Product, Integer> stockSetter =
+        Setter.fromGetSet(
+            Product::stock, (p, stock) -> new Product(p.name(), p.price(), stock, p.tags()));
+
+    Inventory restocked =
+        allProductsSetter.modify(
+            product -> stockSetter.modify(stock -> stock + 10, product), inventory);
+    // the stock levels are now 60, 110 and 40
 ```
 
 ### Step 6: Effectful Modifications
 
 Setters support effectful modifications via `modifyF`, allowing you to compose modifications that might fail or have side effects:
 
-<!-- verify -->
-```java
-Setter<User, String> usernameSetter = Setter.fromGetSet(
-    User::username,
-    (u, name) -> new User(name, u.email(), u.loginCount(), u.settings()));
+``` java
+    Setter<User, String> usernameSetter =
+        Setter.fromGetSet(
+            User::username, (u, name) -> new User(name, u.email(), u.loginCount(), u.settings()));
 
-// Validation: username must be at least 3 characters and lowercase
-Function<String, Kind<OptionalKind.Witness, String>> validateUsername = username -> {
-    if (username.length() >= 3 && username.matches("[a-z_]+")) {
-        return OptionalKindHelper.OPTIONAL.widen(Optional.of(username));
-    } else {
-        return OptionalKindHelper.OPTIONAL.widen(Optional.empty());
-    }
-};
+    // Validation: username must be at least 3 characters and lowercase
+    Function<String, Kind<OptionalKind.Witness, String>> validateUsername =
+        username -> {
+          if (username.length() >= 3 && username.matches("[a-z_]+")) {
+            return OptionalKindHelper.OPTIONAL.widen(Optional.of(username));
+          } else {
+            return OptionalKindHelper.OPTIONAL.widen(Optional.empty());
+          }
+        };
 
-User validUser = new User("john_doe", "john@example.com", 10, settings);
-Kind<OptionalKind.Witness, User> result =
-    usernameSetter.modifyF(validateUsername, validUser, Instances.monadError(optional()));
+    User validUser = new User("john_doe", "john@example.com", 10, settings);
+    Kind<OptionalKind.Witness, User> result =
+        usernameSetter.modifyF(validateUsername, validUser, Instances.monadError(optional()));
 
-Optional<User> validated = OptionalKindHelper.OPTIONAL.narrow(result);
-// Result: Optional[User with validated username]
+    Optional<User> validated = OptionalKindHelper.OPTIONAL.narrow(result);
+    // Optional[User[username=john_doe, email=john@example.com, loginCount=10, settings=...]]
 
-User invalidUser = new User("ab", "a@test.com", 0, settings); // Too short
-Kind<OptionalKind.Witness, User> invalidResult =
-    usernameSetter.modifyF(validateUsername, invalidUser, Instances.monadError(optional()));
+    User invalidUser = new User("ab", "a@test.com", 0, settings); // Too short
+    Kind<OptionalKind.Witness, User> invalidResult =
+        usernameSetter.modifyF(validateUsername, invalidUser, Instances.monadError(optional()));
 
-Optional<User> invalidValidated = OptionalKindHelper.OPTIONAL.narrow(invalidResult);
-// Result: Optional.empty (validation failed)
+    Optional<User> invalidValidated = OptionalKindHelper.OPTIONAL.narrow(invalidResult);
+    // Optional.empty: "ab" fails the validation
 ```
 
 #### Sequencing Effects in Collections {#sequencing-effects-in-collections}
 
-<!-- verify -->
-```java
-Setter<List<Integer>, Integer> listSetter = Setter.forList();
+``` java
+    Setter<List<Integer>, Integer> listSetter = Setter.forList();
 
-List<Integer> numbers = List.of(1, 2, 3);
+    List<Integer> numbers = List.of(1, 2, 3);
 
-Function<Integer, Kind<OptionalKind.Witness, Integer>> doubleIfPositive = n -> {
-    if (n > 0) {
-        return OptionalKindHelper.OPTIONAL.widen(Optional.of(n * 2));
-    } else {
-        return OptionalKindHelper.OPTIONAL.widen(Optional.empty());
-    }
-};
+    Function<Integer, Kind<OptionalKind.Witness, Integer>> doubleIfPositive =
+        n -> {
+          if (n > 0) {
+            return OptionalKindHelper.OPTIONAL.widen(Optional.of(n * 2));
+          } else {
+            return OptionalKindHelper.OPTIONAL.widen(Optional.empty());
+          }
+        };
 
-Kind<OptionalKind.Witness, List<Integer>> result =
-    listSetter.modifyF(doubleIfPositive, numbers, Instances.monadError(optional()));
+    Kind<OptionalKind.Witness, List<Integer>> result =
+        listSetter.modifyF(doubleIfPositive, numbers, Instances.monadError(optional()));
 
-Optional<List<Integer>> doubled = OptionalKindHelper.OPTIONAL.narrow(result);
-// Result: Optional[[2, 4, 6]]
+    Optional<List<Integer>> doubled = OptionalKindHelper.OPTIONAL.narrow(result);
+    // Optional[[2, 4, 6]]
 
-// With negative number (will fail)
-List<Integer> withNegative = List.of(1, -2, 3);
-Kind<OptionalKind.Witness, List<Integer>> failedResult =
-    listSetter.modifyF(doubleIfPositive, withNegative, Instances.monadError(optional()));
+    // With negative number (will fail)
+    List<Integer> withNegative = List.of(1, -2, 3);
+    Kind<OptionalKind.Witness, List<Integer>> failedResult =
+        listSetter.modifyF(doubleIfPositive, withNegative, Instances.monadError(optional()));
 
-Optional<List<Integer>> failed = OptionalKindHelper.OPTIONAL.narrow(failedResult);
-// Result: Optional.empty (validation failed on -2)
+    Optional<List<Integer>> failed = OptionalKindHelper.OPTIONAL.narrow(failedResult);
+    // Optional.empty: -2 fails, so the whole list does
 ```
 
 Each time the effect from `modifyF` runs, it builds a fresh list. So an `IO` gives an equal list on every run, and the `List` applicative gives one list per combination of choices. `forMapValues()` does the same with a map.
@@ -366,15 +370,14 @@ Kind<OptionalKind.Witness, User> result =
 
 ### **`identity()`**: Modifies the Source Itself
 
-<!-- verify -->
-```java
-Setter<String, String> identitySetter = Setter.identity();
+``` java
+    Setter<String, String> identitySetter = Setter.identity();
 
-String result = identitySetter.modify(String::toUpperCase, "hello");
-// Result: "HELLO"
+    String result = identitySetter.modify(String::toUpperCase, "hello");
+    // "HELLO"
 
-String replaced = identitySetter.set("world", "hello");
-// Result: "world"
+    String replaced = identitySetter.set("world", "hello");
+    // "world"
 ```
 
 Useful as a base case in composition or for direct value transformation.
@@ -446,39 +449,39 @@ user.setUsername("new_name"); // Avoid in functional programming
 
 ### Data Normalisation Pipeline
 
-<!-- verify -->
-```java
-Setter<List<Product>, Product> productSetter = Setter.forList();
-Setter<Product, String> nameSetter = Setter.fromGetSet(
-    Product::name,
-    (p, name) -> new Product(name, p.price(), p.stock(), p.tags()));
+``` java
+    Setter<List<Product>, Product> productSetter = Setter.forList();
+    Setter<Product, String> nameSetter =
+        Setter.fromGetSet(
+            Product::name, (p, name) -> new Product(name, p.price(), p.stock(), p.tags()));
 
-Function<String, String> normalise = name -> {
-    String trimmed = name.trim();
-    return trimmed.substring(0, 1).toUpperCase() +
-           trimmed.substring(1).toLowerCase();
-};
+    Function<String, String> normalise =
+        name -> {
+          String trimmed = name.trim();
+          return trimmed.substring(0, 1).toUpperCase() + trimmed.substring(1).toLowerCase();
+        };
 
-List<Product> rawProducts = List.of(
-    new Product("  LAPTOP  ", 999.99, 50, List.of()),
-    new Product("keyboard", 79.99, 100, List.of()),
-    new Product("MONITOR", 299.99, 30, List.of()));
+    List<Product> rawProducts =
+        List.of(
+            new Product("  LAPTOP  ", new BigDecimal("999.99"), 50, List.of()),
+            new Product("keyboard", new BigDecimal("79.99"), 100, List.of()),
+            new Product("MONITOR", new BigDecimal("299.99"), 30, List.of()));
 
-List<Product> normalised = productSetter.modify(
-    product -> nameSetter.modify(normalise, product),
-    rawProducts);
-// Result: [Product("Laptop", ...), Product("Keyboard", ...), Product("Monitor", ...)]
+    List<Product> normalised =
+        productSetter.modify(product -> nameSetter.modify(normalise, product), rawProducts);
+    // [Product[name=Laptop, ...], Product[name=Keyboard, ...], Product[name=Monitor, ...]]
 ```
 
 ### Currency Conversion
 
 <!-- verify -->
 ```java
-// priceSetter, built with fromGetSet as above
-double exchangeRate = 0.92; // USD to EUR
+// priceSetter, built with fromGetSet as in Step 5
+BigDecimal exchangeRate = new BigDecimal("0.92"); // USD to EUR
 
 List<Product> euroProducts = productSetter.modify(
-    product -> priceSetter.modify(price -> price * exchangeRate, product),
+    product -> priceSetter.modify(
+        price -> price.multiply(exchangeRate).setScale(2, RoundingMode.HALF_EVEN), product),
     usdProducts);
 ```
 
@@ -487,7 +490,7 @@ List<Product> euroProducts = productSetter.modify(
 <!-- verify -->
 ```java
 Setter<List<User>, User> usersSetter = Setter.forList();
-// loginCountSetter, built with fromGetSet as above
+// loginCountSetter, built with fromGetSet as in Step 2
 
 // Reset all login counts
 List<User> resetUsers = usersSetter.modify(
@@ -553,7 +556,7 @@ setter.modify(obj -> { obj.setValue(newValue); return obj; }, source);
 <!-- verify -->
 ```java
 // Correct: Return new immutable instance
-Setter<Product, Double> priceSetter = Setter.fromGetSet(
+Setter<Product, BigDecimal> priceSetter = Setter.fromGetSet(
     Product::price,
     (p, price) -> new Product(p.name(), price, p.stock(), p.tags()));
 ```
@@ -565,6 +568,8 @@ Setter<Product, Double> priceSetter = Setter.fromGetSet(
 ``` java
 import static org.higherkindedj.hkt.instances.Witnesses.optional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
@@ -582,7 +587,7 @@ public class SetterExample {
   // A trimmed UserSettings, so the runnable example stays small
   public record UserSettings(String theme, boolean notifications, int fontSize) {}
 
-  public record Product(String name, double price, int stock) {}
+  public record Product(String name, BigDecimal price, int stock) {}
 
   public static void main(String[] args) {
     // === Basic Setters ===
@@ -628,25 +633,27 @@ public class SetterExample {
     System.out.println("Doubled: " + doubled);
 
     // === Product Batch Update ===
-    Setter<Product, Double> priceSetter =
+    Setter<Product, BigDecimal> priceSetter =
         Setter.fromGetSet(Product::price, (p, price) -> new Product(p.name(), price, p.stock()));
 
     Setter<List<Product>, Product> productsSetter = Setter.forList();
 
     List<Product> products =
         List.of(
-            new Product("Laptop", 999.99, 50),
-            new Product("Keyboard", 79.99, 100),
-            new Product("Monitor", 299.99, 30));
+            new Product("Laptop", new BigDecimal("999.99"), 50),
+            new Product("Keyboard", new BigDecimal("79.99"), 100),
+            new Product("Monitor", new BigDecimal("299.99"), 30));
 
-    // Apply 10% discount
+    // Apply 10% discount, rounded to the penny
+    Function<BigDecimal, BigDecimal> tenPercentOff =
+        price -> price.multiply(new BigDecimal("0.9")).setScale(2, RoundingMode.HALF_EVEN);
+
     List<Product> discounted =
-        productsSetter.modify(
-            product -> priceSetter.modify(price -> price * 0.9, product), products);
+        productsSetter.modify(product -> priceSetter.modify(tenPercentOff, product), products);
 
     System.out.println("Discounted prices:");
     for (Product p : discounted) {
-      System.out.printf("  %s: £%.2f%n", p.name(), p.price());
+      System.out.println("  " + p.name() + ": £" + p.price());
     }
 
     // === Effectful Modification ===
@@ -686,9 +693,9 @@ public class SetterExample {
 
     List<Product> rawProducts =
         List.of(
-            new Product("  LAPTOP  ", 999.99, 50),
-            new Product("keyboard", 79.99, 100),
-            new Product("MONITOR", 299.99, 30));
+            new Product("  LAPTOP  ", new BigDecimal("999.99"), 50),
+            new Product("keyboard", new BigDecimal("79.99"), 100),
+            new Product("MONITOR", new BigDecimal("299.99"), 30));
 
     List<Product> normalisedProducts =
         productsSetter.modify(product -> nameSetter.modify(titleCase, product), rawProducts);
