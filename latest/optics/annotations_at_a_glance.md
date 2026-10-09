@@ -24,14 +24,19 @@ Apply these to your own records and sealed types. The generated class is placed 
 | [`@GenerateIsos`](iso.md) | **static, no-argument method** returning `Iso<A, B>`, naming no type variable | companion class with the iso as a static field | Lossless conversions between equivalent representations |
 
 ~~~admonish tip title="Annotations stack"
-You almost always want at least `@GenerateLenses` and `@GenerateFocus` together. Add `@GenerateTraversals` if the record contains a collection field and `@GenerateFolds` if you also need read-only queries.
+You almost always want at least `@GenerateLenses` and `@GenerateFocus` together. Add `@GenerateTraversals` if the record contains a collection field and `@GenerateFolds` if you also need read-only queries. The chapter's `Order` stacks three, and turns on navigators so a Focus path chains through its `Customer`:
 
-<!-- verify -->
-```java
+``` java
 @GenerateLenses
-@GenerateFocus
+@GenerateFocus(generateNavigators = true)
 @GenerateTraversals
-public record Order(Customer customer, List<LineItem> items) {}
+public record Order(
+    UUID id,
+    Customer customer,
+    List<LineItem> lines,
+    Instant placedAt,
+    Currency currency,
+    OrderStatus status) {}
 ```
 ~~~
 

@@ -24,15 +24,18 @@ A **`Getter`** is the simplest read-only optic: it extracts precisely one value 
 
 Consider a corporate reporting system where you need to extract various pieces of information from employee records:
 
-**The Data Model:**
+**The Data Model:** a person and a company, each with the chapter's `Address`:
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record Address(String street, String city, String postcode) {}
+```
 
 <!-- verify -->
 ```java
 @GenerateGetters
 public record Person(String firstName, String lastName, int age, Address address) {}
-
-@GenerateGetters
-public record Address(String street, String city, String zipCode, String country) {}
 
 @GenerateGetters
 public record Company(String name, Person ceo, List<Person> employees, Address headquarters) {}
@@ -142,7 +145,7 @@ Chain Getters together to extract deeply nested values:
     Getter<Person, String> personCity = addressGetter.andThen(cityGetter);
 
     Person person =
-        new Person("Jane", "Smith", 45, new Address("123 Main St", "London", "EC1A", "UK"));
+        new Person("Jane", "Smith", 45, new Address("123 Main St", "London", "EC1A 1BB"));
 
     String city = personCity.get(person);
     // "London"
@@ -280,7 +283,7 @@ It extracts a value using the provided `Getter` and wraps it in `Maybe`:
     Getter<Person, Address> addressGetter = Getter.of(Person::address);
 
     Person person =
-        new Person("Jane", "Smith", 45, new Address("123 Main St", "London", "NW1 4AB", "UK"));
+        new Person("Jane", "Smith", 45, new Address("123 Main St", "London", "NW1 4AB"));
 
     // Extract non-null value
     Maybe<String> name = getMaybe(firstNameGetter, person);
@@ -302,7 +305,7 @@ The real power of `getMaybe` emerges when navigating nested structures with pote
 
     // Safe navigation: Person → Maybe<Address> → Maybe<String>
     Person personWithAddress =
-        new Person("Jane", "Smith", 45, new Address("123 Main St", "London", "NW1 4AB", "UK"));
+        new Person("Jane", "Smith", 45, new Address("123 Main St", "London", "NW1 4AB"));
 
     Maybe<String> city =
         getMaybe(addressGetter, personWithAddress).flatMap(addr -> getMaybe(cityGetter, addr));
@@ -360,7 +363,7 @@ Once you've extracted a value into `Maybe`, you can leverage the full power of m
     Getter<Address, String> cityGetter = Getter.of(Address::city);
 
     Person person =
-        new Person("Jane", "Smith", 45, new Address("123 Main St", "London", "NW1 4AB", "UK"));
+        new Person("Jane", "Smith", 45, new Address("123 Main St", "London", "NW1 4AB"));
 
     // Extract and transform
     Maybe<String> uppercaseCity =
@@ -623,8 +626,8 @@ Person updated = firstName.set("Janet", person);
 <!-- verify -->
 ```java
 // Use Fold for collections
-Fold<Order, Product> itemsFold = Fold.of(Order::items);
-List<Product> all = itemsFold.getAll(order);
+Fold<Order, LineItem> linesFold = Fold.of(Order::lines);
+List<LineItem> all = linesFold.getAll(order);
 ```
 
 ### Use Direct Field Access When
@@ -676,9 +679,9 @@ int totalAge = allEmployees.andThen(age.asFold())
 double averageAge = (double) totalAge / company.employees().size();
 
 // Check conditions
-boolean allFromUK = allEmployees.andThen(addressGetter.asFold())
-    .andThen(countryGetter.asFold())
-    .all(c -> c.equals("UK"), company);
+boolean allInLondon = allEmployees.andThen(addressGetter.asFold())
+    .andThen(cityGetter.asFold())
+    .all(c -> c.equals("London"), company);
 ```
 
 ### API Response Mapping
@@ -686,15 +689,15 @@ boolean allFromUK = allEmployees.andThen(addressGetter.asFold())
 <!-- verify -->
 ```java
 // Extract specific fields from nested API responses
-Getter<ApiResponse, User> userGetter = Getter.of(ApiResponse::user);
-Getter<User, Profile> profileGetter = Getter.of(User::profile);
-Getter<Profile, String> displayName = Getter.of(Profile::displayName);
+Getter<OrderLookup, Order> orderGetter = Getter.of(OrderLookup::order);
+Getter<Order, Customer> customerGetter = Getter.of(Order::customer);
+Getter<Customer, String> customerName = Getter.of(Customer::name);
 
-Getter<ApiResponse, String> userName = userGetter
-    .andThen(profileGetter)
-    .andThen(displayName);
+Getter<OrderLookup, String> buyerName = orderGetter
+    .andThen(customerGetter)
+    .andThen(customerName);
 
-String name = userName.get(response);
+String name = buyerName.get(response);
 ```
 
 ---
@@ -747,6 +750,7 @@ Getter<NullableRecord, String> safeGetter = Getter.of(r ->
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
+import org.higherkindedj.example.book.optics.cast.Address;
 import org.higherkindedj.hkt.Monoid;
 import org.higherkindedj.optics.Fold;
 import org.higherkindedj.optics.Getter;
@@ -756,23 +760,20 @@ public class GetterExample {
 
   public record Person(String firstName, String lastName, int age, Address address) {}
 
-  public record Address(String street, String city, String zipCode, String country) {}
-
   public record Company(String name, Person ceo, List<Person> employees, Address headquarters) {}
 
   public static void main(String[] args) {
     // Create sample data
-    Address ceoAddress = new Address("123 Executive Blvd", "London", "EC1A", "UK");
+    Address ceoAddress = new Address("123 Executive Blvd", "London", "EC1A 1BB");
     Person ceo = new Person("Jane", "Smith", 45, ceoAddress);
 
     List<Person> employees =
         List.of(
-            new Person("John", "Doe", 30, new Address("456 Oak St", "Manchester", "M1", "UK")),
-            new Person(
-                "Alice", "Johnson", 28, new Address("789 Elm Ave", "Birmingham", "B1", "UK")),
-            new Person("Bob", "Williams", 35, new Address("321 Pine Rd", "Leeds", "LS1", "UK")));
+            new Person("John", "Doe", 30, new Address("456 Oak St", "Manchester", "M1 1AE")),
+            new Person("Alice", "Johnson", 28, new Address("789 Elm Ave", "Birmingham", "B1 1BB")),
+            new Person("Bob", "Williams", 35, new Address("321 Pine Rd", "Leeds", "LS1 4AP")));
 
-    Address hqAddress = new Address("1000 Corporate Way", "London", "EC2A", "UK");
+    Address hqAddress = new Address("1000 Corporate Way", "London", "EC2A 4NE");
     Company company = new Company("TechCorp", ceo, employees, hqAddress);
 
     // === Basic Getters ===
@@ -827,14 +828,13 @@ public class GetterExample {
     double avgAge = (double) totalAge / employees.size();
     System.out.println("Average Employee Age: " + String.format("%.1f", avgAge));
 
-    // Check if all from UK
-    Getter<Address, String> countryGetter = Getter.of(Address::country);
-    boolean allUK =
+    // Check if all are in London
+    boolean allInLondon =
         listFold
             .andThen(addressGetter.asFold())
-            .andThen(countryGetter.asFold())
-            .all(c -> c.equals("UK"), employees);
-    System.out.println("All Employees from UK: " + allUK);
+            .andThen(cityGetter.asFold())
+            .all(c -> c.equals("London"), employees);
+    System.out.println("All Employees in London: " + allInLondon);
   }
 
   private static Monoid<Integer> sumMonoid() {
@@ -868,7 +868,7 @@ Age Count: 1
 Employee Names: [John Doe, Alice Johnson, Bob Williams]
 Employee Emails: [john.doe@techcorp.com, alice.johnson@techcorp.com, bob.williams@techcorp.com]
 Average Employee Age: 31.0
-All Employees from UK: true
+All Employees in London: false
 ```
 
 ---

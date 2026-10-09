@@ -28,7 +28,7 @@ Let's use a common business scenario involving a deeply nested data structure. O
 
 <!-- verify -->
 ```java
-public record Address(String street, String city) {}
+public record Address(String street, String city, String postcode) {}
 public record Company(String name, Address address) {}
 public record Employee(String name, Company company) {}
 ```
@@ -53,7 +53,7 @@ This process creates a companion class for each record (e.g., `EmployeeLenses`, 
 import org.higherkindedj.optics.annotations.GenerateLenses;
 
 @GenerateLenses
-public record Address(String street, String city) {}
+public record Address(String street, String city, String postcode) {}
 
 @GenerateLenses
 public record Company(String name, Address address) {}
@@ -136,7 +136,7 @@ By default, generated classes are placed in the same package as the annotated re
 ```java
 // Generated class will be placed in org.example.generated.optics
 @GenerateLenses(targetPackage = "org.example.generated.optics")
-public record Address(String street, String city) {}
+public record Address(String street, String city, String postcode) {}
 ```
 
 This is particularly useful when:
@@ -200,13 +200,14 @@ Employee updatedEmployee = employeeToStreet.set("456 Main St", initialEmployee);
 
 The `set` rebuilds only the records on the path, and reuses everything off it:
 
-<pre class="hkj-ascii-diagram" role="img" aria-label="Setting the street to 456 Main St rebuilds the employee, its company and its address, the three records on the path. The employee's name, the company's name and the city are reused as they were.">
+<pre class="hkj-ascii-diagram" role="img" aria-label="Setting the street to 456 Main St rebuilds the employee, its company and its address, the three records on the path. The employee's name, the company's name, the city and the postcode are reused as they were.">
 Employee ●
-├─ name ........ "Alice"
+├─ name ........... "Alice"
 └─ company ●           company()
-   ├─ name ..... "Initech Inc."
+   ├─ name ........ "Initech Inc."
    └─ address ●        address()
-      ├─ city .. "Anytown"
+      ├─ city ..... "Anytown"
+      ├─ postcode . "AN1 1AA"
       └─ street        street()
       "123 Fake St" → "456 Main St"
 
@@ -374,7 +375,7 @@ public class LensUsageExample {
   // The @GenerateLenses annotation will automatically create Lens implementations
   // and `with*` helper methods for each record component.
   @GenerateLenses
-  public record Address(String street, String city) {}
+  public record Address(String street, String city, String postcode) {}
 
   @GenerateLenses
   public record Company(String name, Address address) {}
@@ -384,7 +385,7 @@ public class LensUsageExample {
 
   public static void main(String[] args) {
     // 2. Create an initial, nested immutable object.
-    var initialAddress = new Address("123 Fake St", "Anytown");
+    var initialAddress = new Address("123 Fake St", "Anytown", "AN1 1AA");
     var initialCompany = new Company("Initech Inc.", initialAddress);
     var initialEmployee = new Employee("Alice", initialCompany);
 
@@ -444,16 +445,16 @@ public class LensUsageExample {
 **Expected Output:**
 
 ```
-Original Employee: Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown]]]
+Original Employee: Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
 ------------------------------------------
-After `withName`:    Employee[name=Bob, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown]]]
-After chaining `with*`: Employee[name=Alice, company=Company[name=Megacorp, address=Address[street=123 Fake St, city=Anytown]]]
+After `withName`:    Employee[name=Bob, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
+After chaining `with*`: Employee[name=Alice, company=Company[name=Megacorp, address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
 ------------------------------------------
-After deep `set`:       Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=456 Main St, city=Anytown]]]
-Original is unchanged:  Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown]]]
+After deep `set`:       Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=456 Main St, city=Anytown, postcode=AN1 1AA]]]
+Original is unchanged:  Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
 ------------------------------------------
-After deep `modify`:    Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 FAKE ST, city=Anytown]]]
-Original is unchanged:  Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown]]]
+After deep `modify`:    Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 FAKE ST, city=Anytown, postcode=AN1 1AA]]]
+Original is unchanged:  Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
 ```
 
 As you can see, the generated optics provide a clean, declarative, and type-safe API for working with immutable data, whether your updates are simple and shallow or complex and deep.

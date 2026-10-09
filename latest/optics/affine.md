@@ -24,15 +24,23 @@ An affine plays the part of an accessor that returns `Optional`, paired with a c
 
 ## The Scenario: Optional Fields in Records
 
-Modern Java applications frequently use `Optional<T>` to represent values that may be absent. Consider a user profile with optional contact information:
+Modern Java applications frequently use `Optional<T>` to represent values that may be absent. The chapter's customer profile has an optional nickname and an optional second email:
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record CustomerProfile(
+    String name, Optional<String> nickname, Optional<EmailAddress> altEmail) {}
+```
+
+A product review may be anonymous, so its author is optional too:
 
 <!-- verify -->
 ```java
-record UserProfile(String username, Optional<ContactInfo> contact) {}
-record ContactInfo(String email, Optional<String> phone) {}
+record Review(String sku, Optional<CustomerProfile> author) {}
 ```
 
-**Our Goal:** We need to safely access and update the phone number, which is doubly optional: the contact info might not exist, and even if it does, the phone number might be absent.
+**Our Goal:** We need to safely access and update the reviewer's nickname, which is doubly optional: the review might be anonymous, and even if it is not, its author might have no nickname.
 
 ---
 
@@ -304,40 +312,40 @@ Traversal<A, C> withTraversal = affineAB.andThen(traversalBC);
 ### Deep Optional Access Example
 
 ``` java
-    record Address(String street, Optional<String> postcode) {}
-    record User(String name, Optional<Address> address) {}
+    // A product review, whose author is absent when it is anonymous
+    record Review(String sku, Optional<CustomerProfile> author) {}
 
     // Build affines for each optional field
-    Lens<User, Optional<Address>> addressLens =
-        Lens.of(User::address, (u, a) -> new User(u.name(), a));
+    Lens<Review, Optional<CustomerProfile>> authorLens =
+        Lens.of(Review::author, (r, a) -> new Review(r.sku(), a));
 
-    Lens<Address, Optional<String>> postcodeLens =
-        Lens.of(Address::postcode, (a, p) -> new Address(a.street(), p));
+    Lens<CustomerProfile, Optional<String>> nicknameLens = CustomerProfileLenses.nickname();
 
-    Prism<Optional<Address>, Address> addressPrism = Prisms.some();
-    Prism<Optional<String>, String> postcodePrism = Prisms.some();
+    Prism<Optional<CustomerProfile>, CustomerProfile> authorPrism = Prisms.some();
+    Prism<Optional<String>, String> nicknamePrism = Prisms.some();
 
     // Compose to access nested optional
-    Affine<User, String> userPostcode =
-        addressLens
-            .andThen(addressPrism) // Lens.andThen(Prism) = Affine
-            .andThen(postcodeLens) // Affine.andThen(Lens) = Affine
-            .andThen(postcodePrism); // Affine.andThen(Prism) = Affine
+    Affine<Review, String> authorNickname =
+        authorLens
+            .andThen(authorPrism) // Lens.andThen(Prism) = Affine
+            .andThen(nicknameLens) // Affine.andThen(Lens) = Affine
+            .andThen(nicknamePrism); // Affine.andThen(Prism) = Affine
 
     // Usage
-    User user1 =
-        new User("Alice", Optional.of(new Address("123 Main St", Optional.of("SW1A 1AA"))));
-    User user2 = new User("Bob", Optional.empty());
+    CustomerProfile ada = new CustomerProfile("Ada", Optional.of("Countess"), Optional.empty());
+    Review signed = new Review("LAMP", Optional.of(ada));
+    Review anonymous = new Review("BULB", Optional.empty());
 
-    Optional<String> postcode1 = userPostcode.getOptional(user1);
-    // Optional.of("SW1A 1AA")
+    Optional<String> nickname1 = authorNickname.getOptional(signed);
+    // Optional.of("Countess")
 
-    Optional<String> postcode2 = userPostcode.getOptional(user2);
+    Optional<String> nickname2 = authorNickname.getOptional(anonymous);
     // Optional.empty()
 
     // Update deeply nested optional
-    User updated = userPostcode.set("EC1A 1BB", user1);
-    // User[name=Alice, address=Optional[Address[street=123 Main St, postcode=Optional[EC1A 1BB]]]]
+    Review updated = authorNickname.set("Lady Lovelace", signed);
+    // Review[sku=LAMP, author=Optional[CustomerProfile[name=Ada,
+    //   nickname=Optional[Lady Lovelace], altEmail=Optional.empty]]]
 ```
 
 ---
@@ -466,9 +474,9 @@ String hostOf(Config config) {
 }
 
 // Verbose: repeated null checks, on a legacy model whose fields may be null
-String postcodeOf(LegacyUser user) {
-    if (user.address() != null && user.address().postcode() != null) {
-        return user.address().postcode();
+String nicknameOf(LegacyReview review) {
+    if (review.author() != null && review.author().nickname() != null) {
+        return review.author().nickname();
     }
     return "";
 }
@@ -491,8 +499,8 @@ Optional<String> timeout = timeoutAffine.mapOptional(Object::toString, config);
 String value = databaseAffine.getOrElse(defaultSettings, config).host();
 
 // Composable: build reusable optics
-Affine<User, String> postcodeAffine = UserOptics.POSTCODE;
-Optional<String> postcode = postcodeAffine.getOptional(user);
+Affine<Review, String> nicknameAffine = ReviewOptics.AUTHOR_NICKNAME;
+Optional<String> nickname = nicknameAffine.getOptional(review);
 ```
 
 ---

@@ -23,7 +23,7 @@ _Update each element knowing its position, map key or field name, without counti
 In our journey through optics, we've mastered how to focus on parts of immutable data structures, whether it's a single field with **Lens**, one variant with **Prism**, an optional value with **Affine**, or multiple elements with **Traversal**. But sometimes, knowing *where* you are is just as important as knowing *what* you're looking at.
 
 Consider these scenarios:
-- **Numbering items** in a packing list: "Item 1: Laptop, Item 2: Mouse..."
+- **Numbering items** in a packing list: "Item 1: LAPTOP, Item 2: MOUSE..."
 - **Tracking field names** for audit logs: "User modified field 'email' from..."
 - **Processing map entries** where both key and value matter: "For metadata key 'priority', set value to..."
 - **Debugging nested updates** by seeing the complete path: "Changed scores[2] from 100 to 150"
@@ -33,14 +33,14 @@ Standard optics give you the *value*. **Indexed optics** give you both the *inde
 ```mermaid
 flowchart TD
     accTitle: A standard traversal beside an indexed one
-    accDescr: A standard Traversal over a List of Item hands back the values Laptop, Mouse and Keyboard. An IndexedTraversal over the same list hands back each value with the index it sat at, as (0, Laptop), (1, Mouse) and (2, Keyboard).
+    accDescr: A standard Traversal over a List of LineItem hands back the values LAPTOP, MOUSE and KEYBOARD. An IndexedTraversal over the same list hands back each value with the index it sat at, as (0, LAPTOP), (1, MOUSE) and (2, KEYBOARD).
     subgraph std["Standard traversal: the value only"]
         direction LR
-        S1["List&lt;Item&gt;"] --> S2@{ shape: st-rect, label: "Traversal" } --> S3["Laptop<br/>Mouse<br/>Keyboard"]
+        S1["List&lt;LineItem&gt;"] --> S2@{ shape: st-rect, label: "Traversal" } --> S3["LAPTOP<br/>MOUSE<br/>KEYBOARD"]
     end
     subgraph idx["Indexed traversal: the value and where it sat"]
         direction LR
-        I1["List&lt;Item&gt;"] --> I2@{ shape: st-rect, label: "IndexedTraversal" } --> I3["(0, Laptop)<br/>(1, Mouse)<br/>(2, Keyboard)"]
+        I1["List&lt;LineItem&gt;"] --> I2@{ shape: st-rect, label: "IndexedTraversal" } --> I3["(0, LAPTOP)<br/>(1, MOUSE)<br/>(2, KEYBOARD)"]
     end
     std ~~~ idx
 
@@ -52,13 +52,13 @@ flowchart TD
     class S3,I3 out
 ```
 
-A standard traversal hands back each `Item` and forgets where it was; an indexed one hands back a `Pair<Index, A>`, so the position travels with the value:
+A standard traversal hands back each `LineItem` and forgets where it was; an indexed one hands back a `Pair<Index, A>`, so the position travels with the value:
 
 | Index | Value |
 |---|---|
-| `0` | `Laptop` |
-| `1` | `Mouse` |
-| `2` | `Keyboard` |
+| `0` | `LAPTOP` |
+| `1` | `MOUSE` |
+| `2` | `KEYBOARD` |
 
 Archimedes understood that position is power. With the right fulcrum point, a lever can move the world. Similarly, with the right index, an optic can transform data in ways that value-only access cannot. Position-based discounts, numbered lists, audit trails showing *which* field changed: all require knowing *where* you are, not just *what* you have.
 
@@ -68,24 +68,52 @@ Archimedes understood that position is power. With the right fulcrum point, a le
 
 Imagine building an order fulfilment system where position information drives business logic.
 
-**The Data Model:**
+**The Data Model:** the chapter's cast, an `Order` of `LineItem`s placed by a `Customer`.
+
+~~~admonish example title="The cast these examples use" collapsible=true
+``` java
+@GenerateLenses
+@GenerateFocus(generateNavigators = true)
+@GenerateTraversals
+public record Order(
+    UUID id,
+    Customer customer,
+    List<LineItem> lines,
+    Instant placedAt,
+    Currency currency,
+    OrderStatus status) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record LineItem(String sku, Integer quantity, BigDecimal price) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus(generateNavigators = true)
+public record Customer(String name, EmailAddress email) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record EmailAddress(String value) {}
+```
+~~~
+
+Each order's metadata is kept beside it, as a map from key to value:
 
 <!-- verify -->
 ```java
-@GenerateLenses
-public record LineItem(String productName, int quantity, BigDecimal price) {}
-
-@GenerateLenses
-@GenerateTraversals
-public record Order(String orderId, List<LineItem> items, Map<String, String> metadata) {}
-
-@GenerateLenses
-public record Customer(String name, String email) {}
+Map<String, String> metadata =
+    Map.of("priority", "express", "gift-wrap", "true", "delivery-note", "Leave at door");
 ```
 
 **Business Requirements:**
 
-1. **Generate packing slips** with numbered items: "Item 1: Laptop (£999.99)"
+1. **Generate packing slips** with numbered items: "Item 1: LAPTOP (£999.99)"
 2. **Process metadata** with key awareness: "Set shipping method based on 'priority' key"
 3. **Audit trail** showing which fields were modified: "Updated Customer.email at 2025-01-15 10:30"
 4. **Position-based pricing** for bulk orders: "Items at even positions get 10% discount"
@@ -96,19 +124,19 @@ public record Customer(String name, String email) {}
 ```java
 // Verbose: Manual index tracking
 List<String> packingSlip = new ArrayList<>();
-for (int i = 0; i < order.items().size(); i++) {
-    LineItem item = order.items().get(i);
-    packingSlip.add("Item " + (i + 1) + ": " + item.productName());
+for (int i = 0; i < order.lines().size(); i++) {
+    LineItem item = order.lines().get(i);
+    packingSlip.add("Item " + (i + 1) + ": " + item.sku());
 }
 
 // Or with streams, losing type-safety
 AtomicInteger counter = new AtomicInteger(1);
-order.items().stream()
-    .map(item -> "Item " + counter.getAndIncrement() + ": " + item.productName())
+order.lines().stream()
+    .map(item -> "Item " + counter.getAndIncrement() + ": " + item.sku())
     .collect(toList());
 
 // Map processing requires breaking into entries
-order.metadata().entrySet().stream()
+metadata.entrySet().stream()
     .map(entry -> processWithKey(entry.getKey(), entry.getValue()))
     .collect(toMap(Entry::getKey, Entry::getValue));
 ```
@@ -194,9 +222,9 @@ Indexed optics provide specialised methods that give you access to both the inde
 ``` java
     List<LineItem> items =
         List.of(
-            new LineItem("Laptop", 1, new BigDecimal("999.99")),
-            new LineItem("Mouse", 2, new BigDecimal("24.99")),
-            new LineItem("Keyboard", 1, new BigDecimal("79.99")));
+            new LineItem("LAPTOP", 1, new BigDecimal("999.99")),
+            new LineItem("MOUSE", 2, new BigDecimal("24.99")),
+            new LineItem("KEYBOARD", 1, new BigDecimal("79.99")));
 
     // Get list of (index, item) pairs - optic meets data
     List<Pair<Integer, LineItem>> indexedItems =
@@ -205,12 +233,12 @@ Indexed optics provide specialised methods that give you access to both the inde
     for (Pair<Integer, LineItem> pair : indexedItems) {
       int position = pair.first();
       LineItem item = pair.second();
-      System.out.println("Position " + position + ": " + item.productName());
+      System.out.println("Position " + position + ": " + item.sku());
     }
     // Output:
-    // Position 0: Laptop
-    // Position 1: Mouse
-    // Position 2: Keyboard
+    // Position 0: LAPTOP
+    // Position 1: MOUSE
+    // Position 2: KEYBOARD
 ```
 
 #### Using IndexedFold for Queries
@@ -223,8 +251,8 @@ Indexed optics provide specialised methods that give you access to both the inde
     Pair<Integer, LineItem> found =
         itemsFold.findWithIndex((index, item) -> index == 1, items).orElseThrow();
 
-    System.out.println("Item at index 1: " + found.second().productName());
-    // Output: Item at index 1: Mouse
+    System.out.println("Item at index 1: " + found.second().sku());
+    // Output: Item at index 1: MOUSE
 
     // Check if any even-positioned item is expensive
     boolean hasExpensiveEven =
@@ -242,24 +270,21 @@ The real power emerges when you modify elements based on their position.
 #### Numbering Items in a Packing Slip
 
 ``` java
-    // Modify product names to include position numbers
-    List<LineItem> numbered =
-        IndexedTraversals.imodify(
-            itemsWithIndex,
-            (index, item) ->
-                new LineItem(
-                    "Item " + (index + 1) + ": " + item.productName(),
-                    item.quantity(),
-                    item.price()),
-            items);
+    // Number each line of a packing slip by its position
+    IndexedTraversal<Integer, List<String>, String> slipLines = IndexedTraversals.forList();
+    List<String> skus = items.stream().map(LineItem::sku).toList();
 
-    for (LineItem item : numbered) {
-      System.out.println(item.productName());
+    List<String> numbered =
+        IndexedTraversals.imodify(
+            slipLines, (index, sku) -> "Item " + (index + 1) + ": " + sku, skus);
+
+    for (String line : numbered) {
+      System.out.println(line);
     }
     // Output:
-    // Item 1: Laptop
-    // Item 2: Mouse
-    // Item 3: Keyboard
+    // Item 1: LAPTOP
+    // Item 2: MOUSE
+    // Item 3: KEYBOARD
 ```
 
 #### Position-Based Discount Logic
@@ -273,15 +298,15 @@ List<LineItem> discounted = IndexedTraversals.imodify(
         if (index % 2 == 0) {
             BigDecimal discountedPrice =
                 item.price().multiply(new BigDecimal("0.9")).setScale(2, RoundingMode.HALF_EVEN);
-            return new LineItem(item.productName(), item.quantity(), discountedPrice);
+            return new LineItem(item.sku(), item.quantity(), discountedPrice);
         }
         return item;
     },
     items
 );
 
-// Positions 0 (Laptop) and 2 (Keyboard) are discounted by 10%
-// Position 1 (Mouse) is unchanged
+// Positions 0 (LAPTOP) and 2 (KEYBOARD) are discounted by 10%
+// Position 1 (MOUSE) is unchanged
 ```
 
 #### Map Processing with Key Awareness
@@ -325,16 +350,16 @@ Indexed traversals support filtering, allowing you to focus on specific position
         itemsWithIndex.filterIndex(index -> index % 2 == 0);
 
     List<Pair<Integer, LineItem>> evenItems = IndexedTraversals.toIndexedList(evenPositions, items);
-    // Laptop at index 0 and Keyboard at index 2
+    // LAPTOP at index 0 and KEYBOARD at index 2
 
     // Modify only even-positioned items
     List<LineItem> result =
         IndexedTraversals.imodify(
             evenPositions,
             (index, item) ->
-                new LineItem(item.productName() + " [SALE]", item.quantity(), item.price()),
+                new LineItem(item.sku(), item.quantity(), item.price().subtract(BigDecimal.TEN)),
             items);
-    // Laptop and Keyboard get "[SALE]" suffix, Mouse unchanged
+    // LAPTOP and KEYBOARD are £10 off, MOUSE unchanged
 ```
 
 #### Filter by Value with Index Available
@@ -347,7 +372,7 @@ Indexed traversals support filtering, allowing you to focus on specific position
 
     List<Pair<Integer, LineItem>> expensive =
         IndexedTraversals.toIndexedList(expensiveItems, items);
-    // Laptop at index 0 and Keyboard at index 2
+    // LAPTOP at index 0 and KEYBOARD at index 2
     // Notice: indices are preserved (0 and 2), not renumbered
 ```
 
@@ -371,31 +396,31 @@ An `IndexedLens` focuses on exactly one field whilst providing its name or ident
 
 ``` java
     // Create an indexed lens for the customer email field
-    IndexedLens<String, Customer, String> emailLens =
+    IndexedLens<String, Customer, EmailAddress> emailLens =
         IndexedLens.of(
             "email", // The index: field name
             Customer::email, // Getter
             (customer, newEmail) -> new Customer(customer.name(), newEmail)); // Setter
 
-    Customer customer = new Customer("Alice", "alice@example.com");
+    Customer customer = new Customer("Ada", new EmailAddress("ada@example.com"));
 
     // Get both field name and value
-    Pair<String, String> fieldInfo = emailLens.iget(customer);
+    Pair<String, EmailAddress> fieldInfo = emailLens.iget(customer);
     System.out.println("Field: " + fieldInfo.first());
-    System.out.println("Value: " + fieldInfo.second());
+    System.out.println("Value: " + fieldInfo.second().value());
     // Output:
     // Field: email
-    // Value: alice@example.com
+    // Value: ada@example.com
 
     // Modify with field name awareness
     Customer updated =
         emailLens.imodify(
             (fieldName, oldValue) -> {
-              System.out.println("Updating field '" + fieldName + "' from " + oldValue);
-              return "alice.smith@example.com";
+              System.out.println("Updating field '" + fieldName + "' from " + oldValue.value());
+              return new EmailAddress("ada.lovelace@example.com");
             },
             customer);
-    // Output: Updating field 'email' from alice@example.com
+    // Output: Updating field 'email' from ada@example.com
 ```
 
 **Use case**: Audit logging that records *which* field changed, not just the new value.
@@ -418,12 +443,9 @@ IndexedTraversal<Integer, List<LineItem>, LineItem> indexed =
 Traversal<List<LineItem>, LineItem> standard = indexed.asTraversal();
 
 // Now you can use standard traversal methods
-List<LineItem> uppercased = Traversals.modify(
-    standard.andThen(Lens.of(
-        LineItem::productName,
-        (item, name) -> new LineItem(name, item.quantity(), item.price())
-    ).asTraversal()),
-    String::toUpperCase,
+List<LineItem> lowercased = Traversals.modify(
+    standard.andThen(LineItemLenses.sku().asTraversal()),
+    String::toLowerCase,
     items
 );
 ```
@@ -503,25 +525,21 @@ List<Product> inflated = Traversals.modify(
 
 <!-- verify -->
 ```java
-IndexedTraversal<Integer, List<LineItem>, LineItem> itemsIndexed =
+IndexedTraversal<Integer, List<String>, String> slipIndexed =
     IndexedTraversals.forList();
 
-List<LineItem> items = List.of(/* ... */);
-int lastIndex = items.size() - 1;
+List<String> slip = List.of(/* ... */);
+int lastIndex = slip.size() - 1;
 
-List<LineItem> marked = IndexedTraversals.imodify(
-    itemsIndexed,
-    (index, item) -> {
+List<String> marked = IndexedTraversals.imodify(
+    slipIndexed,
+    (index, line) -> {
         String marker = "";
         if (index == 0) marker = "[FIRST] ";
         if (index == lastIndex) marker = "[LAST] ";
-        return new LineItem(
-            marker + item.productName(),
-            item.quantity(),
-            item.price()
-        );
+        return marker + line;
     },
-    items
+    slip
 );
 ```
 
@@ -567,7 +585,7 @@ List<LineItem> marked = IndexedTraversals.imodify(
 // Inefficient: Recreating indexed traversals in loops
 for (Order order : orders) {
     var indexed = IndexedTraversals.<LineItem>forList();
-    IndexedTraversals.imodify(indexed, (i, item) -> numberItem(i, item), order.items());
+    IndexedTraversals.imodify(indexed, (i, item) -> numberItem(i, item), order.lines());
 }
 
 // Over-engineering: Using indexed optics when index isn't needed
@@ -598,7 +616,7 @@ IndexedTraversal<Integer, List<LineItem>, LineItem> itemsIndexed =
     IndexedTraversals.forList();
 
 for (Order order : orders) {
-    IndexedTraversals.imodify(itemsIndexed, (i, item) -> numberItem(i, item), order.items());
+    IndexedTraversals.imodify(itemsIndexed, (i, item) -> numberItem(i, item), order.lines());
 }
 
 // Simple: Use standard traversals when index isn't needed

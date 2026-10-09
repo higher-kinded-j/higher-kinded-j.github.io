@@ -54,14 +54,31 @@ public record Product(String sku, String name, BigDecimal price, int stock) {
 public record Catalogue(String name, List<Product> products) {}
 
 @GenerateLenses
-public record Order(String id, List<LineItem> items, LocalDateTime created) {}
-
-@GenerateLenses
-public record LineItem(Product product, int quantity) {}
-
-@GenerateLenses
 public record SalesMetric(LocalDate date, BigDecimal revenue, int transactions) {}
 ```
+
+The orders are the chapter's cast: an `Order` of priced `LineItem`s.
+
+~~~admonish example title="The cast these examples use" collapsible=true
+``` java
+@GenerateLenses
+@GenerateFocus(generateNavigators = true)
+@GenerateTraversals
+public record Order(
+    UUID id,
+    Customer customer,
+    List<LineItem> lines,
+    Instant placedAt,
+    Currency currency,
+    OrderStatus status) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record LineItem(String sku, Integer quantity, BigDecimal price) {}
+```
+~~~
 
 **The Traditional Approach:**
 
@@ -462,13 +479,13 @@ List<Product> restocked = Traversals.modify(
 Traversal<List<Order>, Order> first50Orders = ListTraversals.taking(50);
 
 // Focus on all line items in those orders
-Traversal<List<Order>, LineItem> first50OrderItems =
-    first50Orders.andThen(OrderTraversals.items());
+Traversal<List<Order>, LineItem> first50OrderLines =
+    first50Orders.andThen(OrderTraversals.lines());
 
-// Apply bulk discount to items in first 50 orders
+// Apply a 5% bulk discount to the line prices in the first 50 orders
 List<Order> processed = Traversals.modify(
-    first50OrderItems,
-    item -> new LineItem(item.product().applyDiscount(5), item.quantity()),
+    first50OrderLines.andThen(LineItemLenses.price()),
+    price -> price.multiply(new BigDecimal("0.95")).setScale(2, RoundingMode.HALF_EVEN),
     orders
 );
 ```
