@@ -2417,7 +2417,9 @@ IOPath<String> content = IOPath.withResource(
 All three arguments to `bracket` are plain `Supplier`, `Function` and `Consumer`, so a
 resource whose acquisition, use or release throws a checked exception needs the same wrap
 the creation section shows. `bracketIO` and `withResourceIO` take a use function that
-returns an `IOPath`, for when the body is itself an effect.
+returns an `IOPath`, for when the body is itself an effect. When a release or `close()`
+throws, [The bracket Pattern](advanced_topics.md#the-bracket-pattern) says which exception
+is reported.
 
 ---
 
@@ -5192,7 +5194,7 @@ management. Software faces analogous challenges: database connections, file
 handles, network sockets. Acquire them, use them, release them, and make
 absolutely certain the release happens even when something goes wrong.
 
-### The bracket Pattern
+### The bracket Pattern {#the-bracket-pattern}
 
 `bracket` is the fundamental resource pattern: acquire, use, release. The release
 *always* runs, regardless of whether the use succeeds or fails:
@@ -5206,8 +5208,42 @@ IOPath<String> readFile = IOPath.bracket(
 );
 ```
 
-If `readAllBytes()` throws, the stream still closes. The exception propagates
-after cleanup completes.
+If `readAll` throws, the stream still closes, and the exception propagates once
+the release has run.
+
+`bracket` reports a release that throws as try-with-resources does. When the use
+has failed, `bracket` still throws the use's exception, with the release's
+suppressed onto it, so the log keeps the reason the program failed. After a
+successful use, the release's exception fails the path on its own. `bracketIO`,
+`withResource`, `withResourceIO`, `guarantee` and `guaranteeIO` follow the same
+rule.
+
+```java
+    IOPath<String> report =
+        IOPath.bracket(
+            () -> "connection",
+            _ -> {
+              throw new IllegalStateException("query failed");
+            },
+            _ -> {
+              throw new IllegalArgumentException("close failed");
+            });
+
+    Try<String> outcome = report.runSafe();
+    // Failure(java.lang.IllegalStateException: query failed)
+    List<Throwable> suppressed =
+        outcome.foldFailureFirst(failure -> List.of(failure.getSuppressed()), _ -> List.of());
+    // [java.lang.IllegalArgumentException: close failed]
+```
+
+After a failed use, these methods run the cleanup with the thread's interrupt
+status cleared, so a blocking close is not cut short. They restore the status
+afterwards.
+
+An exception the path holds, such as the one `Path.vtaskFail(e)` fails with, is
+the same instance on every run. So it gathers the cleanup failure of every run,
+as it would under try-with-resources. Create the exception inside the use to
+keep runs apart.
 
 #### bracketIO for Effectful Use
 
@@ -5235,7 +5271,29 @@ IOPath<List<String>> lines = IOPath.withResource(
 );
 ```
 
-The reader is automatically closed after use, with proper exception handling.
+`withResource` closes the reader after use, and reports an exception from
+`close()` as `bracket` reports [a failing release](#the-bracket-pattern). So a
+writer whose final flush fails does not report success. The functions an
+`IOPath` runs cannot throw a checked exception, so after a successful use
+`withResource` wraps one from `close()`. An `IOException` becomes an
+`UncheckedIOException`, and any other checked exception the cause of a
+`RuntimeException`. `getCause()` returns the original. An `InterruptedException`
+from `close()` also sets the thread's interrupt status, whether the use failed
+or succeeded.
+
+```java
+    AutoCloseable writer =
+        () -> {
+          throw new IOException("final flush failed");
+        };
+
+    Try<String> saved = IOPath.withResource(() -> writer, _ -> "saved").runSafe();
+    // Failure(java.io.UncheckedIOException: java.io.IOException: final flush failed)
+```
+
+After a failed use, `withResource` suppresses the exception from `close()` onto
+the use's exception, as `close()` threw it. A resource supplier that returns
+null fails the path with a `NullPointerException` before the use runs.
 
 #### withResourceIO Variant
 
@@ -5262,7 +5320,10 @@ IOPath<Result> computation = fetchData()
     .guarantee(() -> log.info("Fetch completed"));
 ```
 
-The guarantee runs whether `fetchData()` succeeds or fails.
+`guarantee` runs the finaliser whether `fetchData()` succeeds or fails, and
+reports a finaliser that throws as `bracket` reports
+[a failing release](#the-bracket-pattern). `VTaskPath.guarantee` reports a
+failing finaliser the same way.
 
 #### guaranteeIO for Effectful Cleanup
 
