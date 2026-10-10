@@ -43081,15 +43081,17 @@ Compared to a hand-written `with*` cascade for the same nested update, generated
 
 For a single update on a small record, the cost is unlikely to matter. For tight inner loops, see [Caching optics](#caching-optics).
 
-These are engineering estimates from the shape of the generated code, not benchmark output: the [JMH suite](../benchmarks.md) covers `Fold.plus` but not lens or traversal allocation.
+These are engineering estimates from the shape of the generated code, not benchmark output. The [JMH suite](../benchmarks.md) covers `Fold.plus`, and how a list traversal's time grows with the list, but not lens or traversal allocation.
 
 ### `modifyF` and effect handlers
 
 `modifyF(f, source, applicative)` runs `f` once per focused element and threads the results through the supplied `Applicative`. The cost is one call to `f` plus whatever the applicative's `ap` and `pure` do. `Validated` accumulates every error and `Either` keeps only the first, but neither skips work: the traversal applies `f` to every focused element before the applicative combines the results, so the choice shapes the answer rather than the cost.
 
-### Traversal allocation
+### Traversal allocation {#traversal-allocation}
 
 `Traversals.modify(traversal, f, source)` over a `List<A>` allocates one new list, plus a small constant number of short-lived objects *per element*: the traversal threads each result through the `Id` applicative and an immutable cons-list before flattening. Budget O(n) allocations, not O(1). (Reads and writes on a bare `Traversal` go through the `Traversals` utility; the interface itself declares no plain read or write.) If the function returns the same value for every element (a no-op modify), the list is still rebuilt; optics do not compare references to skip rebuilding.
+
+A Focus path's `.each()` on a `List` is `Traversals.forList()`, and `EachInstances.arrayEach()` is `Traversals.forArray()`, as `FocusPaths.listElements` and `EachInstances.arrayEach` show. Both rebuild this way, in time linear in the length, into a new unmodifiable list or a new array.
 
 ### What each collection optic builds {#collection-optics}
 
@@ -43097,10 +43099,11 @@ Each collection optic rebuilds its container in its own way, and several return 
 
 | Optic | What it builds | When nothing changes | Implemented in |
 |---|---|---|---|
+| `Traversals.forList()`, a Focus path's `.each()`, `EachInstances.arrayEach().each()` | Collects the results on an immutable cons list, then builds one new unmodifiable list, or one new array. | An empty list or array still gets a new, empty one. | `Traversals.forList`, `Traversals.forArray` |
 | `Traversals.forMapValues()` | Copies the keys and values into two lists, traverses the values, then builds one new `LinkedHashMap` in the source's order. | An empty map still gets a new, empty map. | `Traversals.traverseMapValues` |
 | `Traversals.forMap(key)` | Copies the whole map to replace one value. | An absent key returns the source itself. | `Traversals.forMap` |
 | `filtered(p)`, `filterBy(query, p)` | Tests each element once, in the same pass as the update; `filterBy`'s test is a `Fold.exists`, which stops at the first queried focus that matches. | A rejected element passes through with `of`, keeping its reference. | `Traversal.filtered`, `Traversal.filterBy` |
-| `ListTraversals.taking(n)`, `slicing(from, to)` and the other limits | Run the function on the slice only, then copy the elements outside it by reference into one new list; `takingWhile` and `droppingWhile` first scan for the split point. | An empty slice returns the source itself. | `ListTraversals.slicing` |
+| `ListTraversals.taking(n)`, `slicing(from, to)` and the other limits | Run the function on the slice only, then copy the elements outside it by reference into one new unmodifiable list; `takingWhile` and `droppingWhile` first scan for the split point. | An empty slice returns the source itself, apart from `dropping` and `droppingLast` with `n <= 0`, which rebuild even an empty list. | `ListTraversals.slicing` |
 | `StringTraversals.chars()`, `worded()`, `lined()` | Split the string into a list, one boxed `Character` per character or a regular-expression split into words or lines, then join one new string. | A new string is joined anyway. | `StringTraversals.chars`, `StringTraversals.worded` |
 | `Traversals.partsOf(t)` | `get` collects the foci into one list through `getAll`, and `set` walks the traversal again, so a `modify` walks it twice. `sorted` and `reversed` copy that list once more, and `distinct` twice. | The traversal is still walked twice. | `Traversals.partsOf` |
 | `IndexedTraversals.forList()`, `forMap()` | Pass the index and the value to your function as two arguments, so no `Pair` is built per focus. | An empty list or map returns the source itself. | `IndexedTraversals.forList`, `IndexedTraversals.forMap` |
@@ -103630,6 +103633,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A fold's query stops at its answer** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). `preview`, `find`, `exists`, `all` and `isEmpty` on `Fold` and `TraversalPath`, and `IndexedFold`'s queries, visit no focus after the one that settles them. So `exists` over a long list returns at its first match. A path from `traced` still reads every focus, so its observer sees them all. See [What reads cost](../optics/production_readiness.md#read-cost).
 - **A prism or affine that matches builds nothing it throws away** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). `Prism.modifyF`, `Affine.modifyF`, `Traversal.andThen(Prism)`, `Prism.andThen(Traversal)` and `Affine.andThen(Traversal)` wrap the source with `of` only on a miss, and `OptionalTraverse.traverse` only for an empty `Optional`. See [Prisms and affines on a miss](../optics/production_readiness.md#prisms-and-affines).
 - **A method named after a Java keyword takes a trailing underscore** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). An enum constant such as `NEW` or `TRUE`, a sealed subtype named `Default`, an `@EffectAlgebra` permit named `Throw`, or an imported `withDefault` crashed the processor. Their methods are now `new_()`, `true_()`, `default_()` and `throw_()`, and so are `@GenerateErrorEnvelope` factories. See [Prisms](../optics/prisms.md).
+- **`.each()` on a `List` path takes time in proportion to the list** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)). A Focus path's `.each()`, which every generated `List` path uses, now rebuilds the list once instead of copying it at every element. On 100,000 elements that took several seconds, and now takes about a millisecond. `EachInstances.arrayEach()` rebuilds an array the same way. See [Traversal allocation](../optics/production_readiness.md#traversal-allocation).
 
 ---
 
@@ -103722,6 +103726,9 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A query's predicate is not called after its answer** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)): `find`, `exists` and `all`, on `Fold`, `IndexedFold` and `TraversalPath`, stop at the focus that settles them, so a logging or counting predicate sees fewer calls. A `Fold` of your own whose `foldMap` catches every exception still gives the same answer, but walks on to its end.
 - **A read no longer runs a traversal's rebuild** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)): a `Traversal` of your own whose rebuild logs or counts no longer runs it for `Traversals.getAll`, a `TraversalPath`'s reads, `IndexedTraversals.toIndexedList`, `getAll` and `length`, or `asIndexedFold()`.
 - **`OptionalTraverse.traverse` rejects a function that returns null** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). For a present value, a `null` from the function used to give an empty `Optional`. It now throws `NullPointerException`, as the other `Traverse` instances do.
+- **The list optics that returned an `ArrayList` now return an unmodifiable list** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)): `.each()`, `.at(i)`, `.head()` and `.last()` on a Focus path, `ListTraversals`, `AtInstances.listAt` and `listAtWithPadding`, and `IxedInstances.listIx`. Changing a returned list throws `UnsupportedOperationException`, so copy it first. With nothing at the index, `.at(i)` and `listIx` return your own list. See [What each collection optic builds](../optics/production_readiness.md#collection-optics).
+- **A Focus path over a field declared as `ArrayList` fails when `.each()`, `.at(i)`, `.head()` or `.last()` writes** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)): storing the rebuilt list, an unmodifiable `List`, back throws `ClassCastException`. `.each()` already failed on a one-element list. Declare the field as `List`, or use `each(EachInstances.fromIterableCollecting(ArrayList::new))`.
+- **`.each()` over an empty list, and `arrayEach().each()` over an empty array, return a new empty one** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)): not the source itself.
 
 #### Effect Paths {#runtime-effect-paths}
 
@@ -104932,7 +104939,7 @@ The suite is designed around three principles:
 
 ## What Is Measured
 
-The `hkj-benchmarks` module contains 22 benchmark classes covering every major type in the library:
+The `hkj-benchmarks` module contains 24 benchmark classes covering every major type in the library:
 
 ### Core Types
 
@@ -104942,6 +104949,8 @@ The `hkj-benchmarks` module contains 22 benchmark classes covering every major t
 | `MaybeBenchmark` | `Maybe<A>` | Instance reuse on Nothing, nullable interop cost |
 | `TrampolineBenchmark` | `Trampoline<A>` | Stack-safe recursion overhead vs naive recursion |
 | `FreeBenchmark` | `Free<F,A>` | Free monad interpretation cost |
+| `FreeEffectBenchmark` | `Free`, `EitherF` | Effect handler overhead: `EitherF` dispatch, `Free.translate`, error handling, combined interpreters and program analysis |
+| `FoldPlusBenchmark` | `Fold` | `Fold.plus` and `Fold.sum` against a single fold and a manual `Stream.concat` |
 
 ### Effect Types
 
@@ -104971,12 +104980,22 @@ The `hkj-benchmarks` module contains 22 benchmark classes covering every major t
 | `AbstractionOverheadBenchmark` | HKJ abstractions vs raw Java |
 | `ConcurrencyScalingBenchmark` | Thread scaling under concurrent load |
 | `MemoryFootprintBenchmark` | Allocation rates for VTask, IO, CompletableFuture |
+| `PCollectionsHktBenchmark` | PCollections `PVector` against `ArrayList` through `ListMonad` and `ListTraverse` |
 
 ### Mapping
 
 | Benchmark | What It Compares |
 |-----------|-----------------|
 | `MappingBenchmark` | The generated mapper's `build` and `parse` against a hand-written mapper, MapStruct, and MapStruct with Bean Validation, on a nested pair and a flat one |
+
+### Scaling
+
+Each of these runs at two sizes, ten times apart, so a test can check that the cost grows in proportion to the input.
+
+| Benchmark | What It Measures |
+|-----------|-----------------|
+| `AccumulationBenchmark` | Collecting every failure of a bulk parse, `Edits.accumulate`, `PathOps.traverseValidated` and a generated mapping's null scan |
+| `EachRebuildBenchmark` | Modifying every element through a Focus path's `.each()` on a `List`, and through `EachInstances.arrayEach()` |
 
 ---
 
@@ -105188,6 +105207,8 @@ The assertion tests **fail** (not skip) if benchmark results are missing. This i
 | **VStreamPerformance** | VStream map execution, construction vs execution, Java Stream baseline |
 | **VTaskVsPlatformThreads** | VTask Par.all vs platform thread pool at scale |
 | **FreeMonadPerformance** | Free monad construction, stack safety, and interpretation overhead |
+| **AccumulationScaling** | Ten times the failures cost under 30 times as long, where copying every earlier failure would cost about 100 |
+| **EachRebuildScaling** | Ten times the elements cost under 30 times as long, where copying the list built so far at each element would cost about 100 |
 
 ### Running the Tests
 
@@ -105259,7 +105280,7 @@ For everything else, the type safety, composability, and testability benefits fa
 
 ~~~admonish tip title="See Also"
 - [Production Readiness](effect/production_readiness.md) - stack traces, allocation analysis, and stack safety for Effect Path types
-- [hkj-benchmarks README](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-benchmarks/README.md) - full method reference for all 18 benchmark classes
+- [hkj-benchmarks README](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-benchmarks/README.md) - full method reference for the benchmark classes
 - [Performance Testing Guide](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/docs/PERFORMANCE-TESTING-GUIDE.md) - benchmark categories and CI integration
 ~~~
 
