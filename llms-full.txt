@@ -39020,6 +39020,8 @@ Leave it out, as `x()` does, and the order is read from the constructor's parame
 
 Either way, the order is held to the constructor the generated call binds. An order of the wrong length is refused at the spec method. So is one that passes `y()` where the parameter named `x` stands, which would otherwise compile and write each value into the other's field. A parameter named after nothing the type reads leaves its place to the order. See the [`@ViaConstructor` entry](compiler_errors.md#viaconstructor-order) in Compiler Errors.
 
+A written order can rebuild through a shorter constructor, one that works out or defaults a value the source holds. Where a longer constructor takes a value the order passes nothing for, or a record component is left out, the processor warns. After every set, that value reads what the shorter constructor gives it. Pass it, in the order the warning offers where the names give one. Where the constructor works it out on purpose, annotate the lens method `@SuppressWarnings("shorter-constructor")`. A variable-arity constructor is held to its parameter names too, the array's included. See [the warning's entry](compiler_errors.md#viaconstructor-shorter-constructor).
+
 ### `@ViaCopyAndSet`: legacy types with a copy constructor and setters
 
 <!-- verify -->
@@ -45657,6 +45659,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`parameter named after the lens's own`](#viaconstructor-order) | No constructor takes a parameter for the lens |
 | [`not a constructor it was read from`](#viaconstructor-order) | An order read from names binds another constructor |
 | [`leaves out what '...' takes`](#viaconstructor-order) | An order read from names misses a longer constructor |
+| [`passes nothing for`](#viaconstructor-shorter-constructor) | **Warning.** A written `@ViaConstructor` order rebuilds through a shorter constructor |
 | [`pairs more than one wither with the field`](#importoptics--pairs-more-than-one-wither-with-the-field--a-note) | **Note.** Two withers reach one field name, and one lens is generated |
 | [`focuses '...', which is not a '...'`](#importoptics--focuses--which-is-not-a-) | A generated prism's focus is a value rather than a variant of the source |
 | [`cannot find symbol`, inside `XPrisms.java`](#cannot-find-symbol-inside-the-generated-xprismsjava-after-using-matchwhen) | A `@MatchWhen` predicate or getter name is misspelt |
@@ -47043,12 +47046,12 @@ interface ParcelOpticsSpec extends OpticsSpec<Parcel> {
 | `cannot choose between 'Duo(int a, Integer b)' and 'Duo(Integer a, int b)'` | More than one constructor takes them, none more closely than the rest |
 | `No 'parameterOrder' is written, and no constructor of` | With no order written, no constructor's names give one; `more than one constructor` when two give different orders |
 | `binds '...', not a constructor it was read from` | The order read from one constructor's names binds another constructor |
-| `leaves out what '...' takes` | The order read from the names is a shorter constructor's, beside a longer one; never for a record |
+| `leaves out what '...' takes` | The order read from the names is a shorter constructor's, beside a longer one; for a record, beside its canonical constructor |
 
 **Fix.** Where the constructor's parameter names give an order the call would rebuild through, the message ends on it, ready to paste: `@ViaConstructor(parameterOrder = {"x", "y"})`. Where the lens's focus is what no constructor takes, it names the type the getter reads, to declare as the focus instead. Where the names give no order, or the order read from them would rebuild through the wrong constructor, write the order of the one the lens should rebuild through. Where no constructor takes the lens's value, or javac cannot choose one, rebuild the source type with `@Wither`, `@ViaBuilder` or `@ViaCopyAndSet`. A lens named after an alias, `price()` for a parameter `cents`, can take the accessor's own name instead. A parameter can be named after an accessor that reads something else, as `Money(long amount, ...)` beside an `amount()` that reads pounds rather than pence. The processor still holds the order to that name, and the lens needs another strategy.
 
 ~~~admonish note title="Why" collapsible=true
-A constructor call checks only types. `Point(int x, int y)` takes `new Point(source.y(), newValue)` as readily as the right order, and the lens then writes each value into the other's field. Setting `x` to 9 on a `Point(1, 2)` gives a `Point(2, 9)`, so a get after the set no longer reads 9. Only the parameter names tell the two apart. So a parameter named after an accessor that reads a value it takes, `x` after `x()`, `getX()` or `isX()`, has to be passed that accessor's value. A parameter named after nothing the type reads leaves its place to the order.
+A constructor call checks only types. `Point(int x, int y)` takes `new Point(source.y(), newValue)` as readily as the right order, and the lens then writes each value into the other's field. Setting `x` to 9 on a `Point(1, 2)` gives a `Point(2, 9)`, so a get after the set no longer reads 9. Only the parameter names tell the two apart. So a parameter named after an accessor that reads a value it takes, `x` after `x()`, `getX()` or `isX()`, has to be passed that accessor's value. A parameter named after nothing the type reads leaves its place to the order. A variable-arity constructor is held the same way: its fixed parameters by their names, and every value passed into its array by the array parameter's.
 
 A constructor compiled from source always carries its names. One read from a class file carries them when it was compiled with `-parameters` or `-g`, and Gradle and Maven pass `-g` by default. Without either, javac reads the names as `arg0` and `arg1`, which name no accessor, so the order you write is held to the types alone, and one left out cannot be read. A record's canonical constructor is read by its components' names, which a class file always keeps.
 ~~~
@@ -47150,6 +47153,43 @@ interface DuoOpticsSpec extends OpticsSpec<Duo> {
 }
 ```
 
+A swap among a variable-arity constructor's fixed parameters, which says `passes 'source.note()' where 'Sticker(String label, String note, String... parts)' takes 'label'`:
+
+<!-- verify:rejects "passes 'source.note()' where 'Sticker(String label, String note, String... parts)' takes 'label'" -->
+```java
+final class Sticker {
+
+    private final String label;
+    private final String note;
+    private final String[] parts;
+
+    Sticker(String label, String note, String... parts) {
+        this.label = label;
+        this.note = note;
+        this.parts = parts.clone();
+    }
+
+    public String label() {
+        return label;
+    }
+
+    public String note() {
+        return note;
+    }
+
+    public String[] parts() {
+        return parts.clone();
+    }
+}
+
+@ImportOptics
+interface StickerOpticsSpec extends OpticsSpec<Sticker> {
+
+    @ViaConstructor(parameterOrder = {"note", "label"})
+    Lens<Sticker, String> label();
+}
+```
+
 No order written, for a lens no constructor takes a parameter for:
 
 <!-- verify:rejects "No constructor of 'Sum' takes a parameter named after the lens's own 'total()'" -->
@@ -47182,6 +47222,55 @@ interface SumOpticsSpec extends OpticsSpec<Sum> {
 
     @ViaConstructor
     Lens<Sum, Integer> total();
+}
+```
+~~~
+
+### "@ViaConstructor: 'parameterOrder' ... passes nothing for '...', which '...' takes" (a warning) {#viaconstructor-shorter-constructor}
+
+A written order rebuilds through the constructor its call binds, even one that takes fewer values than the source holds. Beside `Fee(long amount, String currency)`, `{"amount"}` binds `Fee(long amount)`, and every set then hands back a `Fee` in that constructor's default currency. The warning names every value a longer constructor takes that the order passes nothing for, from each longer constructor; for a record, every component.
+
+**Fix.** Pass it: where a constructor's names give an order that passes it, the warning offers that order, ready to paste, `@ViaConstructor(parameterOrder = {"amount", "currency"})`. A shorter constructor can work the value out on purpose: a `Rect(int w, int h)` works out the `area` a `Rect(int w, int h, int area)` record holds. Then annotate the lens method `@SuppressWarnings("shorter-constructor")`, or the spec interface to cover each lens it declares. Where no one constructor takes all the values, as `Knot(int x, int y)` and `Knot(int x, long z)` take one each, no order passes them all, and the warning says so rather than offer one.
+
+~~~admonish note title="Why" collapsible=true
+After every set, a value the order leaves out reads what the shorter constructor gives it, not what the source held. Setting `amount` to 9 on a `Fee(100, "EUR")` gives a `Fee(9, "GBP")`, so setting a value the lens has just read changes the source, which a lens may not do. A variable-arity constructor passed nothing for its array is shorter in the same way: `{"label"}` for `Sticker(String label, String... parts)` leaves `parts` empty.
+
+Only the parameter names say which values a longer constructor takes, so a parameter named after nothing the type reads never counts. Two constructors of one length, such as `Temperature(double celsius)` and `Temperature(float fahrenheit)`, are two views of one value rather than a shorter and a longer one. A longer view still warns, as `Amount(long pounds, int pence)` beside `Amount(long cents)` does, and the warning says that no order can pass its values with the lens's own. It is a warning rather than an error because a constructor that works a value out keeps the lens lawful, and only you know which of yours do.
+~~~
+
+For this declaration, the warning reads `'parameterOrder' {"amount"} passes nothing for 'currency()', which 'Fee(long amount, String currency)' takes`.
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:reports "passes nothing for 'currency()', which 'Fee(long amount, String currency)' takes" -->
+```java
+final class Fee {
+
+    private final long amount;
+    private final String currency;
+
+    Fee(long amount, String currency) {
+        this.amount = amount;
+        this.currency = currency;
+    }
+
+    Fee(long amount) {
+        this(amount, "GBP");
+    }
+
+    public long amount() {
+        return amount;
+    }
+
+    public String currency() {
+        return currency;
+    }
+}
+
+@ImportOptics
+interface FeeOpticsSpec extends OpticsSpec<Fee> {
+
+    @ViaConstructor(parameterOrder = {"amount"})
+    Lens<Fee, Long> amount();
 }
 ```
 ~~~
@@ -103894,6 +103983,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A map written through an optic keeps its source's order** ([#1022](https://github.com/higher-kinded-j/higher-kinded-j/pull/1022)): every optic that writes a `Map`, from `Traversals.forMapValues` to `AtInstances.mapAt` and `Setter.forMapValues`, hands back a map in the source's iteration order. An updated key keeps its place and a new key goes at the end. See [Persistent and Third-Party Maps](../optics/common_data_structure_traversals.md#persistent-and-third-party-maps-formapvaluescollecting).
 - **`modifyWhen` and `branch` on a `Traversal` call only the function their predicate picks** ([#1026](https://github.com/higher-kinded-j/higher-kinded-j/pull/1026)). Each element is now tested first, so a function may assume the condition that guards it, and an expensive one runs only where it is needed. `Lens.modifyWhen`, `modifyBranch` and `setIf` test first too. See [Complete, Runnable Example](../optics/composing_optics.md#complete-runnable-example).
 - **`@ViaConstructor` holds its order to the constructor** ([#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906)). An order that passes a value where the constructor's parameter names say another belongs, or that no constructor takes, is now refused at the spec method. Leave `parameterOrder` out and it is read from those names. See [`@ViaConstructor`: constructor-only value types](../optics/copy_strategies.md#viaconstructor-constructor-only-value-types).
+- **A `@ViaConstructor` order that leaves a value out says so** ([#1067](https://github.com/higher-kinded-j/higher-kinded-j/issues/1067)). A written order that rebuilds through a shorter constructor now warns, naming the values longer constructors take that the order leaves out. `@SuppressWarnings("shorter-constructor")` keeps quiet a constructor that works the value out on purpose. A variable-arity constructor is held to its parameter names too. See [the warning's entry](../optics/compiler_errors.md#viaconstructor-shorter-constructor).
 - **Optics over a nullable field pass a nullness checker** ([#767](https://github.com/higher-kinded-j/higher-kinded-j/issues/767), [#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): every optic and Focus path type, and `Kind`, takes a nullable type, so the lens generated for a `@Nullable` component checks under JSpecify. A bridge into an effect type can say what a null focus becomes, as `toEitherPath(source, error)` does. See [A focus that may be null](../optics/focus_effects.md#a-focus-that-may-be-null).
 - **`nullable()` keeps the focus type** ([#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): `FocusPath.nullable()` and `AffinePath.nullable()` return the focus type without its null, so a chained `focus(path.nullable(), error)` or a `var` infers it where it inferred `Object`. A call written `path.<String>nullable()` still compiles. See [`.nullable()`: Handle Null Values](../optics/focus_navigation.md#nullable-handle-null-values).
 - **A Focus path through a custom container whose generator names no optic stops at the container** ([#1059](https://github.com/higher-kinded-j/higher-kinded-j/issues/1059)), as if no generator supported it. It used to widen through the `Optional`-only `.some()` or the `List`-only `.each()`, and threw `ClassCastException` on first use for other containers. The generator still serves `@GenerateTraversals` and `@ImportOptics`. See [Registering your own container type](../optics/focus_containers.md#the-fine-print-registering-your-own-container-type).
@@ -104078,6 +104168,8 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Optics | A `@ViaConstructor` `parameterOrder` that passes a value where the constructor's parameter names say another belongs, such as `{"y", "x"}` for `Point(int x, int y)`, including a lens named after an accessor no parameter is named after | Write the order the error offers, which follows those names, or rebuild with the strategy it names | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
 | Optics | A `@ViaConstructor` lens with no `parameterOrder`, whose `set` threw, where the constructors' parameter names give no order the call rebuilds through, a longer constructor might hold more, the lens's focus fits no constructor, or the source type is abstract | Write the order, declare the focus the error names, or rebuild with the strategy it names | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
 | Optics | A spec lens whose focus is wider than its getter's wrapper, such as `Number` over an `int` getter, rebuilding through an overloaded wither, setter or constructor none of whose overloads takes the focus; setting a value of another kind used to throw `ClassCastException` | Declare the focus as the wrapper, `Integer` | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
+| Optics | Under `-Werror`, a written `@ViaConstructor` `parameterOrder` that passes nothing for a value a longer constructor, or a record component, takes, such as `{"amount"}` beside `Fee(long amount, String currency)` | Write the order the warning offers, or annotate the lens method `@SuppressWarnings("shorter-constructor")` where the shorter constructor works the value out | [#1067](https://github.com/higher-kinded-j/higher-kinded-j/issues/1067) |
+| Optics | A `@ViaConstructor` `parameterOrder` that passes a value where a variable-arity constructor's parameter names say another belongs, such as `{"note", "label"}` for `Sticker(String label, String note, String... parts)` | Write the order the error offers | [#1067](https://github.com/higher-kinded-j/higher-kinded-j/issues/1067) |
 | Optics | With `generateNavigators = true`, the path from a field whose type is a generic `@GenerateFocus` record, or an `Either`, `Try` or `Validated` of one, such as `Revision<EmailAddress> email`, used as a path: chained with `.via(RevisionFocus.current())` or assigned to one | Call the navigator's method, `.email().current()`, or take the path with `.email().toPath()` | [#739](https://github.com/higher-kinded-j/higher-kinded-j/issues/739) |
 | Optics | With `generateNavigators = true`, a `Map` or other many-valued SPI container of a generic `@GenerateFocus` record, such as `Map<String, Revision<String>> revisions`, used as its old path: to the map, or with `widenCollections = true` over the values chained with `.via(...)` | Its method now returns a navigator over the values, so call its methods, `.revisions().current()`, or list the field in `excludeFields` to keep the path to the map | [#739](https://github.com/higher-kinded-j/higher-kinded-j/issues/739) |
 | Optics | With `generateNavigators = true` and no `widenCollections`, a `Map` or other many-valued SPI container with a wildcard argument, holding a generic `@GenerateFocus` record it instantiates, such as `Map<String, ? extends Revision<String>>` | Name the container's type argument, `Map<String, Revision<String>>`, as a non-generic element already needs | [#739](https://github.com/higher-kinded-j/higher-kinded-j/issues/739) |
