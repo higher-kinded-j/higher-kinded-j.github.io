@@ -604,45 +604,46 @@ Optional<Product> fifth = IxedInstances.get(IxedInstances.listIx(), 4, products)
 
 ## Real-World Example: E-Commerce Pagination
 
-[`PaginationExample`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PaginationExample.java) serves a catalogue of twenty products the way a REST endpoint would: a page at a time, with a hero section at the front and a clearance section at the back. Each product carries a stock count and a badge:
+[`PaginationExample`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/PaginationExample.java) serves a catalogue of twenty products the way a REST endpoint would: a page at a time, with a hero section at the front and a clearance section at the back. Each product carries a stock count, and the listing that shows it on a page carries a badge:
 
 ``` java
-  public record Product(
-      String sku, String name, BigDecimal price, int stock, boolean featured, String badge) {
-    Product withBadge(String newBadge) {
-      return new Product(sku, name, price, stock, featured, newBadge);
-    }
-
+  public record Product(String sku, String name, BigDecimal price, int stock) {
     Product applyDiscount(int percent) {
       BigDecimal factor = BigDecimal.valueOf(100 - percent, 2); // 30 percent off is 0.70
       return new Product(
-          sku,
-          name,
-          price.multiply(factor).setScale(2, RoundingMode.HALF_EVEN),
-          stock,
-          featured,
-          badge);
+          sku, name, price.multiply(factor).setScale(2, RoundingMode.HALF_EVEN), stock);
+    }
+  }
+
+  // How a page of the catalogue shows a product: featured or not, under a badge
+  public record ShopListing(Product product, boolean featured, String badge) {
+    ShopListing withBadge(String newBadge) {
+      return new ShopListing(product, featured, newBadge);
     }
 
-    Product markFeatured() {
-      return new Product(sku, name, price, stock, true, badge);
+    ShopListing applyDiscount(int percent) {
+      return new ShopListing(product.applyDiscount(percent), featured, badge);
+    }
+
+    ShopListing markFeatured() {
+      return new ShopListing(product, true, badge);
     }
   }
 
   public record PageInfo(int pageNumber, int pageSize, int totalItems, int totalPages) {}
 
-  public record PagedResponse(List<Product> items, PageInfo pageInfo) {}
+  public record PagedResponse(List<ShopListing> items, PageInfo pageInfo) {}
 
 ```
 
 Each page is one `slicing` traversal, built from the page number:
 
 ``` java
-  private static PagedResponse getPage(List<Product> catalogue, int pageNumber, int pageSize) {
-    Traversal<List<Product>, Product> pageTraversal =
+  private static PagedResponse getPage(List<ShopListing> catalogue, int pageNumber, int pageSize) {
+    Traversal<List<ShopListing>, ShopListing> pageTraversal =
         ListTraversals.slicing(pageNumber * pageSize, (pageNumber + 1) * pageSize);
 
-    List<Product> items = Traversals.getAll(pageTraversal, catalogue);
+    List<ShopListing> items = Traversals.getAll(pageTraversal, catalogue);
 
     int totalPages = (int) Math.ceil(catalogue.size() / (double) pageSize);
     PageInfo pageInfo = new PageInfo(pageNumber, pageSize, catalogue.size(), totalPages);
@@ -652,42 +653,37 @@ Each page is one `slicing` traversal, built from the page number:
 
 ```
 
-The hero section is the first three products. `taking(3)` marks them as featured, and composed with a price lens it discounts the same three, leaving every other price as it was:
+The hero section is the first three products. `taking(3)` marks them as featured and, composed with lenses through each listing's product to its price, discounts the same three, leaving every other price as it was:
 
 ``` java
-  private static void demonstrateFeaturedProducts(List<Product> catalogue) {
+  private static void demonstrateFeaturedProducts(List<ShopListing> catalogue) {
     System.out.println("--- Scenario 2: Featured Products (Hero Section) ---");
 
     // First 3 products are featured on the hero section
-    Traversal<List<Product>, Product> heroProducts = ListTraversals.taking(3);
+    Traversal<List<ShopListing>, ShopListing> heroProducts = ListTraversals.taking(3);
 
     // Mark them as featured and add "HOT" badge
-    List<Product> withHeroSection =
-        Traversals.modify(heroProducts, p -> p.markFeatured().withBadge("HOT"), catalogue);
+    List<ShopListing> withHeroSection =
+        Traversals.modify(heroProducts, l -> l.markFeatured().withBadge("HOT"), catalogue);
 
     System.out.println("Hero section products:");
     Traversals.getAll(heroProducts, withHeroSection)
         .forEach(
-            p ->
+            l ->
                 System.out.printf(
-                    "  ⭐ %s [%s] - Featured: %s%n", p.name(), p.badge(), p.featured()));
+                    "  ⭐ %s [%s] - Featured: %s%n", l.product().name(), l.badge(), l.featured()));
 
-    // Apply special 15% discount to hero products
+    // Apply special 15% discount to hero products, through each listing's product
+    Lens<ShopListing, Product> productLens =
+        Lens.of(ShopListing::product, (l, p) -> new ShopListing(p, l.featured(), l.badge()));
     Lens<Product, BigDecimal> priceLens =
         Lens.of(
-            Product::price,
-            (prod, newPrice) ->
-                new Product(
-                    prod.sku(),
-                    prod.name(),
-                    newPrice,
-                    prod.stock(),
-                    prod.featured(),
-                    prod.badge()));
+            Product::price, (p, newPrice) -> new Product(p.sku(), p.name(), newPrice, p.stock()));
 
-    Traversal<List<Product>, BigDecimal> heroPrices = heroProducts.andThen(priceLens);
+    Traversal<List<ShopListing>, BigDecimal> heroPrices =
+        heroProducts.andThen(productLens).andThen(priceLens);
 
-    List<Product> discountedHero =
+    List<ShopListing> discountedHero =
         Traversals.modify(
             heroPrices,
             price -> price.multiply(new BigDecimal("0.85")).setScale(2, RoundingMode.HALF_EVEN),
@@ -695,8 +691,8 @@ The hero section is the first three products. `taking(3)` marks them as featured
 
     System.out.println("\nAfter 15% hero discount:");
     for (int i = 0; i < 5; i++) {
-      Product original = catalogue.get(i);
-      Product discounted = discountedHero.get(i);
+      Product original = catalogue.get(i).product();
+      Product discounted = discountedHero.get(i).product();
       String marker = i < 3 ? "★" : " ";
       System.out.printf(
           "  %s %s: £%.2f → £%.2f%n",
@@ -710,28 +706,32 @@ The hero section is the first three products. `taking(3)` marks them as featured
 The clearance section is the last four. `takingLast(4)` discounts them, and `droppingLast(4)` counts the regular products that are left:
 
 ``` java
-  private static void demonstrateClearanceSection(List<Product> catalogue) {
+  private static void demonstrateClearanceSection(List<ShopListing> catalogue) {
     System.out.println("--- Scenario 3: Clearance Section ---");
 
     // Last 4 products are clearance items
-    Traversal<List<Product>, Product> clearanceItems = ListTraversals.takingLast(4);
+    Traversal<List<ShopListing>, ShopListing> clearanceItems = ListTraversals.takingLast(4);
 
     System.out.println("Clearance items (last 4):");
-    List<Product> clearance = Traversals.getAll(clearanceItems, catalogue);
-    clearance.forEach(p -> System.out.printf("  🏷️ %s - £%.2f%n", p.name(), p.price()));
+    List<ShopListing> clearance = Traversals.getAll(clearanceItems, catalogue);
+    clearance.forEach(
+        l -> System.out.printf("  🏷️ %s - £%.2f%n", l.product().name(), l.product().price()));
 
     // Apply 30% clearance discount
-    List<Product> withClearance =
+    List<ShopListing> withClearance =
         Traversals.modify(
-            clearanceItems, p -> p.applyDiscount(30).withBadge("CLEARANCE"), catalogue);
+            clearanceItems, l -> l.applyDiscount(30).withBadge("CLEARANCE"), catalogue);
 
     System.out.println("\nAfter 30% clearance discount:");
     Traversals.getAll(clearanceItems, withClearance)
-        .forEach(p -> System.out.printf("  🏷️ %s [%s] - £%.2f%n", p.name(), p.badge(), p.price()));
+        .forEach(
+            l ->
+                System.out.printf(
+                    "  🏷️ %s [%s] - £%.2f%n", l.product().name(), l.badge(), l.product().price()));
 
     // Regular items (all except clearance)
-    Traversal<List<Product>, Product> regularItems = ListTraversals.droppingLast(4);
-    List<Product> regular = Traversals.getAll(regularItems, catalogue);
+    Traversal<List<ShopListing>, ShopListing> regularItems = ListTraversals.droppingLast(4);
+    List<ShopListing> regular = Traversals.getAll(regularItems, catalogue);
     System.out.println("\nRegular items (excluding clearance): " + regular.size() + " products");
 
     System.out.println();

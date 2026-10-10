@@ -507,15 +507,15 @@ Here it sorts the prices of a spring catalogue whose six products sit in two cat
                 new Category(
                     "Electronics",
                     List.of(
-                        new Product("Laptop", new BigDecimal("999.99"), "computers", 3),
-                        new Product("Tablet", new BigDecimal("499.99"), "computers", 8),
-                        new Product("Phone", new BigDecimal("799.99"), "phones", 5))),
+                        new Product("LAPTOP", "Laptop", new BigDecimal("999.99"), 3),
+                        new Product("TABLET", "Tablet", new BigDecimal("499.99"), 8),
+                        new Product("PHONE", "Phone", new BigDecimal("799.99"), 5))),
                 new Category(
                     "Accessories",
                     List.of(
-                        new Product("Case", new BigDecimal("29.99"), "phones", 40),
-                        new Product("Charger", new BigDecimal("49.99"), "phones", 25),
-                        new Product("Cable", new BigDecimal("19.99"), "computers", 60)))));
+                        new Product("CASE", "Case", new BigDecimal("29.99"), 40),
+                        new Product("CHARGER", "Charger", new BigDecimal("49.99"), 25),
+                        new Product("CABLE", "Cable", new BigDecimal("19.99"), 60)))));
 
     // Convert traversal to a lens on the list of all prices
     Lens<Catalogue, List<BigDecimal>> pricesLens = Traversals.partsOf(allPrices);
@@ -589,11 +589,12 @@ Project reversedProject = Traversals.reversed(priorityTraversal, project);
 
 <!-- verify -->
 ```java
-Traversal<List<Product>, String> tagTraversal =
-    Traversals.<Product>forList().andThen(ProductLenses.tag());
+Traversal<List<Product>, String> nameTraversal =
+    Traversals.<Product>forList().andThen(ProductLenses.name());
 
-// Remove duplicate tags (preserves first occurrence)
-List<Product> deduplicatedProducts = Traversals.distinct(tagTraversal, products);
+// Keeps every product: the distinct names, in first-seen order, are written back
+// over the first products, and the products after them keep their own names
+List<Product> distinctNamesFirst = Traversals.distinct(nameTraversal, products);
 ```
 
 ### Understanding Size Mismatch Behaviour
@@ -655,7 +656,7 @@ Filtered optics are covered properly in [Filtered Optics](filtered_optics.md); h
 // Sort only in-stock product prices
 Traversal<List<Product>, BigDecimal> inStockPrices =
     Traversals.<Product>forList()
-        .filtered(p -> p.stockLevel() > 0)
+        .filtered(p -> p.stock() > 0)
         .andThen(ProductLenses.price());
 
 List<Product> result = Traversals.sorted(inStockPrices, products);
@@ -684,9 +685,9 @@ prices.removeIf(p -> p.compareTo(BigDecimal.TEN) < 0); // Filter (with caveats)
 ```java
 // Expecting distinct to reduce structure size
 List<Product> products = List.of(
-    new Product("Widget", new BigDecimal("25.99"), "tools", 5),
-    new Product("Gadget", new BigDecimal("49.99"), "tools", 3),
-    new Product("Widget", new BigDecimal("30.00"), "toys", 1)  // Duplicate name
+    new Product("WIDGET", "Widget", new BigDecimal("25.99"), 5),
+    new Product("GADGET", "Gadget", new BigDecimal("49.99"), 3),
+    new Product("WIDGET-XL", "Widget", new BigDecimal("30.00"), 1)  // Duplicate name
 );
 
 // This doesn't remove the third product!
