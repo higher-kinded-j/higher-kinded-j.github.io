@@ -5526,7 +5526,7 @@ on Focus paths.
 
 ### FocusPath Bridge Methods
 
-`FocusPath` always has one focus, so these methods produce a success, except that `toMaybePath` gives `Nothing` for a null focus:
+`FocusPath` always has one focus, so these methods produce a success. For a null focus, `toMaybePath` gives `Nothing`, and the one-argument `toEitherPath` and `toTryPath` throw, since a `Right` or `Success` always holds a value:
 
 <!-- verify -->
 ```java
@@ -5588,10 +5588,10 @@ MaybePath<User> firstEmployee = employeesPath.toMaybePath(company);
 | Path Type | Method | Result |
 |-----------|--------|--------|
 | `FocusPath<S, A>` | `toMaybePath(S)` | `Just(a)`, or `Nothing` for a null focus |
-| `FocusPath<S, A>` | `toEitherPath(S)` | Always `Right(a)` |
+| `FocusPath<S, A>` | `toEitherPath(S)` | `Right(a)`; throws for a null focus |
 | `FocusPath<S, A>` | `toEitherPath(S, E)` | `Right(a)`, or `Left(e)` for a null focus |
 | `FocusPath<S, A>` | `toEitherPath(S, Supplier)` | `Right(a)`, or `Left(e)` built only for a null focus |
-| `FocusPath<S, A>` | `toTryPath(S)` | Always `Success(a)` |
+| `FocusPath<S, A>` | `toTryPath(S)` | `Success(a)`; throws for a null focus |
 | `FocusPath<S, A>` | `toTryPath(S, Supplier)` | `Success(a)`, or `Failure` for a null focus |
 | `FocusPath<S, A>` | `toIdPath(S)` | Always `Id(a)` |
 | `AffinePath<S, A>` | `toMaybePath(S)` | `Just(a)` or `Nothing` |
@@ -6088,7 +6088,7 @@ EitherPath<DirectoryError, Department> lifted =
 ~~~admonish info title="Key Takeaways"
 * **Effects and optics solve different problems.** Effects handle "what might go wrong" (absence, failure, validation). Optics handle "where is the data" (nested fields, optional values). Together, they cover both dimensions in a single pipeline.
 * **`focus()` with `AffinePath` requires an error.** When the optic might not find a value (optional fields, sum type variants), you must supply the error that goes on the failure track. This makes the absent case explicit rather than hidden.
-* **`focus()` with `FocusPath` always succeeds.** When the field is guaranteed to exist (a required record component), no error is needed. The type system enforces this distinction.
+* **`focus()` with `FocusPath` succeeds for a focus that is never null.** When the field is guaranteed to exist (a required record component), no error is needed. The type system enforces this distinction.
 * **The before/after difference is structural, not cosmetic.** The imperative version mixes searching, checking, validating, and rebuilding in one block. The HKJ version gives each concern its own pipeline step, connected by the railway's automatic error propagation.
 ~~~
 
@@ -8056,8 +8056,8 @@ FreePath<ConsoleOp.Witness, String> ask(String prompt) {
     return Path.freeLift(new Ask<>(prompt, Function.identity()), consoleFunctor);
 }
 
-FreePath<ConsoleOp.Witness, Void> tell(String message) {
-    return Path.freeLift(new Tell<>(message, null), consoleFunctor);
+FreePath<ConsoleOp.Witness, Unit> tell(String message) {
+    return Path.freeLift(new Tell<>(message, Unit.INSTANCE), consoleFunctor);
 }
 ```
 
@@ -12966,11 +12966,11 @@ VTask<Report> generateFinancialReport(ReportRequest request) {
 }
 
 // Pattern: Guard with detailed error
-VTask<Void> deleteUser(String userId) {
+VTask<Unit> deleteUser(String userId) {
     return SecurityContext.requireRole("ADMIN")
         .mapError(e -> new ForbiddenException(
             "Cannot delete user: " + e.getMessage()))
-        .flatMap(_ -> Context.<Set<String>, Void>succeed(userService.delete(userId)))
+        .flatMap(_ -> Context.<Set<String>, Unit>succeed(userService.delete(userId)))
         .toVTask();
 }
 
@@ -13019,14 +13019,14 @@ VTask<Document> readDocument(String documentId) {
         .toVTask();
 }
 
-VTask<Void> updateDocument(String documentId, DocumentUpdate update) {
+VTask<Unit> updateDocument(String documentId, DocumentUpdate update) {
     return SecurityContext.requirePermission("document:write")
         .flatMap(_ ->
-            Context.<Set<String>, Void>succeed(documentService.update(documentId, update)))
+            Context.<Set<String>, Unit>succeed(documentService.update(documentId, update)))
         .toVTask();
 }
 
-public VTask<Void> deleteDocument(String documentId) {
+public VTask<Unit> deleteDocument(String documentId) {
     return SecurityContext.requirePermission("document:delete")
         .flatMap(_ -> Context.succeed(documentService.delete(documentId)))
         .toVTask();
@@ -16410,7 +16410,7 @@ try {
 
 If all compensations succeed, the original exception is thrown directly. If any compensation also fails, a `SagaExecutionException` is thrown containing the full `SagaError`.
 
-The saga's own `runSafe()` (distinct from `VTask.runSafe()`, which returns a `Try`) keeps the failure structured instead of thrown:
+The saga's own `runSafe()` (distinct from `VTask.runSafe()`, which returns a `Try`) keeps the failure structured instead of thrown. A `Right` always holds a value, so return `Unit` from a saga with nothing to return: a null result is compensated like a failed step.
 
 ### runSafe(): Either with Full Details
 
@@ -36339,7 +36339,7 @@ flowchart TD
 
 ### Direction 1: Focus Path to Effect Path
 
-Extract a value with optics and continue in an effect pipeline. A `FocusPath` always has one focus, so its one-argument `toEitherPath`, `toTryPath` and `toIdPath` always succeed, and `toMaybePath` gives `Just` unless that focus is null. An `AffinePath` may be empty, so its bridges take the value to use when it is:
+Extract a value with optics and continue in an effect pipeline. A `FocusPath` always has one focus. Its one-argument `toEitherPath` and `toTryPath` give a `Right` or `Success` for a focus that is not null, `toIdPath` holds the focus whatever it is, and `toMaybePath` gives `Just` unless it is null. An `AffinePath` may be empty, so its bridges take the value to use when it is:
 
 <!-- verify -->
 ```java
@@ -36358,10 +36358,10 @@ EitherPath<String, String> nickname =
 | Method | Return Type | Description |
 |--------|-------------|-------------|
 | `toMaybePath(S)` | `MaybePath<A>` | `Just(value)`, or `Nothing` for a null focus |
-| `toEitherPath(S)` | `EitherPath<E, A>` | Always `Right(value)` |
+| `toEitherPath(S)` | `EitherPath<E, A>` | `Right(value)`; throws for a null focus |
 | `toEitherPath(S, E)` | `EitherPath<E, A>` | `Right(value)`, or `Left(error)` for a null focus |
 | `toEitherPath(S, Supplier<E>)` | `EitherPath<E, A>` | `Right(value)`, or `Left(error)` built only for a null focus |
-| `toTryPath(S)` | `TryPath<A>` | Always `Success(value)` |
+| `toTryPath(S)` | `TryPath<A>` | `Success(value)`; throws for a null focus |
 | `toTryPath(S, Supplier<Throwable>)` | `TryPath<A>` | `Success(value)`, or `Failure` for a null focus |
 | `toIdPath(S)` | `IdPath<A>` | Trivial effect wrapper |
 
@@ -36400,7 +36400,7 @@ EitherPath<String, String> nickname =
 
 `find(Objects::nonNull, source)` gives the first focus that is not null, and `getAll` keeps every focus, where position matters.
 
-The one-argument `toEitherPath`, `toTryPath` and `toIdPath` hold the focus as it is. Under a nullness checker such as NullAway, their result type cannot be written for a nullable focus, though `var` hides that. For a focus that may be null, use the forms that take an error, or `toMaybePath`.
+The one-argument `toEitherPath` and `toTryPath` take only a focus that is not null. A `Right` or `Success` always holds a value, so a null focus throws `NullPointerException`, and the message names the form to use instead. Under a nullness checker such as NullAway, their result type cannot be written for a nullable focus, though `var` hides that. For a focus that may be null, use the forms that take an error, or `toMaybePath`.
 
 <!-- verify -->
 ```java
@@ -36444,7 +36444,7 @@ EitherPath<String, String> firstNickname =
 
 `IdPath` is the one row that changes effect: `Id` has nowhere to record an absent focus, so focusing an `AffinePath` through one hands back a `MaybePath`.
 
-A `FocusPath` whose focus may be null reads the null as absent in the `MaybePath` and `OptionalPath` rows. The other rows take only a non-null focus: most hold a null as it is, and `ValidationPath` throws on one. Pass `path.nullable()` to the `AffinePath` column instead, which reads a null focus as absent in every row.
+A `FocusPath` whose focus may be null reads the null as absent in the `MaybePath` and `OptionalPath` rows. The other rows take only a non-null focus: `EitherPath` and `ValidationPath` throw on a null, `TryPath` gives a `Failure`, and `IOPath` and `IdPath` hold it as it is. Pass `path.nullable()` to the `AffinePath` column instead, which reads a null focus as absent in every row.
 
 ### Which Direction?
 
@@ -37714,7 +37714,7 @@ Use for **atomic updates** where all modifications must succeed or none should a
 
 #### `modifyAllEither`: First Error Only
 
-Returns `Either.right(updated)` if **all** validations pass, `Either.left(firstError)` if **any** fail. The result keeps only the first error; the traversal still visits every element.
+Returns `Either.right(updated)` if **all** validations pass, `Either.left(firstError)` if **any** fail. The result keeps only the first error; the traversal still visits every element. An element the traversal passes over, such as a null one that `filtered` or a prism leaves out, stays as it is, though a `Right` could not hold it. The same holds for `modifyAllValidated` and `modifyAllMaybe`.
 
 ``` java
     List<LineItem> withRefunds =
@@ -68102,10 +68102,11 @@ Kind<EitherKind.Witness<String>, Config> config =
         Config.defaults());
 ```
 
-Two things to know:
+Three things to know:
 
 - **`recoverWith` takes a value, not a lambda, so its fallback is evaluated eagerly**, even when `ma` succeeds. Reach for it only when the fallback is already built or cheap; if producing it is expensive or effectful-on-demand (like `loadConfigFromEnv()` above), keep `handleErrorWith` so it runs only on the failure path.
-- **The two methods guard different arguments.** `recoverWith` rejects a `null` *fallback* (and a `null` source) eagerly on every `MonadError` instance. A mistyped fallback fails fast at the call site instead of surfacing later from inside `handleErrorWith`. `recover` rejects a `null` *source*, but its *value* is `@Nullable` **by design**: a null value is lifted through `of`, so `recover(failure, null)` is a valid result (`Success(null)`, `Nothing`, or empty, depending on the type), not an error. (One wrinkle: `Validated` overrides `recoverWith` but not `recover`, because `Validated.of` rejects null; a null source to `Validated.recover` still fails fast, just with a message naming the underlying `handleErrorWith`.)
+- **The two methods guard different arguments.** `recoverWith` rejects a `null` *fallback* (and a `null` source) eagerly on every `MonadError` instance. A mistyped fallback fails fast at the call site instead of surfacing later from inside `handleErrorWith`.
+- **`recover` rejects a `null` *source*, and `of` decides what a null *value* means.** `Maybe` and `Optional` lift it to `Nothing` or empty, and `CompletableFuture` and `VTask` hold it. `Either`, `Try` and `EitherT` refuse it at the call, since a success always holds a value. `Validated` refuses it only when `ma` is invalid, and names `handleErrorWith` for a null source.
 
 ---
 
@@ -73019,13 +73020,11 @@ Once we are on the left rail, every downstream `map` and `flatMap` is a no-op. T
 Either<String, Integer> success = Either.right(123);
 Either<String, Integer> failure = Either.left("File not found");
 
-// Null is permitted on either side; the type does not police absence,
-// it only models the success/alternative split.
-Either<String, Integer> rightNull = Either.right(null);
-Either<String, Integer> leftNull  = Either.left(null);
+// A step that succeeds with nothing to return
+Either<String, Unit> saved = Either.right(Unit.INSTANCE);
 ```
 
-If null-safety on the success side matters, lift through [`Maybe`](./maybe_monad.md) first or convert with `Maybe::toEither`.
+A `Right` always holds a value, so `Either.right(null)` throws `NullPointerException`, and so does a `map` whose function returns null. A step with nothing to return gives `Unit.INSTANCE`. For a value that may be missing, lift through [`Maybe`](./maybe_monad.md) first or convert with `Maybe::toEither`, so the `Left` says why it is missing.
 
 ---
 
@@ -79201,12 +79200,12 @@ You can create `Try` instances in several ways:
    // Failure(ClassNotFoundException)
    ```
 
-3. **`Try.success(value)`:** Directly creates a `Success` instance holding the given value (which can be null).
+3. **`Try.success(value)`:** Directly creates a `Success` instance holding the given value. A `Success` always holds a value, so `Try.success(null)` throws `NullPointerException`. A supplier, mapper or recovery function that returns null gives a `Failure` holding a `NullPointerException`.
 
    <!-- verify -->
    ```java
    Try<String> directSuccess = Try.success("Known value");
-   Try<String> successNull = Try.success(null);
+   Try<String> nothingBack = Try.of(() -> null);   // Failure(NullPointerException)
    ```
 4. **`Try.failure(throwable)`:** Directly creates a `Failure` instance holding the given non-null `Throwable`.
 
@@ -81086,10 +81085,10 @@ Resource<Connection> connResource = Resource.make(
 });
 
 VTask<OrderResult> processOrder = connResource.use(conn ->
-    Scope.<Void>allSucceed()
-        .fork(VTask.of(() -> { updateInventory(conn, order); return null; }))
-        .fork(VTask.of(() -> { chargePayment(conn, order); return null; }))
-        .fork(VTask.of(() -> { sendNotification(conn, order); return null; }))
+    Scope.<Unit>allSucceed()
+        .fork(VTask.exec(() -> updateInventory(conn, order)))
+        .fork(VTask.exec(() -> chargePayment(conn, order)))
+        .fork(VTask.exec(() -> sendNotification(conn, order)))
         .join()
         .flatMap(_ -> VTask.of(() -> {
             conn.commit();
@@ -95074,7 +95073,7 @@ Three recipe groups are shipped; each one has a composite that runs every recipe
 |-------|-----------|------|
 | Arity migration (0.2.x to 0.3.0) | `org.higherkindedj.openrewrite.AddArityBounds` | rewrites source |
 | Effect algebra helpers | `org.higherkindedj.openrewrite.EffectAlgebraMigration` | detection only |
-| 0.5.0 deprecations | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | rewrites source |
+| 0.5.0 deprecations | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | rewrites source, and marks null successes |
 
 ### Arity migration (0.2.x to 0.3.0)
 
@@ -95126,19 +95125,20 @@ Review the matches with `./gradlew rewriteDryRun` (Gradle) or `mvn rewrite:dryRu
 
 ### 0.5.0 deprecation migration
 
-Rewrites call sites of APIs deprecated for removal in 0.5.0 to their replacements, removes a deprecated annotation that has no effect, and replaces two deprecated `@PathSource` capabilities with the levels they generate. It also drops the `Monad` argument that `StateT` no longer takes. These recipes do rewrite source.
+Rewrites call sites of APIs deprecated for removal in 0.5.0 to their replacements, removes a deprecated annotation that has no effect, and replaces two deprecated `@PathSource` capabilities with the levels they generate. It also drops the `Monad` argument that `StateT` no longer takes. These recipes rewrite source, apart from `DetectNullSuccessValuesRecipe`, which only marks each null success that 0.5.0 refuses, for you to change by hand. `rewriteRun` writes each mark into the source as a `/*~~(…)~~>*/` comment; remove it once the site is fixed.
 
 Run them before your build moves to 0.5.0, with `hkj-openrewrite` 0.5.0 on the rewrite classpath. The recipes match the 0.4.x signatures, and the `StateT` calls they rewrite compile only against 0.5.0, so bump the library straight after. A `StateT` held in `var` over a witness with a type argument may then need its types named, as [Removals in 0.5.0](../release-history/upgrading.md#removals-in-050) shows.
 
 | Recipe | Change |
 |--------|--------|
-| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | Composite; runs all six recipes below |
+| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | Composite; runs all seven recipes below |
 | `org.higherkindedj.openrewrite.RenameStateTKindNarrowK` | `StateTKind.narrowK(..)` becomes `StateTKind.narrow(..)`; the wildcard `Kind` overload bypassed witness type safety |
 | `org.higherkindedj.openrewrite.RenameKindValidatorNarrowWithPattern` | `KindValidator.narrowWithPattern(..)` becomes `KindValidator.narrowHolder(..)` |
 | `org.higherkindedj.openrewrite.SwapTryFoldToFoldFailureFirstRecipe` | `Try.fold(successMapper, failureMapper)` and `TryPath.fold(...)` become `foldFailureFirst(failureMapper, successMapper)`, swapping the two arguments as well as renaming the method |
 | `org.higherkindedj.openrewrite.RemovePathConfig` | Removes `@PathConfig` from a `package-info.java`; no processor reads it, so nothing generated changes |
 | `org.higherkindedj.openrewrite.ReplaceDeprecatedPathSourceCapabilitiesRecipe` | `@PathSource`'s `EFFECTFUL` becomes `CHAINABLE` and `ACCUMULATING` becomes `RECOVERABLE`; each generates the same class as its replacement |
 | `org.higherkindedj.openrewrite.RemoveStateTMonadArgument` | `new StateT<>(fn, monad)`, `StateT.create(fn, monad)` and `StateTKindHelper.stateT(fn, monad)` take the function alone, and `stateT.mapT(monad, f)` becomes `stateT.mapT(f)` |
+| `org.higherkindedj.openrewrite.DetectNullSuccessValuesRecipe` | Marks a `null` passed to a success factory: `Either.right`, `Try.success`, `Path.right`, `Path.success`, `Path.vresultRight`, `VResultPath.pure`, `TryKindHelper.success`, `EitherT.right` or `ErrorContext.success`. Also marks a `Try.of`, `Try.attempt`, `Path.tryOf` or `TryKindHelper.tryOf` lambda that returns `null`. And it marks `Void` as the success type of an `Either`, `Try`, `EitherT`, `EitherPath`, `TryPath`, `VResultPath` or `ErrorContext`, or as the result of a `VTask`, `VTaskPath`, `IO`, `IOPath`, `FreePath`, `CompletableFuturePath` or `Saga`. Replace each with `Unit`, or with a `Maybe` where a value may be missing |
 
 ```kotlin
 rewrite {
@@ -95149,7 +95149,7 @@ rewrite {
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **Three groups, three modes.** Arity migration and 0.5.0 deprecations rewrite source; the effect algebra helpers only flag call sites because their targets are user-specific generated code.
+* **Three groups, three modes.** Arity migration and 0.5.0 deprecations rewrite source, apart from the null-success marks; the effect algebra helpers only flag call sites because their targets are user-specific generated code.
 * **Always dry-run first.** `rewriteDryRun` (Gradle) or `mvn rewrite:dryRun` (Maven) shows the diff; `rewriteRun` applies it.
 * **Use the composite recipe.** Activating one of the three composites runs the whole group and avoids ordering mistakes; the individual recipes are there when you need finer control.
 * **Recipe coverage tracks the library.** The same migrations also surface as compile-time checks in `hkj-checker`; pick whichever feedback loop fits the team.
@@ -97480,15 +97480,15 @@ public class OrderController {
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public MaybePath<Void> cancel(@PathVariable String id) {
+    public MaybePath<Unit> cancel(@PathVariable String id) {
         return orderService.cancel(id);
-        // Just(_)   → HTTP 204 No Content (body suppressed)
+        // Just(Unit) → HTTP 204 No Content (body suppressed)
         // Nothing() → HTTP 404
     }
 }
 ```
 
-All ten Effect Path handlers honour `@ResponseStatus` consistently.
+All ten Effect Path handlers honour `@ResponseStatus` consistently. A success holding `Unit`, or a null from a lazy Path such as an `IOPath`, writes no body, at whatever status applies, as a `void` controller method does.
 
 ### Error Status Mapping
 
@@ -97733,9 +97733,9 @@ public class UserController {
 
     // Delete user (may not exist)
     @DeleteMapping("/{id}")
-    public Either<DomainError, Void> deleteUser(@PathVariable String id) {
+    public Either<DomainError, Unit> deleteUser(@PathVariable String id) {
         return userService.delete(id);
-        // Right(null) → 200 OK
+        // Right(Unit) → 200 OK, no body
         // Left(UserNotFoundError) → 404 Not Found
     }
 
@@ -98523,13 +98523,14 @@ For an interface `UserClientApi`, the annotation processor generates three sibli
 - **`UserClientApiClientConfiguration`** : a `@Configuration` that registers the native interface as an `@ImportHttpServices` group and exposes the client as a bean.
 ~~~
 
-Every supported return type maps to the same native method shape, `ResponseEntity<T>`, where `T` is the Path's success type:
+Every supported return type maps to the same native method shape, `ResponseEntity<T>`, where `T` is the Path's success type. The one exception is `Unit`, which says the endpoint sends no body:
 
 | Your method returns | Generated native method |
 |---|---|
 | `EitherPath<E, T>` | `ResponseEntity<T>` |
 | `VTaskPath<Either<E, T>>` | `ResponseEntity<T>` |
 | `MaybePath<T>` | `ResponseEntity<T>` |
+| `EitherPath<E, Unit>`, `VTaskPath<Either<E, Unit>>` or `MaybePath<Unit>` | `ResponseEntity<Void>` |
 
 You never reference the generated names. You autowire your own interface.
 
@@ -98544,9 +98545,12 @@ Each method picks how the call is run and what shape the result takes. (`Right`/
 | `EitherPath<E, T>` | Eager, blocks the calling thread | `Right(body)` | `Left(decoded error)` | A straightforward request/response call |
 | `VTaskPath<Either<E, T>>` | Deferred onto a virtual thread | `Right(body)` | `Left(decoded error)` | You want retries, a circuit breaker, a timeout, or a `Retry-After` hook |
 | `MaybePath<T>` | Eager, blocks the calling thread | `Just(body)` | 404 → `Nothing` | Absence is normal and untyped (a lookup that may miss) |
+| `EitherPath<E, Unit>` | Eager, blocks the calling thread | `Right(Unit.INSTANCE)`, body ignored | `Left(decoded error)` | The endpoint sends no body, such as a `DELETE` answered with 204 |
+| `VTaskPath<Either<E, Unit>>` | Deferred onto a virtual thread | `Right(Unit.INSTANCE)`, body ignored | `Left(decoded error)` | As above, with retries or a timeout |
+| `MaybePath<Unit>` | Eager, blocks the calling thread | `Just(Unit.INSTANCE)`, body ignored | 404 → `Nothing` | The endpoint sends no body and may answer 404 |
 
 ~~~admonish note title="Semantics worth pinning"
-- **Empty 2xx body.** `EitherPath`/`VTaskPath` yield `Right(null)`; `MaybePath` yields `Nothing`. If an endpoint may legitimately return no body, declare `T` accordingly or guard the success value.
+- **Empty 2xx body.** A `Right` always holds a value, so `EitherPath` throws an `EmptyResponseBodyException` for an empty body, and `VTaskPath` fails its task with one. The request has been made by then, so exclude that type from a retry policy. `MaybePath` yields `Nothing`. For an endpoint that sends no body, declare `Unit`; `Void` is refused when the client is generated.
 - **`MaybePath` only treats 404 as absence.** Other non-2xx statuses propagate as the original exception. `MaybePath` models "might be missing", not "might fail".
 - **Thread-safety.** The generated client is a stateless singleton, safe for concurrent use; the eager variants block the caller, the deferred `VTaskPath` runs on a virtual thread when the task is run.
 ~~~
@@ -103767,6 +103771,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **Optics over a nullable field pass a nullness checker**: every optic and Focus path type takes a `@Nullable` focus, as does each bridge into an Effect Path that says what a null focus becomes.
 - **`@PathSource` has a page of its own**, beside `GenericPath` in the Effect Path chapter.
 - **`StateT` is built from its state function alone**, and `mapT` takes only the transformation, as on every other transformer.
+- **A `Right` or a `Success` always holds a value**: `Either`, `Try` and their Paths refuse null as a success, as `Validated` and `EitherOrBoth` do, and `Unit` stands for a step with nothing to return.
 ~~~
 
 ---
@@ -103792,6 +103797,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A prism onto an inner class of a generic class compiles under `-Werror`** ([#886](https://github.com/higher-kinded-j/higher-kinded-j/issues/886)): a `Circle` declared inside `class Shapes<X>` gets `Prism<Shape, Shapes<?>.Circle>`, from `@GeneratePrisms`, `@ImportOptics` and an `@InstanceOf` spec method. A generic inner class gets a prism too, where `@InstanceOf` refused one. See [Generating the Prisms](../optics/prisms.md#step-1-generating-the-prisms) and [Parameterised Targets](../optics/optics_spec_interfaces.md#parameterised-targets).
 - **A method named after a Java keyword takes a trailing underscore** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). An enum constant such as `NEW` or `TRUE`, a sealed subtype named `Default`, an `@EffectAlgebra` permit named `Throw`, or an imported `withDefault` crashed the processor. Their methods are now `new_()`, `true_()`, `default_()` and `throw_()`, and so are `@GenerateErrorEnvelope` factories. See [Prisms](../optics/prisms.md).
 - **`.each()` on a `List` path takes time in proportion to the list** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)). A Focus path's `.each()`, which every generated `List` path uses, now rebuilds the list once instead of copying it at every element. On 100,000 elements that took several seconds, and now takes about a millisecond. `EachInstances.arrayEach()` rebuilds an array the same way. See [Traversal allocation](../optics/production_readiness.md#traversal-allocation).
+- **`modifyAllEither`, `modifyAllValidated` and `modifyAllMaybe` keep a null element their traversal passes over** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): over `filtered` or a prism that leaves a null element alone, `modifyAllValidated` threw and `modifyAllMaybe` gave `Nothing`. Each now keeps the null, and still rebuilds nothing once a step fails. So do `OpticOps`' validating modifiers. See [`modifyAllEither`: First Error Only](../optics/optics_extensions.md#modifyalleither-first-error-only).
 
 ---
 
@@ -103806,6 +103812,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `bracketOutcome` release can block after a cancelled use** ([#1057](https://github.com/higher-kinded-j/higher-kinded-j/issues/1057)): `VResultPath.bracketOutcome` runs its release with the interrupt status cleared, then restores it. A release that blocks, such as a refund call, used to fail at once with an `InterruptedException` when the thread was still interrupted after a cancelled use, so its compensation never happened. See [Outcome-Aware Compensation with bracketOutcome](../hkts/order-concurrency.md#outcome-aware-compensation-with-bracketoutcome).
 - **`VStreamReactive` passes cancellation across the bridge** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): a `toPublisher` subscription closes the rest of its stream when it cancels or the stream fails, once it has requested elements. Closing a `fromPublisher` stream cancels its subscription, so `take(n)` stops the publisher. See [Reactive Interop: Flow.Publisher Bridge](../monads/vstream_advanced.md#reactive-interop-flowpublisher-bridge).
 - **A `Scope` can run again, be retried, or run on several threads** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): each run of the `VTask` from `join()` opens its own `StructuredTaskScope` with a new `Joiner`. A second run used to see the first run's results, and a retry kept failing with the first attempt's error. `VResultPath.allSucceed`, `allSucceedAccumulating` and `firstSuccess` are fixed too. See [Running a Scope Again](../monads/vtask_scope.md#running-a-scope-again).
+- **A `Right` or a `Success` always holds a value** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `Either.right`, `Try.success`, their Path, `EitherT` and `ErrorContext` factories, and `of` on their monads, refuse null, as `Validated` and `EitherOrBoth` already did. A step that succeeds with nothing to return gives `Unit.INSTANCE`, as `VTask.exec`, `Path.vtaskExec` and `Path.ioRunnable` already do. See [Creating Instances](../monads/either_monad.md#creating-instances).
 
 ---
 
@@ -103813,6 +103820,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 - **A streamed `VStreamPath` response closes its stream when it stops** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): a client disconnect, a timeout or a serialisation failure now runs the stream's finalisers. See [VStreamPath: SSE Streaming on Virtual Threads](../spring/spring_boot_integration.md#vstreampath-sse-streaming).
 - **An SSE stream from a declarative HTTP client closes when you stop early** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): `headOption()`, `find(...)` or `take(n)` on a stream from `HkjClientExchange.vstream` now closes the response. There is no need to drain it first. See [Streaming with `VStreamPath`](../spring/declarative_http_clients.md#streaming-with-vstreampath).
+- **An endpoint that sends no body is declared `Unit`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): a declarative client method returning `EitherPath<E, Unit>`, `VTaskPath<Either<E, Unit>>` or `MaybePath<Unit>` ignores the body. A controller's `Unit` success, or a null from a lazy Path, writes no body from every handler that writes one value. See [Choosing a Return Type](../spring/declarative_http_clients.md#choosing-a-return-type).
 
 ---
 
@@ -103827,6 +103835,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`MigrateDeprecationsTo0_5_0` drops the `Monad` that `StateT` no longer takes** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): its new `RemoveStateTMonadArgument` recipe rewrites the constructor, `create`, `stateT` and `mapT` calls. Run it from `hkj-openrewrite` 0.5.0 while the project is on 0.4.11, since it matches the 0.4.x signatures. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
 - **A generator extending the built-in `Optional`, `Maybe`, `List`, `Set` or `Collection` generator inherits no optic expression** ([#757](https://github.com/higher-kinded-j/higher-kinded-j/issues/757)): `@GenerateFocus` recognises those types by name and never asks a generator. So `generateOpticExpression()` and `getRequiredImports()` on them return the defaults, an empty string and an empty set. See [Registering your own container type](../optics/focus_containers.md#the-fine-print-registering-your-own-container-type).
 - **The `state-t-mapt-arity` check is retired** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): every `mapT` now takes the function alone, so there is no missing argument to report. A `disable=` or `severity:` entry that names it has no effect. The `kind-value-narrow` message now names the right accessor: `run()` on `ReaderT` and `WriterT`, and `runStateT(state)` on `StateT`. See [Compile-Time Checks](../tooling/compile_checks.md).
+- **`MigrateDeprecationsTo0_5_0` marks the null successes to replace** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): its new `DetectNullSuccessValuesRecipe` marks a `null` given to `Either.right`, `Try.success` or a Path success factory, and a `Try.of` lambda that returns one. It also marks `Void` used as a success or result type. It rewrites nothing, and `rewriteRun` leaves each mark as a comment to remove. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
 
 ---
 
@@ -103865,6 +103874,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 ### Before you upgrade {#before-you-upgrade}
 
 - **Run `MigrateDeprecationsTo0_5_0` before you move to 0.5.0** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): take `hkj-openrewrite` 0.5.0 for the run, and keep the project on 0.4.11 until it finishes. Its `StateT` recipe matches the 0.4.x signatures, so it rewrites nothing once the build resolves 0.5.0. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
+- **Replace `Void` with `Unit` where a success has nothing to return** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `Either<E, Void>` and `Try<Void>` can no longer hold their null, and a `VTask<Void>` or `IOPath<Void>` now fails when run safely. `VTask.exec`, `Path.vtaskExec` and `Path.ioRunnable` give `Unit`. The `MigrateDeprecationsTo0_5_0` run marks each site.
 
 ### What a running program can notice {#runtime-changes}
 
@@ -103889,6 +103899,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **The list optics that returned an `ArrayList` now return an unmodifiable list** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)): `.each()`, `.at(i)`, `.head()` and `.last()` on a Focus path, `ListTraversals`, `AtInstances.listAt` and `listAtWithPadding`, and `IxedInstances.listIx`. Changing a returned list throws `UnsupportedOperationException`, so copy it first. With nothing at the index, `.at(i)` and `listIx` return your own list. See [What each collection optic builds](../optics/production_readiness.md#collection-optics).
 - **A Focus path over a field declared as `ArrayList` fails when `.each()`, `.at(i)`, `.head()` or `.last()` writes** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)): storing the rebuilt list, an unmodifiable `List`, back throws `ClassCastException`. `.each()` already failed on a one-element list. Declare the field as `List`, or use `each(EachInstances.fromIterableCollecting(ArrayList::new))`.
 - **`.each()` over an empty list, and `arrayEach().each()` over an empty array, return a new empty one** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)): not the source itself.
+- **A raw `modifyF` under `Either` or `Try` cannot pass over a null element** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `filtered` keeps an element it passes over by lifting it with `of`, as do a prism and an affine that miss. Under those applicatives `of` now refuses null. `TraversalExtensions.modifyAllEither` and its siblings keep the element.
 
 #### Effect Paths {#runtime-effect-paths}
 
@@ -103919,6 +103930,18 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **An interrupt while a timed `Scope` waits fails the run** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): with an `InterruptedException`, as it does for an untimed `Scope`. A timed one used to ignore it and keep waiting.
 - **`Par` and `PathOps` copy the list they are given when called** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): `Par.race`, `all` and `traverse`, and `PathOps.sequenceVTask`, `traverseVTask`, `firstVTaskSuccess`, `parSequenceIO` and `raceIO`. Changing the list afterwards no longer changes what a run does. A null task or path in a list, or in `Scope.forkAll`'s, is rejected then, not when it runs.
 - **`Scope.named` names the scope in a JSON thread dump** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): the name used to be dropped. `named(null)` now throws `NullPointerException`, where it was accepted.
+- **A null success throws, or fails a `Try`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `Either.right(null)`, `Try.success(null)` and the Path factories throw `NullPointerException`, and so does an `Either` or `EitherPath` `map` whose function returns null. In `Try.of`, `map`, `ap`, `recover` and `TryPath`, a null result gives a `Failure` holding one. A `VResultPath` fails when it runs.
+- **`recover(ma, null)` throws on `EitherMonad`, `TryMonad` and `EitherTMonad`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): whether or not `ma` failed. A null fallback used to give `Right(null)` or `Success(null)`. `Try.orElseGet` refuses a supplier that returns null, as `Validated.orElseGet` does; `orElse(null)` still hands a null back.
+- **The one-argument `toEitherPath` and `toTryPath` on a `FocusPath` throw on a null focus** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): they gave `Right(null)` and `Success(null)`. The message names the form that takes an error. `EitherPath.focus(FocusPath)` throws on a null focus too, naming `focus(path.nullable(), …)`, `TryPath.focus` gives a `Failure`, and `IdPath.toEitherPath` throws on a null value.
+- **`ErrorContext.io` treats a null result as a failure** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): its error mapper sees a `NullPointerException`, where the context held `Right(null)`.
+- **A computation that returns null fails where it becomes a `Try` or an `Either`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `runSafe`, `toTryPath` and `asTry` give a `Failure` holding a `NullPointerException`, and `catching` hands one to its mapper. So do `Scope.joinSafe` and `joinEither`, `FreePath.attempt` and `EffectBoundary.runSafe`. `VTask.run()`, `unsafeRun()` and `VTaskContext.runOrElse` still hand the null back.
+- **A saga whose result is null is compensated** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): the `VTask` from `Saga.runSafe` gives a `Left(SagaError)` holding a `NullPointerException`, reported against the step named `result`, where it gave `Right(null)`. `CompletableFuturePath.toEitherPath` and `WriterPath.toEitherPath` throw for a null value, naming the route to use.
+
+#### Spring {#runtime-spring}
+
+- **The declarative HTTP client refuses an empty body for `EitherPath` and `VTaskPath`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): it gave `Right(null)`. It now throws an `EmptyResponseBodyException`, or fails the task, after the request has been made. A retry policy that retries every throwable would send it again, so exclude that type. Declare `Unit` where the endpoint sends no body.
+- **A `Unit` or null success writes no body** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): a handler that writes one value wrote `Unit` as the JSON string `"INSTANCE"`, and a null from an `IOPath`, `VTaskPath`, `CompletableFuturePath` or `FreePath` as `null`. Each now sends the resolved status with no body, as a `void` controller method does.
+- **A JSON `Either` holding `"right": null` is refused** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `EitherDeserializer` reports it as bad input, as `ValidatedDeserializer` does for a null value.
 
 #### Testing {#runtime-testing}
 
@@ -103947,6 +103970,9 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Effect Paths | `evalStateT` and `execStateT` without a `Monad`, deprecated since 0.4.6 | Pass the outer `Monad<F>`, the one `Instances.stateT` took, as the last argument | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | `StateT.monadF()`, deprecated since 0.4.6 | Keep a reference to the outer `Monad<F>` you built the stack with, and use it in place of the call | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | A call to `ScopeJoiner.resultEither()` (a `[removal]` warning) | Use `joinEither()` on the `Scope`, as [Deprecated for removal in 0.6.0](#deprecated) says | [#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052) |
+| Effect Paths | Under a nullness checker, a nullable value passed to `Either.right`, `Try.success`, `Path.right`, `Path.success`, `TryKindHelper.success`, `EitherT.right`, the `Either.Right` or `Try.Success` constructor, or `of` on `EitherMonad`, `TryMonad` or `EitherTMonad` | Pass `Unit.INSTANCE` for a step with nothing to return, or route a value that may be missing through `Maybe` | [#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065) |
+| Spring | An `@HkjHttpClient` method whose success type is `Void` | Replace `Void` with `org.higherkindedj.hkt.Unit` | [#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065) |
+| Testing | `EitherAssert.hasRightNull()` | Delete the assertion: a `Right` can no longer hold null | [#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065) |
 
 ### Deprecated for removal in 0.6.0 {#deprecated}
 

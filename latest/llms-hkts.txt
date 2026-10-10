@@ -4592,10 +4592,11 @@ Kind<EitherKind.Witness<String>, Config> config =
         Config.defaults());
 ```
 
-Two things to know:
+Three things to know:
 
 - **`recoverWith` takes a value, not a lambda, so its fallback is evaluated eagerly**, even when `ma` succeeds. Reach for it only when the fallback is already built or cheap; if producing it is expensive or effectful-on-demand (like `loadConfigFromEnv()` above), keep `handleErrorWith` so it runs only on the failure path.
-- **The two methods guard different arguments.** `recoverWith` rejects a `null` *fallback* (and a `null` source) eagerly on every `MonadError` instance. A mistyped fallback fails fast at the call site instead of surfacing later from inside `handleErrorWith`. `recover` rejects a `null` *source*, but its *value* is `@Nullable` **by design**: a null value is lifted through `of`, so `recover(failure, null)` is a valid result (`Success(null)`, `Nothing`, or empty, depending on the type), not an error. (One wrinkle: `Validated` overrides `recoverWith` but not `recover`, because `Validated.of` rejects null; a null source to `Validated.recover` still fails fast, just with a message naming the underlying `handleErrorWith`.)
+- **The two methods guard different arguments.** `recoverWith` rejects a `null` *fallback* (and a `null` source) eagerly on every `MonadError` instance. A mistyped fallback fails fast at the call site instead of surfacing later from inside `handleErrorWith`.
+- **`recover` rejects a `null` *source*, and `of` decides what a null *value* means.** `Maybe` and `Optional` lift it to `Nothing` or empty, and `CompletableFuture` and `VTask` hold it. `Either`, `Try` and `EitherT` refuse it at the call, since a success always holds a value. `Validated` refuses it only when `ma` is invalid, and names `handleErrorWith` for a null source.
 
 ---
 
@@ -9509,13 +9510,11 @@ Once we are on the left rail, every downstream `map` and `flatMap` is a no-op. T
 Either<String, Integer> success = Either.right(123);
 Either<String, Integer> failure = Either.left("File not found");
 
-// Null is permitted on either side; the type does not police absence,
-// it only models the success/alternative split.
-Either<String, Integer> rightNull = Either.right(null);
-Either<String, Integer> leftNull  = Either.left(null);
+// A step that succeeds with nothing to return
+Either<String, Unit> saved = Either.right(Unit.INSTANCE);
 ```
 
-If null-safety on the success side matters, lift through [`Maybe`](./maybe_monad.md) first or convert with `Maybe::toEither`.
+A `Right` always holds a value, so `Either.right(null)` throws `NullPointerException`, and so does a `map` whose function returns null. A step with nothing to return gives `Unit.INSTANCE`. For a value that may be missing, lift through [`Maybe`](./maybe_monad.md) first or convert with `Maybe::toEither`, so the `Left` says why it is missing.
 
 ---
 
@@ -15691,12 +15690,12 @@ You can create `Try` instances in several ways:
    // Failure(ClassNotFoundException)
    ```
 
-3. **`Try.success(value)`:** Directly creates a `Success` instance holding the given value (which can be null).
+3. **`Try.success(value)`:** Directly creates a `Success` instance holding the given value. A `Success` always holds a value, so `Try.success(null)` throws `NullPointerException`. A supplier, mapper or recovery function that returns null gives a `Failure` holding a `NullPointerException`.
 
    <!-- verify -->
    ```java
    Try<String> directSuccess = Try.success("Known value");
-   Try<String> successNull = Try.success(null);
+   Try<String> nothingBack = Try.of(() -> null);   // Failure(NullPointerException)
    ```
 4. **`Try.failure(throwable)`:** Directly creates a `Failure` instance holding the given non-null `Throwable`.
 
@@ -17576,10 +17575,10 @@ Resource<Connection> connResource = Resource.make(
 });
 
 VTask<OrderResult> processOrder = connResource.use(conn ->
-    Scope.<Void>allSucceed()
-        .fork(VTask.of(() -> { updateInventory(conn, order); return null; }))
-        .fork(VTask.of(() -> { chargePayment(conn, order); return null; }))
-        .fork(VTask.of(() -> { sendNotification(conn, order); return null; }))
+    Scope.<Unit>allSucceed()
+        .fork(VTask.exec(() -> updateInventory(conn, order)))
+        .fork(VTask.exec(() -> chargePayment(conn, order)))
+        .fork(VTask.exec(() -> sendNotification(conn, order)))
         .join()
         .flatMap(_ -> VTask.of(() -> {
             conn.commit();
