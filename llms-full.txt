@@ -38807,9 +38807,9 @@ Reads and writes through a bare `Traversal` go through the `Traversals` utility:
 ## The Other Three Strategies
 
 ~~~admonish warning title="Overloaded constructors, withers and setters"
-Every strategy writes the focus through something that can be overloaded: the constructor `parameterOrder` describes, the `@Wither` method, the builder's setter, the setter `@ViaCopyAndSet` calls. A lens focuses a primitive boxed, and Java offers an overloaded call the candidates needing no unboxing first, so a `Long` reaches a `withAmount(Number)` before a `withAmount(long)`.
+Every strategy writes the focus through something that can be overloaded: the constructor `@ViaConstructor` rebuilds through, the `@Wither` method, the builder's setter, the setter `@ViaCopyAndSet` calls. A lens focuses a primitive boxed, and Java offers an overloaded call the candidates needing no unboxing first, so a `Long` reaches a `withAmount(Number)` before a `withAmount(long)`.
 
-The focus is therefore unboxed to its getter's type wherever one of the candidates takes exactly that type. The call then binds where `new Money(source.amount(), source.currency())` would, every argument the type its own getter hands back. Where no candidate takes that type, as when the constructor takes the wrapper, unboxing could move the call somewhere the boxed focus never reached, so it is passed as it is.
+The focus is therefore unboxed to its getter's type wherever one of the candidates takes exactly that type. The call then binds where `new Money(source.amount(), source.currency())` would, every argument the type its own getter hands back. Where no candidate takes that type, as when the constructor takes the wrapper, unboxing could move the call somewhere the boxed focus never reached, so it is passed as it is. A focus wider than the wrapper, `Number` over an `int` getter, is never unboxed, since it may hold a value of another kind. Declare the focus as the wrapper where only the primitive is taken.
 
 That leaves one shape to watch: a getter returning `Long` where the constructor or method takes `long`, beside one taking `Number`, reaches the `Number` one and sets whatever it computes. Have the getters return the types the constructor and methods take, and run `LensLaws` over the lens.
 ~~~
@@ -38828,7 +38828,7 @@ interface MoneyOpticsSpec extends OpticsSpec<Money> {
 
 Naming both halves explicitly is what makes this strategy work where auto-detection cannot: `@ImportOptics` requires the getter's return type to match the wither's parameter exactly, and here you simply say which pair to use. The wither still has to hand back the source type, read under the arguments the spec gives it: on a `Draft<T>`, a `Draft<String> withId(String)` serves an `OpticsSpec<Draft<String>>`, and a wither that returns the type raw, or as a supertype, is refused at the spec method. Where the wither is overloaded, the one checked is the one the call binds: the lens passes the new value typed by its focus, `Long` here, and javac chooses among the overloads by that type. A name the type does not have, or that the generated class cannot call, one none of whose overloads takes the focus, a choice javac could not make, and a `static` method are each refused at the spec method too. See the [wither entries](compiler_errors.md#wither--has-no-method--for-the-generated-lens-to-call) in Compiler Errors.
 
-Every other method name a strategy carries is checked the same way, at the spec method rather than in the generated file: the `getter` each one reads through, which for `@ViaCopyAndSet` and `@ViaConstructor` is the lens method's own name; `@ViaBuilder`'s `toBuilder`, `setter` and `build`, each read on what the step before it hands back; and each accessor a `@ViaConstructor` `parameterOrder` names. An accessor that reads a type the lens cannot hand back as its focus is refused too, which is the [`LocalDate.getMonth()` pairing](importing_optics.md#wither-classes-to-lenses) a spec interface exists to sort out.
+Every other method name a strategy carries is checked the same way, at the spec method rather than in the generated file: the `getter` each one reads through, which for `@ViaCopyAndSet` and `@ViaConstructor` is the lens method's own name; `@ViaBuilder`'s `toBuilder`, `setter` and `build`, each read on what the step before it hands back; and each accessor a `@ViaConstructor` `parameterOrder` names, along with the constructor that order rebuilds through. An accessor that reads a type the lens cannot hand back as its focus is refused too, which is the [`LocalDate.getMonth()` pairing](importing_optics.md#wither-classes-to-lenses) a spec interface exists to sort out.
 
 ### `@ViaConstructor`: constructor-only value types
 
@@ -38837,7 +38837,7 @@ Every other method name a strategy carries is checked the same way, at the spec 
 @ImportOptics
 interface PointOpticsSpec extends OpticsSpec<Point> {
 
-  @ViaConstructor(parameterOrder = {"x", "y"})
+  @ViaConstructor
   Lens<Point, Integer> x();
 
   @ViaConstructor(parameterOrder = {"x", "y"})
@@ -38845,7 +38845,11 @@ interface PointOpticsSpec extends OpticsSpec<Point> {
 }
 ```
 
-`parameterOrder` names the getters to call, in the order the constructor takes them. It has an empty default in the annotation, but the generated code needs it: without it the optic throws `UnsupportedOperationException` when invoked, so treat it as required.
+The `x()` lens rebuilds through `new Point(newValue, source.y())`. `parameterOrder` names the accessors it reads each argument through, in the order the constructor takes them, with the lens method's own name where the new value goes.
+
+Leave it out, as `x()` does, and the order is read from the constructor's parameter names. `Point(int x, int y)` gives `{"x", "y"}`, because each parameter is named after an accessor that reads a value it takes: `x()`, `getX()` or `isX()` for a parameter `x`. Write the order when no constructor's names give one, as for a class compiled with neither `-parameters` nor `-g`, or when two constructors give different orders. Write it too when a longer constructor than the one the names describe might hold more. A record's canonical constructor holds every value the record has, so for a record only that constructor counts as the longer one. A lens no constructor takes a parameter for, such as one reading a value the class works out, cannot be rebuilt through a constructor at all, and needs another strategy.
+
+Either way, the order is held to the constructor the generated call binds. An order of the wrong length is refused at the spec method. So is one that passes `y()` where the parameter named `x` stands, which would otherwise compile and write each value into the other's field. A parameter named after nothing the type reads leaves its place to the order. See the [`@ViaConstructor` entry](compiler_errors.md#viaconstructor-order) in Compiler Errors.
 
 ### `@ViaCopyAndSet`: legacy types with a copy constructor and setters
 
@@ -38949,7 +38953,7 @@ Start with `@ViaBuilder`: it is the pattern most generated code uses. Fall back 
     getter = "")              // default: the optic method's name
 
 @ViaConstructor(
-    parameterOrder = {"x", "y"})   // effectively required, see above
+    parameterOrder = {"x", "y"})   // default: read from the constructor's parameter names
 
 @ViaCopyAndSet(
     copyConstructor = "",     // default: pass the source unchanged; else a fully qualified supertype of S
@@ -45461,6 +45465,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`is not public and so cannot be named from`](#viacopyandset-copyconstructor-names--which-is-not-public-and-so-cannot-be-named-from-) | `copyConstructor` names a type the generated class cannot see |
 | [`and no constructor accepts`](#viacopyandset-copyconstructor-names--which--reaches-as--and-no-constructor-accepts) | No copy constructor takes the supertype you named |
 | [`is written with a wildcard type argument`](#viacopyandset--is-written-with-a-wildcard-type-argument) | A constructor rebuild cannot be written for a wildcard source type |
+| [`is an abstract class`, `is an interface`](#viacopyandset--is-written-with-a-wildcard-type-argument) | A constructor rebuild of an abstract class or interface |
 | [`not the source type`](#wither--returns--not-the-source-type-) | The method a `@Wither` call binds returns something other than the source type |
 | [`for the generated lens to call`](#wither--has-no-method--for-the-generated-lens-to-call) | `@Wither` names a method the source type does not have, or one the generated class cannot reach |
 | [`takes the lens's focus type`](#wither-no-method--of--takes-the-lenss-focus-type-) | No method of the name `@Wither` gives takes the lens's focus |
@@ -45471,6 +45476,14 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`for the generated lens to set through`](#-has-no-method--for-the-generated-lens-to-set-through) | A `setter` names no method of the type it is called on |
 | [`hands back '...', which is not a builder`](#viabuilder-the-chain-the-lens-rebuilds-through) | A `@ViaBuilder` step leads somewhere the next call cannot be made |
 | [`is static, so the generated lens cannot set through`](#-has-no-method--for-the-generated-lens-to-set-through) | The `setter` the focus binds is a static method |
+| [`names no argument for the lens's own`](#viaconstructor-order) | A `@ViaConstructor` order leaves out the lens method |
+| [`'parameterOrder' passes`](#viaconstructor-order) | A `@ViaConstructor` order contradicts the constructor's parameter names |
+| [`No constructor of '...' takes`](#viaconstructor-order) | No constructor takes a `@ViaConstructor` order's arguments |
+| [`The generated call 'new ...' cannot choose between`](#viaconstructor-order) | Several constructors take those arguments equally well |
+| [`No 'parameterOrder' is written`](#viaconstructor-order) | Parameter names give no one order to read |
+| [`parameter named after the lens's own`](#viaconstructor-order) | No constructor takes a parameter for the lens |
+| [`not a constructor it was read from`](#viaconstructor-order) | An order read from names binds another constructor |
+| [`leaves out what '...' takes`](#viaconstructor-order) | An order read from names misses a longer constructor |
 | [`pairs more than one wither with the field`](#importoptics--pairs-more-than-one-wither-with-the-field--a-note) | **Note.** Two withers reach one field name, and one lens is generated |
 | [`focuses '...', which is not a '...'`](#importoptics--focuses--which-is-not-a-) | A generated prism's focus is a value rather than a variant of the source |
 | [`cannot find symbol`, inside `XPrisms.java`](#cannot-find-symbol-inside-the-generated-xprismsjava-after-using-matchwhen) | A `@MatchWhen` predicate or getter name is misspelt |
@@ -46372,10 +46385,10 @@ interface EndpointOpticsSpec extends OpticsSpec<Endpoint> {
 
 The source type carries a wildcard, `OpticsSpec<Node<?>>`, and the strategy rebuilds it through a constructor.
 
-**Fix.** Name the type the wildcard stands for, or switch to `@Wither`, which rebuilds through a method and names no constructor, so a wildcard source type is no obstacle there.
+**Fix.** Name the type the wildcard stands for, or switch to `@Wither`, which rebuilds through a method and names no constructor, so a wildcard source type is no obstacle there. For an abstract class or an interface, name a concrete class as the spec's source type, or switch to `@Wither` likewise.
 
 ~~~admonish note title="Why" collapsible=true
-`new Node<?>(...)` is not something that can be written, whatever the arguments. `@ViaConstructor` reports the same thing for the same reason. An inner class draws the sibling message, because its constructor call needs an enclosing instance the generated class has no way to reach.
+`new Node<?>(...)` is not something that can be written, whatever the arguments. `@ViaConstructor` reports the same thing for the same reason. An inner class draws the sibling message, because its constructor call needs an enclosing instance the generated class has no way to reach. So do an abstract class and an interface, which cannot be instantiated at all.
 ~~~
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
@@ -46494,7 +46507,7 @@ interface TicketOpticsSpec extends OpticsSpec<Ticket> {
 
 The source type has methods of the name `@Wither` gives, and none of them takes the value the lens sets, whose type is the lens's focus.
 
-**Fix.** Name a wither that takes the value the getter reads, or point `getter` at an accessor one of the listed methods takes and declare the focus as its type. The focus alone rarely settles it: the getter pins it from below, so a focus wide enough to read the getter is usually too wide for a parameter the getter's own type already failed. Otherwise rebuild the source type with `@ViaBuilder`, `@ViaConstructor` or `@ViaCopyAndSet`. Where the parameter is a type the source type's wildcard stands for, the `T` of `withValue(T)` on a spec over `Cell<?>`, declare the spec over the type the wildcard stands for, a type parameter of the spec if need be: `interface CellOpticsSpec<T> extends OpticsSpec<Cell<T>>`.
+**Fix.** Name a wither that takes the value the getter reads, or point `getter` at an accessor one of the listed methods takes and declare the focus as its type. The focus alone rarely settles it: the getter pins it from below, so a focus wide enough to read the getter is usually too wide for a parameter the getter's own type already failed. The exception is a focus wider than the wrapper of a primitive getter, `Number` over an `int` one, which is never unboxed: there the message offers the wrapper, `Integer`, as the focus to declare. Otherwise rebuild the source type with `@ViaBuilder`, `@ViaConstructor` or `@ViaCopyAndSet`. Where the parameter is a type the source type's wildcard stands for, the `T` of `withValue(T)` on a spec over `Cell<?>`, declare the spec over the type the wildcard stands for, a type parameter of the spec if need be: `interface CellOpticsSpec<T> extends OpticsSpec<Cell<T>>`.
 
 ~~~admonish note title="Why" collapsible=true
 The generated setter passes the new value to the wither as the focus type, so a method taking another type cannot be called with it. A parameter that a wildcard argument of the source type stands in takes no value at all, since the type it stands for is unknown, which is why that case is fixed on the source type rather than the focus. A lens whose *focus* is a wildcard is not checked here: javac infers such a focus from the getter as much as from the wildcard, so which method the call binds is left to javac.
@@ -46800,6 +46813,162 @@ interface ParcelOpticsSpec extends OpticsSpec<Parcel> {
 
     @ViaBuilder
     Lens<Parcel, String> id();
+}
+```
+~~~
+
+### @ViaConstructor: the order the lens rebuilds through {#viaconstructor-order}
+
+`@ViaConstructor` rebuilds with `new S(source.a(), newValue, source.c())`: the accessor each name in the order reads, and the new value where the lens method's own name stands. The order is `parameterOrder`, or the one the constructor's parameter names give when you leave it out. These messages report an order the generated call cannot rebuild through:
+
+| The message says | What it means |
+|------------------|---------------|
+| `'parameterOrder' names no argument for the lens's own 'id'` | The order never names the lens method, so the rebuild would set nothing |
+| `'parameterOrder' passes 'source.y()' where 'Point(int x, int y)' takes 'x'` | A value goes where a parameter named after another accessor stands |
+| `No constructor of 'Sum' takes a parameter named after the lens's own 'total()'` | Every parameter is named after another accessor, so no place takes the lens's value; `'Heat(double kelvin)' takes no parameter` when a written order binds such a constructor |
+| `No constructor of 'Label' takes (String)` | No constructor takes the arguments: too few, too many, or a type out of place |
+| `cannot choose between 'Duo(int a, Integer b)' and 'Duo(Integer a, int b)'` | More than one constructor takes them, none more closely than the rest |
+| `No 'parameterOrder' is written, and no constructor of` | With no order written, no constructor's names give one; `more than one constructor` when two give different orders |
+| `binds '...', not a constructor it was read from` | The order read from one constructor's names binds another constructor |
+| `leaves out what '...' takes` | The order read from the names is a shorter constructor's, beside a longer one; never for a record |
+
+**Fix.** Where the constructor's parameter names give an order the call would rebuild through, the message ends on it, ready to paste: `@ViaConstructor(parameterOrder = {"x", "y"})`. Where the lens's focus is what no constructor takes, it names the type the getter reads, to declare as the focus instead. Where the names give no order, or the order read from them would rebuild through the wrong constructor, write the order of the one the lens should rebuild through. Where no constructor takes the lens's value, or javac cannot choose one, rebuild the source type with `@Wither`, `@ViaBuilder` or `@ViaCopyAndSet`. A lens named after an alias, `price()` for a parameter `cents`, can take the accessor's own name instead. A parameter can be named after an accessor that reads something else, as `Money(long amount, ...)` beside an `amount()` that reads pounds rather than pence. The processor still holds the order to that name, and the lens needs another strategy.
+
+~~~admonish note title="Why" collapsible=true
+A constructor call checks only types. `Point(int x, int y)` takes `new Point(source.y(), newValue)` as readily as the right order, and the lens then writes each value into the other's field. Setting `x` to 9 on a `Point(1, 2)` gives a `Point(2, 9)`, so a get after the set no longer reads 9. Only the parameter names tell the two apart. So a parameter named after an accessor that reads a value it takes, `x` after `x()`, `getX()` or `isX()`, has to be passed that accessor's value. A parameter named after nothing the type reads leaves its place to the order.
+
+A constructor compiled from source always carries its names. One read from a class file carries them when it was compiled with `-parameters` or `-g`, and Gradle and Maven pass `-g` by default. Without either, javac reads the names as `arg0` and `arg1`, which name no accessor, so the order you write is held to the types alone, and one left out cannot be read. A record's canonical constructor is read by its components' names, which a class file always keeps.
+~~~
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "passes 'source.y()' where 'Point(int x, int y)' takes 'x'" -->
+```java
+final class Point {
+
+    private final int x;
+    private final int y;
+
+    Point(int x, int y) {
+        this.x = x;
+        this.y = y;
+    }
+
+    public int x() {
+        return x;
+    }
+
+    public int y() {
+        return y;
+    }
+}
+
+@ImportOptics
+interface PointOpticsSpec extends OpticsSpec<Point> {
+
+    @ViaConstructor(parameterOrder = {"y", "x"})
+    Lens<Point, Integer> x();
+}
+```
+
+An order one argument short:
+
+<!-- verify:rejects "No constructor of 'Label' takes (String)" -->
+```java
+final class Label {
+
+    private final String id;
+    private final String tag;
+
+    Label(String id, String tag) {
+        this.id = id;
+        this.tag = tag;
+    }
+
+    public String id() {
+        return id;
+    }
+
+    public String tag() {
+        return tag;
+    }
+}
+
+@ImportOptics
+interface LabelOpticsSpec extends OpticsSpec<Label> {
+
+    @ViaConstructor(parameterOrder = {"id"})
+    Lens<Label, String> id();
+}
+```
+
+Two constructors that each take two `Integer`s only by unboxing one of them:
+
+<!-- verify:rejects "cannot choose between 'Duo(int a, Integer b)' and 'Duo(Integer a, int b)'" -->
+```java
+final class Duo {
+
+    private final Integer a;
+    private final Integer b;
+
+    Duo(int a, Integer b) {
+        this.a = a;
+        this.b = b;
+    }
+
+    Duo(Integer a, int b) {
+        this.a = a;
+        this.b = b;
+    }
+
+    public Integer a() {
+        return a;
+    }
+
+    public Integer b() {
+        return b;
+    }
+}
+
+@ImportOptics
+interface DuoOpticsSpec extends OpticsSpec<Duo> {
+
+    @ViaConstructor(parameterOrder = {"a", "b"})
+    Lens<Duo, Integer> a();
+}
+```
+
+No order written, for a lens no constructor takes a parameter for:
+
+<!-- verify:rejects "No constructor of 'Sum' takes a parameter named after the lens's own 'total()'" -->
+```java
+final class Sum {
+
+    private final int x;
+    private final int y;
+
+    Sum(int x, int y) {
+        this.x = x;
+        this.y = y;
+    }
+
+    public int x() {
+        return x;
+    }
+
+    public int y() {
+        return y;
+    }
+
+    public int total() {
+        return x + y;
+    }
+}
+
+@ImportOptics
+interface SumOpticsSpec extends OpticsSpec<Sum> {
+
+    @ViaConstructor
+    Lens<Sum, Integer> total();
 }
 ```
 ~~~
@@ -103452,6 +103621,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **Any two of `Iso`, `Lens`, `Prism`, `Affine` and `Traversal` compose directly with `andThen`** ([#1021](https://github.com/higher-kinded-j/higher-kinded-j/pull/1021)). An `Iso` followed by a `Traversal` now returns a `Traversal`, and so does a `Traversal` followed by an `Affine` or an `Iso`, with no `asTraversal()` first. The composition table is read from the overloads, so it always matches the library. See [Composition Rules Table](../optics/composition_rules.md#composition-rules-table).
 - **A map written through an optic keeps its source's order** ([#1022](https://github.com/higher-kinded-j/higher-kinded-j/pull/1022)): every optic that writes a `Map`, from `Traversals.forMapValues` to `AtInstances.mapAt` and `Setter.forMapValues`, hands back a map in the source's iteration order. An updated key keeps its place and a new key goes at the end. See [Persistent and Third-Party Maps](../optics/common_data_structure_traversals.md#persistent-and-third-party-maps-formapvaluescollecting).
 - **`modifyWhen` and `branch` on a `Traversal` call only the function their predicate picks** ([#1026](https://github.com/higher-kinded-j/higher-kinded-j/pull/1026)). Each element is now tested first, so a function may assume the condition that guards it, and an expensive one runs only where it is needed. `Lens.modifyWhen`, `modifyBranch` and `setIf` test first too. See [Complete, Runnable Example](../optics/composing_optics.md#complete-runnable-example).
+- **`@ViaConstructor` holds its order to the constructor** ([#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906)). An order that passes a value where the constructor's parameter names say another belongs, or that no constructor takes, is now refused at the spec method. Leave `parameterOrder` out and it is read from those names. See [`@ViaConstructor`: constructor-only value types](../optics/copy_strategies.md#viaconstructor-constructor-only-value-types).
 - **Optics over a nullable field pass a nullness checker** ([#767](https://github.com/higher-kinded-j/higher-kinded-j/issues/767), [#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): every optic and Focus path type, and `Kind`, takes a nullable type, so the lens generated for a `@Nullable` component checks under JSpecify. A bridge into an effect type can say what a null focus becomes, as `toEitherPath(source, error)` does. See [A focus that may be null](../optics/focus_effects.md#a-focus-that-may-be-null).
 - **`nullable()` keeps the focus type** ([#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): `FocusPath.nullable()` and `AffinePath.nullable()` return the focus type without its null, so a chained `focus(path.nullable(), error)` or a `var` infers it where it inferred `Object`. A call written `path.<String>nullable()` still compiles. See [`.nullable()`: Handle Null Values](../optics/focus_navigation.md#nullable-handle-null-values).
 - **A `Maybe` component's Focus path reads and writes its `Just` value** ([#757](https://github.com/higher-kinded-j/higher-kinded-j/issues/757)): `@GenerateFocus` now widens a `Maybe` field through `.some(Affines.just())`. It used the `Optional`-only `.some()`, so the first read or write of the path threw `ClassCastException`. A `Maybe` nested in another container, such as `List<Maybe<A>>`, threw the same way. See [Supported Container Types](../optics/focus_containers.md#supported-container-types).
@@ -103546,6 +103716,8 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`IxedInstances.contains` counts an index holding a null as present** ([#767](https://github.com/higher-kinded-j/higher-kinded-j/issues/767)).
 - **A traversal's Effect Path bridges leave a null focus out** ([#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): `toStreamPath`, `toVStreamPath` and `VStreamPath.fromEach` used to stream it, and `toListPath` and `toNonDetPath` threw `NullPointerException`. `TraversalPath.fold` counts it as the monoid's empty value, where `Monoids.string()` appended `"null"`. `getAll` still keeps every focus.
 - **Sequenced lists are unmodifiable at every size** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): `IndexedTraversals.sequenceList`, `ForTraversal.toList` and `ForIndexed.toIndexedList` now return one, as `Traversals.traverseList` does. So do `IndexedTraversals.forList` on a non-empty list and `Traversals.traverseArray` on an empty array. Changing the result throws `UnsupportedOperationException`, so copy it into a new `ArrayList` first.
+- **A `@ViaConstructor` lens with no `parameterOrder` sets through its constructor** ([#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906)): the order is read from the constructor's parameter names, where `set` used to throw `UnsupportedOperationException`.
+- **A spec lens whose focus is wider than its getter's wrapper passes the value as it is** ([#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906)): with `Number` over an `int` getter, it used to be cast to `int` for `withX(int)`. Where the wither, setter or constructor is also overloaded for a wider type, such as `withX(Object)`, that overload is now the one called.
 - **`ForTraversal.toList` and `ForIndexed.toIndexedList` honour the filters** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): they collect only the elements that pass `filter` and `filterIndex`, as `modify` and `set` already did. They used to return every focused element. See [Collecting Results](../functional/for_optics.md#collecting-results).
 - **A query's predicate is not called after its answer** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)): `find`, `exists` and `all`, on `Fold`, `IndexedFold` and `TraversalPath`, stop at the focus that settles them, so a logging or counting predicate sees fewer calls. A `Fold` of your own whose `foldMap` catches every exception still gives the same answer, but walks on to its end.
 - **A read no longer runs a traversal's rebuild** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)): a `Traversal` of your own whose rebuild logs or counts no longer runs it for `Traversals.getAll`, a `TraversalPath`'s reads, `IndexedTraversals.toIndexedList`, `getAll` and `length`, or `asIndexedFold()`.
@@ -103593,6 +103765,9 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Optics | `nullable()` whose result is bound to another focus type, as in `AffinePath<S, Integer> x = stringPath.nullable()`, which compiled as an unchecked cast | Convert the focus with a `Getter` or an `Iso` composed after `nullable()` | [#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017) |
 | Optics | A `@GenerateFocus` component holding a `Maybe` with a wildcard or no type argument, such as `Maybe<?>`, `Maybe<? extends T>`, a raw `Maybe` or `List<Maybe<?>>`, whose path threw `ClassCastException` on first use | Name the type argument, as in `Maybe<T>`, or drop `@GenerateFocus` and add or keep `@GenerateLenses`, which takes the component as written | [#757](https://github.com/higher-kinded-j/higher-kinded-j/issues/757) |
 | Optics | `var x = iso.andThen(traversal);` (or `traversal.andThen(affine)` or `traversal.andThen(iso)`) followed by assigning another kind of optic to `x`; your own `use(Optic)` and `use(Traversal)` overloads now pick the `Traversal` one | Declare `x` as the `Optic` you mean to hold, or call the overload you mean | [#1021](https://github.com/higher-kinded-j/higher-kinded-j/pull/1021) |
+| Optics | A `@ViaConstructor` `parameterOrder` that passes a value where the constructor's parameter names say another belongs, such as `{"y", "x"}` for `Point(int x, int y)`, including a lens named after an accessor no parameter is named after | Write the order the error offers, which follows those names, or rebuild with the strategy it names | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
+| Optics | A `@ViaConstructor` lens with no `parameterOrder`, whose `set` threw, where the constructors' parameter names give no order the call rebuilds through, a longer constructor might hold more, the lens's focus fits no constructor, or the source type is abstract | Write the order, declare the focus the error names, or rebuild with the strategy it names | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
+| Optics | A spec lens whose focus is wider than its getter's wrapper, such as `Number` over an `int` getter, rebuilding through an overloaded wither, setter or constructor none of whose overloads takes the focus; setting a value of another kind used to throw `ClassCastException` | Declare the focus as the wrapper, `Integer` | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
 | Effect Paths | A `Monad` passed to `new StateT<>(fn, monad)`, `StateT.create`, `StateTKindHelper.stateT` or `StateT.mapT` | Run the recipe as [Before you upgrade](#before-you-upgrade) says, or drop the argument by hand | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | A two-component `StateT` record pattern, or `StateT::create` or `StateT::new` as a `BiFunction` | Match the one component, or take a `Function`, by hand | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | A `StateT` in `var` or a chained call over a witness with a type argument, such as `EitherKind.Witness<E>`, which now infers `Object` for it | Name the types, as in `StateT.<S, EitherKind.Witness<E>, A>create(fn)`, or declare the variable | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
