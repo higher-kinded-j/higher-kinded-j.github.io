@@ -19831,28 +19831,28 @@ Not every field does, and knowing which is the difference between a chain that c
 ```mermaid
 flowchart LR
     accTitle: Which fields get a navigator
-    accDescr: A non-generic record annotated with GenerateFocus, whose Focus class was generated, gets a navigator, and so does an SPI container whose element is such a record. Optional, Maybe, List, Set and Collection fields are widened to a path chained with via. A generic record, or anything else, keeps a plain path chained with via.
+    accDescr: A record annotated with GenerateFocus, whose Focus class was generated and whose type parameters the field names, gets a navigator, and so does an SPI container whose element is such a record. Optional, Maybe, List, Set and Collection fields are widened to a path chained with via. A generic record given a wildcard or no type arguments keeps a plain path to the whole value. Anything else keeps a plain path chained with via.
     F{"The field's<br/>type is..."}
-    F --- R1["a non-generic record<br/>with @GenerateFocus and<br/>its Focus class generated"]
+    F --- R1["a record with<br/>@GenerateFocus, its Focus<br/>class generated and each<br/>type parameter named"]
     F --- R2["an SPI container<br/>whose element is<br/>such a record"]
     F --- R3["Optional, Maybe, List,<br/>Set, Collection"]
-    F --- R4["a generic record<br/>with @GenerateFocus"]
+    F --- R4["a generic record<br/>given a wildcard or<br/>no type arguments"]
     F --- R5["anything else"]
     R1 --> N["Navigator<br/>chain with<br/>a method call"]
     R2 --> N
     R3 --> W["Widened path<br/>chain with .via()"]
-    R4 --> P["Plain path<br/>chain with .via()"]
-    R5 --> P
+    R4 --> Q["Plain path<br/>to the whole value"]
+    R5 --> P["Plain path<br/>chain with .via()"]
 
     classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
     classDef step fill:#8caaee,stroke:#1e66f5,color:#232634
     classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
     class F decision
     class R1,R2,R3,R4,R5 step
-    class N,W,P tier
+    class N,W,Q,P tier
 ```
 
-The middle branch is the one that surprises people. `Optional`, `Maybe`, `List`, `Set` and `Collection` are widened by the processor before navigators are considered, so a `List<LineItem> lines` field gives you a `TraversalPath<Order, LineItem>` and never a `LinesNavigator`. SPI containers (a `Map`, an Eclipse Collections `ImmutableList`, an `Either`) *are* eligible, and get a navigator when their element type is itself annotated. A record with type parameters of its own never gets one, as [A target with type parameters](#a-target-with-type-parameters) explains.
+The middle branch is the one that surprises people. `Optional`, `Maybe`, `List`, `Set` and `Collection` are widened by the processor before navigators are considered, so a `List<LineItem> lines` field gives you a `TraversalPath<Order, LineItem>` and never a `LinesNavigator`. SPI containers (a `Map`, an Eclipse Collections `ImmutableList`, an `Either`) *are* eligible, and get a navigator when their element type is itself annotated. A record with type parameters of its own gets one when the field names a type for each of them, as [A target with type parameters](#a-target-with-type-parameters) explains.
 
 ``` java
     // customer is a plain navigable field: navigator, so .email() chains
@@ -20036,7 +20036,38 @@ record CustomerReferral(Customer referrer, Customer referred) {}
 
 ### A target with type parameters {#a-target-with-type-parameters}
 
-A navigator is an inner class parameterised by the source type alone, so it has no way to name a target's own type parameters. `Inner<String> inner` keeps the plain path, chained with `.via()`. `Map<String, Inner<String>> inners` keeps the plain path too, but focused on the *map*: an SPI container of this shape is only stepped into when `widenCollections = true` says so, and the `.via()` chain reaches the element only after that. The processor says so as a note against the field, naming the chain to write in each case. That chain compiles when the field names `Inner`'s type argument, as `Inner<String>` does. For a wildcard one, such as `Inner<? extends CharSequence>`, javac reports "no suitable method found for via", so write the lens that [A wildcard inside the element](focus_containers.md#a-wildcard-inside-the-element) shows instead.
+A navigator into a generic record declares that record's type parameters after its source type. The field supplies their type arguments as it declares them, so `Revision<EmailAddress> email` gets an `EmailNavigator<ContactHistory, EmailAddress>`:
+
+<!-- verify -->
+```java
+// A value kept with the time it last changed, generic so that it can hold any of the cast's values
+@GenerateFocus(generateNavigators = true)
+record Revision<T>(T current, Instant changedAt) {}
+
+@GenerateFocus(generateNavigators = true)
+record ContactHistory(Revision<EmailAddress> email, Revision<?> lastEdit, Instant openedAt) {}
+
+FocusPath<ContactHistory, EmailAddress> current = ContactHistoryFocus.email().current();
+```
+
+A type variable of the declaring record is passed on the same way, and so is an argument that carries a wildcard of its own, such as `List<?>`. An SPI container's element follows the same rule.
+
+A field that names no single type for one of those parameters keeps its plain path. That is a wildcard such as `lastEdit`'s `Revision<?>` or `Revision<? extends EmailAddress>`, or a raw `Revision`. No chain through `RevisionFocus` reaches inside it either, because each of its paths is over one instantiation of `Revision`. The processor says so in a note against the field. Where the parameter's bound is a type it can write, the note names a type to use instead:
+
+<!-- verify:reports "which Revision<?> does not" -->
+```java
+@GenerateFocus(generateNavigators = true)
+record Revision<T>(T current, Instant changedAt) {}
+
+@GenerateFocus(generateNavigators = true)
+record ContactHistory(Revision<EmailAddress> email, Revision<?> lastEdit, Instant openedAt) {}
+```
+
+```
+Note: Navigator for field 'lastEdit' is not generated: a navigator into Revision has to name one type for each of its type parameters, which Revision<?> does not. ContactHistoryFocus.lastEdit() keeps its plain path, and a path over one instantiation of Revision does not compose with it either. Write Revision<Object>, or another concrete instantiation, in place of Revision<?> to get a navigator.
+```
+
+To reach inside the field as declared, wildcard included, write a lens over its type, as [A wildcard inside the element](focus_containers.md#a-wildcard-inside-the-element) shows.
 
 ### Where a `@Nullable` counts {#where-a-nullable-counts}
 
@@ -36538,7 +36569,7 @@ TraversalPath<WidenedEmployee, Integer> widened = WidenedEmployeeFocus.scores();
 `widenCollections = true` is usually what you want on a new record: it makes `Map` fields behave exactly like `List` fields, and the same flag applies one level down inside a nested container. It is opt-in only because turning it on changes a method's return type, and that is a source-breaking change for anyone already calling it. New code has nothing to break.
 ~~~
 
-There is one exception, and it is the one navigators need: a container whose *element* is itself a `@GenerateFocus` record is always stepped into, because the navigator that record's field hands back has to reach it. So `Map<String, Address>` on a navigator-enabled record gives you an `AddressNavigator` over the values without the flag, while `Map<String, String>` waits for it.
+There is one exception, and it is the one navigators need: a container whose *element* is itself a `@GenerateFocus` record is always stepped into, because the navigator that record's field hands back has to reach it. So `Map<String, Address>` on a navigator-enabled record gives you a navigator over the values without the flag, while `Map<String, String>` waits for it. So does a map whose generic element gets no navigator, such as `Map<String, Revision<?>>`, as [A target with type parameters](focus_navigation.md#a-target-with-type-parameters) explains.
 
 Whichever way you reach a field, by the static method or by a navigator on a record that holds this one, you get the same path type. The setting that decides it belongs to the record that *declares* the component, not to the one navigating to it.
 
@@ -102846,7 +102877,7 @@ public interface UserMapping extends MappingSpec<User, UserDto> {}
 
 ## Navigator
 
-**Definition:** A small class the Focus processor generates, under `@GenerateFocus(generateNavigators = true)`, for a field whose type is another non-generic `@GenerateFocus` record. A `Map`, an `Either` or a similar container of such a record gets one too. It wraps the field's path and adds one method per field of that record, so `UserFocus.address().city()` chains where the plain path needs `.via(AddressFocus.city())`. A navigator carries the core reads and writes of the path it wraps:
+**Definition:** A small class the Focus processor generates, under `@GenerateFocus(generateNavigators = true)`, for a field whose type is another `@GenerateFocus` record, given a type for each of its type parameters if it has any. A `Map`, an `Either` or a similar container of such a record gets one too. It wraps the field's path and adds one method per field of that record, so `UserFocus.address().city()` chains where the plain path needs `.via(AddressFocus.city())`. A navigator carries the core reads and writes of the path it wraps:
 
 | Wrapped path | Operations on the navigator |
 |---|---|
@@ -103670,6 +103701,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A read through a traversal no longer rebuilds what it reads** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). `Traversals.getAll`, a `TraversalPath`'s reads, `IndexedTraversals.toIndexedList`, `getAll` and `length`, `asIndexedFold()` and `IxedInstances.get` read each focus as `asFold()` does. So reading a list or map through an optic no longer builds a new one. See [What reads cost](../optics/production_readiness.md#read-cost).
 - **A fold's query stops at its answer** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). `preview`, `find`, `exists`, `all` and `isEmpty` on `Fold` and `TraversalPath`, and `IndexedFold`'s queries, visit no focus after the one that settles them. So `exists` over a long list returns at its first match. A path from `traced` still reads every focus, so its observer sees them all. See [What reads cost](../optics/production_readiness.md#read-cost).
 - **A prism or affine that matches builds nothing it throws away** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). `Prism.modifyF`, `Affine.modifyF`, `Traversal.andThen(Prism)`, `Prism.andThen(Traversal)` and `Affine.andThen(Traversal)` wrap the source with `of` only on a miss, and `OptionalTraverse.traverse` only for an empty `Optional`. See [Prisms and affines on a miss](../optics/production_readiness.md#prisms-and-affines).
+- **A navigator reaches into a generic record** ([#739](https://github.com/higher-kinded-j/higher-kinded-j/issues/739)): a field such as `Revision<EmailAddress> email` gets a navigator instantiated with its type arguments, so `ContactHistoryFocus.email().current()` chains as it would into any other record. A field given a wildcard or no type arguments keeps its plain path, and its note no longer suggests a `.via()` chain. See [A target with type parameters](../optics/focus_navigation.md#a-target-with-type-parameters).
 - **A method named after a Java keyword takes a trailing underscore** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). An enum constant such as `NEW` or `TRUE`, a sealed subtype named `Default`, an `@EffectAlgebra` permit named `Throw`, or an imported `withDefault` crashed the processor. Their methods are now `new_()`, `true_()`, `default_()` and `throw_()`, and so are `@GenerateErrorEnvelope` factories. See [Prisms](../optics/prisms.md).
 - **`.each()` on a `List` path takes time in proportion to the list** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)). A Focus path's `.each()`, which every generated `List` path uses, now rebuilds the list once instead of copying it at every element. On 100,000 elements that took several seconds, and now takes about a millisecond. `EachInstances.arrayEach()` rebuilds an array the same way. See [Traversal allocation](../optics/production_readiness.md#traversal-allocation).
 
@@ -103816,6 +103848,9 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Optics | A `@ViaConstructor` `parameterOrder` that passes a value where the constructor's parameter names say another belongs, such as `{"y", "x"}` for `Point(int x, int y)`, including a lens named after an accessor no parameter is named after | Write the order the error offers, which follows those names, or rebuild with the strategy it names | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
 | Optics | A `@ViaConstructor` lens with no `parameterOrder`, whose `set` threw, where the constructors' parameter names give no order the call rebuilds through, a longer constructor might hold more, the lens's focus fits no constructor, or the source type is abstract | Write the order, declare the focus the error names, or rebuild with the strategy it names | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
 | Optics | A spec lens whose focus is wider than its getter's wrapper, such as `Number` over an `int` getter, rebuilding through an overloaded wither, setter or constructor none of whose overloads takes the focus; setting a value of another kind used to throw `ClassCastException` | Declare the focus as the wrapper, `Integer` | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
+| Optics | With `generateNavigators = true`, the path from a field whose type is a generic `@GenerateFocus` record, or an `Either`, `Try` or `Validated` of one, such as `Revision<EmailAddress> email`, used as a path: chained with `.via(RevisionFocus.current())` or assigned to one | Call the navigator's method, `.email().current()`, or take the path with `.email().toPath()` | [#739](https://github.com/higher-kinded-j/higher-kinded-j/issues/739) |
+| Optics | With `generateNavigators = true`, a `Map` or other many-valued SPI container of a generic `@GenerateFocus` record, such as `Map<String, Revision<String>> revisions`, used as its old path: to the map, or with `widenCollections = true` over the values chained with `.via(...)` | Its method now returns a navigator over the values, so call its methods, `.revisions().current()`, or list the field in `excludeFields` to keep the path to the map | [#739](https://github.com/higher-kinded-j/higher-kinded-j/issues/739) |
+| Optics | With `generateNavigators = true` and no `widenCollections`, a `Map` or other many-valued SPI container with a wildcard argument, holding a generic `@GenerateFocus` record it instantiates, such as `Map<String, ? extends Revision<String>>` | Name the container's type argument, `Map<String, Revision<String>>`, as a non-generic element already needs | [#739](https://github.com/higher-kinded-j/higher-kinded-j/issues/739) |
 | Effect Paths | A `Monad` passed to `new StateT<>(fn, monad)`, `StateT.create`, `StateTKindHelper.stateT` or `StateT.mapT` | Run the recipe as [Before you upgrade](#before-you-upgrade) says, or drop the argument by hand | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | A two-component `StateT` record pattern, or `StateT::create` or `StateT::new` as a `BiFunction` | Match the one component, or take a `Function`, by hand | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | A `StateT` in `var` or a chained call over a witness with a type argument, such as `EitherKind.Witness<E>`, which now infers `Object` for it | Name the types, as in `StateT.<S, EitherKind.Witness<E>, A>create(fn)`, or declare the variable | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
