@@ -19830,11 +19830,11 @@ Not every field does, and knowing which is the difference between a chain that c
 ```mermaid
 flowchart LR
     accTitle: Which fields get a navigator
-    accDescr: A non-generic record annotated with GenerateFocus, whose Focus class was generated, gets a navigator, and so does an SPI container whose element is such a record. Optional, List, Set and Collection fields are widened to a path chained with via. A generic record, or anything else, keeps a plain path chained with via.
+    accDescr: A non-generic record annotated with GenerateFocus, whose Focus class was generated, gets a navigator, and so does an SPI container whose element is such a record. Optional, Maybe, List, Set and Collection fields are widened to a path chained with via. A generic record, or anything else, keeps a plain path chained with via.
     F{"The field's<br/>type is..."}
     F --- R1["a non-generic record<br/>with @GenerateFocus and<br/>its Focus class generated"]
     F --- R2["an SPI container<br/>whose element is<br/>such a record"]
-    F --- R3["Optional, List,<br/>Set, Collection"]
+    F --- R3["Optional, Maybe, List,<br/>Set, Collection"]
     F --- R4["a generic record<br/>with @GenerateFocus"]
     F --- R5["anything else"]
     R1 --> N["Navigator<br/>chain with<br/>a method call"]
@@ -19851,7 +19851,7 @@ flowchart LR
     class N,W,P tier
 ```
 
-The middle branch is the one that surprises people. `Optional`, `List`, `Set` and `Collection` are widened by the processor before navigators are considered, so a `List<LineItem> lines` field gives you a `TraversalPath<Order, LineItem>` and never a `LinesNavigator`. SPI containers (a `Map`, an Eclipse Collections `ImmutableList`, an `Either`) *are* eligible, and get a navigator when their element type is itself annotated. A record with type parameters of its own never gets one, as [A target with type parameters](#a-target-with-type-parameters) explains.
+The middle branch is the one that surprises people. `Optional`, `Maybe`, `List`, `Set` and `Collection` are widened by the processor before navigators are considered, so a `List<LineItem> lines` field gives you a `TraversalPath<Order, LineItem>` and never a `LinesNavigator`. SPI containers (a `Map`, an Eclipse Collections `ImmutableList`, an `Either`) *are* eligible, and get a navigator when their element type is itself annotated. A record with type parameters of its own never gets one, as [A target with type parameters](#a-target-with-type-parameters) explains.
 
 ``` java
     // customer is a plain navigable field: navigator, so .email() chains
@@ -19948,7 +19948,7 @@ record Stockroom(String name, Map<String, Integer> stock, Either<String, String>
     Stockroom untouched = verified.modify(String::toUpperCase, stockroom); // a no-op on a Left
 ```
 
-The following `Affine` instances cover the built-in SPI types:
+The following `Affine` instances cover HKJ's containers that hold zero or one value:
 
 | Container type | Affine instance | Focuses on |
 |----------------|-----------------|------------|
@@ -20053,7 +20053,7 @@ Each SPI generator declares a `Cardinality`, the number of values its container 
 
 | Cardinality | Path | Types |
 |-------------|------|-------|
-| `ZERO_OR_ONE` | `AffinePath` | `Either<L,R>`, `Try<A>`, `Validated<E,A>`, `Optional<A>`, `Maybe<A>` |
+| `ZERO_OR_ONE` | `AffinePath` | `Either<L,R>`, `Try<A>`, `Validated<E,A>` |
 | `ZERO_OR_MORE` | `TraversalPath`, under `widenCollections` or when the element is itself navigable | `Map<K,V>`, arrays, Eclipse Collections, Guava, Vavr, Apache Commons |
 
 ``` java
@@ -20099,7 +20099,7 @@ A field whose type nests containers gets a composed chain, up to three levels de
 | `Either<E, Map<K, V>>` | `.some(Affines.eitherRight())` | `AffinePath` to the `Map` |
 | `Either<E, Map<K, V>>` with `widenCollections = true` | `.some(Affines.eitherRight()).each(EachInstances.mapValuesEach())` | `TraversalPath` |
 
-The last two rows are the rule in miniature. `Optional`, `List`, `Set` and `Collection` nest unconditionally, but an inner container that arrives through the SPI is stepped into only when it is `ZERO_OR_ONE`, or `ZERO_OR_MORE` with `widenCollections` on. Otherwise the path stops at the container.
+The last two rows are the rule in miniature. `Optional`, `Maybe`, `List`, `Set` and `Collection` nest unconditionally, but an inner container that arrives through the SPI is stepped into only when it is `ZERO_OR_ONE`, or `ZERO_OR_MORE` with `widenCollections` on. Otherwise the path stops at the container.
 
 ``` java
     TraversalPath<NestedConfig, String> allTags = NestedConfigFocus.tags();
@@ -20126,7 +20126,7 @@ Beyond three levels, compose the rest with `.via()`.
 * **A generated collection method is element-level; a generated `Map` method is not.** `.at(i)` and `ListPrisms` start from `FocusPath.of(theLens())`, because there is no generated `order.line(0)`. `.atKey(k)` applies straight to the generated path, because that path still focuses the whole map.
 * **An `Optional`, or a recognised `@Nullable`, is already an `AffinePath`.** Chain `.nullable()` yourself for a field nobody annotated, or one carrying Spring's `@Nullable`.
 * **One variant of a sealed type is a prism away.** `@GeneratePrisms` names each variant of a type you own; `AffinePath.instanceOf` matches by runtime type in one you do not.
-* **Navigators cover a field whose type is another annotated record.** A `Map` or `Either` of one gets a navigator too, but `Optional`, `List`, `Set` and `Collection` are widened first and never produce one, so those hops use `.via()`.
+* **Navigators cover a field whose type is another annotated record.** A `Map` or `Either` of one gets a navigator too, but `Optional`, `Maybe`, `List`, `Set` and `Collection` are widened first and never produce one, so those hops use `.via()`.
 * **`toPath()` is the escape hatch.** A navigator carries only the core operations; `filter`, `modifyF`, `traced` and `via` are one `toPath()` away.
 ~~~
 
@@ -26756,7 +26756,7 @@ record Roster(String coach, List<? extends Player> players) {}
 Traversal<Roster, Player> everyPlayer = RosterTraversals.players();
 ```
 
-The generated source cannot hold a wildcard: `Traversal<Roster, ? extends Player>` cannot declare an implementation. So the method hands back the bound. It is the element type [`@GenerateFocus`](focus_containers.md) reads wherever it looks inside a container, so a Focus path over the same component reaches `Player` too. That annotation has the stricter job of composing an optic instance to widen an **SPI** container, and rejects a wildcard there rather than guessing one.
+The generated source cannot hold a wildcard: `Traversal<Roster, ? extends Player>` cannot declare an implementation. So the method hands back the bound. It is the element type [`@GenerateFocus`](focus_containers.md) reads wherever it looks inside a container, so a Focus path over the same component reaches `Player` too. That annotation has the stricter job of composing an optic instance to widen a container such as a `Set` or an `Either`, and rejects a wildcard there rather than guessing one.
 
 Modifying through the traversal builds a **fresh** container and hands it to the record's constructor, so a narrower list the field was constructed from is never written into.
 
@@ -36550,10 +36550,12 @@ Whichever way you reach a field, by the static method or by a navigator on a rec
 | Container | Source | Optic used |
 |-----------|--------|------------|
 | `Optional<A>` | JDK | `.some()` (recognised directly) |
-| `Maybe<A>` | HKJ | `Affines.just()` |
+| `Maybe<A>` | HKJ | `Affines.just()` (recognised directly) |
 | `Either<L, R>` | HKJ | `Affines.eitherRight()` |
 | `Try<A>` | HKJ | `Affines.trySuccess()` |
 | `Validated<E, A>` | HKJ | `Affines.validatedValid()` |
+
+`Optional` and `Maybe` are recognised by name rather than by the SPI, and they do not share an optic. The no-argument `.some()` reads an `Optional` only, so a `Maybe` field widens through `.some(Affines.just())`.
 
 `ZERO_OR_MORE` containers, which produce a `TraversalPath` (at the static method for the first three rows, which are recognised by name, and for the rest only under `widenCollections = true`):
 
@@ -36622,8 +36624,8 @@ Which fields the rule reaches follows from how each one widens:
 
 | Field | Widens by | Raw or wildcard argument |
 |-------|-----------|--------------------------|
-| `Optional`, `Maybe`, `List` | `.some()` and `.each()`, which take no argument | ✅ Accepted. `List<? extends Leaf>` widens to `TraversalPath<Holder, Leaf>` |
-| `Set`, `Collection` | naming an `Each` instance | ❌ Rejected, the same as an SPI container |
+| `Optional`, `List` | `.some()` and `.each()`, which take no argument | ✅ Accepted. `List<? extends Leaf>` widens to `TraversalPath<Holder, Leaf>` |
+| `Maybe`, `Set`, `Collection` | naming an optic instance: `Affines.just()` or an `Each` | ❌ Rejected, the same as an SPI container |
 | `Either`, `Try`, `Validated`, `Map`, arrays, third-party collections | naming the optic its SPI generator supplies | ❌ Rejected, but only when the field is actually widened |
 | `Kind<W, A>` | the `Traverse` registered for the witness `W` | ✅ Accepted. A wildcard element resolves to its bound, so `Kind<ListKind.Witness, ? extends Leaf>` widens to `TraversalPath<Holder, Leaf>`; a wildcard *witness* names no `Traverse` at all, so `Kind<?, Leaf>` stays a plain `FocusPath` (see [Kind Field Support](kind_field_support.md#convention-based-detection)) |
 
@@ -36633,7 +36635,7 @@ Three things narrow the rule further.
 
 **A `ZERO_OR_MORE` SPI container is only rejected when something widens it**, which means `widenCollections = true` or a navigator stepping into it. At the default settings the path stops at the container, no optic is named, and the wildcard costs nothing. That covers wildcards below it too: `Map<String, Either<String, ? extends Leaf>>` compiles at the default settings, because the `Map` is never widened and so the `Either` inside it is never asked for an optic.
 
-**A generator that names no optic expression is exempt.** It widens through `.nullable()` or `.each()`, whose element type is free to be whatever the field says, so a raw or wildcard argument costs it nothing. Every generator shipped with HKJ names an optic, so this only applies to one of your own.
+**A generator that names no optic expression is exempt.** It widens through the no-argument `.some()` or `.each()`, whose element type is free to be whatever the field says, so a raw or wildcard argument costs it nothing. Every generator HKJ ships for a type the SPI widens names an optic, so this only applies to one of your own.
 
 The rule follows the optic instance, so it is `@GenerateFocus`'s alone. `@GenerateTraversals` reads the same component and writes a `Traversal` over the type the wildcard stands for. Nothing is inferred there, so nothing can fail. See [Wildcard Element Types](traversals.md#wildcard-element-types).
 ~~~
@@ -36700,7 +36702,7 @@ public final class ResultGenerator extends BaseTraversableGenerator {
 
 ~~~admonish info title="Key Takeaways"
 * **The field type picks the path type, through cardinality.** Zero or one gives an `AffinePath`, `List`/`Set`/`Collection` a `TraversalPath`, anything else a `FocusPath`. Every other zero-or-more container stops at the container until `widenCollections` says otherwise.
-* **`List`, `Set`, `Collection` and `Optional` are built in.** Everything else, including `Map` and arrays, arrives through the `TraversableGenerator` SPI.
+* **`Optional`, `Maybe`, `List`, `Set` and `Collection` are built in.** Everything else, including `Map` and arrays, arrives through the `TraversableGenerator` SPI.
 * **`widenCollections = true` removes the asymmetry.** Without it, an SPI `ZERO_OR_MORE` container stops at the container, in static Focus methods and navigator methods alike; a container holding a navigable element is stepped into either way, because that is how its navigator reaches the element.
 * **Third-party collections need no extra HKJ module.** One generic `fromIterableCollecting` factory covers Eclipse Collections, Guava, Vavr, Apache Commons and PCollections, on top of the ecosystem dependency you already declare to name the type.
 * **The SPI is open.** Implement `supports`, `getCardinality`, `getFocusTypeArgumentIndex`, `generateOpticExpression` and the one method with no default, `generateModifyF`; register with `@ServiceProvider`, and your container becomes a first-class Focus field.
@@ -45725,12 +45727,12 @@ class Shop {
 
 ### "@GenerateFocus: record component 'X.y' has a wildcard type argument in Set<? extends T>"
 
-A container that the processor widens through an optic **instance** is declared raw, or with a wildcard type argument. The same error covers `Set`, `Collection`, `Map`, `Either`, `Try` and every other such container, and is also reported as *"has a raw Set"*.
+A container that the processor widens through an optic **instance** is declared raw, or with a wildcard type argument. The same error covers `Set`, `Collection`, `Maybe`, `Map`, `Either`, `Try` and every other such container, and is also reported as *"has a raw Set"*.
 
-**Fix.** Name the type argument, `Set<Leaf>` rather than `Set<? extends Leaf>`, or drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance and take the component as written. See [Custom Containers](focus_containers.md#supported-container-types).
+**Fix.** Name the type argument, `Set<Leaf>` rather than `Set<? extends Leaf>`. For a wildcard, you can instead drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance and take the component as written. A raw container has no element type for `@GenerateTraversals` to focus, so it draws a note and no traversal there; keep `@GenerateLenses` alone for one. See [Custom Containers](focus_containers.md#supported-container-types).
 
 ~~~admonish note title="Why" collapsible=true
-That instance, `EachInstances.setEach()` or `Affines.eitherRight()`, has its own type arguments worked out from the component's type. A raw container gives javac nothing to work from, and a wildcard stands for no one type. `Optional`, `Maybe` and `List` are exempt: they widen through the no-argument `.some()` and `.each()`, whose element type is free to be whatever the field says.
+That instance, `EachInstances.setEach()` or `Affines.eitherRight()`, has its own type arguments worked out from the component's type. A raw container gives javac nothing to work from, and a wildcard stands for no one type. `Optional` and `List` are exempt: they widen through the no-argument `.some()` and `.each()`, whose element type is free to be whatever the field says.
 ~~~
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
@@ -94988,7 +94990,7 @@ These generators are always active. No additional dependencies are required.
 | Type | Focus | Behaviour |
 |------|-------|-----------|
 | `List<A>` | Each element | Traverses all elements via `Traversals.traverseList()` |
-| `Set<A>` | Each element | Converts to list, traverses, converts back |
+| `Set<A>` | Each element | Traverses all elements in iteration order via `Traversals.traverseSet()`, keeping that order; elements that map to equal values collapse into one |
 | `Collection<A>` | Each element | Rebuilds a set source as a set and any other source as a list, via `Traversals.traverseCollection()` |
 | `Optional<A>` | 0 or 1 element | Applies function if present; returns unchanged if empty |
 | `Map<K, V>` | Each value | Traverses values whilst preserving keys |
@@ -95138,7 +95140,7 @@ ServiceLoader.load(TraversableGenerator.class)
     └── ... 26 more generators
 ```
 
-For each record component, the processor asks every loaded generator `supports(TypeMirror)`, and the highest-priority generator that answers `true` handles code generation for that field, wherever its registration entry lands. Generators rank themselves through `priority()`: `PRIORITY_OVERRIDE` (100) beats `PRIORITY_DEFAULT` (0) beats `PRIORITY_FALLBACK` (-100). Two generators claiming the same type at the same priority draw a compile-time warning naming both, and the first registered wins. The same resolution serves `@GenerateTraversals`, the Focus DSL's widening and `@ImportOptics`, so the three annotations always agree about which generator claims a type.
+For each record component, the processor asks every loaded generator `supports(TypeMirror)`, and the highest-priority generator that answers `true` handles code generation for that field, wherever its registration entry lands. Generators rank themselves through `priority()`: `PRIORITY_OVERRIDE` (100) beats `PRIORITY_DEFAULT` (0) beats `PRIORITY_FALLBACK` (-100). Two generators claiming the same type at the same priority draw a compile-time warning naming both, and the first registered wins. The same resolution serves `@GenerateTraversals`, the Focus DSL's widening and `@ImportOptics`, so the three annotations always agree about which generator claims a type. The one exception is the five types `@GenerateFocus` recognises by name, which it widens without asking a generator.
 
 A component that holds elements but reaches no generator is not passed over silently. A `java.util.Collection` or `java.util.Map` subtype that no loaded generator supports — a `Deque`, a `SortedMap`, a Guava, Apache Commons or PCollections type whose plugin is not on the processor path — draws a compile-time **note** on the component, naming the unsupported type and the remedy: declare the component as a supported container, or put a `TraversableGenerator` for it on the annotation processor path. A container that is not a `java.util.Collection` or `Map` at all — Vavr's collections and Eclipse Collections' `Immutable*` types are `Iterable` only — is passed over silently, as is a `String` or an `int`, for the same reason a bare `Iterable` is not the bar: `java.nio.file.Path` implements it.
 
@@ -95220,6 +95222,8 @@ The `getCardinality()` method influences both `@GenerateTraversals` and `@Genera
 
 ~~~admonish tip title="Replacing a Built-in Generator"
 To take over a type a built-in generator already claims, implement `supports()` for that type and return `PRIORITY_OVERRIDE` from `priority()`. Registration order does not matter: the higher priority wins on every route that chooses a generator, so no fork of the built-in plugin is needed.
+
+`@GenerateFocus` asks no generator about `Optional`, `Maybe`, `List`, `Set` or `Collection`: it recognises them by name and widens them itself, so a build without the plugins widens them too. An override for one of those changes what `@GenerateTraversals` and `@ImportOptics` generate, not its Focus path.
 ~~~
 
 ### Step-by-Step Example
@@ -103450,6 +103454,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`modifyWhen` and `branch` on a `Traversal` call only the function their predicate picks** ([#1026](https://github.com/higher-kinded-j/higher-kinded-j/pull/1026)). Each element is now tested first, so a function may assume the condition that guards it, and an expensive one runs only where it is needed. `Lens.modifyWhen`, `modifyBranch` and `setIf` test first too. See [Complete, Runnable Example](../optics/composing_optics.md#complete-runnable-example).
 - **Optics over a nullable field pass a nullness checker** ([#767](https://github.com/higher-kinded-j/higher-kinded-j/issues/767), [#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): every optic and Focus path type, and `Kind`, takes a nullable type, so the lens generated for a `@Nullable` component checks under JSpecify. A bridge into an effect type can say what a null focus becomes, as `toEitherPath(source, error)` does. See [A focus that may be null](../optics/focus_effects.md#a-focus-that-may-be-null).
 - **`nullable()` keeps the focus type** ([#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): `FocusPath.nullable()` and `AffinePath.nullable()` return the focus type without its null, so a chained `focus(path.nullable(), error)` or a `var` infers it where it inferred `Object`. A call written `path.<String>nullable()` still compiles. See [`.nullable()`: Handle Null Values](../optics/focus_navigation.md#nullable-handle-null-values).
+- **A `Maybe` component's Focus path reads and writes its `Just` value** ([#757](https://github.com/higher-kinded-j/higher-kinded-j/issues/757)): `@GenerateFocus` now widens a `Maybe` field through `.some(Affines.just())`. It used the `Optional`-only `.some()`, so the first read or write of the path threw `ClassCastException`. A `Maybe` nested in another container, such as `List<Maybe<A>>`, threw the same way. See [Supported Container Types](../optics/focus_containers.md#supported-container-types).
 - **`Setter.forList` and `Setter.forMapValues` give the same result on every run** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): each time the effect from `modifyF` runs, it builds its own list or map. So an `IO` gives an equal value on every run, and the `List` applicative gives every combination of choices. `Traversals.traverseMapValues` does the same for an empty map. See [Sequencing Effects in Collections](../optics/setters.md#sequencing-effects-in-collections).
 - **A read through a traversal no longer rebuilds what it reads** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). `Traversals.getAll`, a `TraversalPath`'s reads, `IndexedTraversals.toIndexedList`, `getAll` and `length`, `asIndexedFold()` and `IxedInstances.get` read each focus as `asFold()` does. So reading a list or map through an optic no longer builds a new one. See [What reads cost](../optics/production_readiness.md#read-cost).
 - **A fold's query stops at its answer** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). `preview`, `find`, `exists`, `all` and `isEmpty` on `Fold` and `TraversalPath`, and `IndexedFold`'s queries, visit no focus after the one that settles them. So `exists` over a long list returns at its first match. A path from `traced` still reads every focus, so its observer sees them all. See [What reads cost](../optics/production_readiness.md#read-cost).
@@ -103487,6 +103492,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 ## Build and tooling {#build-and-tooling}
 
 - **`MigrateDeprecationsTo0_5_0` drops the `Monad` that `StateT` no longer takes** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): its new `RemoveStateTMonadArgument` recipe rewrites the constructor, `create`, `stateT` and `mapT` calls. Run it from `hkj-openrewrite` 0.5.0 while the project is on 0.4.11, since it matches the 0.4.x signatures. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
+- **A generator extending the built-in `Optional`, `Maybe`, `List`, `Set` or `Collection` generator inherits no optic expression** ([#757](https://github.com/higher-kinded-j/higher-kinded-j/issues/757)): `@GenerateFocus` recognises those types by name and never asks a generator. So `generateOpticExpression()` and `getRequiredImports()` on them return the defaults, an empty string and an empty set. See [Registering your own container type](../optics/focus_containers.md#the-fine-print-registering-your-own-container-type).
 - **The `state-t-mapt-arity` check is retired** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): every `mapT` now takes the function alone, so there is no missing argument to report. A `disable=` or `severity:` entry that names it has no effect. The `kind-value-narrow` message now names the right accessor: `run()` on `ReaderT` and `WriterT`, and `runStateT(state)` on `StateT`. See [Compile-Time Checks](../tooling/compile_checks.md).
 
 ---
@@ -103585,6 +103591,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Optics | Under a nullness checker, `FocusPaths.nullable()` assigned to an `Affine<X, X>` | Declare `Affine<@Nullable X, X>`, the type `Affines.nullable()` returns | [#767](https://github.com/higher-kinded-j/higher-kinded-j/issues/767) |
 | Optics | Under a nullness checker, `AtInstances.listAtWithPadding(null)` for a non-null element type | Pad with a value, or name a nullable element type: `AtInstances.<@Nullable String>listAtWithPadding(null)` | [#767](https://github.com/higher-kinded-j/higher-kinded-j/issues/767) |
 | Optics | `nullable()` whose result is bound to another focus type, as in `AffinePath<S, Integer> x = stringPath.nullable()`, which compiled as an unchecked cast | Convert the focus with a `Getter` or an `Iso` composed after `nullable()` | [#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017) |
+| Optics | A `@GenerateFocus` component holding a `Maybe` with a wildcard or no type argument, such as `Maybe<?>`, `Maybe<? extends T>`, a raw `Maybe` or `List<Maybe<?>>`, whose path threw `ClassCastException` on first use | Name the type argument, as in `Maybe<T>`, or drop `@GenerateFocus` and add or keep `@GenerateLenses`, which takes the component as written | [#757](https://github.com/higher-kinded-j/higher-kinded-j/issues/757) |
 | Optics | `var x = iso.andThen(traversal);` (or `traversal.andThen(affine)` or `traversal.andThen(iso)`) followed by assigning another kind of optic to `x`; your own `use(Optic)` and `use(Traversal)` overloads now pick the `Traversal` one | Declare `x` as the `Optic` you mean to hold, or call the overload you mean | [#1021](https://github.com/higher-kinded-j/higher-kinded-j/pull/1021) |
 | Effect Paths | A `Monad` passed to `new StateT<>(fn, monad)`, `StateT.create`, `StateTKindHelper.stateT` or `StateT.mapT` | Run the recipe as [Before you upgrade](#before-you-upgrade) says, or drop the argument by hand | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | A two-component `StateT` record pattern, or `StateT::create` or `StateT::new` as a `BiFunction` | Match the one component, or take a `Function`, by hand | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
