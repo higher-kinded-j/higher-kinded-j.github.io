@@ -568,3 +568,8 @@ Order result = pipeline.apply(order);
 **Why it matters:** because the identity is "change nothing", an absent or skipped step contributes nothing to the fold. That property powers sparse partial updates: the [Edits](optics.md#edits) builder folds optic-targeted edits through `Monoids.update()`, with absent fields contributing the identity.
 
 **Related:** [Semigroup and Monoid](../functional/semigroup_and_monoid.md), [Monoid](#monoid), [Edits](optics.md#edits)
+
+---
+
+**Previous:** [Type System & HKT](type-system.md)
+**Next:** [Data & Effect Types](data-effects.md)

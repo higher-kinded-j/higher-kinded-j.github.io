@@ -482,3 +482,8 @@ Validated<String, Integer> validated =
 **Effect Path Equivalent:** Use [ValidationPath](effect-paths.md#effect-path) for fluent composition.
 
 **Related:** [Validated Documentation](../monads/validated_monad.md), [ValidationPath](../effect/path_validation.md), [NonEmptyList](#nonemptylist), [Validated Assembly](optics.md#validated-assembly), [FieldError](optics.md#fielderror)
+
+---
+
+**Previous:** [Type Classes](type-classes.md)
+**Next:** [Effect Paths & Handlers](effect-paths.md)

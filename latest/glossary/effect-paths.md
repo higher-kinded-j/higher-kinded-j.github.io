@@ -626,3 +626,8 @@ VTask<Either<OrderError, OrderResult>> carrier = process(req).run();    // execu
 **Two channels, kept apart:** a business failure travels in the value channel as `Left`, whilst an unexpected defect stays on the `VTask` channel. The outcome-aware structured-concurrency combinators (`firstSuccess`, `allSucceed`, `allSucceedAccumulating`, `withTimeout`, `bracketOutcome`) preserve that split, and the `with*` resilience combinators are railway-aware.
 
 **Related:** [VResultPath](../effect/path_vresult.md), [Path](#path), [Railway-Oriented Programming](#railway-oriented-programming), [Either](data-effects.md#either), [Resilience Combinators](concurrency.md#resilience-combinators)
+
+---
+
+**Previous:** [Data & Effect Types](data-effects.md)
+**Next:** [Optics & Mapping](optics.md)

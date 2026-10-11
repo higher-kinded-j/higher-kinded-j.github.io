@@ -719,3 +719,8 @@ String rendered = email.build(addr);   // always succeeds
 **Halves:** each direction is also a type of its own, `ValidatedParse` (`parse` and its bulk forms) and `ValidatedBuild` (`build` and its bulk forms). Every prism is both, so it serves wherever either is asked for, and a boundary crossed one way only, such as a one-directional bean mapping, exposes just the half it has.
 
 **Related:** [ValidatedPrism](../optics/validated_prism.md), [Prism](#prism), [FieldError](#fielderror), [Validated](data-effects.md#validated)
+
+---
+
+**Previous:** [Effect Paths & Handlers](effect-paths.md)
+**Next:** [Concurrency & Resilience](concurrency.md)

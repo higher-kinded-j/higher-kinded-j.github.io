@@ -433,3 +433,8 @@ Functor<ListKind.Witness> listFunctor = Instances.functor(list());
 **Why It Matters:** WitnessArity provides compile-time guarantees that witness types are used with compatible type classes. You cannot accidentally use a binary witness with a unary type class.
 
 **Related:** [TypeArity](#typearity), [Witness Type](#witness-type), [Type Arity](../hkts/type-arity.md)
+
+---
+
+**Previous:** [Glossary](../glossary.md)
+**Next:** [Type Classes](type-classes.md)
