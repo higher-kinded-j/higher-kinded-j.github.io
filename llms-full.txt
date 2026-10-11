@@ -38701,7 +38701,26 @@ interface NodeOpticsSpec extends OpticsSpec<Node<String>> {
 }
 ```
 
-Where the source pins `Outer`'s argument, through `Node<X>` in the class's own clause or through a source that is an inner class of `Outer` too, the test names it, as in `Outer<String>.Sub`. An inner class whose parameter's bound is one the source leaves free, as in `Inner<Y extends X>`, has no test that can be written, and is [refused](compiler_errors.md#instanceof-unwritable-bound).
+Where the source pins `Outer`'s argument, through `Node<X>` in the class's own clause or through a source that is an inner class of `Outer` too, the test names it, as in `Outer<String>.Sub`. An inner class whose parameter's bound is one the source leaves free, as in `Inner<Y extends X>`, has no test that can be written, and the processor refuses it, as [a bound the source leaves free](compiler_errors.md#instanceof-unwritable-bound) explains.
+
+A pinned argument must also be within its parameter's bound, since javac refuses the test otherwise. `Gauge<Y extends Number> extends Node<Y>` reached from a `Node<U>` is tested as `Gauge<U>`, so the spec declares `U extends Number` for the prism to be written:
+
+<!-- verify -->
+```java
+class Node<U> {}
+
+class Gauge<Y extends Number> extends Node<Y> {}
+
+@ImportOptics
+interface NodeOpticsSpec<U extends Number> extends OpticsSpec<Node<U>> {
+
+    @InstanceOf(Gauge.class)
+    Prism<Node<U>, Gauge<U>> gauge();
+    // generates: source instanceof Gauge<U> t ? Optional.of(t) : Optional.empty()
+}
+```
+
+Left unbounded, `U` makes the processor refuse the prism at the spec method, as it does for a class no instantiation of the source can be, such as `Gauge` reached from a `Node<String>`. Where one bound will do, the message gives the declaration to write, as [an argument outside its bound](compiler_errors.md#instanceof-out-of-bound) shows.
 
 ---
 
@@ -45654,7 +45673,8 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`which the spec declares static` or `private`](#throughfield--composes-through-a-lens-named-items-which-the-spec-does-not-declare) | `@ThroughField` names a lens the generated class does not carry |
 | [`hands back as 'String'`](#throughfield--declares-focus-integer-over-field-items-of-type-liststring-whose-elements-the-standard-traversal-hands-back-as-string) | `@ThroughField`'s declared focus is not what the traversal returns |
 | [`is not a subtype of source type`](#instanceof-target-comexamplefoo-is-not-a-subtype-of-source-type-comexamplebase) | `@InstanceOf` names a class outside the hierarchy |
-| [`where Y extends X and`](#instanceof-unwritable-bound) | A pinned parameter is bounded by one the source leaves free |
+| [`so the bound has nothing to name`](#instanceof-unwritable-bound) | A pinned parameter is bounded by one the source leaves free |
+| [`outside its parameter's bound`](#instanceof-out-of-bound) | An argument the source pins breaks its bound |
 | [`which the test cannot narrow to`](#instanceof--declares-its-focus-as-circlet-which-the-test-cannot-narrow-to) | The focus promises a type argument `instanceof` cannot check |
 | [`narrows to '...', which is not a '...'`](#instanceof--narrows-to--which-is-not-a-) | The `@InstanceOf` class is not assignable to the declared focus |
 | [`does not resolve to a type`](#viacopyandset-copyconstructor-names--which-does-not-resolve-to-a-type) | `copyConstructor` is not a fully qualified class name |
@@ -46499,7 +46519,7 @@ interface ShapeOpticsSpec<T> extends OpticsSpec<Shape> {
 
 ### "@InstanceOf: '...' tests 'Outer.Inner', where Y extends X and '...' pins nothing to Outer's X" {#instanceof-unwritable-bound}
 
-A parameter the test pins is bounded by a parameter the source pins nothing to. A bound that only names it, such as `Y extends List<X>`, is fine.
+A parameter the test pins is bounded by a parameter the source pins nothing to. A bound that only names it, such as `Y extends List<X>`, reads as `List<?>`, and the argument the source pins has to be within it, as [an argument outside its bound](#instanceof-out-of-bound) explains.
 
 **Fix.** Narrow through a predicate and getter of the source type with `@MatchWhen`, or write the prism by hand with `Prism.of`. Where you can change the classes, a source that pins `X` as well lets the test name it.
 
@@ -46522,6 +46542,37 @@ interface NodeOpticsSpec<U> extends OpticsSpec<Node<U>> {
 
     @InstanceOf(Outer.Inner.class)
     Prism<Node<U>, Node<U>> inner();
+}
+```
+~~~
+
+### "@InstanceOf: '...' tests '...', where Y extends Number and U is not a 'Number'" {#instanceof-out-of-bound}
+
+The source pins a parameter of the class `@InstanceOf` names to an argument outside that parameter's bound.
+
+**Fix.** The message ends in one of two lines:
+
+- **It declares a spec parameter where one bound will do.** The declaration, as in `interface NodeOpticsSpec<U extends Number>`, keeps every bound the parameter has, so it can replace the one there.
+- **Otherwise it offers another class for `@InstanceOf`.** The message still lists every bound the argument has to meet, so a spec that can take them all may declare them itself, as in `U extends Number & Comparable<U>`.
+
+Either way, `@MatchWhen` narrows through a predicate and getter of the source type instead.
+
+~~~admonish note title="Why" collapsible=true
+The test names the type a matching value must be, so `Gauge.class` narrowed from a `Node<U>` is tested as `Gauge<U>`. javac refuses a type argument outside its parameter's bound, and with `Y extends Number` and nothing said about `U`, the generated file would not compile. No `Node<U>` can be a `Gauge` unless `U` is a `Number`, which is why a bound on the spec is the fix. javac reads a parameter the source leaves free as the `?` the test writes for it. In `class Rack<A, B extends List<A>> extends Node<B>`, the argument the source pins to `B` has to be a `List<?>`.
+~~~
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "where Y extends Number and U is not a 'Number'" -->
+```java
+class Node<U> {}
+
+class Gauge<Y extends Number> extends Node<Y> {}
+
+@ImportOptics
+interface NodeOpticsSpec<U> extends OpticsSpec<Node<U>> {
+
+    @InstanceOf(Gauge.class)
+    Prism<Node<U>, Node<U>> gauge();
 }
 ```
 ~~~
@@ -104016,6 +104067,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A prism or affine that matches builds nothing it throws away** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). `Prism.modifyF`, `Affine.modifyF`, `Traversal.andThen(Prism)`, `Prism.andThen(Traversal)` and `Affine.andThen(Traversal)` wrap the source with `of` only on a miss, and `OptionalTraverse.traverse` only for an empty `Optional`. See [Prisms and affines on a miss](../optics/production_readiness.md#prisms-and-affines).
 - **A navigator reaches into a generic record** ([#739](https://github.com/higher-kinded-j/higher-kinded-j/issues/739)): a field such as `Revision<EmailAddress> email` gets a navigator instantiated with its type arguments, so `ContactHistoryFocus.email().current()` chains as it would into any other record. A field given a wildcard or no type arguments keeps its plain path, and its note no longer suggests a `.via()` chain. See [A target with type parameters](../optics/focus_navigation.md#a-target-with-type-parameters).
 - **A prism onto an inner class of a generic class compiles under `-Werror`** ([#886](https://github.com/higher-kinded-j/higher-kinded-j/issues/886)): a `Circle` declared inside `class Shapes<X>` gets `Prism<Shape, Shapes<?>.Circle>`, from `@GeneratePrisms`, `@ImportOptics` and an `@InstanceOf` spec method. A generic inner class gets a prism too, where `@InstanceOf` refused one. See [Generating the Prisms](../optics/prisms.md#step-1-generating-the-prisms) and [Parameterised Targets](../optics/optics_spec_interfaces.md#parameterised-targets).
+- **`@InstanceOf` reports a source argument outside the target's bound at the spec method** ([#1082](https://github.com/higher-kinded-j/higher-kinded-j/issues/1082)). A `Gauge<Y extends Number>` reached from a `Node<U>` whose `U` could be anything used to fail in the generated file, where javac refused `Gauge<U>`. The message now lands on the spec method, and where one bound would do, gives the declaration to write. See [Parameterised Targets](../optics/optics_spec_interfaces.md#parameterised-targets).
 - **A method named after a Java keyword takes a trailing underscore** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). An enum constant such as `NEW` or `TRUE`, a sealed subtype named `Default`, an `@EffectAlgebra` permit named `Throw`, or an imported `withDefault` crashed the processor. Their methods are now `new_()`, `true_()`, `default_()` and `throw_()`, and so are `@GenerateErrorEnvelope` factories. See [Prisms](../optics/prisms.md).
 - **`.each()` on a `List` path takes time in proportion to the list** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)). A Focus path's `.each()`, which every generated `List` path uses, now rebuilds the list once instead of copying it at every element. On 100,000 elements that took several seconds, and now takes about a millisecond. `EachInstances.arrayEach()` rebuilds an array the same way. See [Traversal allocation](../optics/production_readiness.md#traversal-allocation).
 - **`modifyAllEither`, `modifyAllValidated` and `modifyAllMaybe` keep a null element their traversal passes over** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): over `filtered` or a prism that leaves a null element alone, `modifyAllValidated` threw and `modifyAllMaybe` gave `Nothing`. Each now keeps the null, and still rebuilds nothing once a step fails. So do `OpticOps`' validating modifiers. See [`modifyAllEither`: First Error Only](../optics/optics_extensions.md#modifyalleither-first-error-only).
