@@ -4415,11 +4415,11 @@ Three levels of nesting, three different recovery rules, and the business logic 
 
 ---
 
-## The Solution: `raiseError` and `handleErrorWith`
+## The Solution: `raiseError` and `handleErrorWith` {#the-solution-raiseerror-and-handleerrorwith}
 
 `MonadError` extends `Monad` with two operations that turn try/catch inside out.
 
-1. **`raiseError(E error)`** constructs a failed computation by lifting an error into the monadic context. `Either`, `EitherT`, `Try`, `Validated`, `CompletableFuture` and `VTask` refuse a null error, since their failure always holds one. `Maybe` and `Optional`, whose error is `Unit`, ignore it.
+1. **`raiseError(E error)`** constructs a failed computation by lifting an error into the monadic context. Every instance refuses a null error. `Maybe` and `Optional`, whose failure carries no detail, take `Unit.INSTANCE`.
 2. **`handleErrorWith(fa, handler)`** inspects a failure and provides a fallback computation.
 
 ```
@@ -4494,7 +4494,7 @@ The business logic reads top to bottom. Recovery is a separate layer applied at 
 @NullMarked
 public interface MonadError<F extends WitnessArity<TypeArity.Unary>, E> extends Monad<F> {
 
-  <A> @NonNull Kind<F, A> raiseError(@Nullable E error);
+  <A> @NonNull Kind<F, A> raiseError(E error);
 
   <A> @NonNull Kind<F, A> handleErrorWith(
       Kind<F, A> ma,
@@ -4596,7 +4596,7 @@ Three things to know:
 
 - **`recoverWith` takes a value, not a lambda, so its fallback is evaluated eagerly**, even when `ma` succeeds. Reach for it only when the fallback is already built or cheap; if producing it is expensive or effectful-on-demand (like `loadConfigFromEnv()` above), keep `handleErrorWith` so it runs only on the failure path.
 - **The two methods guard different arguments.** `recoverWith` rejects a `null` *fallback* (and a `null` source) eagerly on every `MonadError` instance. A mistyped fallback fails fast at the call site instead of surfacing later from inside `handleErrorWith`.
-- **`recover` rejects a `null` *source*, and `of` decides what a null *value* means.** `Maybe` and `Optional` lift it to `Nothing` or empty, and `CompletableFuture` and `VTask` hold it. `Either`, `Try` and `EitherT` refuse it at the call, since a success always holds a value. `Validated` refuses it only when `ma` is invalid, and names `handleErrorWith` for a null source.
+- **`recover` rejects a `null` *source*, and `of` decides what a null *value* means.** `Maybe` and `Optional` lift it to `Nothing` or empty, and `CompletableFuture` holds it. `Either`, `Try`, `EitherT` and `VTask` refuse it at the call, since a success always holds a value. `Validated` refuses it only when `ma` is invalid, and names `handleErrorWith` for a null source.
 
 ---
 
@@ -9423,6 +9423,8 @@ CompletableFuturePath<Order> orderPath = CompletableFuturePath.fromFuture(findUs
     .via(u -> CompletableFuturePath.fromFuture(createOrder(u)));
 ```
 
+A `CompletableFuturePath` always gives a value, so a future that completes with null fails the path. Map a `runAsync` future to `Unit` first, with `thenApply(_ -> Unit.INSTANCE)`. The path holds a future that depends on the one given, and cancelling the path's future cancels the given one too. `CompletableFutureMonad` keeps the JDK's null.
+
 See [Migration Cookbook: Recipe 4](../effect/migration_cookbook.md#recipe-4-completablefuture-nesting-to-completablefuturepath) for a complete before/after walkthrough, and [Effect Path Overview](../effect/effect_path_overview.md) for the complete guide.
 ~~~
 
@@ -10032,6 +10034,8 @@ String value = idString.value(); // "Hello, Identity!"
 Id<Integer> idInt = Id.of(123);
 Id<String> idNull = Id.of(null); // Id can wrap null
 ```
+
+`Id` is the one type here that holds a null, since every optic's `modify` runs through it. [`IdPath`](../effect/path_id.md) does not: `Path.id(null)` throws, as every lazy Path's factory does.
 ~~~
 
 ~~~admonish example title="Monadic Operations with IdMonad"
@@ -10256,6 +10260,8 @@ Kind<IOKind.Witness, Long> currentTime = IO_OP.delay(System::currentTimeMillis);
 ```
 
 None of these execute when created. The `Supplier` inside `delay` is stored, not called.
+
+An IO always gives a value, so `printHello` returns `Unit.INSTANCE` rather than `null`. A supplier or `map` function that returns null fails the IO when it runs, naming that function, and `ioMonad.of(null)` throws at the call. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 ~~~
 
 ~~~admonish example title="Executing IO Actions"
@@ -10551,6 +10557,8 @@ Contrast this with a raw `Supplier<T>`, which re-executes on every `.get()` call
 - **`now(value)`**: create an already-evaluated `LazyKind`
 - **`force(kind)`**: unwrap and evaluate, returning the cached result or throwing the cached exception
 - **`widen(lazy)`** / **`narrow(kind)`**: convert between `Lazy<A>` and `Kind<LazyKind.Witness, A>`
+
+A `Lazy` always gives a value. `now(null)` throws at the call, and a computation or `map` function that returns null makes `force()` throw, naming that function. The failure is memoised like any other exception. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ~~~admonish note title="How Lazy Evaluation Works"
 ```
@@ -11235,9 +11243,9 @@ Lifts a value into `Kind<MaybeKind.Witness, A>`. Uses `Maybe.fromNullable()` int
   Kind<MaybeKind.Witness, String> kindNullFromMonad = maybeMonad.of(null);   // Nothing
   ```
 ~~~
-~~~admonish  title="_maybeMonad.raiseError(@Nullable Unit error)_"
+~~~admonish  title="_maybeMonad.raiseError(Unit error)_"
 
-Creates a `Kind<MaybeKind.Witness, E>` representing `Nothing`. The `error` (Unit) argument is ignored.
+Creates a `Kind<MaybeKind.Witness, A>` representing `Nothing`. A `Nothing` carries no detail, so the error is `Unit.INSTANCE`, and a null error throws.
   <!-- verify -->
   ```java
   Kind<MaybeKind.Witness, Double> errorKind = maybeMonad.raiseError(Unit.INSTANCE); // Nothing
@@ -11880,11 +11888,11 @@ The core type is the `Reader<R, A>` functional interface:
 ```java
 @FunctionalInterface
 public interface Reader<R, A> {
-  @Nullable A run(@NonNull R r); // The core function: Environment -> Value
+  @NonNull A run(@NonNull R r); // The core function: Environment -> Value
 
   // Static factories
   static <R, A> @NonNull Reader<R, A> of(@NonNull Function<R, A> runFunction);
-  static <R, A> @NonNull Reader<R, A> constant(@Nullable A value);
+  static <R, A> @NonNull Reader<R, A> constant(@NonNull A value);
   static <R> @NonNull Reader<R, R> ask();
 
   // Instance methods (for composition)
@@ -11899,6 +11907,8 @@ public interface Reader<R, A> {
 * `ask()`: Creates a `Reader` that simply returns the environment itself as the result.
 * `map(Function<A, B>)`: Transforms the result `A` to `B`*after* the reader is run, without affecting the required environment `R`.
 * `flatMap(Function<A, Reader<R, B>>)`: Sequences computations. It runs the first reader, uses its result `A` to create a *second* reader (`Reader<R, B>`), and then runs that second reader with the *original* environment `R`.
+
+A `Reader` always gives a value. `constant(null)` throws at the call, and a function given to `of` or `map` that returns null fails the reader when it runs, naming that function. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ## Reader Components
 
@@ -12421,6 +12431,8 @@ Context<String, String> getTraceId = Context.ask(AppContext.TRACE_ID);
 ```
 
 `Context.ask(key)` returns a `Context<R, R>`; it reads the value and returns it unchanged.
+
+A `Context` always gives a value, so `ask` on a key bound to null fails with a `NullPointerException`. Read a key that may hold null with `asks`, turning it into a `Maybe` or a `boolean`, as [`principalIfPresent`](../effect/context_security.md#principalifpresent-optional-access) does.
 
 ### Reading and Transforming with Context.asks
 
@@ -13088,18 +13100,18 @@ The core type is the `State<S, A>` functional interface:
 public interface State<S, A> {
 
   // Represents the result: final value A and final state S
-  record StateTuple<S, A>(@Nullable A value, @NonNull S state) { /* ... */ }
+  record StateTuple<S, A>(@NonNull A value, @NonNull S state) { /* ... */ }
 
   // The core function: Initial State -> (Result Value, Final State)
   @NonNull StateTuple<S, A> run(@NonNull S initialState);
 
   // Static factories
   static <S, A> @NonNull State<S, A> of(@NonNull Function<@NonNull S, @NonNull StateTuple<S, A>> runFunction);
-  static <S, A> @NonNull State<S, A> pure(@Nullable A value); // Creates State(s -> (value, s))
+  static <S, A> @NonNull State<S, A> pure(@NonNull A value); // Creates State(s -> (value, s))
   static <S> @NonNull State<S, S> get();                      // Creates State(s -> (s, s))
   static <S> @NonNull State<S, Unit> set(@NonNull S newState); // Creates State(s -> (Unit.INSTANCE, newState))
   static <S> @NonNull State<S, Unit> modify(@NonNull Function<@NonNull S, @NonNull S> f); // Creates State(s -> (Unit.INSTANCE, f(s)))
-  static <S, A> @NonNull State<S, A> inspect(@NonNull Function<@NonNull S, @Nullable A> f); // Creates State(s -> (f(s), s))
+  static <S, A> @NonNull State<S, A> inspect(@NonNull Function<@NonNull S, @NonNull A> f); // Creates State(s -> (f(s), s))
 
   // Instance methods for composition
   default <B> @NonNull State<S, B> map(@NonNull Function<? super A, ? extends B> f);
@@ -13117,6 +13129,10 @@ public interface State<S, A> {
 * `inspect(Function<S, A> f)`: Creates a computation that applies a function `f` to the current state to calculate a *result value*`A`, leaving the state unchanged.
 * `map(...)`: Transforms the *result value*`A` to `B` after the computation runs, leaving the state transition logic untouched.
 * `flatMap(...)`: The core sequencing operation. It runs the first `State` computation, takes its result value `A`, uses it to create a *second*`State` computation, and runs that second computation using the state produced by the first one. The final result and state are those from the second computation.
+
+### A State Always Gives a Value {#a-state-always-gives-a-value}
+
+A `StateTuple` always holds a value, so `pure(null)` and `new StateTuple<>(null, s)` throw at the call. A function given to `inspect` or `map` that returns null fails the computation when it runs, naming that function. A step with nothing to return gives `Unit.INSTANCE`, as `set` and `modify` do. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ## State Components
 
@@ -14048,7 +14064,7 @@ That is it. No restructuring, no cleverness. Follow these three steps and your f
 | Component | Role |
 |-----------|------|
 | `Trampoline<A>` | Sealed interface with three variants: `Done<A>` (final value), `More<A>` (suspended thunk), `FlatMap<A,B>` (monadic bind) |
-| `Trampoline.done(value)` | Create a completed computation holding a final value |
+| `Trampoline.done(value)` | Create a completed computation holding a final value, which must not be null |
 | `Trampoline.defer(supplier)` | Suspend a computation for later evaluation: the key to stack safety |
 | `trampoline.run()` | Execute the trampoline iteratively and return the final result |
 | `trampoline.map(f)` | Transform the eventual result without executing yet |
@@ -14345,6 +14361,8 @@ That is the Free monad's value: **write once, interpret many ways**.
 | `FreeFactory<F>` | Captures the functor type once, fixing Java's type inference for chained operations |
 | `Free.liftF(fa, functor)` | Lifts a single instruction into a Free program |
 | `free.foldMap(transform, monad)` | Interprets the program using a natural transformation, stack-safe via Trampoline |
+
+A program always gives a value: `Free.pure(null)` throws at the call, and a `map` function that returns null fails the program when it is interpreted. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ~~~admonish note title="How foldMap Works"
 ```
@@ -14798,6 +14816,8 @@ FreeAp<DbOpKind.Witness, User> userFetch =
 // Map over a FreeAp
 FreeAp<DbOpKind.Witness, String> userName = userFetch.map(User::name);
 ```
+
+`FreeAp.pure(null)` throws at the call, and a `map` or `map2` function that returns null fails the program when it is interpreted, whichever applicative interprets it. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ### Combining Independent Computations
 
@@ -16708,6 +16728,28 @@ VTask<String> result = fetchUser
 
 ---
 
+### A Task Always Gives a Value {#a-task-always-gives-a-value}
+
+A `VTask` that succeeds gives a value, never `null`. `VTask.succeed(null)` throws `NullPointerException` at the call. A callable, supplier, `map` function or recovery function that returns null fails the task when it runs, and the exception names that function, as in `callable must not return null`.
+
+<!-- verify -->
+```java
+// Nothing to return: give Unit.INSTANCE, as VTask.exec does
+VTask<Unit> logged = VTask.of(() -> {
+    System.out.println("Fetched " + userId);
+    return Unit.INSTANCE;
+});
+
+// A value that may be missing: say so with a Maybe
+VTask<Maybe<String>> nickname = VTask.of(() -> Maybe.fromNullable(System.getenv("NICKNAME")));
+```
+
+So `VTask.of(() -> { work(); return null; })`, typed `VTask<Void>`, fails when it runs. Use `VTask.exec`, or return `Unit.INSTANCE`. `run()` and `runAsync()` refuse a null from a task written by hand as a lambda, too.
+
+The factories and functions of every lazy type follow the same rule: `IO`, `VStream`, `State`, `Reader`, `Writer`, `Lazy`, `Trampoline`, `Free` and `Context`, and every Effect Path over one. A stream refuses a null element. A nullness checker flags a hand-written `IO` or `Reader` lambda that returns null, and an `IOPath` refuses one when it runs. Only [`Id`](./identity.md) holds a null, since every optic's `modify` runs through it. A `CompletableFuture` outside a Path keeps the JDK's null too.
+
+---
+
 ### Error Handling
 
 ~~~admonish title="recover and recoverWith"
@@ -17738,9 +17780,9 @@ Every pull from a VStream answers exactly one question: *what happened when I as
 
 ```java
 sealed interface Step<A> {
-    record Emit<A>(@Nullable A value, VStream<A> tail) implements Step<A> {}
-    record Done<A>()                                    implements Step<A> {}
-    record Skip<A>(VStream<A> tail)                     implements Step<A> {}
+    record Emit<A>(A value, VStream<A> tail) implements Step<A> {}
+    record Done<A>()                          implements Step<A> {}
+    record Skip<A>(VStream<A> tail)           implements Step<A> {}
 }
 ```
 
@@ -17768,7 +17810,7 @@ sealed interface Step<A> {
 
 | Step | Meaning |
 |------|---------|
-| `Emit(value, tail)` | Here is a value, and here is the rest of the stream |
+| `Emit(value, tail)` | Here is a value, never null, and here is the rest of the stream |
 | `Done()` | The stream is exhausted; stop pulling |
 | `Skip(tail)` | No value this time (e.g. filtered out); advance to the tail |
 
@@ -17799,6 +17841,8 @@ VStream<Integer> range = VStream.range(1, 6); // 1, 2, 3, 4, 5
 // Empty stream
 VStream<Integer> empty = VStream.empty();
 ```
+
+A stream never holds a null element. `VStream.of(null)` throws at the call, and a null in a list, iterator or Java `Stream` fails the stream when that element is pulled: `VStream.fromList element cannot be null`. A function given to `map`, `zipWith` or `recover` that returns null fails it too, closing what the stream opened. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ### From Sequences That Never End
 
@@ -17846,7 +17890,7 @@ VStream<String> pages = VStream.unfold(1, page ->
 The `Seed<A, S>` record carries both the emitted value and the next state:
 
 ```java
-public record Seed<A, S>(@Nullable A value, S next) {}
+public record Seed<A, S>(A value, S next) {}
 ```
 
 Each call to the unfold function advances the state and either emits a value or signals completion:
@@ -19569,6 +19613,9 @@ The publisher is subscribed to immediately. Incoming elements are buffered in a 
 push-based delivery to pull-based consumption. Closing the VStream cancels the subscription, so
 `events.take(5)` stops the publisher once it has its five elements.
 
+The Flow rules forbid a null element, and so does a VStream. A publisher that sends one has its
+subscription cancelled, and the stream fails with `VStream.fromPublisher element cannot be null`.
+
 ### Round-Trip
 
 <!-- verify -->
@@ -19633,7 +19680,7 @@ Transformations to `Stream` or `List` materialise the entire VStream. For infini
 use `take()` first.
 ~~~
 
-## PathProvider SPI Registration
+## PathProvider SPI Registration {#pathprovider-spi-registration}
 
 `VStreamPathProvider` registers VStream with the PathProvider SPI, enabling dynamic path
 creation via `Path.from()`:
@@ -19650,6 +19697,8 @@ Optional<Chainable<String>> path =
 ```
 
 The provider is registered in `META-INF/services/org.higherkindedj.hkt.effect.spi.PathProvider` and in the `provides` clause of `hkj-core`'s `module-info`, so `Path.from()` finds it whether `hkj-core` is on the classpath or the module path. When a `PathProvider` of your own lives in a module with a `module-info`, register it both ways: in the services file, which is read when the jar is on the classpath, and with `provides org.higherkindedj.hkt.effect.spi.PathProvider with ...;` in `module-info.java`, which is all `ServiceLoader` reads when the jar is on the module path.
+
+A provider whose effect can fail overrides `monadError()` to return its `MonadError` in an `Optional`. The default is empty, as for `VStream`, and `supportsRecovery()` says which. `PathRegistry.unregister` gives the provider it removed in an `Optional` too.
 
 ## VStreamContext: Layer 2 API
 

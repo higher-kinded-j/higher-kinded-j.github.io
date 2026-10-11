@@ -2315,6 +2315,8 @@ IOPath<String> readFile = Path.io(() -> {
 IOPath<Connection> conn = Path.ioPath(databaseIO);
 ```
 
+An `IOPath` always gives a value. `Path.ioPure(null)` throws at the call, and a supplier or `map` function that returns null fails the path when it runs, naming that function. A step with nothing to return is `Path.ioRunnable`, which gives `Unit`. [A Task Always Gives a Value](../monads/vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
+
 ~~~admonish tip title="A computation that throws"
 `Path.vtask` takes a `Callable`, so a throwing computation goes in as it stands:
 `Path.vtask(() -> Files.readString(path))`. See [VTaskPath](path_vtask.md).
@@ -2576,6 +2578,8 @@ VTaskPath<Unit> logAction = Path.vtaskExec(() -> logger.info("Starting..."));
 // From an existing VTask
 VTaskPath<Config> config = Path.vtaskPath(existingVTask);
 ```
+
+A `VTaskPath` always gives a value. `Path.vtaskPure(null)` throws at the call, and a callable or `map` function that returns null fails the path when it runs, naming that function. A step with nothing to return is `Path.vtaskExec`, which gives `Unit`. [A Task Always Gives a Value](../monads/vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 Unlike `IOPath`, which defers execution until you call `unsafeRun()`, a
 `VTaskPath` also defers execution. Nothing happens until you explicitly
@@ -4238,7 +4242,7 @@ on Focus paths.
 
 ### FocusPath Bridge Methods
 
-`FocusPath` always has one focus, so these methods produce a success. For a null focus, `toMaybePath` gives `Nothing`, and the one-argument `toEitherPath` and `toTryPath` throw, since a `Right` or `Success` always holds a value:
+`FocusPath` always has one focus, so these methods produce a success. For a null focus, `toMaybePath` gives `Nothing`, and the one-argument `toEitherPath`, `toTryPath` and `toIdPath` throw, since a `Right`, a `Success` and an `IdPath` always hold a value:
 
 <!-- verify -->
 ```java
@@ -4305,7 +4309,7 @@ MaybePath<User> firstEmployee = employeesPath.toMaybePath(company);
 | `FocusPath<S, A>` | `toEitherPath(S, Supplier)` | `Right(a)`, or `Left(e)` built only for a null focus |
 | `FocusPath<S, A>` | `toTryPath(S)` | `Success(a)`; throws for a null focus |
 | `FocusPath<S, A>` | `toTryPath(S, Supplier)` | `Success(a)`, or `Failure` for a null focus |
-| `FocusPath<S, A>` | `toIdPath(S)` | Always `Id(a)` |
+| `FocusPath<S, A>` | `toIdPath(S)` | `Id(a)`; throws for a null focus |
 | `AffinePath<S, A>` | `toMaybePath(S)` | `Just(a)` or `Nothing` |
 | `AffinePath<S, A>` | `toEitherPath(S, E)` | `Right(a)` or `Left(e)` |
 | `AffinePath<S, A>` | `toEitherPath(S, Supplier)` | `Right(a)`, or `Left(e)` built only when absent |
@@ -5731,6 +5735,8 @@ and never fails. This sounds useless until you need it.
 IdPath<String> id = Path.id("hello");
 IdPath<User> fromId = Path.idPath(idUser);
 ```
+
+An `IdPath` always holds a value, so `Path.id(null)` throws, and so does `Path.idPath` given an `Id` holding null. The plain [`Id`](../monads/identity.md) holds a null, since every optic's `modify` runs through it.
 
 ---
 
@@ -7207,6 +7213,10 @@ VStreamPath<Page> pages = Path.vstreamUnfold(1, pageNum ->
 Like VTaskPath, nothing runs until a terminal operation executes. Construction only
 describes the pipeline.
 
+A stream never holds a null element. `Path.vstreamPure(null)` and a null among
+`vstreamOf`'s values throw at the call, and a null in a list, a generator or a `map`
+function's result fails the stream when that element is pulled.
+
 ---
 
 ## Core Operations
@@ -7382,6 +7392,9 @@ VStreamPath<String> names = Path.vstreamOf(
 ).focus(userNameLens);
 // ["Alice", "Bob"]
 ```
+
+A null focus fails the stream, and the message names `focus(path.nullable())`, which
+leaves the element out, as `focus` with an `AffinePath` does.
 
 ### focus with AffinePath (Optional/Prism)
 
@@ -11364,6 +11377,8 @@ The `PRINCIPAL` represents the authenticated user. It can be:
 - **Null**: An anonymous/unauthenticated user
 - **Unbound**: A configuration error (security context not established)
 
+A `Context` always gives a value, so `Context.ask(PRINCIPAL)` fails for an anonymous user. Read the principal with `asks`, as `isAuthenticated` and `principalIfPresent` do.
+
 ### Defining a Principal
 
 <!-- verify -->
@@ -11483,9 +11498,9 @@ public final class SecurityContext {
      * @return Context containing the Principal, or failing with UnauthenticatedException
      */
     public static Context<Principal, Principal> requireAuthenticated() {
-        return Context.ask(PRINCIPAL).flatMap(principal ->
-            principal != null
-                ? Context.succeed(principal)
+        return principalIfPresent().flatMap(principal ->
+            principal.isJust()
+                ? Context.succeed(principal.get())
                 : Context.fail(new UnauthenticatedException("Authentication required")));
     }
 }
@@ -15126,7 +15141,7 @@ try {
 
 If all compensations succeed, the original exception is thrown directly. If any compensation also fails, a `SagaExecutionException` is thrown containing the full `SagaError`.
 
-The saga's own `runSafe()` (distinct from `VTask.runSafe()`, which returns a `Try`) keeps the failure structured instead of thrown. A `Right` always holds a value, so return `Unit` from a saga with nothing to return: a null result is compensated like a failed step.
+The saga's own `runSafe()` (distinct from `VTask.runSafe()`, which returns a `Try`) keeps the failure structured instead of thrown. A saga always gives a value, so return `Unit` from a saga with nothing to return. Under `run()` and `runSafe()` alike, a step or a `map` that gives null fails like any other step, and the steps before it are compensated.
 
 ### runSafe(): Either with Full Details
 

@@ -3606,6 +3606,8 @@ IOPath<String> readFile = Path.io(() -> {
 IOPath<Connection> conn = Path.ioPath(databaseIO);
 ```
 
+An `IOPath` always gives a value. `Path.ioPure(null)` throws at the call, and a supplier or `map` function that returns null fails the path when it runs, naming that function. A step with nothing to return is `Path.ioRunnable`, which gives `Unit`. [A Task Always Gives a Value](../monads/vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
+
 ~~~admonish tip title="A computation that throws"
 `Path.vtask` takes a `Callable`, so a throwing computation goes in as it stands:
 `Path.vtask(() -> Files.readString(path))`. See [VTaskPath](path_vtask.md).
@@ -3867,6 +3869,8 @@ VTaskPath<Unit> logAction = Path.vtaskExec(() -> logger.info("Starting..."));
 // From an existing VTask
 VTaskPath<Config> config = Path.vtaskPath(existingVTask);
 ```
+
+A `VTaskPath` always gives a value. `Path.vtaskPure(null)` throws at the call, and a callable or `map` function that returns null fails the path when it runs, naming that function. A step with nothing to return is `Path.vtaskExec`, which gives `Unit`. [A Task Always Gives a Value](../monads/vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 Unlike `IOPath`, which defers execution until you call `unsafeRun()`, a
 `VTaskPath` also defers execution. Nothing happens until you explicitly
@@ -5529,7 +5533,7 @@ on Focus paths.
 
 ### FocusPath Bridge Methods
 
-`FocusPath` always has one focus, so these methods produce a success. For a null focus, `toMaybePath` gives `Nothing`, and the one-argument `toEitherPath` and `toTryPath` throw, since a `Right` or `Success` always holds a value:
+`FocusPath` always has one focus, so these methods produce a success. For a null focus, `toMaybePath` gives `Nothing`, and the one-argument `toEitherPath`, `toTryPath` and `toIdPath` throw, since a `Right`, a `Success` and an `IdPath` always hold a value:
 
 <!-- verify -->
 ```java
@@ -5596,7 +5600,7 @@ MaybePath<User> firstEmployee = employeesPath.toMaybePath(company);
 | `FocusPath<S, A>` | `toEitherPath(S, Supplier)` | `Right(a)`, or `Left(e)` built only for a null focus |
 | `FocusPath<S, A>` | `toTryPath(S)` | `Success(a)`; throws for a null focus |
 | `FocusPath<S, A>` | `toTryPath(S, Supplier)` | `Success(a)`, or `Failure` for a null focus |
-| `FocusPath<S, A>` | `toIdPath(S)` | Always `Id(a)` |
+| `FocusPath<S, A>` | `toIdPath(S)` | `Id(a)`; throws for a null focus |
 | `AffinePath<S, A>` | `toMaybePath(S)` | `Just(a)` or `Nothing` |
 | `AffinePath<S, A>` | `toEitherPath(S, E)` | `Right(a)` or `Left(e)` |
 | `AffinePath<S, A>` | `toEitherPath(S, Supplier)` | `Right(a)`, or `Left(e)` built only when absent |
@@ -7022,6 +7026,8 @@ and never fails. This sounds useless until you need it.
 IdPath<String> id = Path.id("hello");
 IdPath<User> fromId = Path.idPath(idUser);
 ```
+
+An `IdPath` always holds a value, so `Path.id(null)` throws, and so does `Path.idPath` given an `Id` holding null. The plain [`Id`](../monads/identity.md) holds a null, since every optic's `modify` runs through it.
 
 ---
 
@@ -8498,6 +8504,10 @@ VStreamPath<Page> pages = Path.vstreamUnfold(1, pageNum ->
 Like VTaskPath, nothing runs until a terminal operation executes. Construction only
 describes the pipeline.
 
+A stream never holds a null element. `Path.vstreamPure(null)` and a null among
+`vstreamOf`'s values throw at the call, and a null in a list, a generator or a `map`
+function's result fails the stream when that element is pulled.
+
 ---
 
 ## Core Operations
@@ -8673,6 +8683,9 @@ VStreamPath<String> names = Path.vstreamOf(
 ).focus(userNameLens);
 // ["Alice", "Bob"]
 ```
+
+A null focus fails the stream, and the message names `focus(path.nullable())`, which
+leaves the element out, as `focus` with an `AffinePath` does.
 
 ### focus with AffinePath (Optional/Prism)
 
@@ -12655,6 +12668,8 @@ The `PRINCIPAL` represents the authenticated user. It can be:
 - **Null**: An anonymous/unauthenticated user
 - **Unbound**: A configuration error (security context not established)
 
+A `Context` always gives a value, so `Context.ask(PRINCIPAL)` fails for an anonymous user. Read the principal with `asks`, as `isAuthenticated` and `principalIfPresent` do.
+
 ### Defining a Principal
 
 <!-- verify -->
@@ -12774,9 +12789,9 @@ public final class SecurityContext {
      * @return Context containing the Principal, or failing with UnauthenticatedException
      */
     public static Context<Principal, Principal> requireAuthenticated() {
-        return Context.ask(PRINCIPAL).flatMap(principal ->
-            principal != null
-                ? Context.succeed(principal)
+        return principalIfPresent().flatMap(principal ->
+            principal.isJust()
+                ? Context.succeed(principal.get())
                 : Context.fail(new UnauthenticatedException("Authentication required")));
     }
 }
@@ -16417,7 +16432,7 @@ try {
 
 If all compensations succeed, the original exception is thrown directly. If any compensation also fails, a `SagaExecutionException` is thrown containing the full `SagaError`.
 
-The saga's own `runSafe()` (distinct from `VTask.runSafe()`, which returns a `Try`) keeps the failure structured instead of thrown. A `Right` always holds a value, so return `Unit` from a saga with nothing to return: a null result is compensated like a failed step.
+The saga's own `runSafe()` (distinct from `VTask.runSafe()`, which returns a `Try`) keeps the failure structured instead of thrown. A saga always gives a value, so return `Unit` from a saga with nothing to return. Under `run()` and `runSafe()` alike, a step or a `map` that gives null fails like any other step, and the steps before it are compensated.
 
 ### runSafe(): Either with Full Details
 
@@ -36399,7 +36414,7 @@ flowchart TD
 
 ### Direction 1: Focus Path to Effect Path
 
-Extract a value with optics and continue in an effect pipeline. A `FocusPath` always has one focus. Its one-argument `toEitherPath` and `toTryPath` give a `Right` or `Success` for a focus that is not null, `toIdPath` holds the focus whatever it is, and `toMaybePath` gives `Just` unless it is null. An `AffinePath` may be empty, so its bridges take the value to use when it is:
+Extract a value with optics and continue in an effect pipeline. A `FocusPath` always has one focus. Its one-argument `toEitherPath`, `toTryPath` and `toIdPath` take a focus that is not null, and `toMaybePath` gives `Just` unless it is null. An `AffinePath` may be empty, so its bridges take the value to use when it is:
 
 <!-- verify -->
 ```java
@@ -36460,7 +36475,7 @@ EitherPath<String, String> nickname =
 
 `find(Objects::nonNull, source)` gives the first focus that is not null, and `getAll` keeps every focus, where position matters.
 
-The one-argument `toEitherPath` and `toTryPath` take only a focus that is not null. A `Right` or `Success` always holds a value, so a null focus throws `NullPointerException`, and the message names the form to use instead. Under a nullness checker such as NullAway, their result type cannot be written for a nullable focus, though `var` hides that. For a focus that may be null, use the forms that take an error, or `toMaybePath`.
+The one-argument `toEitherPath`, `toTryPath` and `toIdPath` take only a focus that is not null. A `Right`, a `Success` and an `IdPath` always hold a value, so a null focus throws `NullPointerException`, and the message names the form to use instead. Under a nullness checker such as NullAway, their result types cannot be written for a nullable focus, though `var` hides that. For a focus that may be null, use the forms that take an error, or `toMaybePath`.
 
 <!-- verify -->
 ```java
@@ -36504,7 +36519,7 @@ EitherPath<String, String> firstNickname =
 
 `IdPath` is the one row that changes effect: `Id` has nowhere to record an absent focus, so focusing an `AffinePath` through one hands back a `MaybePath`.
 
-A `FocusPath` whose focus may be null reads the null as absent in the `MaybePath` and `OptionalPath` rows. The other rows take only a non-null focus: `EitherPath` and `ValidationPath` throw on a null, `TryPath` gives a `Failure`, and `IOPath` and `IdPath` hold it as it is. Pass `path.nullable()` to the `AffinePath` column instead, which reads a null focus as absent in every row.
+A `FocusPath` whose focus may be null reads the null as absent in the `MaybePath` and `OptionalPath` rows. The other rows take only a non-null focus: `EitherPath`, `ValidationPath` and `IdPath` throw on a null, `TryPath` gives a `Failure`, and `IOPath` fails when it runs. Pass `path.nullable()` to the `AffinePath` column instead, which reads a null focus as absent in every row.
 
 ### Which Direction?
 
@@ -68173,11 +68188,11 @@ Three levels of nesting, three different recovery rules, and the business logic 
 
 ---
 
-## The Solution: `raiseError` and `handleErrorWith`
+## The Solution: `raiseError` and `handleErrorWith` {#the-solution-raiseerror-and-handleerrorwith}
 
 `MonadError` extends `Monad` with two operations that turn try/catch inside out.
 
-1. **`raiseError(E error)`** constructs a failed computation by lifting an error into the monadic context. `Either`, `EitherT`, `Try`, `Validated`, `CompletableFuture` and `VTask` refuse a null error, since their failure always holds one. `Maybe` and `Optional`, whose error is `Unit`, ignore it.
+1. **`raiseError(E error)`** constructs a failed computation by lifting an error into the monadic context. Every instance refuses a null error. `Maybe` and `Optional`, whose failure carries no detail, take `Unit.INSTANCE`.
 2. **`handleErrorWith(fa, handler)`** inspects a failure and provides a fallback computation.
 
 ```
@@ -68252,7 +68267,7 @@ The business logic reads top to bottom. Recovery is a separate layer applied at 
 @NullMarked
 public interface MonadError<F extends WitnessArity<TypeArity.Unary>, E> extends Monad<F> {
 
-  <A> @NonNull Kind<F, A> raiseError(@Nullable E error);
+  <A> @NonNull Kind<F, A> raiseError(E error);
 
   <A> @NonNull Kind<F, A> handleErrorWith(
       Kind<F, A> ma,
@@ -68354,7 +68369,7 @@ Three things to know:
 
 - **`recoverWith` takes a value, not a lambda, so its fallback is evaluated eagerly**, even when `ma` succeeds. Reach for it only when the fallback is already built or cheap; if producing it is expensive or effectful-on-demand (like `loadConfigFromEnv()` above), keep `handleErrorWith` so it runs only on the failure path.
 - **The two methods guard different arguments.** `recoverWith` rejects a `null` *fallback* (and a `null` source) eagerly on every `MonadError` instance. A mistyped fallback fails fast at the call site instead of surfacing later from inside `handleErrorWith`.
-- **`recover` rejects a `null` *source*, and `of` decides what a null *value* means.** `Maybe` and `Optional` lift it to `Nothing` or empty, and `CompletableFuture` and `VTask` hold it. `Either`, `Try` and `EitherT` refuse it at the call, since a success always holds a value. `Validated` refuses it only when `ma` is invalid, and names `handleErrorWith` for a null source.
+- **`recover` rejects a `null` *source*, and `of` decides what a null *value* means.** `Maybe` and `Optional` lift it to `Nothing` or empty, and `CompletableFuture` holds it. `Either`, `Try`, `EitherT` and `VTask` refuse it at the call, since a success always holds a value. `Validated` refuses it only when `ma` is invalid, and names `handleErrorWith` for a null source.
 
 ---
 
@@ -73181,6 +73196,8 @@ CompletableFuturePath<Order> orderPath = CompletableFuturePath.fromFuture(findUs
     .via(u -> CompletableFuturePath.fromFuture(createOrder(u)));
 ```
 
+A `CompletableFuturePath` always gives a value, so a future that completes with null fails the path. Map a `runAsync` future to `Unit` first, with `thenApply(_ -> Unit.INSTANCE)`. The path holds a future that depends on the one given, and cancelling the path's future cancels the given one too. `CompletableFutureMonad` keeps the JDK's null.
+
 See [Migration Cookbook: Recipe 4](../effect/migration_cookbook.md#recipe-4-completablefuture-nesting-to-completablefuturepath) for a complete before/after walkthrough, and [Effect Path Overview](../effect/effect_path_overview.md) for the complete guide.
 ~~~
 
@@ -73790,6 +73807,8 @@ String value = idString.value(); // "Hello, Identity!"
 Id<Integer> idInt = Id.of(123);
 Id<String> idNull = Id.of(null); // Id can wrap null
 ```
+
+`Id` is the one type here that holds a null, since every optic's `modify` runs through it. [`IdPath`](../effect/path_id.md) does not: `Path.id(null)` throws, as every lazy Path's factory does.
 ~~~
 
 ~~~admonish example title="Monadic Operations with IdMonad"
@@ -74014,6 +74033,8 @@ Kind<IOKind.Witness, Long> currentTime = IO_OP.delay(System::currentTimeMillis);
 ```
 
 None of these execute when created. The `Supplier` inside `delay` is stored, not called.
+
+An IO always gives a value, so `printHello` returns `Unit.INSTANCE` rather than `null`. A supplier or `map` function that returns null fails the IO when it runs, naming that function, and `ioMonad.of(null)` throws at the call. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 ~~~
 
 ~~~admonish example title="Executing IO Actions"
@@ -74309,6 +74330,8 @@ Contrast this with a raw `Supplier<T>`, which re-executes on every `.get()` call
 - **`now(value)`**: create an already-evaluated `LazyKind`
 - **`force(kind)`**: unwrap and evaluate, returning the cached result or throwing the cached exception
 - **`widen(lazy)`** / **`narrow(kind)`**: convert between `Lazy<A>` and `Kind<LazyKind.Witness, A>`
+
+A `Lazy` always gives a value. `now(null)` throws at the call, and a computation or `map` function that returns null makes `force()` throw, naming that function. The failure is memoised like any other exception. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ~~~admonish note title="How Lazy Evaluation Works"
 ```
@@ -74993,9 +75016,9 @@ Lifts a value into `Kind<MaybeKind.Witness, A>`. Uses `Maybe.fromNullable()` int
   Kind<MaybeKind.Witness, String> kindNullFromMonad = maybeMonad.of(null);   // Nothing
   ```
 ~~~
-~~~admonish  title="_maybeMonad.raiseError(@Nullable Unit error)_"
+~~~admonish  title="_maybeMonad.raiseError(Unit error)_"
 
-Creates a `Kind<MaybeKind.Witness, E>` representing `Nothing`. The `error` (Unit) argument is ignored.
+Creates a `Kind<MaybeKind.Witness, A>` representing `Nothing`. A `Nothing` carries no detail, so the error is `Unit.INSTANCE`, and a null error throws.
   <!-- verify -->
   ```java
   Kind<MaybeKind.Witness, Double> errorKind = maybeMonad.raiseError(Unit.INSTANCE); // Nothing
@@ -75638,11 +75661,11 @@ The core type is the `Reader<R, A>` functional interface:
 ```java
 @FunctionalInterface
 public interface Reader<R, A> {
-  @Nullable A run(@NonNull R r); // The core function: Environment -> Value
+  @NonNull A run(@NonNull R r); // The core function: Environment -> Value
 
   // Static factories
   static <R, A> @NonNull Reader<R, A> of(@NonNull Function<R, A> runFunction);
-  static <R, A> @NonNull Reader<R, A> constant(@Nullable A value);
+  static <R, A> @NonNull Reader<R, A> constant(@NonNull A value);
   static <R> @NonNull Reader<R, R> ask();
 
   // Instance methods (for composition)
@@ -75657,6 +75680,8 @@ public interface Reader<R, A> {
 * `ask()`: Creates a `Reader` that simply returns the environment itself as the result.
 * `map(Function<A, B>)`: Transforms the result `A` to `B`*after* the reader is run, without affecting the required environment `R`.
 * `flatMap(Function<A, Reader<R, B>>)`: Sequences computations. It runs the first reader, uses its result `A` to create a *second* reader (`Reader<R, B>`), and then runs that second reader with the *original* environment `R`.
+
+A `Reader` always gives a value. `constant(null)` throws at the call, and a function given to `of` or `map` that returns null fails the reader when it runs, naming that function. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ## Reader Components
 
@@ -76179,6 +76204,8 @@ Context<String, String> getTraceId = Context.ask(AppContext.TRACE_ID);
 ```
 
 `Context.ask(key)` returns a `Context<R, R>`; it reads the value and returns it unchanged.
+
+A `Context` always gives a value, so `ask` on a key bound to null fails with a `NullPointerException`. Read a key that may hold null with `asks`, turning it into a `Maybe` or a `boolean`, as [`principalIfPresent`](../effect/context_security.md#principalifpresent-optional-access) does.
 
 ### Reading and Transforming with Context.asks
 
@@ -76846,18 +76873,18 @@ The core type is the `State<S, A>` functional interface:
 public interface State<S, A> {
 
   // Represents the result: final value A and final state S
-  record StateTuple<S, A>(@Nullable A value, @NonNull S state) { /* ... */ }
+  record StateTuple<S, A>(@NonNull A value, @NonNull S state) { /* ... */ }
 
   // The core function: Initial State -> (Result Value, Final State)
   @NonNull StateTuple<S, A> run(@NonNull S initialState);
 
   // Static factories
   static <S, A> @NonNull State<S, A> of(@NonNull Function<@NonNull S, @NonNull StateTuple<S, A>> runFunction);
-  static <S, A> @NonNull State<S, A> pure(@Nullable A value); // Creates State(s -> (value, s))
+  static <S, A> @NonNull State<S, A> pure(@NonNull A value); // Creates State(s -> (value, s))
   static <S> @NonNull State<S, S> get();                      // Creates State(s -> (s, s))
   static <S> @NonNull State<S, Unit> set(@NonNull S newState); // Creates State(s -> (Unit.INSTANCE, newState))
   static <S> @NonNull State<S, Unit> modify(@NonNull Function<@NonNull S, @NonNull S> f); // Creates State(s -> (Unit.INSTANCE, f(s)))
-  static <S, A> @NonNull State<S, A> inspect(@NonNull Function<@NonNull S, @Nullable A> f); // Creates State(s -> (f(s), s))
+  static <S, A> @NonNull State<S, A> inspect(@NonNull Function<@NonNull S, @NonNull A> f); // Creates State(s -> (f(s), s))
 
   // Instance methods for composition
   default <B> @NonNull State<S, B> map(@NonNull Function<? super A, ? extends B> f);
@@ -76875,6 +76902,10 @@ public interface State<S, A> {
 * `inspect(Function<S, A> f)`: Creates a computation that applies a function `f` to the current state to calculate a *result value*`A`, leaving the state unchanged.
 * `map(...)`: Transforms the *result value*`A` to `B` after the computation runs, leaving the state transition logic untouched.
 * `flatMap(...)`: The core sequencing operation. It runs the first `State` computation, takes its result value `A`, uses it to create a *second*`State` computation, and runs that second computation using the state produced by the first one. The final result and state are those from the second computation.
+
+### A State Always Gives a Value {#a-state-always-gives-a-value}
+
+A `StateTuple` always holds a value, so `pure(null)` and `new StateTuple<>(null, s)` throw at the call. A function given to `inspect` or `map` that returns null fails the computation when it runs, naming that function. A step with nothing to return gives `Unit.INSTANCE`, as `set` and `modify` do. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ## State Components
 
@@ -77806,7 +77837,7 @@ That is it. No restructuring, no cleverness. Follow these three steps and your f
 | Component | Role |
 |-----------|------|
 | `Trampoline<A>` | Sealed interface with three variants: `Done<A>` (final value), `More<A>` (suspended thunk), `FlatMap<A,B>` (monadic bind) |
-| `Trampoline.done(value)` | Create a completed computation holding a final value |
+| `Trampoline.done(value)` | Create a completed computation holding a final value, which must not be null |
 | `Trampoline.defer(supplier)` | Suspend a computation for later evaluation: the key to stack safety |
 | `trampoline.run()` | Execute the trampoline iteratively and return the final result |
 | `trampoline.map(f)` | Transform the eventual result without executing yet |
@@ -78103,6 +78134,8 @@ That is the Free monad's value: **write once, interpret many ways**.
 | `FreeFactory<F>` | Captures the functor type once, fixing Java's type inference for chained operations |
 | `Free.liftF(fa, functor)` | Lifts a single instruction into a Free program |
 | `free.foldMap(transform, monad)` | Interprets the program using a natural transformation, stack-safe via Trampoline |
+
+A program always gives a value: `Free.pure(null)` throws at the call, and a `map` function that returns null fails the program when it is interpreted. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ~~~admonish note title="How foldMap Works"
 ```
@@ -78556,6 +78589,8 @@ FreeAp<DbOpKind.Witness, User> userFetch =
 // Map over a FreeAp
 FreeAp<DbOpKind.Witness, String> userName = userFetch.map(User::name);
 ```
+
+`FreeAp.pure(null)` throws at the call, and a `map` or `map2` function that returns null fails the program when it is interpreted, whichever applicative interprets it. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ### Combining Independent Computations
 
@@ -80466,6 +80501,28 @@ VTask<String> result = fetchUser
 
 ---
 
+### A Task Always Gives a Value {#a-task-always-gives-a-value}
+
+A `VTask` that succeeds gives a value, never `null`. `VTask.succeed(null)` throws `NullPointerException` at the call. A callable, supplier, `map` function or recovery function that returns null fails the task when it runs, and the exception names that function, as in `callable must not return null`.
+
+<!-- verify -->
+```java
+// Nothing to return: give Unit.INSTANCE, as VTask.exec does
+VTask<Unit> logged = VTask.of(() -> {
+    System.out.println("Fetched " + userId);
+    return Unit.INSTANCE;
+});
+
+// A value that may be missing: say so with a Maybe
+VTask<Maybe<String>> nickname = VTask.of(() -> Maybe.fromNullable(System.getenv("NICKNAME")));
+```
+
+So `VTask.of(() -> { work(); return null; })`, typed `VTask<Void>`, fails when it runs. Use `VTask.exec`, or return `Unit.INSTANCE`. `run()` and `runAsync()` refuse a null from a task written by hand as a lambda, too.
+
+The factories and functions of every lazy type follow the same rule: `IO`, `VStream`, `State`, `Reader`, `Writer`, `Lazy`, `Trampoline`, `Free` and `Context`, and every Effect Path over one. A stream refuses a null element. A nullness checker flags a hand-written `IO` or `Reader` lambda that returns null, and an `IOPath` refuses one when it runs. Only [`Id`](./identity.md) holds a null, since every optic's `modify` runs through it. A `CompletableFuture` outside a Path keeps the JDK's null too.
+
+---
+
 ### Error Handling
 
 ~~~admonish title="recover and recoverWith"
@@ -81496,9 +81553,9 @@ Every pull from a VStream answers exactly one question: *what happened when I as
 
 ```java
 sealed interface Step<A> {
-    record Emit<A>(@Nullable A value, VStream<A> tail) implements Step<A> {}
-    record Done<A>()                                    implements Step<A> {}
-    record Skip<A>(VStream<A> tail)                     implements Step<A> {}
+    record Emit<A>(A value, VStream<A> tail) implements Step<A> {}
+    record Done<A>()                          implements Step<A> {}
+    record Skip<A>(VStream<A> tail)           implements Step<A> {}
 }
 ```
 
@@ -81526,7 +81583,7 @@ sealed interface Step<A> {
 
 | Step | Meaning |
 |------|---------|
-| `Emit(value, tail)` | Here is a value, and here is the rest of the stream |
+| `Emit(value, tail)` | Here is a value, never null, and here is the rest of the stream |
 | `Done()` | The stream is exhausted; stop pulling |
 | `Skip(tail)` | No value this time (e.g. filtered out); advance to the tail |
 
@@ -81557,6 +81614,8 @@ VStream<Integer> range = VStream.range(1, 6); // 1, 2, 3, 4, 5
 // Empty stream
 VStream<Integer> empty = VStream.empty();
 ```
+
+A stream never holds a null element. `VStream.of(null)` throws at the call, and a null in a list, iterator or Java `Stream` fails the stream when that element is pulled: `VStream.fromList element cannot be null`. A function given to `map`, `zipWith` or `recover` that returns null fails it too, closing what the stream opened. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
 ### From Sequences That Never End
 
@@ -81604,7 +81663,7 @@ VStream<String> pages = VStream.unfold(1, page ->
 The `Seed<A, S>` record carries both the emitted value and the next state:
 
 ```java
-public record Seed<A, S>(@Nullable A value, S next) {}
+public record Seed<A, S>(A value, S next) {}
 ```
 
 Each call to the unfold function advances the state and either emits a value or signals completion:
@@ -83327,6 +83386,9 @@ The publisher is subscribed to immediately. Incoming elements are buffered in a 
 push-based delivery to pull-based consumption. Closing the VStream cancels the subscription, so
 `events.take(5)` stops the publisher once it has its five elements.
 
+The Flow rules forbid a null element, and so does a VStream. A publisher that sends one has its
+subscription cancelled, and the stream fails with `VStream.fromPublisher element cannot be null`.
+
 ### Round-Trip
 
 <!-- verify -->
@@ -83391,7 +83453,7 @@ Transformations to `Stream` or `List` materialise the entire VStream. For infini
 use `take()` first.
 ~~~
 
-## PathProvider SPI Registration
+## PathProvider SPI Registration {#pathprovider-spi-registration}
 
 `VStreamPathProvider` registers VStream with the PathProvider SPI, enabling dynamic path
 creation via `Path.from()`:
@@ -83408,6 +83470,8 @@ Optional<Chainable<String>> path =
 ```
 
 The provider is registered in `META-INF/services/org.higherkindedj.hkt.effect.spi.PathProvider` and in the `provides` clause of `hkj-core`'s `module-info`, so `Path.from()` finds it whether `hkj-core` is on the classpath or the module path. When a `PathProvider` of your own lives in a module with a `module-info`, register it both ways: in the services file, which is read when the jar is on the classpath, and with `provides org.higherkindedj.hkt.effect.spi.PathProvider with ...;` in `module-info.java`, which is all `ServiceLoader` reads when the jar is on the module path.
+
+A provider whose effect can fail overrides `monadError()` to return its `MonadError` in an `Optional`. The default is empty, as for `VStream`, and `supportsRecovery()` says which. `PathRegistry.unregister` gives the provider it removed in an `Optional` too.
 
 ## VStreamContext: Layer 2 API
 
@@ -92357,12 +92421,12 @@ ValidationOpticInterpreter.ValidationResult validation =
 ## Common Pitfalls
 
 ### 1. Null Checks in Validation Interpreter
-**Problem**: NPE when using Free Monad DSL with validation interpreter.
+**Problem**: A `get` over a field that holds null fails. The direct and logging interpreters throw `NullPointerException`, and the validation interpreter records an error.
 
-**Solution**: Validation returns null for `get` operations. Always null-check:
+**Solution**: A Free program always gives a value, so an interpreter refuses a `get` that reads null, and the message names `OpticPrograms.preview`. Read a field that may be null with `preview`, passing a lens as `lens.asFold()`. It reads a null as absent and gives an `Optional`:
 ```java
-.flatMap(value -> {
-    if (value != null && value.equals("expected")) {
+.flatMap(maybeValue -> {
+    if (maybeValue.isPresent() && maybeValue.get().equals("expected")) {
         // ...
     }
 })
@@ -95388,8 +95452,8 @@ Run them before your build moves to 0.5.0, with `hkj-openrewrite` 0.5.0 on the r
 | `org.higherkindedj.openrewrite.RemovePathConfig` | Removes `@PathConfig` from a `package-info.java`; no processor reads it, so nothing generated changes |
 | `org.higherkindedj.openrewrite.ReplaceDeprecatedPathSourceCapabilitiesRecipe` | `@PathSource`'s `EFFECTFUL` becomes `CHAINABLE` and `ACCUMULATING` becomes `RECOVERABLE`; each generates the same class as its replacement |
 | `org.higherkindedj.openrewrite.RemoveStateTMonadArgument` | `new StateT<>(fn, monad)`, `StateT.create(fn, monad)` and `StateTKindHelper.stateT(fn, monad)` take the function alone, and `stateT.mapT(monad, f)` becomes `stateT.mapT(f)` |
-| `org.higherkindedj.openrewrite.DetectNullSuccessValuesRecipe` | Marks a `null` passed to a success factory: `Either.right`, `Try.success`, `Path.right`, `Path.success`, `Path.vresultRight`, `VResultPath.pure`, `TryKindHelper.success`, `EitherT.right` or `ErrorContext.success`. Also marks a `Try.of`, `Try.attempt`, `Path.tryOf` or `TryKindHelper.tryOf` lambda that returns `null`. And it marks `Void` as the success type of an `Either`, `Try`, `EitherT`, `EitherPath`, `TryPath`, `VResultPath` or `ErrorContext`, or as the result of a `VTask`, `VTaskPath`, `IO`, `IOPath`, `FreePath`, `CompletableFuturePath` or `Saga`. Replace each with `Unit`, or with a `Maybe` where a value may be missing |
-| `org.higherkindedj.openrewrite.DetectNullErrorValuesRecipe` | Marks a `null`, cast or not, passed as the error to `Either.left`, `EitherT.left`, `Maybe.toEither`, `raiseError` on an `Either` or `EitherT` monad, or a `LensExtensions` or `PrismExtensions` helper, and a `mapLeft` or `bimap` error lambda that returns `null`. Also marks `Void` as the error type of an `Either`, `EitherT`, `EitherMonad` or `EitherTMonad`. Replace each with an error that says what went wrong, or `Unit.INSTANCE` where the error type is `Unit` |
+| `org.higherkindedj.openrewrite.DetectNullSuccessValuesRecipe` | Marks a `null` passed to a success or value factory, such as `Either.right`, `Try.success`, `VTask.succeed`, `State.pure`, `Context.succeed`, a `KindHelper` or context `pure`, or a `Path` factory such as `Path.ioPure`. It also marks a `null` `iterate` seed, `StateTuple` or `Writer` value, or stream element. A lambda that returns `null` is marked when given to `Try.of`, a deferred factory such as `VTask.of` or `IO.delay`, or the `map` of a lazy type, a `Path`, an `Either` or a `Writer`. The `map` of a `Maybe`, an `Optional` or a list, or of their Paths, is left alone, since there a null result means empty. A `CompletableFuture<Void>` given to `Path.future` is marked, as is `Void` as the value type of an `Either`, `Try`, lazy type or `Path`. Replace each with `Unit`, or with a `Maybe` where a value may be missing |
+| `org.higherkindedj.openrewrite.DetectNullErrorValuesRecipe` | Marks a `null`, cast or not, passed as the error to `Either.left`, `EitherT.left`, `Maybe.toEither`, `raiseError` on any `MonadError`, or a `LensExtensions` or `PrismExtensions` helper, and a `mapLeft` or `bimap` error lambda that returns `null`. Also marks `Void` as the error type of an `Either`, `EitherT`, `EitherMonad` or `EitherTMonad`. Replace each with an error that says what went wrong, or `Unit.INSTANCE` where the error type is `Unit` |
 
 ```kotlin
 rewrite {
@@ -97756,7 +97820,7 @@ public class OrderController {
 }
 ```
 
-All ten Effect Path handlers honour `@ResponseStatus` consistently. A success holding `Unit`, or a null from a lazy Path such as an `IOPath`, writes no body, at whatever status applies, as a `void` controller method does.
+All ten Effect Path handlers honour `@ResponseStatus` consistently. A success holding `Unit` writes no body, at whatever status applies, as a `void` controller method does. A lazy Path whose step returns null fails, and writes the failure status.
 
 ### Error Status Mapping
 
@@ -104041,6 +104105,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`StateT` is built from its state function alone**, and `mapT` takes only the transformation, as on every other transformer.
 - **A `Right` or a `Success` always holds a value**: `Either`, `Try` and their Paths refuse null as a success, as `Validated` and `EitherOrBoth` do, and `Unit` stands for a step with nothing to return.
 - **A `Left` always holds an error**: the core `Either` and `EitherT` refuse a null error, as every Effect Path already did.
+- **A lazy computation always gives a value**: `IO`, `VTask`, `VStream`, `State`, `Lazy` and the other lazy types, and every Path over them, refuse a null value, as `Either` and `Try` do. Only `Id` keeps one, for the optics.
 ~~~
 
 ---
@@ -104091,6 +104156,9 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `Right` or a `Success` always holds a value** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `Either.right`, `Try.success`, their Path, `EitherT` and `ErrorContext` factories, and `of` on their monads, refuse null, as `Validated` and `EitherOrBoth` already did. A step that succeeds with nothing to return gives `Unit.INSTANCE`, as `VTask.exec`, `Path.vtaskExec` and `Path.ioRunnable` already do. See [Creating Instances](../monads/either_monad.md#creating-instances).
 - **A `Left` always holds an error** ([#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077)): `Either.left`, `EitherT.left`, `raiseError` on `EitherMonad` and `EitherTMonad`, and `Maybe.toEither` refuse null, as every Effect Path has done since 0.4.11. An error with no detail to carry is `Unit.INSTANCE`. See [Creating Instances](../monads/either_monad.md#creating-instances).
 - **`bracketOutcome`'s release sees its error as a `Maybe`** ([#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077)): release takes an `Either<Maybe<E>, B>`. A typed failure arrives as `Left(Just(e))`, and a failed `onDefect` as `Left(Nothing)`, where it was `Left(null)`. A release lambda that never reads the error needs no change. See [Outcome-aware structured concurrency](../effect/path_vresult.md#outcome-aware-structured-concurrency).
+- **A lazy computation always gives a value** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `IO`, `VTask`, `VStream`, `State`, `Lazy` and the other lazy types, and every Path over them, refuse a null value, as `Either` and `Try` do. A value passed in throws at the call, and a function that returns null fails the computation when it runs. See [A Task Always Gives a Value](../monads/vtask_monad.md#a-task-always-gives-a-value).
+- **Every `raiseError` refuses a null error** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `MonadError.raiseError` takes an error that is never null, so a nullness checker flags `raiseError(null)` on any instance. `Maybe`, `Optional`, `MaybeT` and `OptionalT`, whose failure carries no detail, take `Unit.INSTANCE`. See [The Solution: `raiseError` and `handleErrorWith`](../functional/monad_error.md#the-solution-raiseerror-and-handleerrorwith).
+- **The Path SPI answers with an `Optional` where it has nothing to give** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `PathProvider.monadError()` and `PathRegistry.unregister` return an `Optional`, as `PathRegistry.getProvider` and `GenericPath.monadError()` do, where they returned null. See [PathProvider SPI Registration](../monads/vstream_advanced.md#pathprovider-spi-registration).
 
 ---
 
@@ -104098,7 +104166,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 - **A streamed `VStreamPath` response closes its stream when it stops** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): a client disconnect, a timeout or a serialisation failure now runs the stream's finalisers. See [VStreamPath: SSE Streaming on Virtual Threads](../spring/spring_boot_integration.md#vstreampath-sse-streaming).
 - **An SSE stream from a declarative HTTP client closes when you stop early** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): `headOption()`, `find(...)` or `take(n)` on a stream from `HkjClientExchange.vstream` now closes the response. There is no need to drain it first. See [Streaming with `VStreamPath`](../spring/declarative_http_clients.md#streaming-with-vstreampath).
-- **An endpoint that sends no body is declared `Unit`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): a declarative client method returning `EitherPath<E, Unit>`, `VTaskPath<Either<E, Unit>>` or `MaybePath<Unit>` ignores the body. A controller's `Unit` success, or a null from a lazy Path, writes no body from every handler that writes one value. See [Choosing a Return Type](../spring/declarative_http_clients.md#choosing-a-return-type).
+- **An endpoint that sends no body is declared `Unit`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): a declarative client method returning `EitherPath<E, Unit>`, `VTaskPath<Either<E, Unit>>` or `MaybePath<Unit>` ignores the body. A controller's `Unit` success writes no body from every handler that writes one value. See [Choosing a Return Type](../spring/declarative_http_clients.md#choosing-a-return-type).
 
 ---
 
@@ -104113,8 +104181,9 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`MigrateDeprecationsTo0_5_0` drops the `Monad` that `StateT` no longer takes** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): its new `RemoveStateTMonadArgument` recipe rewrites the constructor, `create`, `stateT` and `mapT` calls. Run it from `hkj-openrewrite` 0.5.0 while the project is on 0.4.11, since it matches the 0.4.x signatures. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
 - **A generator extending the built-in `Optional`, `Maybe`, `List`, `Set` or `Collection` generator inherits no optic expression** ([#757](https://github.com/higher-kinded-j/higher-kinded-j/issues/757)): `@GenerateFocus` recognises those types by name and never asks a generator. So `generateOpticExpression()` and `getRequiredImports()` on them return the defaults, and a subclass claiming another type takes no part in `@GenerateFocus` until it names its own. See [Registering your own container type](../optics/focus_containers.md#the-fine-print-registering-your-own-container-type).
 - **The `state-t-mapt-arity` check is retired** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): every `mapT` now takes the function alone, so there is no missing argument to report. A `disable=` or `severity:` entry that names it has no effect. The `kind-value-narrow` message now names the right accessor: `run()` on `ReaderT` and `WriterT`, and `runStateT(state)` on `StateT`. See [Compile-Time Checks](../tooling/compile_checks.md).
-- **`MigrateDeprecationsTo0_5_0` marks the null successes to replace** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): its new `DetectNullSuccessValuesRecipe` marks a `null` given to `Either.right`, `Try.success` or a Path success factory, and a `Try.of` lambda that returns one. It also marks `Void` used as a success or result type. It rewrites nothing, and `rewriteRun` leaves each mark as a comment to remove. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
-- **`MigrateDeprecationsTo0_5_0` marks the null errors to replace** ([#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077)): its new `DetectNullErrorValuesRecipe` marks a `null` given as an error, as to `Either.left` or `raiseError`, and a `mapLeft` or `bimap` error lambda that returns one. It also marks `Void` used as an error type. Like the success recipe, it only marks. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
+- **`MigrateDeprecationsTo0_5_0` marks the null successes to replace** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): its new `DetectNullSuccessValuesRecipe` marks a `null` given to a success or value factory, and a lambda that returns one where it now fails. It also marks `Void` used as a value type. It rewrites nothing, and `rewriteRun` leaves each mark as a comment to remove. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
+- **`MigrateDeprecationsTo0_5_0` marks the null errors to replace** ([#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): its new `DetectNullErrorValuesRecipe` marks a `null` given as an error, as to `Either.left` or `raiseError`, and a `mapLeft` or `bimap` error lambda that returns one. It also marks `Void` used as an error type. Like the success recipe, it only marks. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
+- **A nullness checker sees every `hkj-core` package as `@NullMarked`** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `vstream`, `constant`, `func`, `writer_t`, `effect.spi`, `util.validation`, `optics.at`, `optics.util`, `optics.free` and `optics.fluent` carry the package annotation the others already did. NullAway reading `hkj-core` from the classpath ignores the module's annotation, so it treated `VStream`, `Const`, `WriterT`, the Path SPI and the validation helpers as unannotated.
 
 ---
 
@@ -104155,7 +104224,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 ### Before you upgrade {#before-you-upgrade}
 
 - **Run `MigrateDeprecationsTo0_5_0` before you move to 0.5.0** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): take `hkj-openrewrite` 0.5.0 for the run, and keep the project on 0.4.11 until it finishes. Its `StateT` recipe matches the 0.4.x signatures, so it rewrites nothing once the build resolves 0.5.0. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
-- **Replace `Void` with `Unit` where a success has nothing to return** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `Either<E, Void>` and `Try<Void>` can no longer hold their null, and a `VTask<Void>` or `IOPath<Void>` now fails when run safely. `VTask.exec`, `Path.vtaskExec` and `Path.ioRunnable` give `Unit`. The `MigrateDeprecationsTo0_5_0` run marks each site.
+- **Replace `Void` with `Unit` where a success has nothing to return** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `Either<E, Void>` and `Try<Void>` can no longer hold their null. A `VTask<Void>`, `IOPath<Void>` or other lazy computation fails when its step returns null. `VTask.exec`, `Path.vtaskExec` and `Path.ioRunnable` give `Unit`. The `MigrateDeprecationsTo0_5_0` run marks each site.
 
 ### What a running program can notice {#runtime-changes}
 
@@ -104182,6 +104251,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`.each()` over an empty list, and `arrayEach().each()` over an empty array, return a new empty one** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)): not the source itself.
 - **A raw `modifyF` under `Either` or `Try` cannot pass over a null element** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `filtered` keeps an element it passes over by lifting it with `of`, as do a prism and an affine that miss. Under those applicatives `of` now refuses null. `TraversalExtensions.modifyAllEither` and its siblings keep the element.
 - **A null `@Nullable` container has no focus** ([#1062](https://github.com/higher-kinded-j/higher-kinded-j/issues/1062)): a generated Focus path that steps into one reads nothing, and a modification leaves it null, where both threw `NullPointerException`.
+- **`OpticPrograms.get` fails on a null focus, naming `preview`** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): a Free program always gives a value, so the direct and logging interpreters throw `NullPointerException`, and `ValidationOpticInterpreter` records an error. `StateOps.view` on a null focus fails the same way.
 
 #### Effect Paths {#runtime-effect-paths}
 
@@ -104214,18 +104284,31 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`Scope.named` names the scope in a JSON thread dump** ([#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052)): the name used to be dropped. `named(null)` now throws `NullPointerException`, where it was accepted.
 - **A null success throws, or fails a `Try`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `Either.right(null)`, `Try.success(null)` and the Path factories throw `NullPointerException`, and so does an `Either` or `EitherPath` `map` whose function returns null. In `Try.of`, `map`, `ap`, `recover` and `TryPath`, a null result gives a `Failure` holding one. A `VResultPath` fails when it runs.
 - **`recover(ma, null)` throws on `EitherMonad`, `TryMonad` and `EitherTMonad`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): whether or not `ma` failed. A null fallback used to give `Right(null)` or `Success(null)`. `Try.orElseGet` refuses a supplier that returns null, as `Validated.orElseGet` does; `orElse(null)` still hands a null back.
-- **The one-argument `toEitherPath` and `toTryPath` on a `FocusPath` throw on a null focus** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): they gave `Right(null)` and `Success(null)`. The message names the form that takes an error. `EitherPath.focus(FocusPath)` throws on a null focus too, naming `focus(path.nullable(), …)`, `TryPath.focus` gives a `Failure`, and `IdPath.toEitherPath` throws on a null value.
+- **The one-argument `toEitherPath` and `toTryPath` on a `FocusPath` throw on a null focus** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): they gave `Right(null)` and `Success(null)`. The message names the form that takes an error. `EitherPath.focus(FocusPath)` throws on a null focus too, naming `focus(path.nullable(), …)`, and `TryPath.focus` gives a `Failure`.
 - **`ErrorContext.io` treats a null result as a failure** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): its error mapper sees a `NullPointerException`, where the context held `Right(null)`.
-- **A computation that returns null fails where it becomes a `Try` or an `Either`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `runSafe`, `toTryPath` and `asTry` give a `Failure` holding a `NullPointerException`, and `catching` hands one to its mapper. So do `Scope.joinSafe` and `joinEither`, `FreePath.attempt` and `EffectBoundary.runSafe`. `VTask.run()`, `unsafeRun()` and `VTaskContext.runOrElse` still hand the null back.
-- **A saga whose result is null is compensated** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): the `VTask` from `Saga.runSafe` gives a `Left(SagaError)` holding a `NullPointerException`, reported against the step named `result`, where it gave `Right(null)`. `CompletableFuturePath.toEitherPath` and `WriterPath.toEitherPath` throw for a null value, naming the route to use.
+- **A function that returns null fails the computation** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): a callable, supplier, `map` function, combiner or recovery function that returns null fails the lazy computation when it runs, and the `NullPointerException` names that function. So `VTask.of(() -> { work(); return null; })` fails, where `run()` handed the null back.
+- **A null result fails where a computation becomes a `Try` or an `Either`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): `runSafe`, `toTryPath`, `asTry`, `Scope.joinSafe` and `EffectBoundary.runSafe` give a `Failure` holding a `NullPointerException`. `joinEither` and `FreePath.attempt` give a `Left`, and `catching` hands it to its mapper.
+- **A null value passed to a lazy factory throws** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `VTask.succeed`, `State.pure`, `Reader.constant`, `Writer.value`, `Lazy.now`, `Trampoline.done`, `Free.pure`, `FreeAp.pure`, `VStream.of`, `Context.succeed`, the Path factories such as `Path.ioPure` and `Path.id`, and `of` on their monads throw `NullPointerException`. So do the constructors of `StateTuple`, `Writer`, `Trampoline.Done`, `Free.Pure` and `VStream`'s `Emit` and `Seed`.
+- **`StateT`, `ReaderT` and `WriterT` refuse a null value** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `of` on their monads, `WriterT.of` and `WriterT.writer` throw on one. A function given to `ReaderT.reader`, or to `map` or `ap` on their monads, that returns null fails the computation. `ReaderTMonad.of(null)` over `Optional` gave an empty `Optional`.
+- **`VTask.run()` and `runAsync()` refuse a null from a hand-written task** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): a `VTask` written as a lambda that returns null throws `NullPointerException` from `run()`, and fails the future from `runAsync()`. `PathOps.firstVTaskSuccess` counts such a null as a failure and tries the next path. `VTaskContext.runOrElse` refuses a null default, and `runOrElseGet` a handler that returns null.
+- **An `IOPath`, `Par` and a `Scope` refuse a null from a hand-written `IO` or task** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `IOPath.unsafeRun()` throws `NullPointerException` for one, as does each step that runs it, and `EffectBoundary.embed`. `Par`'s combinators and a `Scope` that needs every subtask fail on such a null, and an accumulating `Scope` records it as an error.
+- **A stream refuses a null element** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `VStream.of` throws on one, and `fromList`, `fromIterator`, `fromStream` and `generate` fail the stream when they pull one. `fromPublisher` cancels its subscription and fails the stream. `StreamPath` does the same for its sources. `PathOps.traverseVStream` still hands a null item in its list to the function.
+- **A `CompletableFuturePath` fails on a future that completes with null** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `Path.future` and `fromFuture` check the value as it arrives: map a `runAsync` future to `Unit` first. Cancelling either future cancels both. `withTimeout` and `completeOnTimeout` complete only the path's future, where they completed the given one, and the latter refuses a null default. `CompletableFutureMonad` keeps the JDK's null.
+- **An `IdPath` always holds a value** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `Path.id(null)` throws, as does `Path.idPath` given an `Id` holding null. `FocusPath.toIdPath` throws on a null focus, naming `toMaybePath`, and so does `IdPath.focus`, naming `focus(path.nullable())`. `Id` and `IdMonad` still hold a null, since every optic's `modify` runs through them.
+- **The lazy Paths' `focus` refuses a null focus** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `IOPath`, `VTaskPath` and `VStreamPath` fail when they run, and the message names the `path.nullable()` form to use. They used to hold the null.
+- **`Context.ask` fails on a key bound to null** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): read a key that may hold null with `asks`. `SecurityContext.requireAuthenticated` still fails an anonymous user with `UnauthenticatedException`.
+- **A null in a saga fails its step** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): a step whose task returns null fails like any other step, and so does a `map` that returns null. The steps before it are compensated, under `Saga.run` and `Saga.runSafe` alike. A null result gave `Right(null)` from `runSafe`, and `run` handed it back.
+- **`raiseError(null)` throws on `Maybe`, `Optional`, `MaybeT` and `OptionalT`** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): it gave `Nothing` or an empty `Optional`. Pass `Unit.INSTANCE`. Every `MonadError` now refuses a null error.
 - **A null error throws** ([#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077)): `Either.left(null)`, `EitherT.left`, `raiseError(null)` on `EitherMonad` and `EitherTMonad`, and a `mapLeft` or `bimap` whose error function returns null throw `NullPointerException`, where they built `Left(null)`.
 - **The conversions into an `Either` check their error even when it is not needed** ([#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077)): `Maybe.toEither` checks its error, or its supplier, even on a `Just`. The optics helpers `getEither`, `getValidated`, `modifyEither` and `modifyValidated` check theirs even when the focus is there. `Try.toEither` throws `NullPointerException` for a mapper that returns null, where it threw `KindUnwrapException`.
 
 #### Spring {#runtime-spring}
 
 - **The declarative HTTP client refuses an empty body for `EitherPath` and `VTaskPath`** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): it gave `Right(null)`. It now throws an `EmptyResponseBodyException`, or fails the task, after the request has been made. A retry policy that retries every throwable would send it again, so exclude that type. Declare `Unit` where the endpoint sends no body.
-- **A `Unit` or null success writes no body** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): a handler that writes one value wrote `Unit` as the JSON string `"INSTANCE"`, and a null from an `IOPath`, `VTaskPath`, `CompletableFuturePath` or `FreePath` as `null`. Each now sends the resolved status with no body, as a `void` controller method does.
+- **A `Unit` success writes no body** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): a handler that writes one value wrote `Unit` as the JSON string `"INSTANCE"`. It now sends the resolved status with no body, as a `void` controller method does.
+- **A lazy Path whose step returns null writes the failure status** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): an `IOPath`, `VTaskPath`, `CompletableFuturePath` or `FreePath` handler wrote `null` as the body. The step now fails, as a null does in any lazy computation.
 - **A JSON `Either` holding `"right": null` or `"left": null` is refused** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077)): `EitherDeserializer` reports it as bad input, as `ValidatedDeserializer` does for a null value.
+- **An SSE frame holding `null` fails the stream** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): a stream from `HkjClientExchange.vstream` fails with `SseStreamException`, as for any other frame it cannot read.
 
 #### Testing {#runtime-testing}
 
@@ -104263,9 +104346,14 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Effect Paths | Under a nullness checker, a nullable value passed to `Either.right`, `Try.success`, `Path.right`, `Path.success`, `TryKindHelper.success`, `EitherT.right`, the `Either.Right` or `Try.Success` constructor, or `of` on `EitherMonad`, `TryMonad` or `EitherTMonad` | Pass `Unit.INSTANCE` for a step with nothing to return, or route a value that may be missing through `Maybe` | [#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065) |
 | Effect Paths | Under a nullness checker, a nullable error passed to `Either.left`, `EitherT.left`, the `Either.Left` constructor, or `raiseError` on `EitherMonad` or `EitherTMonad` | Pass an error that says what went wrong, or `Unit.INSTANCE` where the error type is `Unit` | [#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077) |
 | Effect Paths | A `bracketOutcome` release whose outcome parameter is declared `Either<E, B>`, or that reads the error as an `E` | Take `Either<Maybe<E>, B>`, and read the error through the `Maybe` | [#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077) |
+| Effect Paths | Under a nullness checker, a nullable value passed to a lazy value factory such as `VTask.succeed`, `State.pure`, `Lazy.now` or `Path.ioPure`, or to `of` on their monads or on a transformer's, or a hand-written `VTask`, `IO` or `Reader` lambda that returns one | Pass `Unit.INSTANCE` for a step with nothing to return, or route a value that may be missing through `Maybe` | [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078) |
+| Effect Paths | Under a nullness checker, a nullable error passed to `raiseError` on any `MonadError`, such as `MaybeMonad` or `OptionalMonad` | Pass an error that says what went wrong, or `Unit.INSTANCE` where the error type is `Unit` | [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078) |
+| Effect Paths | A `PathProvider` that overrides `monadError()`, or code that reads `monadError()` or `PathRegistry.unregister` as a value that may be null | Return `Optional.of(...)` from the override, and read the `Optional` | [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078) |
+| Effect Paths | Under a nullness checker reading `hkj-core` from the classpath, a nullable argument to a type it treated as unannotated: `VStream`, `Const`, `WriterT`, the Path SPI or the validation helpers | Pass a value, or route one that may be missing through `Maybe` | [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078) |
 | Spring | An `@HkjHttpClient` method whose success type is `Void` | Replace `Void` with `org.higherkindedj.hkt.Unit` | [#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065) |
 | Testing | `EitherAssert.hasRightNull()` | Delete the assertion: a `Right` can no longer hold null | [#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065) |
 | Testing | `EitherAssert.hasLeftNull()` | Delete the assertion: a `Left` can no longer hold null | [#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077) |
+| Testing | `IOAssert.hasValueNull()`, `hasNullValue()` on `VTaskAssert`, `LazyAssert`, `StateAssert` and `WriterAssert`, and `ReaderAssert`'s `producesNull()` | Delete the assertion: a lazy computation can no longer give null | [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078) |
 
 ### Deprecated for removal in 0.6.0 {#deprecated}
 
