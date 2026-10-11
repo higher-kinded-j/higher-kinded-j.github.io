@@ -2459,7 +2459,7 @@ IOPath<String> resilient = Path.io(() -> callFlakyService())
     .withBulkhead(serviceBulkhead);                          // cap concurrent callers
 ```
 
-`IOPath` has no typed error channel, so failures surface on the failure channel: `withTimeout` fails with a `CompletionException` wrapping the `TimeoutException` (the same surfacing as `CompletableFuturePath.withTimeout`), an open circuit throws `CircuitOpenException`, and a full bulkhead throws `BulkheadFullException`. The timed-out computation is not interrupted; it keeps running unobserved. To land a timeout or rejection as a typed `Left` instead, use the static `EitherPath` combinators (`EitherPath.withTimeout(step, duration, onTimeout)` and friends).
+`IOPath` has no typed error channel, so failures surface on the failure channel: `withTimeout` fails with a `CompletionException` wrapping the `TimeoutException` (the same surfacing as `CompletableFuturePath.withTimeout`), an open circuit throws `CircuitOpenException`, and a full bulkhead throws `BulkheadFullException`. The timed-out computation is not interrupted; it keeps running unobserved. An interrupt of the caller does reach it, and surfaces as a `VTaskExecutionException` wrapping the `InterruptedException`, with the interrupt status set. To land a timeout or rejection as a typed `Left` instead, use the static `EitherPath` combinators (`EitherPath.withTimeout(step, duration, onTimeout)` and friends).
 
 See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table, and [Patterns and Recipes](patterns.md) for more recipes.
 
@@ -2736,7 +2736,7 @@ VTaskPath<Data> guarded = Path.vtask(() -> fetchData())
     .withBulkhead(serviceBulkhead);
 ```
 
-Two caveats inherited from `VTask.timeout`: the losing computation is *not* interrupted (it keeps running unobserved after the timeout is reported), and a `TimeoutException` thrown inside the computation is indistinguishable from the budget expiring. To interrupt it instead, fork it into a `Scope` with a `timeout`, as in `Scope.<Data>anySucceed().timeout(d).fork(task).join()`. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
+Two caveats inherited from `VTask.timeout`: the losing computation is *not* interrupted (it keeps running unobserved after the timeout is reported), and a `TimeoutException` thrown inside the computation is indistinguishable from the budget expiring. To interrupt it instead, fork it into a `Scope` with a `timeout`, as in `Scope.<Data>anySucceed().timeout(d).fork(task).join()`. A cancellation does reach it: when the thread waiting for the result is interrupted, so is the computation, and the timeout throws `InterruptedException` once it stops, or the time runs out. The path's `unsafeRun()` and `runSafe()` report it wrapped in `VTaskExecutionException`, and `run().runSafe()` holds the `InterruptedException` itself; each sets the interrupt status. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
 
 ---
 
@@ -14349,7 +14349,7 @@ VTask<String> resilient2 = Retry.retryTask(
     RetryPolicy.exponentialBackoff(3, Duration.ofSeconds(1)));
 ```
 
-Both forms return a lazy `VTask`. Nothing executes until you call `run()`, `runSafe()`, or `runAsync()`.
+Both forms return a lazy `VTask`. Nothing executes until you call `run()`, `runSafe()`, or `runAsync()`. The policy's predicate sees the exception the task threw, so `retryOn(IOException.class)` retries a task that throws `IOException`.
 
 ### Retry with Fallback
 
@@ -14477,6 +14477,8 @@ try {
     // Handle the last failure specifically
 }
 ```
+
+An interrupt ends the retry early, whatever the policy's predicate. An attempt that throws `InterruptedException` is not run again, and the exception reaches you as thrown, as it would with no retry. A thread interrupted before the next attempt stops the retry too: the interrupt status is set, and `RetryExhaustedException` is thrown with the last attempt's exception as its cause. So a [`Scope`](../monads/vtask_scope.md) that cancels a retried task does not wait for further attempts. After an interrupt a recovery task does not start, since a cancelled retry starts no new work. A fallback, or a `bracketOutcome` `onDefect` that maps `InterruptedException`, can check `Thread.currentThread().isInterrupted()` to tell this cancellation from exhaustion.
 
 ---
 
@@ -14641,7 +14643,7 @@ CircuitBreakerConfig config = CircuitBreakerConfig.builder()
 | `callTimeout` | 10s | Timeout applied to each protected call |
 | `recordFailure` | all exceptions | Predicate determining which exceptions count |
 
-The `recordFailure` predicate is important: not every exception means the service is unhealthy. A `400 Bad Request` or a business validation error reflects a problem with the *request*, not the *service*. Only count failures that indicate the service itself is struggling.
+The `recordFailure` predicate is important: not every exception means the service is unhealthy. A `400 Bad Request` or a business validation error reflects a problem with the *request*, not the *service*. Only count failures that indicate the service itself is struggling. A cancelled call counts as neither a success nor a failure, whatever `recordFailure` says, and its `InterruptedException` passes through.
 
 ## Creating a Circuit Breaker
 
@@ -14689,6 +14691,8 @@ VTask<String> withFallback = paymentBreaker.protectWithFallback(
     VTask.of(() -> paymentService.getStatus(orderId)),
     ex -> "status-unavailable");
 ```
+
+The fallback runs only for `CircuitOpenException`. Any other failure passes through as thrown.
 
 Or compose with `recover()` for more control:
 
@@ -14757,8 +14761,8 @@ log.info("Circuit breaker: total={}, success={}, failed={}, rejected={}, transit
 
 | Metric | Description |
 |--------|-------------|
-| `totalCalls` | Total calls attempted (including rejected) |
-| `successfulCalls` | Calls that completed successfully |
+| `totalCalls` | Total calls attempted (including rejected and cancelled) |
+| `successfulCalls` | Calls recorded as successes, including those whose exception `recordFailure` does not select |
 | `failedCalls` | Calls that failed (counted by the failure predicate) |
 | `rejectedCalls` | Calls rejected because the circuit was open |
 | `stateTransitions` | Number of state transitions |
@@ -14892,7 +14896,7 @@ VTask<Result> protectedQuery = dbBulkhead.protect(
 Result result = protectedQuery.run();
 ```
 
-Like `CircuitBreaker.protect()`, the method is generic: one bulkhead can protect calls returning different types.
+Like `CircuitBreaker.protect()`, the method is generic: one bulkhead can protect calls returning different types. The bulkhead passes on the task's failure unchanged, so `runSafe()` gives the task's own exception, such as an `IOException`.
 
 ## Handling Rejection
 
@@ -15357,7 +15361,7 @@ VTask<Response> resilientCall = Resilience.<Response>builder(
 Response response = resilientCall.run();
 ```
 
-The builder methods can be called in any order; patterns are always applied in the correct sequence.
+The builder methods can be called in any order; patterns are always applied in the correct sequence. The fallback runs for any failure but an `InterruptedException`, which passes through. Without `withTimeout`, a bulkhead wait, or a retry that an interrupt stops between attempts, throws its own exception with the interrupt status set, and the fallback runs for that.
 
 ~~~admonish tip title="Why this matters"
 The ordering bug is silent: hand-wired resilience with retry accidentally inside the breaker compiles, runs, and even works in tests, then misreports service health in production, where one logical failure counts once instead of once per attempt. `ResilienceBuilder` makes that mistake unrepresentable: whatever order you call the methods in, the layers land as timeout, bulkhead, retry, breaker. The principle is the same as the mapper's [truthful tiers](../mapping/tiers.md): make the wrong composition unrepresentable rather than documented.
