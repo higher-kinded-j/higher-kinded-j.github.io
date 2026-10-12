@@ -26,24 +26,33 @@ Every service has the same three files. A DTO the framework binds. A domain reco
 
 Here is the version most codebases carry, in one form or another:
 
-<!-- verify -->
-```java
-static Order toDomainByHand(OrderDto dto) {
+``` java
+  /** The hand-written version this chapter replaces: throws on the first problem, unlocated. */
+  static Order toDomainByHand(OrderDto dto) {
     Objects.requireNonNull(dto.customer(), "customer required"); // first null wins
     if (!dto.customer().email().contains("@")) {
-        throw new IllegalArgumentException("bad email");         // no field name, no path
+      throw new IllegalArgumentException("bad email"); // no field name, no path
+    }
+    List<LineItem> lines = new ArrayList<>();
+    for (LineItemDto line : dto.lines()) {
+      lines.add(
+          new LineItem(
+              line.sku(), Integer.parseInt(line.quantity()), new BigDecimal(line.price())));
     }
     return new Order(
-        UUID.fromString(dto.id()),                               // throws its own exception
-        new Customer(dto.customer().fullName(),
-                     new EmailAddress(dto.customer().email())),
-        Instant.parse(dto.placedAt()));                          // and so does this one
-}
+        UUID.fromString(dto.id()), // throws its own exception
+        new Customer(dto.customer().fullName(), new EmailAddress(dto.customer().email())),
+        List.copyOf(lines),
+        Instant.parse(dto.placedAt()), // and so does this one
+        Currency.getInstance(dto.currency()), // and this one
+        OrderStatus.valueOf(dto.status())); // and this one
+  }
+
 ```
 
 It works, until it doesn't, and it fails three ways at once:
 
-1. **It drifts.** Add a component to `Order` and nothing tells you the mapper no longer covers it. The compiler is not watching this file.
+1. **It drifts.** Add a component to `OrderDto` and nothing tells you the mapper never reads it. The compiler is not watching this file.
 2. **It stops at the first error.** The client fixes the email, resubmits, and only then learns the date was bad too. One round trip per defect.
 3. **Its errors have no address.** `IllegalArgumentException: bad email` says nothing a client can map onto a form field, so a handler somewhere turns it into a vague 400.
 
@@ -2141,7 +2150,7 @@ Every value a leaf converts arrives as a `String`, the quantity included, so `pa
 
 ## The Imperative Approach
 
-The [chapter opened](ch_intro.md) with a sketch of this mapper; here it is at full scale:
+The [chapter opened](ch_intro.md) with this mapper, over these records:
 
 ``` java
   /** The hand-written version this chapter replaces: throws on the first problem, unlocated. */
@@ -2167,7 +2176,7 @@ The [chapter opened](ch_intro.md) with a sketch of this mapper; here it is at fu
 
 ```
 
-Count the ways [the five-defect request](#the-payoff) defeats it. The mapper reports **one** problem, whichever throws first, and its message carries **no field path**. Eight call sites throw four different exception types (`NullPointerException`, `IllegalArgumentException`, `DateTimeParseException`, `NumberFormatException`). Since a `NumberFormatException` is an `IllegalArgumentException`, three unrelated catch clauses cover them. And when `Order` grows a component next quarter, nothing warns that this method no longer covers it.
+Count the ways [the five-defect request](#the-payoff) defeats it. The mapper reports **one** problem, whichever throws first, and its message carries **no field path**. Eight call sites throw four different exception types (`NullPointerException`, `IllegalArgumentException`, `DateTimeParseException`, `NumberFormatException`). Since a `NumberFormatException` is an `IllegalArgumentException`, three unrelated catch clauses cover them. And when `OrderDto` grows a component next quarter, nothing warns that this method never reads it.
 
 ---
 

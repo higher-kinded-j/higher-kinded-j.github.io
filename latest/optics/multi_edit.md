@@ -126,7 +126,7 @@ A sparse edit cannot *clear* a field: `setIfPresent(path, null)` means "no chang
 ~~~admonish example title="The two parsers" collapsible=true
 ``` java
 /** The boundary parsers the page hands to {@code parseIfPresent}. */
-final class Sku {
+final class SkuParser {
   static Validated<NonEmptyList<FieldError>, String> parse(String raw) {
     String sku = raw.strip();
     return sku.matches("[A-Z0-9-]+")
@@ -134,10 +134,10 @@ final class Sku {
         : Validated.invalidNel(FieldError.of("not a SKU"));
   }
 
-  private Sku() {}
+  private SkuParser() {}
 }
 
-final class Price {
+final class PriceParser {
   static Validated<NonEmptyList<FieldError>, BigDecimal> parse(String raw) {
     try {
       BigDecimal price = new BigDecimal(raw.strip());
@@ -149,7 +149,7 @@ final class Price {
     }
   }
 
-  private Price() {}
+  private PriceParser() {}
 }
 ```
 ~~~
@@ -157,9 +157,9 @@ final class Price {
 ``` java
     Validated<NonEmptyList<FieldError>, LineItem> patched =
         Edits.accumulate(
-                parseIfPresent(SKU, badPatch.sku(), Sku::parse),
+                parseIfPresent(SKU, badPatch.sku(), SkuParser::parse),
                 modifyIfPresent(QUANTITY, badPatch.qtyDelta(), (delta, qty) -> qty + delta),
-                parseIfPresent(PRICE, badPatch.price(), Price::parse))
+                parseIfPresent(PRICE, badPatch.price(), PriceParser::parse))
             .apply(line);
     // Invalid(NonEmptyList[sku: not a SKU, price: not a price])
     //   <- or Valid(line) with only the present fields changed

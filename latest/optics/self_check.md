@@ -113,9 +113,9 @@ A PATCH of an order line sends the SKU `lamp 2` and the price `forty`, and both 
 ``` java
     Validated<NonEmptyList<FieldError>, LineItem> patched =
         Edits.accumulate(
-                parseIfPresent(SKU, badPatch.sku(), Sku::parse),
+                parseIfPresent(SKU, badPatch.sku(), SkuParser::parse),
                 modifyIfPresent(QUANTITY, badPatch.qtyDelta(), (delta, qty) -> qty + delta),
-                parseIfPresent(PRICE, badPatch.price(), Price::parse))
+                parseIfPresent(PRICE, badPatch.price(), PriceParser::parse))
             .apply(line);
     // Invalid(NonEmptyList[sku: not a SKU, price: not a price])
     //   <- or Valid(line) with only the present fields changed
