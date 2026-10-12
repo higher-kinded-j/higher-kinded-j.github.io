@@ -34,30 +34,30 @@ interface InvoiceMapping extends MappingSpec<Invoice, InvoiceDto> {}
 A `List` of such pairs **lifts** the element's spec, which means it parses every element through it. Think `dtos.stream().map(mapper::toDomain).toList()`, except that a bad element does not stop the others, and each failure keeps its index. Here the second line's price fails its leaf:
 
 ``` java
-record LineItem(String sku, BigDecimal price) {}
+record CartLine(String sku, BigDecimal price) {}
 
-record LineItemDto(String sku, String price) {}
+record CartLineDto(String sku, String price) {}
 
-record Cart(String id, List<LineItem> lines) {}
+record Cart(String id, List<CartLine> lines) {}
 
-record CartDto(String id, List<LineItemDto> lines) {}
+record CartDto(String id, List<CartLineDto> lines) {}
 
 @GenerateMapping
-interface LineItemMapping extends MappingSpec<LineItem, LineItemDto> {
+interface CartLineMapping extends MappingSpec<CartLine, CartLineDto> {
   default ValidatedPrism<String, BigDecimal> price() {
     return StandardCodecs.bigDecimal();
   }
 }
 
 @GenerateMapping
-interface CartMapping extends MappingSpec<Cart, CartDto> {} // lines: LineItemMapping, per element
+interface CartMapping extends MappingSpec<Cart, CartDto> {} // lines: CartLineMapping, per element
 
 
     Validated<NonEmptyList<FieldError>, Cart> cart =
         CartMappingImpl.INSTANCE.parse(
             new CartDto(
                 "C-1",
-                List.of(new LineItemDto("SKU-1", "9.99"), new LineItemDto("SKU-2", "12,50"))));
+                List.of(new CartLineDto("SKU-1", "9.99"), new CartLineDto("SKU-2", "12,50"))));
     // Invalid(NonEmptyList[lines.1.price: not a number in plain notation (expected e.g. 123.45)])
 ```
 
@@ -67,10 +67,10 @@ That is the `lines.1.price` error from the [chapter's opening response](ch_intro
 %%{init: {"sequence": {"actorMargin": 20, "diagramMarginX": 10}}}%%
 sequenceDiagram
     accTitle: How an error path grows outward
-    accDescr: The price leaf reports a bare message. LineItemMapping puts price in front of it, the list puts the index 1 in front of that, and CartMapping puts lines in front, so the client reads lines.1.price.
+    accDescr: The price leaf reports a bare message. CartLineMapping puts price in front of it, the list puts the index 1 in front of that, and CartMapping puts lines in front, so the client reads lines.1.price.
     participant C as CartMapping
     participant L as lines list
-    participant I as LineItemMapping
+    participant I as CartLineMapping
     participant P as price leaf
     C->>L: parse lines
     L->>I: parse index 1
@@ -383,7 +383,7 @@ A domain `Optional` against a plain nullable wire component is the [bridge](#opt
 
 An array that needs no conversion crosses as a clone. A record compares an array by reference, so a record with an array and no `equals` of its own is not equal to its own round trip.
 
-The generated Impl calls a nested spec as it would a leaf, through its `asValidatedPrism()`, so recursion needs nothing special: a catalogue's `Category(String name, List<Category> children)` maps with an empty spec. A [one-directional bean mapping](beans.md#one-directional-beans) nests for the direction it has.
+The generated Impl calls a nested spec as it would a leaf, through its `asValidatedPrism()`, so recursion needs nothing special: a shop menu's `MenuSection(String name, List<MenuSection> children)` maps with an empty spec. A [one-directional bean mapping](beans.md#one-directional-beans) nests for the direction it has.
 
 ### Converting Map keys {#converting-map-keys}
 
@@ -401,42 +401,42 @@ A leaf that parses two wire values to one domain value (`"1"` and `"01"`, say) b
 
 ## Flattening a nested component onto a flat wire {#flattening-a-nested-component-onto-a-flat-wire}
 
-Nesting assumes the wire nests too. When a courier's API, fixed by someone else, lists a pickup point's [`Address`](basics.md#your-first-mapping) as plain `street`, `city` and `postcode` fields, no single wire component holds it, so no leaf can map it. `@Flatten` on a marker named after the component spreads it instead:
+Nesting assumes the wire nests too. When a courier's API, fixed by someone else, lists a collection point's [`Address`](basics.md#your-first-mapping) as plain `street`, `city` and `postcode` fields, no single wire component holds it, so no leaf can map it. `@Flatten` on a marker named after the component spreads it instead:
 
 ``` java
-// A courier's pickup point, whose API lists its address as plain fields.
-record PickupPoint(String name, Address address) {} // Address as on Record Mapping Basics
+// A courier's collection point, whose API lists its address as plain fields.
+record CollectionPoint(String name, Address address) {} // Address as on Record Mapping Basics
 
-record PickupPointDto(String name, String street, String city, String postcode) {} // flat
+record CollectionPointDto(String name, String street, String city, String postcode) {} // flat
 
 @GenerateMapping
-interface PickupPointMapping extends MappingSpec<PickupPoint, PickupPointDto> {
+interface CollectionPointMapping extends MappingSpec<CollectionPoint, CollectionPointDto> {
   @Flatten
   Address address(); // spread by name: street, city and postcode
 }
 
 
-    PickupPointMappingImpl pickupMapping = PickupPointMappingImpl.INSTANCE;
+    CollectionPointMappingImpl collectionMapping = CollectionPointMappingImpl.INSTANCE;
 
-    PickupPointDto flat =
-        pickupMapping.build(
-            new PickupPoint("Kirkstall", new Address("1 High Street", "Leeds", "LS1 4AP")));
-    // PickupPointDto[name=Kirkstall, street=1 High Street, city=Leeds, postcode=LS1 4AP]
-    Validated<NonEmptyList<FieldError>, PickupPoint> missing =
-        pickupMapping.parse(new PickupPointDto("Kirkstall", null, "Leeds", null));
+    CollectionPointDto flat =
+        collectionMapping.build(
+            new CollectionPoint("Kirkstall", new Address("1 High Street", "Leeds", "LS1 4AP")));
+    // CollectionPointDto[name=Kirkstall, street=1 High Street, city=Leeds, postcode=LS1 4AP]
+    Validated<NonEmptyList<FieldError>, CollectionPoint> missing =
+        collectionMapping.parse(new CollectionPointDto("Kirkstall", null, "Leeds", null));
     // Invalid(NonEmptyList[address.street: must not be null, address.postcode: must not be null])
 ```
 
 ```mermaid
 flowchart LR
     accTitle: A flattened address
-    accDescr: Each member of the domain's Address record, address.street, address.city and address.postcode, pairs by name with the flat PickupPointDto field of the same name.
-    subgraph D["PickupPoint.address"]
+    accDescr: Each member of the domain's Address record, address.street, address.city and address.postcode, pairs by name with the flat CollectionPointDto field of the same name.
+    subgraph D["CollectionPoint.address"]
         AS["address.street"]
         AC["address.city"]
         AP["address.postcode"]
     end
-    subgraph W["PickupPointDto"]
+    subgraph W["CollectionPointDto"]
         S["street"]
         C["city"]
         P["postcode"]
@@ -453,7 +453,7 @@ flowchart LR
 
 In words: each member of the address pairs with the flat field of the same name, so a bad `street` comes back as `address.street`.
 
-The record's components, spread this way, are the **group**. `parse` builds the `Address` from those fields, with their failures accumulating beside the pickup point's, at the domain path `address.street`. The flat wire never sent that name, but like a [rename](basics.md#renames-mapfield), a path always uses domain names.
+The record's components, spread this way, are the **group**. `parse` builds the `Address` from those fields, with their failures accumulating beside the collection point's, at the domain path `address.street`. The flat wire never sent that name, but like a [rename](basics.md#renames-mapfield), a path always uses domain names.
 
 The vocabulary applies inside the group by name:
 

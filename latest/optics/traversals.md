@@ -127,7 +127,7 @@ Modifying through the traversal builds a **fresh** container and hands it to the
 
 #### Generic Records
 
-A record that declares type parameters of its own gets them on the generated method, so a traversal over `Holder<T>` focuses `T` rather than losing it:
+A record that declares type parameters of its own gets them on the generated method, so a traversal over `Squad<T>` focuses `T` rather than losing it:
 
 <!-- verify -->
 ```java
@@ -247,11 +247,11 @@ In words: reach for a traversal when the structure keeps its shape and only its 
 <!-- verify -->
 ```java
 // Perfect for bulk updates with type safety
-Traversal<Company, String> allEmails = CompanyTraversals.employees()
-    .andThen(EmployeeTraversals.contactInfo())
+Traversal<StaffDirectory, String> allEmails = StaffDirectoryTraversals.employees()
+    .andThen(DirectoryEntryTraversals.contactInfo())
     .andThen(ContactInfoLenses.email());
 
-Company withNormalisedEmails = Traversals.modify(allEmails, String::toLowerCase, company);
+StaffDirectory withNormalisedEmails = Traversals.modify(allEmails, String::toLowerCase, directory);
 ```
 
 ### Use Streams When
@@ -344,9 +344,9 @@ OptionalDouble average = allScores.stream().mapToInt(Integer::intValue).average(
 
 <!-- verify -->
 ```java
-// Validate every email address in the company
-Traversal<Company, String> allEmails = CompanyTraversals.employees()
-    .andThen(EmployeeTraversals.contactInfo())
+// Validate every email address in the directory
+Traversal<StaffDirectory, String> allEmails = StaffDirectoryTraversals.employees()
+    .andThen(DirectoryEntryTraversals.contactInfo())
     .andThen(ContactInfoLenses.email());
 
 Function<String, Kind<ValidatedKind.Witness<List<String>>, String>> validateEmail = 
@@ -354,8 +354,8 @@ Function<String, Kind<ValidatedKind.Witness<List<String>>, String>> validateEmai
         ? VALIDATED.widen(Validated.valid(email))
         : VALIDATED.widen(Validated.invalid(List.of("Invalid email: " + email)));
 
-Validated<List<String>, Company> result = VALIDATED.narrow(
-    allEmails.modifyF(validateEmail, company, Instances.validated(Semigroups.list()))
+Validated<List<String>, StaffDirectory> result = VALIDATED.narrow(
+    allEmails.modifyF(validateEmail, directory, Instances.validated(Semigroups.list()))
 );
 ```
 
@@ -425,18 +425,18 @@ The same `modifyF` pattern scales from one composed path to a whole configuratio
 // Configuration model
 @GenerateLenses
 @GenerateTraversals
-public record ServerConfig(String name, List<DatabaseConfig> databases) {}
+public record ClusterConfig(String name, List<DatabaseEndpoint> databases) {}
 
 @GenerateLenses  
-public record DatabaseConfig(String host, int port, String name) {}
+public record DatabaseEndpoint(String host, int port, String name) {}
 
 // Validation traversal
 public class ConfigValidation {
-    private static final Traversal<ServerConfig, Integer> ALL_DB_PORTS = 
-        ServerConfigTraversals.databases()
-            .andThen(DatabaseConfigLenses.port());
+    private static final Traversal<ClusterConfig, Integer> ALL_DB_PORTS = 
+        ClusterConfigTraversals.databases()
+            .andThen(DatabaseEndpointLenses.port());
   
-    public static Validated<List<String>, ServerConfig> validateConfig(ServerConfig config) {
+    public static Validated<List<String>, ClusterConfig> validateConfig(ClusterConfig config) {
         Function<Integer, Kind<ValidatedKind.Witness<List<String>>, Integer>> validatePort = 
             port -> {
                 if (port >= 1024 && port <= 65535) {
@@ -472,17 +472,17 @@ This is where `partsOf` becomes invaluable. It plays the part of reading the val
 
 ### The Problem: Element-Wise Limitations
 
-Consider this scenario: you have a catalogue of products across multiple categories, and you want to sort all prices from lowest to highest. With standard traversal operations, you're stuck:
+Consider this scenario: you have an assortment of products across several categories, and you want to sort all prices from lowest to highest. With standard traversal operations, you're stuck:
 
 <!-- verify -->
 ```java
 // This doesn't work - modify operates on each element independently
-Traversal<Catalogue, BigDecimal> allPrices = CatalogueTraversals.categories()
+Traversal<Assortment, BigDecimal> allPrices = AssortmentTraversals.categories()
     .andThen(CategoryTraversals.products())
     .andThen(ProductLenses.price());
 
 // This sorts nothing - each price is transformed in isolation
-Catalogue result = Traversals.modify(allPrices, price -> price, catalogue);
+Assortment result = Traversals.modify(allPrices, price -> price, assortment);
 // Prices remain in original order!
 ```
 
@@ -496,12 +496,12 @@ The `partsOf` combinator transforms a `Traversal<S, A>` into a `Lens<S, List<A>>
 2. **Manipulate**: Apply any list operation (sort, reverse, filter, etc.)
 3. **Set**: Distribute the modified elements back to their original positions
 
-Here it sorts the prices of a spring catalogue whose six products sit in two categories:
+Here it sorts the prices of a spring assortment whose six products sit in two categories:
 
 ``` java
     // Two categories of three products, priced in no particular order
-    Catalogue spring =
-        new Catalogue(
+    Assortment spring =
+        new Assortment(
             "Spring",
             List.of(
                 new Category(
@@ -518,7 +518,7 @@ Here it sorts the prices of a spring catalogue whose six products sit in two cat
                         new Product("CABLE", "Cable", new BigDecimal("19.99"), 60)))));
 
     // Convert traversal to a lens on the list of all prices
-    Lens<Catalogue, List<BigDecimal>> pricesLens = Traversals.partsOf(allPrices);
+    Lens<Assortment, List<BigDecimal>> pricesLens = Traversals.partsOf(allPrices);
 
     // Get all prices as a list
     List<BigDecimal> allPricesList = pricesLens.get(spring);
@@ -530,7 +530,7 @@ Here it sorts the prices of a spring catalogue whose six products sit in two cat
     // Result: [19.99, 29.99, 49.99, 499.99, 799.99, 999.99]
 
     // Set the sorted prices back
-    Catalogue sortedCatalogue = pricesLens.set(sortedPrices, spring);
+    Assortment sortedAssortment = pricesLens.set(sortedPrices, spring);
 ```
 
 **The Magic**: The sorted prices are distributed back to the *original positions* in the structure. The first product gets the lowest price, the second product gets the second-lowest, and so on, regardless of which category they belong to.
@@ -667,8 +667,8 @@ List<Product> result = Traversals.sorted(inStockPrices, products);
 
 <!-- verify -->
 ```java
-Lens<Catalogue, List<BigDecimal>> pricesLens = Traversals.partsOf(allPrices);
-List<BigDecimal> prices = new ArrayList<>(pricesLens.get(catalogue));
+Lens<Assortment, List<BigDecimal>> pricesLens = Traversals.partsOf(allPrices);
+List<BigDecimal> prices = new ArrayList<>(pricesLens.get(assortment));
 
 // Apply any list algorithm:
 Collections.shuffle(prices);                         // Randomise

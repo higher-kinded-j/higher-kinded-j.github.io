@@ -20,11 +20,11 @@ A merge is declared entirely by a method's signature: two or more record sources
 ``` java
 // Customer is the chapter's own, from Record Mapping Basics.
 
-record Account(String iban, int balance) {}
+record Account(String accountId, BigDecimal balance) {}
 
 record Settings(boolean darkMode) {}
 
-record Dashboard(String name, String iban, boolean darkMode) {}
+record Dashboard(String name, String accountId, boolean darkMode) {}
 
 @GenerateMerge
 interface DashboardAssembly {
@@ -35,25 +35,25 @@ interface DashboardAssembly {
     Dashboard dashboard =
         DashboardAssemblyImpl.INSTANCE.assemble(
             new Customer("Ada", new EmailAddress("ada@corp.example")),
-            new Account("GB29-XXXX", 4200),
+            new Account("ACC001", new BigDecimal("4200.00")),
             new Settings(true));
-    // Dashboard[name=Ada, iban=GB29-XXXX, darkMode=true]
+    // Dashboard[name=Ada, accountId=ACC001, darkMode=true]
 ```
 
 ```mermaid
 flowchart LR
     accTitle: How a merge fills
-    accDescr: Dashboard's name fills from Customer's name, its iban from Account's iban, and its darkMode from Settings' darkMode. Customer's email and Account's balance are not read.
+    accDescr: Dashboard's name fills from Customer's name, its accountId from Account's accountId, and its darkMode from Settings' darkMode. Customer's email and Account's balance are not read.
     subgraph S["the sources"]
         CN["Customer.name"]
         CE["Customer.email (not read)"]
-        AI["Account.iban"]
+        AI["Account.accountId"]
         AB["Account.balance (not read)"]
         SD["Settings.darkMode"]
     end
     subgraph T["Dashboard"]
         TN["name"]
-        TI["iban"]
+        TI["accountId"]
         TD["darkMode"]
     end
     CN --> TN
@@ -71,7 +71,7 @@ In words: each of `Dashboard`'s components comes from the one source that names 
 A fill copies when the types match, and a same-typed container [crosses as a copy](rules.md#same-typed-containers-cross-as-copies). Otherwise it converts through a leaf, a `default` method on the merge interface named after the target component. Or it parses through a `@GenerateMapping` spec whose wire is the source component and whose domain is the target component. Here a support desk ticket takes its agent's department and parses its `customer` through `CustomerMappingImpl`, and a failure locates as a dotted path:
 
 ``` java
-// A support desk ticket: the department of the agent who opens it (an Employee, as on What Your
+// A support desk ticket: the department of the agent who opens it (a BadgeHolder, as on What Your
 // Spec Generates), and the customer a form describes.
 record TicketForm(CustomerDto customer) {} // the wire side
 
@@ -81,12 +81,13 @@ record TicketCard(String department, Customer customer) {} // the domain side
 interface TicketCardAssembly {
   // TicketCard.department fills from the agent's; TicketCard.customer from TicketForm.customer,
   // through CustomerMapping, which can fail.
-  Validated<NonEmptyList<FieldError>, TicketCard> assemble(Employee agent, TicketForm form);
+  Validated<NonEmptyList<FieldError>, TicketCard> assemble(BadgeHolder agent, TicketForm form);
 }
 
     Validated<NonEmptyList<FieldError>, TicketCard> card =
         TicketCardAssemblyImpl.INSTANCE.assemble(
-            new Employee("Grace", "Support", 41), new TicketForm(new CustomerDto("Bob", "nope")));
+            new BadgeHolder("Grace", "Support", 41),
+            new TicketForm(new CustomerDto("Bob", "nope")));
     // Invalid(NonEmptyList[customer.email: not an email address])
 ```
 
@@ -204,7 +205,7 @@ You can now assemble a domain value from several sources with a return type that
 
 1. It throws a `NullPointerException`
 2. `Invalid(NonEmptyList[name: must not be null])`
-3. `Dashboard[name=null, iban=GB29-XXXX, darkMode=true]`
+3. `Dashboard[name=null, accountId=ACC001, darkMode=true]`
 4. Nothing: the processor refuses a merge that can read a `null`
 ~~~
 
@@ -215,10 +216,10 @@ You can now assemble a domain value from several sources with a return type that
     Dashboard dashboard =
         DashboardAssemblyImpl.INSTANCE.assemble(
             new Customer(null, new EmailAddress("ada@corp.example")),
-            new Account("GB29-XXXX", 4200),
+            new Account("ACC001", new BigDecimal("4200.00")),
             new Settings(true));
 
-    assertThat(dashboard).isEqualTo(new Dashboard(null, "GB29-XXXX", true)); // no check, no error
+    assertThat(dashboard).isEqualTo(new Dashboard(null, "ACC001", true)); // no check, no error
 ```
 
 A leaf that can fail on `name` would make the merge fallible, its return `Validated`, and the `null` a located `must not be null`.

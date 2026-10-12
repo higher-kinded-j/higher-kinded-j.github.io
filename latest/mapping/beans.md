@@ -363,10 +363,10 @@ A compiler note says which way a one-directional bean was read, and why. Renames
 
 ## Bean projections {#bean-projections}
 
-A bean with fewer properties than the domain has no `parse`, since it cannot produce a whole domain value. With a reference property, the Impl offers a validated `patch(current, bean)` instead, which copies the bean's properties onto a domain value you already hold, checking each one. A record projection that copies by identity gets a [lens](tiers.md) instead, since a record is constructed whole. A bean is constructed empty and filled by setters, so a property can be unset, and a lens has no way to refuse one. Here `Employee` is `record Employee(String name, String department, int age)`, from [What Your Spec Generates](tiers.md):
+A bean with fewer properties than the domain has no `parse`, since it cannot produce a whole domain value. With a reference property, the Impl offers a validated `patch(current, bean)` instead, which copies the bean's properties onto a domain value you already hold, checking each one. A record projection that copies by identity gets a [lens](tiers.md) instead, since a record is constructed whole. A bean is constructed empty and filled by setters, so a property can be unset, and a lens has no way to refuse one. Here `BadgeHolder` is `record BadgeHolder(String name, String department, int age)`, from [What Your Spec Generates](tiers.md):
 
 ``` java
-// A bean carrying one of Employee's three components: a projection. A record wire of that shape
+// A bean carrying one of BadgeHolder's three components: a projection. A record wire of that shape
 // copies by identity and keeps asLens(); a bean's reference property can be unset, which a lens's
 // set could not refuse, so the Impl emits the validated patch instead.
 class TransferBean {
@@ -382,22 +382,22 @@ class TransferBean {
 }
 
 @GenerateMapping
-interface TransferMapping extends MappingSpec<Employee, TransferBean> {}
+interface TransferMapping extends MappingSpec<BadgeHolder, TransferBean> {}
 
 
-    Employee researcher = new Employee("Ada", "Research", 36);
+    BadgeHolder researcher = new BadgeHolder("Ada", "Research", 36);
     TransferBean transfer = new TransferBean();
     transfer.setDepartment("Platform");
     TransferMappingImpl transferMapping = TransferMappingImpl.INSTANCE;
 
     // The bean's property can be unset, so the projection validates: patch, never a lens.
-    Validated<NonEmptyList<FieldError>, Employee> transferred =
+    Validated<NonEmptyList<FieldError>, BadgeHolder> transferred =
         transferMapping.patch(researcher, transfer);
-    // Valid(Employee[name=Ada, department=Platform, age=36])
+    // Valid(BadgeHolder[name=Ada, department=Platform, age=36])
 
     // Dense, as on a record wire: an unset property is a located error, never "keep the current
     // value".
-    Validated<NonEmptyList<FieldError>, Employee> unset =
+    Validated<NonEmptyList<FieldError>, BadgeHolder> unset =
         transferMapping.patch(researcher, new TransferBean());
     // Invalid(NonEmptyList[department: must not be null])
 ```

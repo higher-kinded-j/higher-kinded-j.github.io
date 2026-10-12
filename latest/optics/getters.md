@@ -38,7 +38,7 @@ public record Address(String street, String city, String postcode) {}
 public record Person(String firstName, String lastName, int age, Address address) {}
 
 @GenerateGetters
-public record Company(String name, Person ceo, List<Person> employees, Address headquarters) {}
+public record CompanyProfile(String name, Person ceo, List<Person> employees, Address headquarters) {}
 ```
 
 **Common Extraction Needs:**
@@ -154,15 +154,15 @@ Chain Getters together to extract deeply nested values:
 #### Deep Composition Chain
 
 ``` java
-    Getter<Company, Person> ceoGetter = Getter.of(Company::ceo);
+    Getter<CompanyProfile, Person> ceoGetter = Getter.of(CompanyProfile::ceo);
     Getter<Person, String> fullNameGetter = Getter.of(p -> p.firstName() + " " + p.lastName());
     Getter<String, Integer> lengthGetter = Getter.of(String::length);
 
-    // Compose: Company → Person → String → Integer
-    Getter<Company, Integer> ceoNameLength =
+    // Compose: CompanyProfile → Person → String → Integer
+    Getter<CompanyProfile, Integer> ceoNameLength =
         ceoGetter.andThen(fullNameGetter).andThen(lengthGetter);
 
-    Company company = new Company("TechCorp", ceo, employees, headquarters);
+    CompanyProfile company = new CompanyProfile("TechCorp", ceo, employees, headquarters);
     int length = ceoNameLength.get(company);
     // 10, the length of "Jane Smith"
 ```
@@ -211,12 +211,12 @@ Compose Getters with Folds for powerful queries. Two small tools make it work: `
 The company here employs John Doe, Alice Johnson and Bob Williams, aged 30, 28 and 35:
 
 ``` java
-    Getter<Company, List<Person>> employeesGetter = Getter.of(Company::employees);
+    Getter<CompanyProfile, List<Person>> employeesGetter = Getter.of(CompanyProfile::employees);
     Fold<List<Person>, Person> listFold = Fold.of(list -> list);
     Getter<Person, String> fullNameGetter = Getter.of(p -> p.firstName() + " " + p.lastName());
 
-    // Company → List<Person> → Person (multiple) → String
-    Fold<Company, String> allEmployeeNames =
+    // CompanyProfile → List<Person> → Person (multiple) → String
+    Fold<CompanyProfile, String> allEmployeeNames =
         employeesGetter
             .asFold() // Convert Getter to Fold
             .andThen(listFold)
@@ -442,14 +442,14 @@ import org.higherkindedj.optics.Getter;
 import org.higherkindedj.hkt.maybe.Maybe;
 import static org.higherkindedj.optics.extensions.GetterExtensions.getMaybe;
 
-public record Employee(String id, PersonalInfo personalInfo) {}
+public record PersonnelFile(String id, PersonalInfo personalInfo) {}
 public record PersonalInfo(ContactInfo contactInfo, EmergencyContact emergencyContact) {}
 public record ContactInfo(String email, String phone, Address address) {}
 public record EmergencyContact(String name, String phone) {}
 
 public class EmployeeService {
-    private static final Getter<Employee, PersonalInfo> PERSONAL_INFO =
-        Getter.of(Employee::personalInfo);
+    private static final Getter<PersonnelFile, PersonalInfo> PERSONAL_INFO =
+        Getter.of(PersonnelFile::personalInfo);
     private static final Getter<PersonalInfo, ContactInfo> CONTACT_INFO =
         Getter.of(PersonalInfo::contactInfo);
     private static final Getter<ContactInfo, Address> ADDRESS =
@@ -458,7 +458,7 @@ public class EmployeeService {
         Getter.of(Address::city);
 
     // Extract employee city with full null safety
-    public Maybe<String> getEmployeeCity(Employee employee) {
+    public Maybe<String> getEmployeeCity(PersonnelFile employee) {
         return getMaybe(PERSONAL_INFO, employee)
             .flatMap(info -> getMaybe(CONTACT_INFO, info))
             .flatMap(contact -> getMaybe(ADDRESS, contact))
@@ -466,21 +466,21 @@ public class EmployeeService {
     }
 
     // Generate location-based welcome message
-    public String generateWelcomeMessage(Employee employee) {
+    public String generateWelcomeMessage(PersonnelFile employee) {
         return getEmployeeCity(employee)
             .map(city -> "Welcome to our " + city + " office!")
             .orElse("Welcome to our company!");
     }
 
     // Check if employee is in specific city
-    public boolean isEmployeeInCity(Employee employee, String targetCity) {
+    public boolean isEmployeeInCity(PersonnelFile employee, String targetCity) {
         return getEmployeeCity(employee)
             .map(city -> city.equalsIgnoreCase(targetCity))
             .orElse(false);
     }
 
     // Collect all cities from employee list (skipping unknowns)
-    public List<String> getAllCities(List<Employee> employees) {
+    public List<String> getAllCities(List<PersonnelFile> employees) {
         return employees.stream()
             .map(this::getEmployeeCity)
             .filter(Maybe::isJust)
@@ -490,7 +490,7 @@ public class EmployeeService {
     }
 
     // Get city or fallback to emergency contact location
-    public String getAnyCityInfo(Employee employee) {
+    public String getAnyCityInfo(PersonnelFile employee) {
         Getter<PersonalInfo, EmergencyContact> emergencyGetter =
             Getter.of(PersonalInfo::emergencyContact);
 
@@ -597,7 +597,7 @@ Getter<Person, String> email = Getter.of(p ->
     p.firstName().toLowerCase() + "." + p.lastName().toLowerCase() + "@company.com");
 
 // Good: Composable pipeline
-Getter<Company, String> ceoCityUppercase = ceoGetter
+Getter<CompanyProfile, String> ceoCityUppercase = ceoGetter
     .andThen(addressGetter)
     .andThen(cityGetter)
     .andThen(Getter.of(String::toUpperCase));
@@ -668,7 +668,7 @@ for (Person emp : company.employees()) {
 
 <!-- verify -->
 ```java
-Fold<Company, Person> allEmployees = Fold.of(Company::employees);
+Fold<CompanyProfile, Person> allEmployees = Fold.of(CompanyProfile::employees);
 Getter<Person, Integer> age = Getter.of(Person::age);
 
 // Calculate total age
@@ -760,7 +760,8 @@ public class GetterExample {
 
   public record Person(String firstName, String lastName, int age, Address address) {}
 
-  public record Company(String name, Person ceo, List<Person> employees, Address headquarters) {}
+  public record CompanyProfile(
+      String name, Person ceo, List<Person> employees, Address headquarters) {}
 
   public static void main(String[] args) {
     // Create sample data
@@ -774,7 +775,7 @@ public class GetterExample {
             new Person("Bob", "Williams", 35, new Address("321 Pine Rd", "Leeds", "LS1 4AP")));
 
     Address hqAddress = new Address("1000 Corporate Way", "London", "EC2A 4NE");
-    Company company = new Company("TechCorp", ceo, employees, hqAddress);
+    CompanyProfile company = new CompanyProfile("TechCorp", ceo, employees, hqAddress);
 
     // === Basic Getters ===
     Getter<Person, String> fullName = Getter.of(p -> p.firstName() + " " + p.lastName());
@@ -796,10 +797,10 @@ public class GetterExample {
     // === Composition ===
     Getter<Person, Address> addressGetter = Getter.of(Person::address);
     Getter<Address, String> cityGetter = Getter.of(Address::city);
-    Getter<Company, Person> ceoGetter = Getter.of(Company::ceo);
+    Getter<CompanyProfile, Person> ceoGetter = Getter.of(CompanyProfile::ceo);
 
     Getter<Person, String> personCity = addressGetter.andThen(cityGetter);
-    Getter<Company, String> companyCeoCity = ceoGetter.andThen(personCity);
+    Getter<CompanyProfile, String> companyCeoCity = ceoGetter.andThen(personCity);
 
     System.out.println("CEO City: " + personCity.get(ceo));
     System.out.println("Company CEO City: " + companyCeoCity.get(company));

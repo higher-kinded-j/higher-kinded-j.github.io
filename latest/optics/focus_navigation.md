@@ -36,19 +36,19 @@ The previous page gave you one method per record component. This page is about t
 
 ### `.each(Each)`: traverse with a custom `Each` instance {#eacheach-traverse-with-a-custom-each-instance}
 
-The no-argument `.each()` carries a `List` traversal and nothing else. Every other container (a `Set`, a `Collection`, a `Map`, an array, a third-party collection) takes an explicit `Each` instead. An `Each` is a small strategy object, as a `Comparator` is for sorting, that says how to visit a container's elements. The generated method already does this for you: `EachInstances.setEach()` for a `Set` field, `EachInstances.collectionEach()` for a `Collection`. Hand-built paths have to say it themselves, and this works on `FocusPath`, `AffinePath` and `TraversalPath` alike. A catalogue keeps its prices in a `Map` keyed by SKU:
+The no-argument `.each()` carries a `List` traversal and nothing else. Every other container (a `Set`, a `Collection`, a `Map`, an array, a third-party collection) takes an explicit `Each` instead. An `Each` is a small strategy object, as a `Comparator` is for sorting, that says how to visit a container's elements. The generated method already does this for you: `EachInstances.setEach()` for a `Set` field, `EachInstances.collectionEach()` for a `Collection`. Hand-built paths have to say it themselves, and this works on `FocusPath`, `AffinePath` and `TraversalPath` alike. A price list keeps its prices in a `Map` keyed by SKU:
 
 ``` java
 @GenerateLenses
 @GenerateFocus
-record Catalogue(String name, Map<String, BigDecimal> prices) {}
+record PriceList(String name, Map<String, BigDecimal> prices) {}
 
 ```
 
 ``` java
     // A Map field: traverse the values
-    TraversalPath<Catalogue, BigDecimal> allPrices =
-        CatalogueFocus.prices().each(EachInstances.mapValuesEach());
+    TraversalPath<PriceList, BigDecimal> allPrices =
+        PriceListFocus.prices().each(EachInstances.mapValuesEach());
 
     // An HKJ container held behind a hand-written lens
     Lens<SavedForLater, Maybe<LineItem>> itemLens =
@@ -77,8 +77,8 @@ The generated Focus class has exactly one method per record component, so there 
     AffinePath<Order, LineItem> alsoFirst = OrderFocus.lines().headOption();
 
     // A Map field: the generated path still focuses the whole map, so .atKey() applies
-    AffinePath<Catalogue, BigDecimal> lamp = CatalogueFocus.prices().atKey("LAMP");
-    Optional<BigDecimal> lampPrice = lamp.getOptional(catalogue);
+    AffinePath<PriceList, BigDecimal> lamp = PriceListFocus.prices().atKey("LAMP");
+    Optional<BigDecimal> lampPrice = lamp.getOptional(priceList);
 ```
 
 ~~~admonish warning title="Element-level versus container-level"
@@ -520,17 +520,17 @@ A field whose type nests containers gets a composed chain, up to three levels de
 The last two rows are the rule in miniature. `Optional`, `Maybe`, `List`, `Set` and `Collection` nest unconditionally, but an inner container that arrives through the SPI is stepped into only when it is `ZERO_OR_ONE`, or `ZERO_OR_MORE` with `widenCollections` on. Otherwise the path stops at the container.
 
 ``` java
-    TraversalPath<NestedConfig, String> allTags = NestedConfigFocus.tags();
-    List<String> tagValues = allTags.getAll(nestedConfig);
+    TraversalPath<NestedContainers, String> allTags = NestedContainersFocus.tags();
+    List<String> tagValues = allTags.getAll(containers);
 
-    AffinePath<NestedConfig, String> nestedOpt = NestedConfigFocus.nested();
-    Optional<String> innerValue = nestedOpt.getOptional(nestedConfig);
+    AffinePath<NestedContainers, String> nestedOpt = NestedContainersFocus.nested();
+    Optional<String> innerValue = nestedOpt.getOptional(containers);
 
     // Either<String, List<Integer>>: a nested List is stepped into unconditionally
-    TraversalPath<NestedConfig, Integer> data = NestedConfigFocus.data();
+    TraversalPath<NestedContainers, Integer> data = NestedContainersFocus.data();
 
     // Either<String, Map<String, Integer>>: an SPI ZERO_OR_MORE stops at the Map...
-    AffinePath<NestedConfig, Map<String, Integer>> meta = NestedConfigFocus.meta();
+    AffinePath<NestedContainers, Map<String, Integer>> meta = NestedContainersFocus.meta();
 
     // ...unless widenCollections is on
     TraversalPath<WidenedConfig, Integer> hits = WidenedConfigFocus.meta();

@@ -111,8 +111,8 @@ Setter<User, String> usernameSetter = Setter.fromGetSet(
     (user, newUsername) -> new User(newUsername, user.email(), user.loginCount(), user.settings()));
 
 // Using of for transformation-based definition
-Setter<Person, String> nameSetter = Setter.of(
-    f -> person -> new Person(f.apply(person.name()), person.age()));
+Setter<NewHire, String> nameSetter = Setter.of(
+    f -> hire -> new NewHire(f.apply(hire.name()), hire.age()));
 
 // Built-in collection setters
 Setter<List<Integer>, Integer> listSetter = Setter.forList();
@@ -401,9 +401,9 @@ Setter<List<String>, String> listSetter = Setter.forList();
 List<String> normalised = listSetter.modify(String::trim, rawStrings);
 
 // Good: Composable deep modification
-Setter<Company, String> employeeNamesSetter = companySetter
-    .andThen(employeesSetter)
-    .andThen(personNameSetter);
+Setter<Intake, String> hireNamesSetter = intakeSetter
+    .andThen(hiresSetter)
+    .andThen(hireNameSetter);
 ```
 
 ### Use Lens When
@@ -524,11 +524,11 @@ List<User> darkModeUsers = usersSetter.modify(
 <!-- verify -->
 ```java
 // Warning: Setter.of() doesn't support modifyF properly
-Setter<Person, String> nameSetter = Setter.of(
-    f -> person -> new Person(f.apply(person.name()), person.age()));
+Setter<NewHire, String> nameSetter = Setter.of(
+    f -> hire -> new NewHire(f.apply(hire.name()), hire.age()));
 
 // This will throw UnsupportedOperationException!
-nameSetter.modifyF(validateFn, person, applicative);
+nameSetter.modifyF(validateFn, hire, applicative);
 ```
 
 ### Use `fromGetSet()` for Effectful Support
@@ -536,12 +536,12 @@ nameSetter.modifyF(validateFn, person, applicative);
 <!-- verify -->
 ```java
 // Correct: fromGetSet supports modifyF
-Setter<Person, String> nameSetter = Setter.fromGetSet(
-    Person::name,
-    (p, name) -> new Person(name, p.age()));
+Setter<NewHire, String> nameSetter = Setter.fromGetSet(
+    NewHire::name,
+    (h, name) -> new NewHire(name, h.age()));
 
 // Works correctly
-nameSetter.modifyF(validateFn, person, applicative);
+nameSetter.modifyF(validateFn, hire, applicative);
 ```
 
 ### Don't Forget Immutability
@@ -571,6 +571,7 @@ import static org.higherkindedj.hkt.instances.Witnesses.optional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import org.higherkindedj.hkt.Kind;
@@ -584,8 +585,8 @@ public class SetterExample {
 
   public record User(String username, String email, int loginCount, UserSettings settings) {}
 
-  // A trimmed UserSettings, so the runnable example stays small
-  public record UserSettings(String theme, boolean notifications, int fontSize) {}
+  public record UserSettings(
+      String theme, boolean notifications, int fontSize, Map<String, String> preferences) {}
 
   public record Product(String sku, String name, BigDecimal price, int stock) {}
 
@@ -599,7 +600,7 @@ public class SetterExample {
         Setter.fromGetSet(
             User::loginCount, (u, count) -> new User(u.username(), u.email(), count, u.settings()));
 
-    UserSettings settings = new UserSettings("light", true, 14);
+    UserSettings settings = new UserSettings("light", true, 14, Map.of());
     User user = new User("JOHN_DOE", "john@example.com", 10, settings);
 
     // Normalise username
@@ -618,7 +619,8 @@ public class SetterExample {
     Setter<UserSettings, String> themeSetter =
         Setter.fromGetSet(
             UserSettings::theme,
-            (s, theme) -> new UserSettings(theme, s.notifications(), s.fontSize()));
+            (s, theme) ->
+                new UserSettings(theme, s.notifications(), s.fontSize(), s.preferences()));
 
     Setter<User, String> userThemeSetter = settingsSetter.andThen(themeSetter);
 

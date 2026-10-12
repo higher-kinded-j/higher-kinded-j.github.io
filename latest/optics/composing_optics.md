@@ -28,12 +28,12 @@ The alternative to this composition is a nested loop that pattern-matches the pr
 
 ## The Scenario: Validating User Permissions
 
-Imagine a data model for a form that can be filled out by either a registered `User` or a `Guest`. Our goal is to validate that every `Permission` held by a `User` has a valid name.
+Imagine a data model for a form that can be filled out by either a `RegisteredUser` or a `Guest`. Our goal is to validate that every `Permission` held by a `RegisteredUser` has a valid name.
 
 This single task requires us to:
 
 1. Focus on the form's `principal` field (**a job for a Lens**).
-2. Safely "select" the `User` case, ignoring any `Guest`s (**a job for a Prism**).
+2. Safely "select" the `RegisteredUser` case, ignoring any `Guest`s (**a job for a Prism**).
 3. Operate on every `Permission` in the user's list (**a job for a Traversal**).
 
 ---
@@ -61,7 +61,7 @@ public sealed interface Principal {}
 
 @GenerateLenses
 @GenerateTraversals
-public record User(String username, List<Permission> permissions) implements Principal {}
+public record RegisteredUser(String username, List<Permission> permissions) implements Principal {}
 
 public record Guest() implements Principal {}
 
@@ -102,10 +102,10 @@ Before diving into the code, let's understand why we need each type of optic and
 * We need guaranteed access to focus on this field
 * A `Lens` provides exactly this: reliable access to required data
 
-**Why a Prism for `User`?**
+**Why a Prism for `RegisteredUser`?**
 
-* The `principal` could be either a `User` or a `Guest`
-* We only want to validate `User` permissions, ignoring `Guest`s
+* The `principal` could be either a `RegisteredUser` or a `Guest`
+* We only want to validate `RegisteredUser` permissions, ignoring `Guest`s
 * A `Prism` provides safe, optional access to specific sum type cases
 
 **Why a Traversal for `permissions`?**
@@ -116,7 +116,7 @@ Before diving into the code, let's understand why we need each type of optic and
 
 **Why is the result a `Traversal`?**
 
-* The path reaches zero or more names: none for a `Guest`, one per permission for a `User`
+* The path reaches zero or more names: none for a `Guest`, one per permission for a `RegisteredUser`
 * `andThen` works the type out at each step: a `Lens` then a `Prism` is an `Affine`, and an `Affine` then a `Traversal` is a `Traversal`
 * So the chain needs no conversions; [Composition Rules](composition_rules.md) has the full table
 
@@ -134,14 +134,14 @@ import org.higherkindedj.optics.Traversal;
 
 // Get the individual generated optics
 Lens<Form, Principal> formPrincipalLens = FormLenses.principal();
-Prism<Principal, User> principalUserPrism = PrincipalPrisms.user();
-Traversal<User, Permission> userPermissionsTraversal = UserTraversals.permissions();
+Prism<Principal, RegisteredUser> principalUserPrism = PrincipalPrisms.registeredUser();
+Traversal<RegisteredUser, Permission> userPermissionsTraversal = RegisteredUserTraversals.permissions();
 Lens<Permission, String> permissionNameLens = PermissionLenses.name();
 
 // Compose them into a single, deep Traversal
 Traversal<Form, String> formToPermissionNameTraversal =
     formPrincipalLens                       // Lens<Form, Principal>
-        .andThen(principalUserPrism)        // Affine<Form, User>
+        .andThen(principalUserPrism)        // Affine<Form, RegisteredUser>
         .andThen(userPermissionsTraversal)  // Traversal<Form, Permission>
         .andThen(permissionNameLens);       // Traversal<Form, String>
 ```
@@ -179,7 +179,7 @@ Validated<String, Form> rechecked = validatePermissions(updatedForm);
 <!-- verify -->
 ```java
 // Simple validation doesn't need optics
-public Validated<String, User> validateUser(User user) {
+public Validated<String, RegisteredUser> validateUser(RegisteredUser user) {
     if (user.username().length() < 3) {
         return Validated.invalid("Username too short");
     }
@@ -199,8 +199,8 @@ public Validated<String, User> validateUser(User user) {
 // Better with streams for aggregation
 Map<String, Long> permissionCounts = forms.stream()
     .map(Form::principal)
-    .filter(User.class::isInstance)
-    .map(User.class::cast)
+    .filter(RegisteredUser.class::isInstance)
+    .map(RegisteredUser.class::cast)
     .flatMap(user -> user.permissions().stream())
     .collect(groupingBy(Permission::name, counting()));
 ```
@@ -223,8 +223,8 @@ var badResult = traversal.modifyF(validatePermissionName, form, /* wrong applica
 
 // Creating complex compositions inline
 var inlineResult = FormLenses.principal()
-    .andThen(PrincipalPrisms.user())
-    .andThen(UserTraversals.permissions())
+    .andThen(PrincipalPrisms.registeredUser())
+    .andThen(RegisteredUserTraversals.permissions())
     .andThen(PermissionLenses.name())
     .modifyF(validatePermissionName, form, applicative); // Hard to read and reuse
 
@@ -248,8 +248,8 @@ Applicative<ValidatedKind.Witness<String>> validatedApplicative =
 // Create reusable, well-named compositions
 public static final Traversal<Form, String> FORM_TO_PERMISSION_NAMES =
     FormLenses.principal()
-        .andThen(PrincipalPrisms.user())
-        .andThen(UserTraversals.permissions())
+        .andThen(PrincipalPrisms.registeredUser())
+        .andThen(RegisteredUserTraversals.permissions())
         .andThen(PermissionLenses.name());
 
 // Use the well-named traversal
@@ -257,7 +257,7 @@ var result = FORM_TO_PERMISSION_NAMES.modifyF(
     ValidationOptics::validatePermissionName, form, validatedApplicative);
 
 // Be specific about what you're validating
-// This traversal has clear semantics: Form -> User permissions -> permission names
+// This traversal has clear semantics: Form -> RegisteredUser permissions -> permission names
 ```
 
 ---
@@ -273,8 +273,8 @@ var result = FORM_TO_PERMISSION_NAMES.modifyF(
 public static Validated<String, Form> validateFormCompletely(Form form) {
     // First validate the user's basic info
     var userValidation = FormLenses.principal()
-        .andThen(PrincipalPrisms.user())
-        .andThen(UserLenses.username())
+        .andThen(PrincipalPrisms.registeredUser())
+        .andThen(RegisteredUserLenses.username())
         .modifyF(ValidationOptics::validateUsername, form, getValidatedApplicative());
   
     // Then validate permissions
@@ -299,17 +299,17 @@ public static Validated<String, Form> validateFormCompletely(Form form) {
 // so this pair is legal: one path for each variant.
 public static final Traversal<Form, String> USER_PERMISSIONS =
     FormLenses.principal()
-        .andThen(PrincipalPrisms.user())
-        .andThen(UserTraversals.permissions())
+        .andThen(PrincipalPrisms.registeredUser())
+        .andThen(RegisteredUserTraversals.permissions())
         .andThen(PermissionLenses.name());
 
-// `User` is a record, so there is no `UserPrisms`: @GeneratePrisms applies to
+// `RegisteredUser` is a record, so there is no `RegisteredUserPrisms`: @GeneratePrisms applies to
 // sealed interfaces and enums only. To narrow further, filter on a field.
 public static final Traversal<Form, String> DESTRUCTIVE_PERMISSIONS =
     USER_PERMISSIONS.filtered(name -> name.startsWith("PERM_DELETE"));
 ```
 
-If you genuinely need per-role paths, the split has to exist in the model: make `User` a sealed interface over `AdminUser` and `RegularUser`, and `@GeneratePrisms` will give you `UserPrisms.adminUser()`. A record cannot be narrowed by a prism, only filtered.
+If you genuinely need per-role paths, the split has to exist in the model: make `RegisteredUser` a sealed interface over `AdminUser` and `RegularUser`, and `@GeneratePrisms` will give you `RegisteredUserPrisms.adminUser()`. A record cannot be narrowed by a prism, only filtered.
 
 ### 3. Cross-Field Validation
 
@@ -319,7 +319,7 @@ If you genuinely need per-role paths, the split has to exist in the model: make 
 // Validate that a user's permissions are appropriate for who they are
 public static Validated<String, Form> validatePermissionsForUser(Form form) {
     return VALIDATED.narrow(FormLenses.principal()
-        .andThen(PrincipalPrisms.user())
+        .andThen(PrincipalPrisms.registeredUser())
         .modifyF(user -> {
             // Cross-field: the username decides which permissions are allowed
             Set<String> allowedPerms = allowedPermissionsFor(user.username());
@@ -341,9 +341,6 @@ public static Validated<String, Form> validatePermissionsForUser(Form form) {
 ## Complete, Runnable Example {#complete-runnable-example}
 
 With our composed `Traversal`, we can now use `modifyF` to run our validation logic. The `Traversal` handles the navigation and filtering, while the `Validated` applicative (created with a `Semigroup` for joining error strings) handles the effects and error accumulation.
-
-
-The program names its record `VTUser`, to keep it apart from the other examples in its package, so its generated prism is `PrincipalPrisms.vTUser()` where this page writes `user()`.
 
 ```java
 
@@ -381,7 +378,8 @@ public class ValidatedTraversalExample {
 
   @GenerateLenses
   @GenerateTraversals
-  public record VTUser(String username, List<Permission> permissions) implements Principal {}
+  public record RegisteredUser(String username, List<Permission> permissions)
+      implements Principal {}
 
   public record Guest() implements Principal {}
 
@@ -403,8 +401,8 @@ public class ValidatedTraversalExample {
   // --- Reusable Optic Compositions ---
   public static final Traversal<Form, String> FORM_TO_PERMISSION_NAMES =
       FormLenses.principal()
-          .andThen(PrincipalPrisms.vTUser())
-          .andThen(VTUserTraversals.permissions())
+          .andThen(PrincipalPrisms.registeredUser())
+          .andThen(RegisteredUserTraversals.permissions())
           .andThen(PermissionLenses.name());
 
   // --- Helper Methods ---
@@ -426,7 +424,8 @@ public class ValidatedTraversalExample {
     // --- SCENARIO 1: Form with valid permissions ---
     System.out.println("--- Scenario 1: Valid Permissions ---");
     var validUser =
-        new VTUser("alice", List.of(new Permission("PERM_READ"), new Permission("PERM_WRITE")));
+        new RegisteredUser(
+            "alice", List.of(new Permission("PERM_READ"), new Permission("PERM_WRITE")));
     var validForm = new Form(1, validUser);
 
     System.out.println("Input: " + validForm);
@@ -437,7 +436,7 @@ public class ValidatedTraversalExample {
     // --- SCENARIO 2: Form with multiple invalid permissions ---
     System.out.println("--- Scenario 2: Multiple Invalid Permissions ---");
     var invalidUser =
-        new VTUser(
+        new RegisteredUser(
             "charlie",
             List.of(
                 new Permission("PERM_EXECUTE"), // Invalid
@@ -463,7 +462,7 @@ public class ValidatedTraversalExample {
 
     // --- SCENARIO 4: Form with empty permissions list ---
     System.out.println("--- Scenario 4: Empty Permissions List ---");
-    var emptyPermissionsUser = new VTUser("diana", List.of());
+    var emptyPermissionsUser = new RegisteredUser("diana", List.of());
     var emptyPermissionsForm = new Form(5, emptyPermissionsUser);
 
     System.out.println("Input: " + emptyPermissionsForm);
@@ -518,7 +517,7 @@ public class ValidatedTraversalExample {
     System.out.println("--- Scenario 7: Selective Validation (Skipping the Expensive Check) ---");
 
     var userWithInvalidPerms =
-        new VTUser(
+        new RegisteredUser(
             "eve",
             List.of(
                 new Permission(""), // Empty - cheap check fails
@@ -560,11 +559,11 @@ public class ValidatedTraversalExample {
 === OPTIC COMPOSITION VALIDATION EXAMPLE ===
 
 --- Scenario 1: Valid Permissions ---
-Input: Form[formId=1, principal=VTUser[username=alice, permissions=[Permission[name=PERM_READ], Permission[name=PERM_WRITE]]]]
-Result: Valid(Form[formId=1, principal=VTUser[username=alice, permissions=[Permission[name=PERM_READ], Permission[name=PERM_WRITE]]]])
+Input: Form[formId=1, principal=RegisteredUser[username=alice, permissions=[Permission[name=PERM_READ], Permission[name=PERM_WRITE]]]]
+Result: Valid(Form[formId=1, principal=RegisteredUser[username=alice, permissions=[Permission[name=PERM_READ], Permission[name=PERM_WRITE]]]])
 
 --- Scenario 2: Multiple Invalid Permissions ---
-Input: Form[formId=3, principal=VTUser[username=charlie, permissions=[Permission[name=PERM_EXECUTE], Permission[name=PERM_WRITE], Permission[name=PERM_SUDO], Permission[name=PERM_READ]]]]
+Input: Form[formId=3, principal=RegisteredUser[username=charlie, permissions=[Permission[name=PERM_EXECUTE], Permission[name=PERM_WRITE], Permission[name=PERM_SUDO], Permission[name=PERM_READ]]]]
 Result (errors accumulated): Invalid(Invalid permission: PERM_EXECUTE; Invalid permission: PERM_SUDO)
 
 --- Scenario 3: Guest Principal (No Validation Targets) ---
@@ -572,8 +571,8 @@ Input: Form[formId=4, principal=Guest[]]
 Result (path does not match): Valid(Form[formId=4, principal=Guest[]])
 
 --- Scenario 4: Empty Permissions List ---
-Input: Form[formId=5, principal=VTUser[username=diana, permissions=[]]]
-Result (empty list): Valid(Form[formId=5, principal=VTUser[username=diana, permissions=[]]])
+Input: Form[formId=5, principal=RegisteredUser[username=diana, permissions=[]]]
+Result (empty list): Valid(Form[formId=5, principal=RegisteredUser[username=diana, permissions=[]]])
 
 --- Scenario 5: Optic Reusability ---
 Batch validation results:
@@ -583,10 +582,10 @@ Batch validation results:
   Form 4: ✓ VALID
 
 --- Scenario 6: Different Error Accumulation Strategy ---
-Input: Form[formId=3, principal=VTUser[username=charlie, permissions=[Permission[name=PERM_EXECUTE], Permission[name=PERM_WRITE], Permission[name=PERM_SUDO], Permission[name=PERM_READ]]]]
+Input: Form[formId=3, principal=RegisteredUser[username=charlie, permissions=[Permission[name=PERM_EXECUTE], Permission[name=PERM_WRITE], Permission[name=PERM_SUDO], Permission[name=PERM_READ]]]]
 Result with list accumulation: Invalid([Invalid permission: PERM_EXECUTE, Invalid permission: PERM_SUDO])
 --- Scenario 7: Selective Validation (Skipping the Expensive Check) ---
-Input: Form[formId=7, principal=VTUser[username=eve, permissions=[Permission[name=], Permission[name=PERM_READ], Permission[name=INVALID_PERM]]]]
+Input: Form[formId=7, principal=RegisteredUser[username=eve, permissions=[Permission[name=], Permission[name=PERM_READ], Permission[name=INVALID_PERM]]]]
   Running EXPENSIVE validation for: PERM_READ
   Running EXPENSIVE validation for: INVALID_PERM
 Result: Invalid(Invalid permission: INVALID_PERM)
@@ -605,11 +604,11 @@ This example shows several advantages of the optics approach:
 
 ### **Declarative Composition**
 
-The `formToPermissionNameTraversal` reads like a clear path specification: "From a Form, go to the principal, if it's a User, then to each permission, then to each name." This is self-documenting code.
+The `formToPermissionNameTraversal` reads like a clear path specification: "From a Form, go to the principal, if it's a RegisteredUser, then to each permission, then to each name." This is self-documenting code.
 
 ### **Type Safety**
 
-Every step in the composition is checked at compile time. It's impossible to accidentally apply permission validation to Guest data or to skip the User filtering step.
+Every step in the composition is checked at compile time. It's impossible to accidentally apply permission validation to Guest data or to skip the RegisteredUser filtering step.
 
 ### **Automatic Error Accumulation**
 
@@ -800,8 +799,8 @@ public class SimplifiedValidation {
     // Same traversal as before
     public static final Traversal<Form, String> FORM_TO_PERMISSION_NAMES =
         FormLenses.principal()
-            .andThen(PrincipalPrisms.user())
-            .andThen(UserTraversals.permissions())
+            .andThen(PrincipalPrisms.registeredUser())
+            .andThen(RegisteredUserTraversals.permissions())
             .andThen(PermissionLenses.name());
 
     // Simplified validation - no Applicative setup needed

@@ -26,7 +26,7 @@ An **`Iso`** (Isomorphism) is an optic that represents a perfectly reversible, l
 
 An `Iso` is the right tool when you need to:
 
-* Convert a wrapper type to its raw value (e.g., `UserId(long id)` <-> `long`).
+* Convert a wrapper type to its raw value (e.g., `UserId(String value)` <-> `String`).
 * Change units or representation without losing anything (e.g., whole cents <-> the same amount written to two decimal places).
 * Bridge two data structures that are informationally identical (e.g., a custom record and a generic tuple).
 
@@ -201,11 +201,11 @@ For the full range of optics operations within comprehensions (including travers
 <!-- verify -->
 ```java
 // A wrapper and the value it wraps: the same information, convertible both ways for every value
-Iso<UserId, Long> userIdIso = Iso.of(UserId::value, UserId::new);
+Iso<UserId, String> userIdIso = Iso.of(UserId::value, UserId::new);
 
 // Use with any lens that focuses a UserId
-@GenerateLenses record Account(UserId id, String owner) {}
-Lens<Account, Long> rawAccountId = AccountLenses.id().andThen(userIdIso);
+@GenerateLenses record UserAccount(UserId id, String owner) {}
+Lens<UserAccount, String> rawAccountId = UserAccountLenses.id().andThen(userIdIso);
 ```
 
 ### Use Direct Conversion Methods When
@@ -298,19 +298,19 @@ public static final Iso<Point, Tuple2<Integer, Integer>> POINT_TO_TUPLE =
 <!-- verify -->
 ```java
 // Strongly-typed wrappers
-public record ProductId(UUID value) {}
+public record VariantId(UUID value) {}
 public record CategoryId(UUID value) {}
 
 public class WrapperIsos {
-    public static final Iso<ProductId, UUID> PRODUCT_ID_UUID =
-        Iso.of(ProductId::value, ProductId::new);
+    public static final Iso<VariantId, UUID> VARIANT_ID_UUID =
+        Iso.of(VariantId::value, VariantId::new);
 
     public static final Iso<CategoryId, UUID> CATEGORY_ID_UUID =
         Iso.of(CategoryId::value, CategoryId::new);
 
     // Use with any UUID-based operations
-    public static String formatProductId(ProductId id) {
-        return PRODUCT_ID_UUID
+    public static String formatVariantId(VariantId id) {
+        return VARIANT_ID_UUID
             .andThen(Iso.of(UUID::toString, UUID::fromString))
             .get(id);
     }
@@ -323,10 +323,10 @@ A tempting use of an Iso is a bridge between a domain record and its wire DTO (`
 
 ## Complete, Runnable Example
 
-This example puts all the steps together to show both direct conversion and composition. Its records pass `targetPackage` to `@GenerateLenses`, so `CircleLenses` is generated into `org.higherkindedj.example.optics.iso` and imported from there; your own records can leave the attribute out.
+This example puts all the steps together to show both direct conversion and composition. Its records pass `targetPackage` to `@GenerateLenses`, so `DeliveryZoneLenses` is generated into `org.higherkindedj.example.optics.iso` and imported from there; your own records can leave the attribute out.
 
 ``` java
-import org.higherkindedj.example.optics.iso.CircleLenses;
+import org.higherkindedj.example.optics.iso.DeliveryZoneLenses;
 import org.higherkindedj.hkt.tuple.Tuple;
 import org.higherkindedj.hkt.tuple.Tuple2;
 import org.higherkindedj.hkt.tuple.Tuple2Lenses;
@@ -345,7 +345,7 @@ public class IsoUsageExample {
   public record Point(int x, int y) {}
 
   @GenerateLenses(targetPackage = "org.higherkindedj.example.optics.iso")
-  public record Circle(Point centre, int radius) {}
+  public record DeliveryZone(Point centre, int radius) {}
 
   public static class Converters {
     @GenerateIsos
@@ -377,13 +377,13 @@ public class IsoUsageExample {
   }
 
   public static void main(String[] args) {
-    // 1. Define a point and circle.
+    // 1. Define a point and a delivery zone.
     var myPoint = new Point(10, 20);
-    var myCircle = new Circle(myPoint, 5);
+    var myZone = new DeliveryZone(myPoint, 5);
 
     System.out.println("=== ISO USAGE EXAMPLE ===");
     System.out.println("Original Point: " + myPoint);
-    System.out.println("Original Circle: " + myCircle);
+    System.out.println("Original Zone: " + myZone);
     System.out.println("------------------------------------------");
 
     // 2. Get the generated Iso.
@@ -443,21 +443,21 @@ public class IsoUsageExample {
     System.out.println("Perfect round-trip: " + myPoint.equals(recoveredFromString));
     System.out.println();
 
-    // --- SCENARIO 6: Working with Circle centre through Iso ---
-    System.out.println("--- Scenario 6: Circle Centre Manipulation ---");
+    // --- SCENARIO 6: Working with a delivery zone's centre through Iso ---
+    System.out.println("--- Scenario 6: Zone Centre Manipulation ---");
 
     // Get the centre as a tuple, modify it, and put it back
-    Point originalCentre = myCircle.centre();
+    Point originalCentre = myZone.centre();
     Tuple2<Integer, Integer> centreAsTuple = pointToTupleIso.get(originalCentre);
     Tuple2<Integer, Integer> shiftedCentre =
         Tuple.of(centreAsTuple._1() + 10, centreAsTuple._2() + 10);
     Point newCentre = pointToTupleIso.reverse().get(shiftedCentre);
-    Circle newCircle = CircleLenses.centre().set(newCentre, myCircle);
+    DeliveryZone newZone = DeliveryZoneLenses.centre().set(newCentre, myZone);
 
-    System.out.println("Original circle: " + myCircle);
+    System.out.println("Original zone: " + myZone);
     System.out.println("Centre as tuple: " + centreAsTuple);
     System.out.println("Shifted centre tuple: " + shiftedCentre);
-    System.out.println("New circle: " + newCircle);
+    System.out.println("New zone: " + newZone);
   }
 }
 ```
@@ -467,7 +467,7 @@ public class IsoUsageExample {
 ```
 === ISO USAGE EXAMPLE ===
 Original Point: Point[x=10, y=20]
-Original Circle: Circle[centre=Point[x=10, y=20], radius=5]
+Original Zone: DeliveryZone[centre=Point[x=10, y=20], radius=5]
 ------------------------------------------
 --- Scenario 1: Direct Conversions ---
 Point to Tuple conversion:
@@ -499,11 +499,11 @@ Point as string: 10,20
 Recovered from string: Point[x=10, y=20]
 Perfect round-trip: true
 
---- Scenario 6: Circle Centre Manipulation ---
-Original circle: Circle[centre=Point[x=10, y=20], radius=5]
+--- Scenario 6: Zone Centre Manipulation ---
+Original zone: DeliveryZone[centre=Point[x=10, y=20], radius=5]
 Centre as tuple: Tuple2[_1=10, _2=20]
 Shifted centre tuple: Tuple2[_1=20, _2=30]
-New circle: Circle[centre=Point[x=20, y=30], radius=5]
+New zone: DeliveryZone[centre=Point[x=20, y=30], radius=5]
 ```
 
 ---

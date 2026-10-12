@@ -14,12 +14,12 @@ Here is the whole idea before any of the theory. One program, described once, ru
 
 ``` java
     // A description, not an action: nothing has touched the account yet
-    Free<OpticOpKind.Witness, Account> withdrawal = withdraw(account, 30);
+    Free<OpticOpKind.Witness, Account> withdrawal = withdraw(account, new BigDecimal("30"));
 
     // Run it for real
     DirectOpticInterpreter direct = OpticInterpreters.direct();
     Account settled = direct.run(withdrawal);
-    // Account[id=ACC-1, balance=70]
+    // Account[accountId=ACC-1, balance=70]
 
     // Run the same value again, recording every optic operation on the way
     LoggingOpticInterpreter logging = OpticInterpreters.logging();

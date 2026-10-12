@@ -82,13 +82,14 @@ A constant on the spec holding something built from the Impl, such as its `Valid
 
 ``` java
 // A surface of the Impl held on the spec: no warning, and never do this either.
-record Locker(String code, EmailAddress contact) {}
+record ParcelLocker(String code, EmailAddress contact) {}
 
-record LockerDto(String code, String contact) {}
+record ParcelLockerDto(String code, String contact) {}
 
 @GenerateMapping
-interface LockerMapping extends MappingSpec<Locker, LockerDto> {
-  ValidatedPrism<LockerDto, Locker> PRISM = LockerMappingImpl.INSTANCE.asValidatedPrism();
+interface ParcelLockerMapping extends MappingSpec<ParcelLocker, ParcelLockerDto> {
+  ValidatedPrism<ParcelLockerDto, ParcelLocker> PRISM =
+      ParcelLockerMappingImpl.INSTANCE.asValidatedPrism();
 
   default ValidatedPrism<String, EmailAddress> contact() {
     return EmailCodecs.EMAIL;
@@ -97,7 +98,7 @@ interface LockerMapping extends MappingSpec<Locker, LockerDto> {
 
 ```
 
-This one fails harder than a `null`. A program that uses `LockerMappingImpl.INSTANCE` first evaluates `PRISM` while `INSTANCE` is still `null`, so the Impl fails to initialise with an `ExceptionInInitializerError`, and every later use throws `NoClassDefFoundError`. Keep the Impl and its surfaces in the calling code.
+This one fails harder than a `null`. A program that uses `ParcelLockerMappingImpl.INSTANCE` first evaluates `PRISM` while `INSTANCE` is still `null`, so the Impl fails to initialise with an `ExceptionInInitializerError`, and every later use throws `NoClassDefFoundError`. Keep the Impl and its surfaces in the calling code.
 ~~~
 
 ---
