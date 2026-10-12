@@ -26,7 +26,7 @@ The recipes use the chapter's order-service cast, and declare any supporting typ
 ~~~admonish example title="The cast these recipes use" collapsible=true
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 @GenerateTraversals
 public record Order(
     UUID id,
@@ -39,7 +39,7 @@ public record Order(
 
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 public record Customer(String name, EmailAddress email) {}
 ```
 
@@ -64,7 +64,7 @@ public record CustomerProfile(
 
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 public record Consignment(UUID orderId, Address to, ConsignmentState state) {}
 ```
 
@@ -125,7 +125,7 @@ You want to replace one value three records down, such as the email on an order'
 ```
 ~~~
 
-`set` returns a new `Order`: it rebuilds the records on the path and reuses everything off it, the lines included. Chaining `.email().value()` straight on needs generated navigators, which `@GenerateFocus(generateNavigators = true)` turns on, here on `Order` and `Customer`. Without them, each hop is a `.via(...)`.
+`set` returns a new `Order`: it rebuilds the records on the path and reuses everything off it, the lines included. Chaining `.email().value()` straight on uses the navigators `@GenerateFocus` generates, here on `Order` and `Customer`. With them turned off, each hop is a `.via(...)`.
 
 ---
 
@@ -311,7 +311,7 @@ A stockroom keeps its stock by SKU in a `Map<String, Integer>`. You want a count
 ``` java
 // The stockroom an order is picked from: stock by SKU, and a name verified by a check
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 record Stockroom(String name, Map<String, Integer> stock, Either<String, String> verifiedName) {}
 
 ```
@@ -410,7 +410,7 @@ final class Emails {
     Validated<NonEmptyList<FieldError>, Customer> patched =
         Edits.accumulate(
                 parseIfPresent(CustomerFocus.name(), patch.name(), Names::parse),
-                parseIfPresent(CustomerFocus.email().toPath(), patch.email(), Emails::parse))
+                parseIfPresent(CustomerFocus.email(), patch.email(), Emails::parse))
             .apply(customer);
 ```
 
@@ -429,7 +429,7 @@ final class Emails {
 
 For a patch with a blank name and an email that has no `@`, `patched` is `Invalid(NonEmptyList[name: must not be blank, email: not an address])`. A patch that supplies only a good email changes only the email.
 
-`parseIfPresent` does nothing for a `null` field. `Edits.accumulate` collects every failure in edit order, and writes only when every edit has parsed. A generated path carries its component's name, which is where `name:` and `email:` come from. A navigator hop such as `CustomerFocus.email()` hands over its path with `toPath()`. [Many Edits at Once](multi_edit.md) covers the rest of the builder.
+`parseIfPresent` does nothing for a `null` field. `Edits.accumulate` collects every failure in edit order, and writes only when every edit has parsed. A generated path carries its component's name, which is where `name:` and `email:` come from. A navigator such as `CustomerFocus.email()` is a path itself, so it goes straight in. [Many Edits at Once](multi_edit.md) covers the rest of the builder.
 
 ---
 

@@ -26,7 +26,7 @@ The records are the chapter's cast: an order of priced line items, placed by a c
 ~~~admonish example title="The cast these examples use" collapsible=true
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 @GenerateTraversals
 public record Order(
     UUID id,
@@ -45,7 +45,7 @@ public record LineItem(String sku, Integer quantity, BigDecimal price) {}
 
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 public record Customer(String name, EmailAddress email) {}
 ```
 

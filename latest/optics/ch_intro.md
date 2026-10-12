@@ -38,7 +38,7 @@ The annotation processor writes `OrderFocus` and `LineItemFocus` from `@Generate
 
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 @GenerateTraversals
 public record Order(
     UUID id,

@@ -62,7 +62,7 @@ The orders are the chapter's cast: an `Order` of priced `LineItem`s.
 ~~~admonish example title="The cast these examples use" collapsible=true
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 @GenerateTraversals
 public record Order(
     UUID id,

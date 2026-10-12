@@ -26,7 +26,7 @@ A Focus path does for your records what the JPA metamodel or QueryDSL's Q-types 
 ~~~admonish example title="The cast these examples use" collapsible=true
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 @GenerateTraversals
 public record Order(
     UUID id,
@@ -39,7 +39,7 @@ public record Order(
 
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 public record Customer(String name, EmailAddress email) {}
 ```
 ~~~
@@ -56,7 +56,7 @@ public record Customer(String name, EmailAddress email) {}
 
 **Step 3.** That is it. The path you typed (`OrderFocus.customer().name()`) is a typed value: store it, pass it around, reuse it. The processor generated `OrderFocus` and `CustomerFocus` at compile time; nothing reflective happens at runtime.
 
-`.name()` chains straight off `.customer()` because of `generateNavigators = true`. A *navigator* is the small class the processor generates for a field whose type is another annotated record, with one method per field of that record. Without it, `OrderFocus.customer()` is still a perfectly good `FocusPath<Order, Customer>`, and you spell the next hop `.via(CustomerFocus.name())`. Navigators are sugar over composition, so nothing is lost by leaving them off and nothing is locked in by turning them on.
+`.name()` chains straight off `.customer()` because `Customer` is another annotated record, so `customer()` returns a *navigator*. A navigator is the field's own path, a `FocusPath<Order, Customer>`, with a method added for each field of the record it reaches. It goes wherever a `FocusPath` goes, and `.via(CustomerFocus.name())` spells the same hop. Navigators are on by default, and `@GenerateFocus(generateNavigators = false)` turns them off for a record.
 
 Collections, optionals and sealed types extend the same pattern, and [Find your field](#find-your-field) gives the spelling for each. You almost never have to compose lenses by hand to get useful work done.
 
@@ -72,7 +72,7 @@ You arrive holding a field, not an optic type. Find its declaration in the table
 
 | Your field | The generated method returns | What you write next |
 |---|---|---|
-| [`Customer customer`](focus_navigation.md#fluent-navigation-with-generated-navigators), a record with `@GenerateFocus` | a navigator, since `Basket` has `generateNavigators = true` | `.email()` |
+| [`Customer customer`](focus_navigation.md#fluent-navigation-with-generated-navigators), a record with `@GenerateFocus` | a navigator, which is also a `FocusPath<Basket, Customer>` | `.email()` |
 | `String reference` | `FocusPath<Basket, String>` | `.get(basket)`, `.set(value, basket)`, `.modify(f, basket)` |
 | [`List<LineItem> lines`](focus_navigation.md#collection-navigation), or a `Set` or `Collection` | `TraversalPath<Basket, LineItem>`, already on the elements | `.via(LineItemFocus.quantity())` |
 | [`Optional<String> giftMessage`](focus_navigation.md#some-unwrap-optional) | `AffinePath<Basket, String>` | `.getOptional(basket)` |
@@ -85,12 +85,12 @@ You arrive holding a field, not an optic type. Find its declaration in the table
 | [`JsonNode payload`](importing_optics.md), a type you cannot annotate | `FocusPath<Basket, JsonNode>` | `.via(JsonNodeOptics.object())`, from `@ImportOptics` |
 | [`Kind<F, A> items`](kind_field_support.md) | a path chosen by the witness | depends on the witness |
 
-The two rows marked "by default" step into the elements instead when the annotation sets `widenCollections = true`, which [the fine print](focus_navigation.md#path-widening) covers.
+The two rows marked "by default" step into the elements instead when the annotation sets `widenCollections = true`, or names the field in `widenFields`, which [the fine print](focus_navigation.md#path-widening) covers.
 
 ~~~admonish example title="Proof: every row, compiled" collapsible=true
 ``` java
 // The basket a customer pays for before it becomes an Order, with a field of every kind
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 record Basket(
     Customer customer,
     String reference,
@@ -305,7 +305,7 @@ Where this lives: [AffinePath: Zero or One Element](#affinepath-zero-or-one-elem
 ~~~
 
 ~~~admonish question title="Checkpoint: predict the path type" id="check-focus-types"
-`Consignment` carries `@GenerateFocus(generateNavigators = true)` and has two components: `Address to`, where `Address` carries `@GenerateFocus`, and a sealed `ConsignmentState state`. What do `ConsignmentFocus.to()` and `ConsignmentFocus.state()` return? And what does `CustomerProfileFocus.altEmail()` return for an `Optional<EmailAddress>`?
+`Consignment` carries `@GenerateFocus` and has two components: `Address to`, where `Address` carries `@GenerateFocus`, and a sealed `ConsignmentState state`. What do `ConsignmentFocus.to()` and `ConsignmentFocus.state()` return? And what does `CustomerProfileFocus.altEmail()` return for an `Optional<EmailAddress>`?
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-focus-types-answer"

@@ -222,7 +222,7 @@ The most comprehensive optics implementation available for Java: lenses, prisms,
 ~~~admonish example title="Quick example" collapsible=true
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 @GenerateTraversals
 public record Order(
     UUID id,
@@ -235,7 +235,7 @@ public record Order(
 
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 public record Customer(String name, EmailAddress email) {}
 ```
 

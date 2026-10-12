@@ -27,7 +27,7 @@ Each of the [three path types](focus_dsl.md#the-three-path-types) wraps the opti
 ~~~admonish example title="The cast these examples use" collapsible=true
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 @GenerateTraversals
 public record Order(
     UUID id,
@@ -46,7 +46,7 @@ public record LineItem(String sku, Integer quantity, BigDecimal price) {}
 
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 public record Customer(String name, EmailAddress email) {}
 ```
 
@@ -58,7 +58,7 @@ public record EmailAddress(String value) {}
 
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 public record Consignment(UUID orderId, Address to, ConsignmentState state) {}
 ```
 

@@ -33,7 +33,7 @@ Imagine you're building the order service, where you need to:
 ~~~admonish example title="The cast these examples use" collapsible=true
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 @GenerateTraversals
 public record Order(
     UUID id,
@@ -52,7 +52,7 @@ public record LineItem(String sku, Integer quantity, BigDecimal price) {}
 
 ``` java
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 public record Customer(String name, EmailAddress email) {}
 ```
 

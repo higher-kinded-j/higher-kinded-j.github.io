@@ -34,7 +34,7 @@ Consider the chapter's order service, where you need to analyse orders:
 public record LineItem(String sku, Integer quantity, BigDecimal price) {}
 
 @GenerateLenses
-@GenerateFocus(generateNavigators = true)
+@GenerateFocus
 @GenerateTraversals
 public record Order(
     UUID id,
