@@ -39069,7 +39069,7 @@ interface MoneyOpticsSpec extends OpticsSpec<Money> {
 
 Naming both halves explicitly is what makes this strategy work where auto-detection cannot: `@ImportOptics` requires the getter's return type to match the wither's parameter exactly, and here you simply say which pair to use. The wither still has to hand back the source type, read under the arguments the spec gives it: on a `Draft<T>`, a `Draft<String> withId(String)` serves an `OpticsSpec<Draft<String>>`, and a wither that returns the type raw, or as a supertype, is refused at the spec method. Where the wither is overloaded, the one checked is the one the call binds: the lens passes the new value typed by its focus, `Long` here, and javac chooses among the overloads by that type. A name the type does not have, or that the generated class cannot call, one none of whose overloads takes the focus, a choice javac could not make, and a `static` method are each refused at the spec method too. See the [wither entries](compiler_errors.md#wither--has-no-method--for-the-generated-lens-to-call) in Compiler Errors.
 
-Every other method name a strategy carries is checked the same way, at the spec method rather than in the generated file: the `getter` each one reads through, which for `@ViaCopyAndSet` and `@ViaConstructor` is the lens method's own name; `@ViaBuilder`'s `toBuilder`, `setter` and `build`, each read on what the step before it hands back; and each accessor a `@ViaConstructor` `parameterOrder` names, along with the constructor that order rebuilds through. An accessor that reads a type the lens cannot hand back as its focus is refused too, which is the [`LocalDate.getMonth()` pairing](importing_optics.md#wither-classes-to-lenses) a spec interface exists to sort out.
+Every other method name a strategy carries is checked the same way, at the spec method rather than in the generated file: the `getter` each one reads through, which for `@ViaCopyAndSet` and `@ViaConstructor` is the lens method's own name; `@ViaBuilder`'s `toBuilder`, `setter` and `build`, each read on what the step before it hands back; and each accessor a `@ViaConstructor` `parameterOrder` names, along with the constructor that order rebuilds through. An accessor that reads a type the lens cannot hand back as its focus is refused too, which is the [`LocalDate.getMonth()` pairing](importing_optics.md#wither-classes-to-lenses) a spec interface exists to sort out. So is a read or rebuild javac would report as unchecked, such as a raw `List` handed back as a `List<String>` focus, or a setter called through a raw builder. That warning would land in the generated file, beyond the reach of your own `@SuppressWarnings`. See [the unchecked conversion entry](compiler_errors.md#spec-unchecked-conversion) in Compiler Errors.
 
 ### `@ViaConstructor`: constructor-only value types
 
@@ -45733,6 +45733,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`is static, so the generated lens cannot rebuild`](#wither--is-static-so-the-generated-lens-cannot-rebuild-a--through-it) | The overload the focus binds is a static method |
 | [`for the generated lens to read the value it focuses`](#-has-no-method--for-the-generated-lens-to-read-the-value-it-focuses) | A strategy's `getter`, or the lens method that stands in for it, names no accessor |
 | [`reads '...', not the lens's focus`](#-reads--not-the-lenss-focus-) | The accessor reads a value the lens cannot hand back as its focus |
+| [`only through an unchecked conversion`, `so the generated call to ... is unchecked`](#spec-unchecked-conversion) | A read or rebuild through a raw type is unchecked |
 | [`for the generated lens to set through`](#-has-no-method--for-the-generated-lens-to-set-through) | A `setter` names no method of the type it is called on |
 | [`hands back '...', which is not a builder`](#viabuilder-the-chain-the-lens-rebuilds-through) | A `@ViaBuilder` step leads somewhere the next call cannot be made |
 | [`is static, so the generated lens cannot set through`](#-has-no-method--for-the-generated-lens-to-set-through) | The `setter` the focus binds is a static method |
@@ -47175,6 +47176,53 @@ interface StampOpticsSpec extends OpticsSpec<Stamp> {
 
     @Wither(value = "withMonth", getter = "getMonth")
     Lens<Stamp, Integer> month();
+}
+```
+~~~
+
+### Unchecked reads and rebuilds through a raw type {#spec-unchecked-conversion}
+
+The external class declares an accessor, a builder or a supertype raw, or the spec writes the focus raw. The generated lens would read or rebuild through it in a way javac flags as unchecked. These messages report it, under the strategy's own tag:
+
+| The message says | What it means |
+|------------------|---------------|
+| `'getItems()' reads the raw type 'List', which reaches the lens's focus 'List<String>' only through an unchecked conversion` | The accessor reads a raw type, or a class that extends one, and the lens hands it back as a focus with type arguments |
+| `'withTyped(List<String>)' takes the lens's focus, the raw type 'List', only through an unchecked conversion to 'List<String>'` | The focus is written raw, and the method the lens rebuilds through takes the type with its arguments. For `@ViaConstructor` it reads `takes what 'getItems()' reads` where an accessor's value goes to the constructor |
+| `'toBuilder()' hands back the raw type 'Docket.Builder', so the generated call to 'id(T)' on it is unchecked` | The builder comes back raw, and erasing it changes a parameter of the setter: a type variable such as `T`, or a type with arguments such as `List<String>` |
+| `'Doc' inherits 'setValue(T)' from the raw type 'Base', so the generated call to it is unchecked` | The source type extends a raw type, and the method called is one it inherits from there |
+| `'build()' returns the raw type 'Tote', which reaches the source type 'Tote<String>' only through an unchecked conversion` | The builder chain turns raw at some step, so `build()` returns the erasure of the source type |
+
+**Fix.** Read and rebuild through members that name their types with arguments: an accessor that reads `List<String>`, a method that takes it, a builder whose steps hand back `Builder<T>`. Where the class offers only raw members, declare the lens over the raw type they read, `Lens<Shelf, List>`, with `@SuppressWarnings("rawtypes")` on the lens method. Otherwise rebuild with another strategy.
+
+~~~admonish note title="Why" collapsible=true
+A raw type is not refused in itself. A raw focus is your own declaration, and the optic generated for it carries the suppression, as it does for a record component. What is refused is generated code that converts a raw value to a type with arguments, or calls a method through a raw type that erases one of its parameters. javac flags both as unchecked in the generated file, which you cannot edit, and the `@SuppressWarnings` on your spec does not reach it. Under `-Xlint:unchecked` that is a warning, which `-Werror` turns into a failed build; without it, javac still notes that the file uses unchecked operations. A setter that erasure leaves as it is, such as `name(String)`, is called through a raw builder cleanly, so a chain through it that builds a type without arguments is accepted. Nor is a raw value refused where the type it reaches is reifiable, such as `List<?>` or `Class<?>`, which javac converts to with no warning. An accessor that declares a type variable of its own, such as `<T extends List> T items()`, is accepted too, since javac infers its type at the call.
+~~~
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:rejects "reads the raw type 'List', which reaches the lens's focus 'List<String>' only through an unchecked conversion" -->
+```java
+final class Shelf {
+
+    private final List items;
+
+    Shelf(List items) {
+        this.items = items;
+    }
+
+    public List getItems() {
+        return items;
+    }
+
+    public Shelf withItems(List items) {
+        return new Shelf(items);
+    }
+}
+
+@ImportOptics
+interface ShelfOpticsSpec extends OpticsSpec<Shelf> {
+
+    @Wither(value = "withItems", getter = "getItems")
+    Lens<Shelf, List<String>> items();
 }
 ```
 ~~~
@@ -104357,6 +104405,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`modifyWhen` and `branch` on a `Traversal` call only the function their predicate picks** ([#1026](https://github.com/higher-kinded-j/higher-kinded-j/pull/1026)). Each element is now tested first, so a function may assume the condition that guards it, and an expensive one runs only where it is needed. `Lens.modifyWhen`, `modifyBranch` and `setIf` test first too. See [Complete, Runnable Example](../optics/composing_optics.md#complete-runnable-example).
 - **`@ViaConstructor` holds its order to the constructor** ([#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906)). An order that passes a value where the constructor's parameter names say another belongs, or that no constructor takes, is now refused at the spec method. Leave `parameterOrder` out and it is read from those names. See [`@ViaConstructor`: constructor-only value types](../optics/copy_strategies.md#viaconstructor-constructor-only-value-types).
 - **A `@ViaConstructor` order that leaves a value out says so** ([#1067](https://github.com/higher-kinded-j/higher-kinded-j/issues/1067)). A written order that rebuilds through a shorter constructor now warns, naming the values longer constructors take that the order leaves out. `@SuppressWarnings("shorter-constructor")` keeps quiet a constructor that works the value out on purpose. A variable-arity constructor is held to its parameter names too. See [the warning's entry](../optics/compiler_errors.md#viaconstructor-shorter-constructor).
+- **A spec lens that would read or rebuild unchecked through a raw type is refused at the spec method** ([#905](https://github.com/higher-kinded-j/higher-kinded-j/issues/905)). A raw accessor read as `List<String>`, or a setter called through a raw builder, left an unchecked operation in generated code, which failed a build under `-Xlint:unchecked -Werror`. The error names the member at fault. See [Compiler Errors](../optics/compiler_errors.md#spec-unchecked-conversion).
 - **Optics over a nullable field pass a nullness checker** ([#767](https://github.com/higher-kinded-j/higher-kinded-j/issues/767), [#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): every optic and Focus path type, and `Kind`, takes a nullable type, so the lens generated for a `@Nullable` component checks under JSpecify. A bridge into an effect type can say what a null focus becomes, as `toEitherPath(source, error)` does. See [A focus that may be null](../optics/focus_effects.md#a-focus-that-may-be-null).
 - **`nullable()` keeps the focus type** ([#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): `FocusPath.nullable()` and `AffinePath.nullable()` return the focus type without its null, so a chained `focus(path.nullable(), error)` or a `var` infers it where it inferred `Object`. A call written `path.<String>nullable()` still compiles. See [`.nullable()`: Handle Null Values](../optics/focus_navigation.md#nullable-handle-null-values).
 - **A Focus path through a custom container whose generator names no optic stops at the container** ([#1059](https://github.com/higher-kinded-j/higher-kinded-j/issues/1059)), as if no generator supported it. It used to widen through the `Optional`-only `.some()` or the `List`-only `.each()`, and threw `ClassCastException` on first use for other containers. The generator still serves `@GenerateTraversals` and `@ImportOptics`. See [Registering your own container type](../optics/focus_containers.md#the-fine-print-registering-your-own-container-type).
@@ -104582,6 +104631,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Optics | A spec lens whose focus is wider than its getter's wrapper, such as `Number` over an `int` getter, rebuilding through an overloaded wither, setter or constructor none of whose overloads takes the focus; setting a value of another kind used to throw `ClassCastException` | Declare the focus as the wrapper, `Integer` | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
 | Optics | Under `-Werror`, a written `@ViaConstructor` `parameterOrder` that passes nothing for a value a longer constructor, or a record component, takes, such as `{"amount"}` beside `Fee(long amount, String currency)` | Write the order the warning offers, or annotate the lens method `@SuppressWarnings("shorter-constructor")` where the shorter constructor works the value out | [#1067](https://github.com/higher-kinded-j/higher-kinded-j/issues/1067) |
 | Optics | A `@ViaConstructor` `parameterOrder` that passes a value where a variable-arity constructor's parameter names say another belongs, such as `{"note", "label"}` for `Sticker(String label, String note, String... parts)` | Write the order the error offers | [#1067](https://github.com/higher-kinded-j/higher-kinded-j/issues/1067) |
+| Optics | A spec lens whose generated code made an unchecked conversion or call, which compiled, with javac's note on unchecked operations, unless `-Xlint:unchecked` and `-Werror` were both on: an accessor that reads a raw type for a focus with type arguments, a focus written raw for a method or constructor that takes one with them, a raw accessor passed to a `@ViaConstructor` parameter that has them, or a method called through a raw builder or a raw supertype | Read and rebuild through members that keep their type arguments, or declare the lens over the raw type with `@SuppressWarnings("rawtypes")` on the lens method, or rebuild with another strategy | [#905](https://github.com/higher-kinded-j/higher-kinded-j/issues/905) |
 | Optics | With `widenCollections = true`, a Focus method over an array of a reference type, or over a container holding one, such as `String[] tags` or `List<String[]> rows`, used as its old path or chained with `.each(EachInstances.arrayEach())`. A `String @Nullable []` was an `AffinePath` to the array | Drop the `.each(EachInstances.arrayEach())` and use the path over the elements, or keep the array's own path from its lens, `FocusPath.of(SLenses.tags())`, adding `@GenerateLenses` if the record lacks it | [#1062](https://github.com/higher-kinded-j/higher-kinded-j/issues/1062) |
 | Optics | With `widenCollections = true`, an array whose element is a `Set`, `Collection`, `Maybe` or SPI container with a wildcard argument or none, such as `Set<? extends Leaf>[]` or `Set[]` | Name the element's type argument, as in `Set<Leaf>[]`, or drop `@GenerateFocus` and add or keep `@GenerateLenses`, as for a `Set<?>` component | [#1062](https://github.com/higher-kinded-j/higher-kinded-j/issues/1062) |
 | Optics | A record that writes `generateNavigators = true` and holds another `@GenerateFocus` record that has a field named like a no-argument path method, such as `last`, `head`, `each`, `segments`, `toLens` or `toPath` | Rename that field, or keep the field that navigates into it a plain path, as the error says | [#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033) |
