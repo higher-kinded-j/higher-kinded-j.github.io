@@ -52748,6 +52748,8 @@ interface CodecPageMapping<T, TDto> extends MappingSpec<Page<T>, PageDto<TDto>> 
 
 A prism can be another mapping's `asValidatedPrism()`, so `CodecPageMappingImpl.of(CustomerMappingImpl.INSTANCE.asValidatedPrism())` maps a page of customers. Each `of(...)` call allocates a new Impl, so build one where it is used and keep it.
 
+A chained `of(...)` infers its type arguments from the prisms alone. Where no leaf names a type variable, as none names the pass-through `X` of a [`TaggedPage<T, X>`](rules.md#element-mapped-nesting), spell them all in the spec's order: `TaggedPageMappingImpl.<EmailAddress, String, Integer>of(EmailCodecs.EMAIL).asValidatedPrism()`. Bound to a variable typed as the Impl, plain `of(EmailCodecs.EMAIL)` is enough.
+
 ~~~admonish warning title="Not checked for you: pass the prisms in declaration order"
 `of(...)` takes one prism per abstract leaf, in the order the spec declares the leaves. Two leaves of the same type swap without a compile error, and each value then parses through the other's leaf, perhaps to a wrong value with no error at all. The generated `of(opens, closes)` names each parameter after its leaf, so your IDE's parameter hints show the order.
 ~~~
@@ -54808,7 +54810,7 @@ A one-directional mapping follows these rules:
 
 ### How an element-mapped spec nests {#element-mapped-nesting}
 
-**An [element-mapped](generics.md#element-mapped-specs) mapping nests as a composition.** Where a record's component matches the spec's pair, the processor resolves each element pair in turn and composes the Impl in place, `CodecPageMappingImpl.of(entries()).asValidatedPrism()` for a single leaf:
+**An [element-mapped](generics.md#element-mapped-specs) mapping nests as a composition.** Where a record's component matches the spec's pair, the processor resolves each element pair in turn and composes the Impl in place, `CodecPageMappingImpl.<EmailAddress, String>of(entries()).asValidatedPrism()` for a single leaf:
 
 | The element-mapped spec has | Each prism comes from |
 |---|---|
@@ -54822,7 +54824,54 @@ The registered mapping may itself be a composition, resolved the same way. A fai
 'z' has no mapping.
 ```
 
-The message goes on to offer the ways to supply it. For several leaves those are another registered mapping, or a leaf over the whole pair that builds the composition itself with `of(...)`.
+The message goes on to offer the ways to supply it. For several leaves those are another registered mapping, or a leaf over the whole pair. That leaf builds the composition itself with `of(...)`, its type arguments written, or is abstract where the pair names the using spec's own variables.
+
+The processor writes the spec's type arguments into the composition, as the use site binds them. Java infers `of(...)`'s arguments from the prisms alone, so a type variable that no leaf names would otherwise fall to its bound. Here only `TaggedPage`'s elements convert, and its `tag` is an `Integer` on both sides. `Newsletters` writes the same call by hand, and binds the Impl to a variable typed as the Impl:
+
+<!-- verify -->
+```java
+import java.util.List;
+import org.higherkindedj.hkt.validated.Validated;
+import org.higherkindedj.optics.annotations.GenerateMapping;
+import org.higherkindedj.optics.annotations.MappingSpec;
+import org.higherkindedj.optics.validated.ValidatedPrism;
+
+record EmailAddress(String value) {}
+
+record TaggedPage<T, X>(List<T> items, X tag) {}
+
+record TaggedPageDto<TDto, X>(List<TDto> items, X tag) {}
+
+@GenerateMapping
+interface TaggedPageMapping<T, TDto, X>
+    extends MappingSpec<TaggedPage<T, X>, TaggedPageDto<TDto, X>> {
+  ValidatedPrism<TDto, T> items();
+}
+
+record Newsletter(TaggedPage<EmailAddress, Integer> entries) {}
+
+record NewsletterDto(TaggedPageDto<String, Integer> entries) {}
+
+@GenerateMapping
+interface NewsletterMapping extends MappingSpec<Newsletter, NewsletterDto> {
+  default ValidatedPrism<String, EmailAddress> entries() {
+    return ValidatedPrism.of(raw -> Validated.validNel(new EmailAddress(raw)), EmailAddress::value);
+  }
+}
+
+final class Newsletters {
+  static ValidatedPrism<TaggedPageDto<String, Integer>, TaggedPage<EmailAddress, Integer>> pages(
+      ValidatedPrism<String, EmailAddress> email) {
+    return TaggedPageMappingImpl.<EmailAddress, String, Integer>of(email).asValidatedPrism();
+  }
+
+  static TaggedPageMappingImpl<EmailAddress, String, Integer> impl(
+      ValidatedPrism<String, EmailAddress> email) {
+    TaggedPageMappingImpl<EmailAddress, String, Integer> pages = TaggedPageMappingImpl.of(email);
+    return pages;
+  }
+}
+```
 
 ### Leaf order in `of(...)` {#leaf-order-in-of}
 
@@ -104553,6 +104602,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 - **A generic spec over an array of its parameter no longer breaks on a primitive array** ([#1091](https://github.com/higher-kinded-j/higher-kinded-j/issues/1091)). No type argument is a primitive, so a spec over `Page<T[]>` no longer covers a `Page<int[]>` field, which crashed the processor or failed in generated code. The field reports no usable source instead. See [The boundaries of a generic spec](../mapping/rules.md#generic-boundaries).
 - **A bounded generic spec no longer covers an argument outside its bound** ([#1118](https://github.com/higher-kinded-j/higher-kinded-j/issues/1118)). A spec over `Page<T>` with `T extends Number` covered a `Page<String>` field and broke the generated code. That field now reports no usable source, naming the bound, or nests through a spec for `Page<String>` declared beside it. See [A bounded spec covers only what its bounds admit](../mapping/rules.md#generic-spec-bounds).
+- **An element-mapped spec nests where a type argument passes through unconverted** ([#1122](https://github.com/higher-kinded-j/higher-kinded-j/issues/1122)). A spec over `TaggedPage<T, X>` whose leaf converts only the elements broke the generated code wherever it nested, since no leaf names `X`. The generated call now spells out its type arguments. See [How an element-mapped spec nests](../mapping/rules.md#element-mapped-nesting).
 - **The processor names what an accessor-style leaf or marker meant** ([#907](https://github.com/higher-kinded-j/higher-kinded-j/issues/907)): a leaf written `getEmail()` for the component `email` now draws `Did you mean 'email()'?`, as a near misspelling already did. An `@Unmapped` or `@ReadOnly` marker named after its accessor, `setStamp()` or `getId()`, draws the property the same way. See [Compiler Messages](../mapping/compiler_errors.md#leaf-names-no-component).
 
 ---
