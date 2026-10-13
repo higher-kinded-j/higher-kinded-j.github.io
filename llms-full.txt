@@ -39106,6 +39106,8 @@ interface HostSettingOpticsSpec extends OpticsSpec<HostSetting> {
 }
 ```
 
+A setter spelt as a wither, such as `withHost`, is taken at its word. Where every method of that name the new value can be passed to returns a `HostSetting`, the lens hands back what the wither returns: a new value, or the copy a fluent wither set. `@Wither` reaches the same value without the copy. A `with` method that returns anything else, such as its argument, is taken at its word too, so rebuild that type with `@ViaBuilder` or `@ViaConstructor`. Any other setter is called for its effect, whatever it returns, since a `set` method that returns a `HostSetting` may hand back the value it replaced. A setter spelt as a wither that may return a `HostSetting`, but whose result the lens cannot keep, draws [the dropped-result warning](compiler_errors.md#viacopyandset-dropped-result).
+
 ~~~admonish warning title="Lens laws and mutable types"
 `@ViaCopyAndSet` copies, then mutates the copy. That is lawful only if the copy constructor really copies everything: a shallow copy that shares a mutable field means a "set" can be seen through the original, which breaks the lens laws in the most confusing way possible. Verify with `LensLaws` on a type where this matters.
 
@@ -45747,6 +45749,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`not a constructor it was read from`](#viaconstructor-order) | An order read from names binds another constructor |
 | [`leaves out what '...' takes`](#viaconstructor-order) | An order read from names misses a longer constructor |
 | [`passes nothing for`](#viaconstructor-shorter-constructor) | **Warning.** A written `@ViaConstructor` order rebuilds through a shorter constructor |
+| [`drops what '...' returns`](#viacopyandset-dropped-result) | **Warning.** A `withX` setter's new value may be lost |
 | [`pairs more than one wither with the field`](#importoptics--pairs-more-than-one-wither-with-the-field--a-note) | **Note.** Two withers reach one field name, and one lens is generated |
 | [`focuses '...', which is not a '...'`](#importoptics--focuses--which-is-not-a-) | A generated prism's focus is a value rather than a variant of the source |
 | [`cannot find symbol`, inside `XPrisms.java`](#cannot-find-symbol-inside-the-generated-xprismsjava-after-using-matchwhen) | A `@MatchWhen` predicate or getter name is misspelt |
@@ -46882,11 +46885,59 @@ interface SlotOpticsSpec extends OpticsSpec<Slot<?>> {
 ```
 ~~~
 
+### "@ViaCopyAndSet: The generated lens returns the copy it calls '...' on, and drops what '...' returns" (a warning) {#viacopyandset-dropped-result}
+
+The setter is spelt as a wither, `withTitle`, and may return the source type, but not every method of that name the new value can be passed to returns it. One returns a supertype, a raw type, `void`, or a type that holds the source type, such as an `Optional`. So the lens calls it for its effect and hands back the copy. A wither leaves the copy as it was, and then `set` changes nothing.
+
+**Fix.** Name a setter that sets the copy, or rebuild the source type with `@ViaBuilder` or `@ViaConstructor`. Where `@Wither` would rebuild through the method the focus binds, the warning offers it in place of naming another setter. Where the method does set the copy it is called on, as a fluent `withTitle` returning its base type does, annotate the lens method `@SuppressWarnings("dropped-result")`, or the spec interface to cover each lens it declares.
+
+~~~admonish note title="Why" collapsible=true
+A setter spelt as a wither is taken at its word, and the lens hands back what it returns. That needs the result to be the source type whichever method of that name the call binds, so every method the new value can be passed to counts. A call that binds one returning no source type drops nothing, and does not warn. So a `void withTitle(Object)` beside a `withTitle(String)` that returns the source type warns, though a `String` binds the second. So does a retag whose type the call infers from its argument, such as `<U> Memo<U> withId(U)`. A `set` method is never taken at its word, since one that returns the source type may hand back the value it replaced, so it never warns.
+~~~
+
+For this declaration, the warning reads `The lens can hand back the result only where every method of that name the new value can be passed to returns a 'Hedge', and 'withTitle(String)' returns 'Shrub'`.
+
+~~~admonish example title="A declaration that produces it" collapsible=true
+<!-- verify:reports "and 'withTitle(String)' returns 'Shrub'" -->
+```java
+class Shrub {
+
+    protected String title = "";
+
+    public Shrub withTitle(String title) {
+        Shrub copy = new Shrub();
+        copy.title = title;
+        return copy;
+    }
+}
+
+final class Hedge extends Shrub {
+
+    Hedge() {}
+
+    Hedge(Hedge other) {
+        this.title = other.title;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+}
+
+@ImportOptics
+interface HedgeOpticsSpec extends OpticsSpec<Hedge> {
+
+    @ViaCopyAndSet(setter = "withTitle")
+    Lens<Hedge, String> getTitle();
+}
+```
+~~~
+
 ### "@Wither: '...' returns '...', not the source type '...'"
 
 The method a spec's `@Wither` call binds hands back something other than the source type the spec declares: that type raw, the type under other arguments, or a supertype.
 
-**Fix.** Name a wither that returns the source type. Where the wither returns the type under fixed arguments, `Memo<String> withId(String)` on a `Memo<T>`, declare the spec over that instantiation, `OpticsSpec<Memo<String>>`, and it serves as it is. Otherwise rebuild the source type with `@ViaBuilder`, `@ViaConstructor` or `@ViaCopyAndSet`. See [Copy Strategies](copy_strategies.md#wither-types-with-withx-methods).
+**Fix.** Name a wither that returns the source type. Where the wither returns the type under fixed arguments, `Memo<String> withId(String)` on a `Memo<T>`, declare the spec over that instantiation, `OpticsSpec<Memo<String>>`, and it serves as it is. Otherwise rebuild the source type with `@ViaBuilder` or `@ViaConstructor`, or with `@ViaCopyAndSet` through a setter that sets the copy it is called on. The same wither named as that setter has its new value dropped, and draws [the dropped-result warning](#viacopyandset-dropped-result). See [Copy Strategies](copy_strategies.md#wither-types-with-withx-methods).
 
 ~~~admonish note title="Why" collapsible=true
 The generated lens sets through the wither and hands its result back as the source type. A raw return gets there only by an unchecked conversion, in a generated file your own `@SuppressWarnings` does not reach, and any other type does not get there at all: `Base<String>`, inherited by a `Sub extends Base<String>`, is not a `Sub`. The wither is read on the source type as the spec names it, which is why the fixed-argument case above works, and a retag, `<U> Memo<U> withId(String)`, is accepted because the call infers `U` back to the spec's argument. A variable that only a wildcard argument stands for, as in a spec over `Memo<? extends Number>`, is not inferred, and such a wither is refused.
@@ -47234,7 +47285,7 @@ The `setter` a `@ViaBuilder` or `@ViaCopyAndSet` names is not a method of the ty
 
 Where the name exists, the call is held to what a wither's is, under the strategy's own tag: [`takes the lens's focus type`](#wither-no-method--of--takes-the-lenss-focus-type-) where no overload takes the focus, [`cannot choose between`](#wither-the-generated-call-to--cannot-choose-between--and-) where more than one does, and `is static, so the generated lens cannot set through it` where the one it binds is `static`, since a static method never reads the value it is called on. Where the focus is a wildcard and no method of the name takes one argument, the message says `takes one argument` instead.
 
-**Fix.** Set the strategy's `setter` to a method that type declares, and one that takes the value the getter reads. The message offers one where the name is a near miss, or names the same value in the strategy's convention. Under `@ViaBuilder`, it offers a fluent builder's `name`, a protobuf builder's `setName` or a `withName` step, as the builder declares them. Since the setter defaults to the lens method's name, a lens named `getName` is offered `name`. Under `@ViaCopyAndSet`, it offers only a `set` method, near miss or not, since a bare or `with` method may hand back a copy, which the generated call drops.
+**Fix.** Set the strategy's `setter` to a method that type declares, and one that takes the value the getter reads. The message offers one where the name is a near miss, or names the same value in the strategy's convention. Under `@ViaBuilder`, it offers a fluent builder's `name`, a protobuf builder's `setName` or a `withName` step, as the builder declares them. Since the setter defaults to the lens method's name, a lens named `getName` is offered `name`. Under `@ViaCopyAndSet`, it offers only a `set` method, near miss or not. A bare or `with` method may hand back a copy, and `@Wither` is the strategy for one of those.
 
 ~~~admonish note title="Why" collapsible=true
 `@ViaBuilder` sets through `source.toBuilder().setter(newValue).build()` and `@ViaCopyAndSet` through a copy, so the setter is looked for where the call is made rather than on the source type in both cases. A builder's setter that returns `void` ends the chain, which the [chain entry](#viabuilder-the-chain-the-lens-rebuilds-through) covers.
@@ -104519,6 +104570,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`modifyWhen` and `branch` on a `Traversal` call only the function their predicate picks** ([#1026](https://github.com/higher-kinded-j/higher-kinded-j/pull/1026)). Each element is now tested first, so a function may assume the condition that guards it, and an expensive one runs only where it is needed. `Lens.modifyWhen`, `modifyBranch` and `setIf` test first too. See [Complete, Runnable Example](../optics/composing_optics.md#complete-runnable-example).
 - **`@ViaConstructor` holds its order to the constructor** ([#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906)). An order that passes a value where the constructor's parameter names say another belongs, or that no constructor takes, is now refused at the spec method. Leave `parameterOrder` out and it is read from those names. See [`@ViaConstructor`: constructor-only value types](../optics/copy_strategies.md#viaconstructor-constructor-only-value-types).
 - **A `@ViaConstructor` order that leaves a value out says so** ([#1067](https://github.com/higher-kinded-j/higher-kinded-j/issues/1067)). A written order that rebuilds through a shorter constructor now warns, naming the values longer constructors take that the order leaves out. `@SuppressWarnings("shorter-constructor")` keeps quiet a constructor that works the value out on purpose. A variable-arity constructor is held to its parameter names too. See [the warning's entry](../optics/compiler_errors.md#viaconstructor-shorter-constructor).
+- **A `@ViaCopyAndSet` lens keeps what its `withX` setter returns** ([#1108](https://github.com/higher-kinded-j/higher-kinded-j/issues/1108)). A `withTitle` setter had its new value dropped. The lens now hands back what it returns where every method of that name the new value can be passed to returns the source type. One it cannot keep warns, unless the lens method is annotated `@SuppressWarnings("dropped-result")`. See [`@ViaCopyAndSet`](../optics/copy_strategies.md#viacopyandset-legacy-types-with-a-copy-constructor-and-setters).
 - **A spec lens that would read or rebuild unchecked through a raw type is refused at the spec method** ([#905](https://github.com/higher-kinded-j/higher-kinded-j/issues/905)). A raw accessor read as `List<String>`, or a setter called through a raw builder, left an unchecked operation in generated code, which failed a build under `-Xlint:unchecked -Werror`. The error names the member at fault. See [Compiler Errors](../optics/compiler_errors.md#spec-unchecked-conversion).
 - **Optics over a nullable field pass a nullness checker** ([#767](https://github.com/higher-kinded-j/higher-kinded-j/issues/767), [#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): every optic and Focus path type, and `Kind`, takes a nullable type, so the lens generated for a `@Nullable` component checks under JSpecify. A bridge into an effect type can say what a null focus becomes, as `toEitherPath(source, error)` does. See [A focus that may be null](../optics/focus_effects.md#a-focus-that-may-be-null).
 - **`nullable()` keeps the focus type** ([#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): `FocusPath.nullable()` and `AffinePath.nullable()` return the focus type without its null, so a chained `focus(path.nullable(), error)` or a `var` infers it where it inferred `Object`. A call written `path.<String>nullable()` still compiles. See [`.nullable()`: Handle Null Values](../optics/focus_navigation.md#nullable-handle-null-values).
@@ -104651,6 +104703,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A traversal's Effect Path bridges leave a null focus out** ([#1017](https://github.com/higher-kinded-j/higher-kinded-j/issues/1017)): `toStreamPath`, `toVStreamPath` and `VStreamPath.fromEach` used to stream it, and `toListPath` and `toNonDetPath` threw `NullPointerException`. `TraversalPath.fold` counts it as the monoid's empty value, where `Monoids.string()` appended `"null"`. `getAll` still keeps every focus.
 - **Sequenced lists are unmodifiable at every size** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): `IndexedTraversals.sequenceList`, `ForTraversal.toList` and `ForIndexed.toIndexedList` now return one, as `Traversals.traverseList` does. So do `IndexedTraversals.forList` on a non-empty list and `Traversals.traverseArray` on an empty array. Changing the result throws `UnsupportedOperationException`, so copy it into a new `ArrayList` first.
 - **A `@ViaConstructor` lens with no `parameterOrder` sets through its constructor** ([#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906)): the order is read from the constructor's parameter names, where `set` used to throw `UnsupportedOperationException`.
+- **A `@ViaCopyAndSet` lens over a `withX` setter hands back what it returns** ([#1108](https://github.com/higher-kinded-j/higher-kinded-j/issues/1108)): not the copy, where every method of that name the new value can be passed to returns the source type. A fluent `withX` behaves as before, and so does every `set` method.
 - **A spec lens whose focus is wider than its getter's wrapper passes the value as it is** ([#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906)): with `Number` over an `int` getter, it used to be cast to `int` for `withX(int)`. Where the wither, setter or constructor is also overloaded for a wider type, such as `withX(Object)`, that overload is now the one called.
 - **`ForTraversal.toList` and `ForIndexed.toIndexedList` honour the filters** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): they collect only the elements that pass `filter` and `filterIndex`, as `modify` and `set` already did. They used to return every focused element. See [Collecting Results](../functional/for_optics.md#collecting-results).
 - **A query's predicate is not called after its answer** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)): `find`, `exists` and `all`, on `Fold`, `IndexedFold` and `TraversalPath`, stop at the focus that settles them, so a logging or counting predicate sees fewer calls. A `Fold` of your own whose `foldMap` catches every exception still gives the same answer, but walks on to its end.
@@ -104747,6 +104800,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Optics | A spec lens whose focus is wider than its getter's wrapper, such as `Number` over an `int` getter, rebuilding through an overloaded wither, setter or constructor none of whose overloads takes the focus; setting a value of another kind used to throw `ClassCastException` | Declare the focus as the wrapper, `Integer` | [#906](https://github.com/higher-kinded-j/higher-kinded-j/issues/906) |
 | Optics | Under `-Werror`, a written `@ViaConstructor` `parameterOrder` that passes nothing for a value a longer constructor, or a record component, takes, such as `{"amount"}` beside `Fee(long amount, String currency)` | Write the order the warning offers, or annotate the lens method `@SuppressWarnings("shorter-constructor")` where the shorter constructor works the value out | [#1067](https://github.com/higher-kinded-j/higher-kinded-j/issues/1067) |
 | Optics | A `@ViaConstructor` `parameterOrder` that passes a value where a variable-arity constructor's parameter names say another belongs, such as `{"note", "label"}` for `Sticker(String label, String note, String... parts)` | Write the order the error offers | [#1067](https://github.com/higher-kinded-j/higher-kinded-j/issues/1067) |
+| Optics | Under `-Werror`, a `@ViaCopyAndSet` setter spelt as a wither whose result the lens cannot keep, such as `Shrub withTitle(String)` on a `Hedge extends Shrub`, or a fluent `withX` returning a raw or base type | Annotate the lens method `@SuppressWarnings("dropped-result")` where the method sets the copy it is called on; otherwise follow the warning's fix | [#1108](https://github.com/higher-kinded-j/higher-kinded-j/issues/1108) |
 | Optics | A spec lens whose generated code made an unchecked conversion or call, which compiled, with javac's note on unchecked operations, unless `-Xlint:unchecked` and `-Werror` were both on: an accessor that reads a raw type for a focus with type arguments, a focus written raw for a method or constructor that takes one with them, a raw accessor passed to a `@ViaConstructor` parameter that has them, or a method called through a raw builder or a raw supertype | Read and rebuild through members that keep their type arguments, or declare the lens over the raw type with `@SuppressWarnings("rawtypes")` on the lens method, or rebuild with another strategy | [#905](https://github.com/higher-kinded-j/higher-kinded-j/issues/905) |
 | Optics | With `widenCollections = true`, a Focus method over an array of a reference type, or over a container holding one, such as `String[] tags` or `List<String[]> rows`, used as its old path or chained with `.each(EachInstances.arrayEach())`. A `String @Nullable []` was an `AffinePath` to the array | Drop the `.each(EachInstances.arrayEach())` and use the path over the elements, or keep the array's own path from its lens, `FocusPath.of(SLenses.tags())`, adding `@GenerateLenses` if the record lacks it | [#1062](https://github.com/higher-kinded-j/higher-kinded-j/issues/1062) |
 | Optics | With `widenCollections = true`, an array whose element is a `Set`, `Collection`, `Maybe` or SPI container with a wildcard argument or none, such as `Set<? extends Widget>[]` or `Set[]` | Name the element's type argument, as in `Set<Widget>[]`, or drop `@GenerateFocus` and add or keep `@GenerateLenses`, as for a `Set<?>` component | [#1062](https://github.com/higher-kinded-j/higher-kinded-j/issues/1062) |
