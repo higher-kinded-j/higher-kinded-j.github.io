@@ -46,7 +46,7 @@ interface CustomerPageMapping extends MappingSpec<Page<Customer>, PageDto<Custom
     // Invalid(NonEmptyList[items.1.email: not an email address])
 ```
 
-A concrete mapping nests like any other, so `Report(Page<Customer> results)` nests it automatically when it is the only spec for the pair.
+A concrete mapping nests like any other, so `Report(Page<Customer> results)` nests it automatically.
 
 ---
 
@@ -77,7 +77,7 @@ A chained call such as `PageMappingImpl.<String>instance().build(tags)` gives Ja
     PageDto<String> again = tagPages.build(tags);
 ```
 
-Multi-parameter and bounded specs thread too (`ResultMapping<E, A>`, `RankedMapping<T extends Number>`), and a same-typed `default` leaf (`ValidatedPrism<T, T>`) is applied to each element. A threaded spec nests as well. The processor matches `Page<String>` against `Page<T>`, so `TagSearch(Page<String> results)` uses `PageMappingImpl.<String>instance()`, and a generic outer spec passes its own variable straight through, as `PageMappingImpl.<T>instance()`. A bounded spec nests only where each argument lies within its bound, as [A bounded spec covers only what its bounds admit](rules.md#generic-spec-bounds) says.
+Multi-parameter and bounded specs thread too (`ResultMapping<E, A>`, `RankedMapping<T extends Number>`), and a same-typed `default` leaf (`ValidatedPrism<T, T>`) is applied to each element. A threaded spec nests as well. The processor matches `Page<Integer>` against `Page<T>`, so a field of that type uses `PageMappingImpl.<Integer>instance()`, and a generic outer spec passes its own variable straight through, as `PageMappingImpl.<T>instance()`. A bounded spec nests only where each argument lies within its bound, as [A bounded spec covers only what its bounds admit](rules.md#generic-spec-bounds) says.
 
 ---
 
@@ -110,8 +110,8 @@ A chained `of(...)` infers its type arguments from the prisms alone. Where no le
 
 Where a record nests an element-mapped spec, the processor composes it, so a `MailingList(Page<EmailAddress> entries)` reports `entries.items.1: not an email address`. [How an element-mapped spec nests](rules.md#element-mapped-nesting) says what supplies each prism.
 
-~~~admonish note title="Declare one form for each pair a record nests"
-A generic spec covers every instantiation it matches within its bounds, so it competes with a concrete spec for the same pair: `CodecPageMapping<T, TDto>` covers `Page<Customer>` against `PageDto<CustomerDto>` too. Declared side by side, as on this page, a record nesting `Page<Customer>` stops with [`matches more than one mapping spec`](compiler_errors.md#more-than-one-spec) until a leaf picks one. Declare one form for each pair a record nests.
+~~~admonish note title="The most specific spec is used"
+Of this page's specs, the most specific maps a pair: `CustomerPageMapping` and `TagPageMapping` their own, `PageMapping` any other page of one element type, and `CodecPageMapping` the rest, as [the most specific spec is used](rules.md#generic-spec-precedence) says.
 ~~~
 
 Generic mappings are record-to-record only. A generic type on a bean wire, a PATCH or a sealed hierarchy is not supported yet, even at a concrete instantiation. Model an envelope such as `Result<E, A>` as a record. [The boundaries of a generic spec](rules.md#generic-boundaries) lists what else the processor diagnoses.
