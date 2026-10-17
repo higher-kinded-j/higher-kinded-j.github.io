@@ -454,7 +454,7 @@ interface MerchantPatchMapping extends UpdateSpec<Merchant, MerchantPatchBean> {
     // Valid(Merchant[id=m-1, name=Brightside Homeware]) - the m-9 the bean reads is never applied
 ```
 
-The marker withholds the refusal, and nothing else: the component stays out of the mapping. On a `MappingSpec` that leaves the bean narrower than the domain, so the Impl becomes a [projection](#bean-projections), with `build` and `patch` and no `parse`. To keep `parse`, mark a getter [read-only](#read-only-properties) instead. [What `@Unmapped` withholds](rules.md#what-unmapped-withholds) has the precise rule.
+A method that only starts like an accessor, such as `getaway()`, is [a word](rules.md#word-accessors), and the marker can name one the processor would refuse, on a bean crossed either way. The marker withholds the refusal, and nothing else: the component stays out of the mapping. On a `MappingSpec` that leaves the bean narrower than the domain, so the Impl becomes a [projection](#bean-projections), with `build` and `patch` and no `parse`. To keep `parse`, mark a getter [read-only](#read-only-properties) instead. [What `@Unmapped` withholds](rules.md#what-unmapped-withholds) has the precise rule.
 
 ---
 
