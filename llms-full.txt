@@ -905,7 +905,7 @@ String msg = eitherPath.run().fold(
 | `.unsafeRun()` | Execute a deferred effect (may throw) | IOPath, VTaskPath |
 | `.runSafe()` | Execute safely, returning `Try` | IOPath, VTaskPath |
 | `.fold(onErr, onOk)` | Handle both tracks (error-first) | EitherPath, ValidationPath |
-| `.foldFailureFirst(onErr, onOk)` | Handle both tracks (error-first; replaces deprecated `.fold(onOk, onErr)` since 0.4.6) | TryPath |
+| `.foldFailureFirst(onErr, onOk)` | Handle both tracks (error-first) | TryPath |
 | `.fold(identity, op)` | Reduce a sequence to one value | ListPath, StreamPath, VStreamPath |
 | `.foldLeft(seed, fn)` / `.foldRight(seed, fn)` | Directional reduce (type-changing) | ListPath, StreamPath |
 | `.foldMap(monoid, fn)` | Map then combine via a `Monoid` | ListPath, StreamPath, VStreamPath |
@@ -945,6 +945,7 @@ Getting back to standard Java from any Path:
 | `EitherPath<E, A>` | `B` | `.run().fold(onErr, onOk)` |
 | `TryPath<A>` | `Try<A>` | `.run()` |
 | `TryPath<A>` | `A` (or default) | `.getOrElse(defaultValue)` |
+| `TryPath<A>` | `B` | `.foldFailureFirst(onErr, onOk)` |
 | `ValidationPath<E, A>` | `Validated<E, A>` | `.run()` |
 | `ValidationPath<E, A>` | `B` | `.fold(onInvalid, onValid)` |
 | `IOPath<A>` | `A` | `.unsafeRun()` |
@@ -2060,7 +2061,7 @@ EitherPath<AppError, String> shouted = name.map(value -> value.toUpperCase());
 
 ## Getting Back to Standard Java
 
-You are never locked in. Every Path type unwraps to a standard Java value with `.run()`, and `.fold()` gives you full control over both tracks:
+You are never locked in. Every Path type unwraps to a standard Java value with `.run()`, and `.fold()` gives you full control over both tracks, as `foldFailureFirst` does on a `TryPath`:
 
 <!-- verify -->
 ```java
@@ -73576,7 +73577,7 @@ Six ways to model "this computation might not produce a value."
 
 **[`Either<L, R>`](./either_monad.md)**: `Right(value)` or `Left(error)`. Right-biased. Unlike Maybe/Optional which only say "absent", Either carries a typed error `L` that explains *why* the computation failed. Also provides Bifunctor for mapping both sides.
 
-**[`Try<A>`](./try_monad.md)**: `Success(value)` or `Failure(throwable)`. Either specialised for exceptions. Wrap risky code with `Try.tryOf(() -> ...)` and it catches the exception for you. Reach for this when your error is always a `Throwable`.
+**[`Try<A>`](./try_monad.md)**: `Success(value)` or `Failure(throwable)`. Either specialised for exceptions. Wrap risky code with `Try.of(() -> ...)` and it catches the exception for you. Reach for this when your error is always a `Throwable`.
 
 **[`Validated<E, A>`](./validated_monad.md)**: `Valid(value)` or `Invalid(error)`. Looks like Either, but its killer feature is error *accumulation*: use applicative `ap` with a `Semigroup<E>` to collect ALL errors from independent validations, not just the first one. The go-to for form validation and input checking.
 
@@ -75806,7 +75807,7 @@ List<Order> found = ids.stream()
     .toList();
 ```
 
-`Maybe` carries `stream()` deliberately alone among the optional-shaped types: an empty stream renders absence faithfully, while the same conversion on `Either` or `Try` would silently discard the error the value carries. Those types convert through `toEither` and `fold` instead.
+`Maybe` carries `stream()` deliberately alone among the optional-shaped types: an empty stream renders absence faithfully, while the same conversion on `Either` or `Try` would silently discard the error the value carries. Those types convert through `toEither` and `fold` instead, which `Try` spells `foldFailureFirst`.
 ~~~
 
 ### Key Operations (via `MaybeMonad`)
@@ -80229,7 +80230,7 @@ You can create `Try` instances in several ways:
 
 ### Getting the Value (Use with Caution)
 
-* `get()`: Returns the value if `Success`, otherwise throws the contained `Throwable`. **Avoid using this directly; prefer `fold`, `map`, `flatMap`, or recovery methods.**
+* `get()`: Returns the value if `Success`, otherwise throws the contained `Throwable`. **Avoid using this directly; prefer `foldFailureFirst`, `map`, `flatMap`, or recovery methods.**
 ~~~
 
 
@@ -80274,7 +80275,7 @@ Try<Double> result3 = inputFailure.flatMap(safeDivide); // Failure(RuntimeExcept
 ~~~
 
 ----
-### Handling Failures (`foldFailureFirst`, `recover`, `recoverWith`)
+### Handling Failures (`foldFailureFirst`, `recover`, `recoverWith`) {#handling-failures-foldfailurefirst-recover-recoverwith}
 
 ~~~admonish title="_foldFailureFirst(failureFunc, successFunc)_"
 
@@ -80292,9 +80293,9 @@ String message = result2.foldFailureFirst(
 ```
 ~~~
 
-~~~admonish warning title="`fold` is deprecated for removal in 0.5.0"
+~~~admonish note title="Why not `fold`?"
 
-The legacy `Try.fold(successMapper, failureMapper)` and `TryPath.fold(successMapper, failureMapper)` are success-first, which is inconsistent with the error-first ordering used by `Either`, `Validated`, `EitherF`, `EitherPath`, and `ValidationPath`. Both are `@Deprecated(forRemoval = true)` since 0.4.6 and are removed in 0.5.0. Use `foldFailureFirst(failureMapper, successMapper)` instead; the rename is intentional so that no call site can silently flip behaviour after an argument swap. The canonical name `fold` is planned to be reintroduced with the error-first argument order in 0.6.0.
+Releases before 0.5.0 had a success-first `Try.fold(successMapper, failureMapper)`, and `TryPath.fold` to match. Because `foldFailureFirst` has a name of its own, a call written for that `fold` fails to compile rather than running its two functions the wrong way round. Rename such a call and swap its two functions, or run `SwapTryFoldToFoldFailureFirstRecipe` before the project moves to 0.5.0, as [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration) shows.
 ~~~
 
 ~~~admonish title="_recover(recoveryFunc)_"
@@ -96192,7 +96193,7 @@ Run them before your build moves to 0.5.0, with `hkj-openrewrite` 0.5.0 on the r
 
 | Recipe | Change |
 |--------|--------|
-| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | Composite; runs all seven recipes below |
+| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | Composite; runs all eight recipes below |
 | `org.higherkindedj.openrewrite.RenameStateTKindNarrowK` | `StateTKind.narrowK(..)` becomes `StateTKind.narrow(..)`; the wildcard `Kind` overload bypassed witness type safety |
 | `org.higherkindedj.openrewrite.RenameKindValidatorNarrowWithPattern` | `KindValidator.narrowWithPattern(..)` becomes `KindValidator.narrowHolder(..)` |
 | `org.higherkindedj.openrewrite.SwapTryFoldToFoldFailureFirstRecipe` | `Try.fold(successMapper, failureMapper)` and `TryPath.fold(...)` become `foldFailureFirst(failureMapper, successMapper)`, swapping the two arguments as well as renaming the method |
@@ -104997,6 +104998,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 - **A deferred trampoline step names a supplier that returns null** ([#1153](https://github.com/higher-kinded-j/higher-kinded-j/issues/1153), [#1161](https://github.com/higher-kinded-j/higher-kinded-j/issues/1161)): `Trampoline.defer`, `TrampolinePath.defer` and `Path.trampolineDefer` report `supplier must not return null` when that step runs. The supplier stays lazy.
 - **`StateT` is built from its state function alone** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): its constructor, `create` and `StateTKindHelper.stateT` take no `Monad`, and `mapT` takes only the transformation, as on every other transformer. The record holds only that function, so `equals`, `hashCode` and `toString` leave the `Monad` out. See [Running StateT Computations](../transformers/statet_transformer.md#running-statet-computations).
+- **`Try` and `TryPath` fold failure first, as `Either` does** ([#452](https://github.com/higher-kinded-j/higher-kinded-j/issues/452)): the success-first `fold`, deprecated since 0.4.6, is removed, leaving `foldFailureFirst`. A call to `fold` fails to compile rather than running its two functions the wrong way round. See [Handling Failures](../monads/try_monad.md#handling-failures-foldfailurefirst-recover-recoverwith).
 - **`@PathSource` points an effect algebra to `FreePath`** ([#1008](https://github.com/higher-kinded-j/higher-kinded-j/issues/1008)): a Path over a witness that `@EffectAlgebra` generates now draws a note at the witness. The algebra has a `Functor` and no `Monad` to pass to the Path's `of` and `pure`, so the note shows how to wrap its programs in a `FreePath`. See [A witness another processor writes](../effect/path_source.md#a-witness-another-processor-writes).
 - **`TrampolineUtils.traverseListStackSafe` is stack-safe under every applicative** ([#1018](https://github.com/higher-kinded-j/higher-kinded-j/issues/1018)): it combines the effects as a balanced tree, so a million-element traversal under `IO` no longer overflows the stack. It builds the result in linear time instead of copying the list at every element, and a `Validated` collecting its errors in a list is no longer quadratic in the failures. See [Core Components](../monads/trampoline_monad.md#core-components).
 - **A `VStream` releases its resources when it stops early or fails** ([#1024](https://github.com/higher-kinded-j/higher-kinded-j/issues/1024)): closing reaches every finaliser upstream that the stream has started reading, through any operator, innermost first. `takeWhile`, `zipWith`, `headOption`, `find`, `exists`, `forAll` and a failing terminal operation close what they leave unread. So `bracket(...).map(f).headOption()` releases at once. `VStream.closeAfterFailure` closes a failed manual pull. See [onFinalize: Lightweight Cleanup](../monads/vstream_resources.md#onfinalize-lightweight-cleanup).
@@ -105083,7 +105085,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 ### Before you upgrade {#before-you-upgrade}
 
-- **Run `MigrateDeprecationsTo0_5_0` before you move to 0.5.0** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): take `hkj-openrewrite` 0.5.0 for the run, and keep the project on 0.4.11 until it finishes. Its `StateT` recipe matches the 0.4.x signatures, so it rewrites nothing once the build resolves 0.5.0. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
+- **Run `MigrateDeprecationsTo0_5_0` before you move to 0.5.0** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445), [#452](https://github.com/higher-kinded-j/higher-kinded-j/issues/452)): take `hkj-openrewrite` 0.5.0 for the run, and keep the project on 0.4.11 until it finishes. Its `StateT` and `Try.fold` recipes match the 0.4.x signatures, so they rewrite nothing once the build resolves 0.5.0. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
 - **Replace `Void` with `Unit` where a success has nothing to return** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `Either<E, Void>` and `Try<Void>` can no longer hold their null. A `VTask<Void>`, `IOPath<Void>` or other lazy computation fails when its step returns null. `VTask.exec`, `Path.vtaskExec` and `Path.ioRunnable` give `Unit`. The `MigrateDeprecationsTo0_5_0` run marks each site.
 
 - **Recompile what was compiled against a generated Focus class** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033)): a field that gains a navigator returns a navigator class, so a module compiled against the earlier class fails with `NoSuchMethodError` until it is rebuilt.
@@ -105227,6 +105229,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Effect Paths | A `StateT` in `var` or a chained call over a witness with a type argument, such as `EitherKind.Witness<E>`, which now infers `Object` for it | Name the types, as in `StateT.<S, EitherKind.Witness<E>, A>create(fn)`, or declare the variable | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | `evalStateT` and `execStateT` without a `Monad`, deprecated since 0.4.6 | Pass the outer `Monad<F>`, the one `Instances.stateT` took, as the last argument | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | `StateT.monadF()`, deprecated since 0.4.6 | Keep a reference to the outer `Monad<F>` you built the stack with, and use it in place of the call | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
+| Effect Paths | `Try.fold` or `TryPath.fold`, deprecated since 0.4.6 | Run the recipe as [Before you upgrade](#before-you-upgrade) says, or call `foldFailureFirst` with the two functions swapped | [#452](https://github.com/higher-kinded-j/higher-kinded-j/issues/452) |
 | Effect Paths | A call to `ScopeJoiner.resultEither()` (a `[removal]` warning) | Use `joinEither()` on the `Scope`, as [Deprecated for removal in 0.6.0](#deprecated) says | [#1052](https://github.com/higher-kinded-j/higher-kinded-j/issues/1052) |
 | Effect Paths | Under a nullness checker, a nullable value passed to `Either.right`, `Try.success`, `Path.right`, `Path.success`, `TryKindHelper.success`, `EitherT.right`, the `Either.Right` or `Try.Success` constructor, or `of` on `EitherMonad`, `TryMonad` or `EitherTMonad` | Pass `Unit.INSTANCE` for a step with nothing to return, or route a value that may be missing through `Maybe` | [#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065) |
 | Effect Paths | Under a nullness checker, a nullable error passed to `Either.left`, `EitherT.left`, the `Either.Left` constructor, or `raiseError` on `EitherMonad` or `EitherTMonad` | Pass an error that says what went wrong, or `Unit.INSTANCE` where the error type is `Unit` | [#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077) |
