@@ -89,7 +89,7 @@ Each path gives up its optic:
         ConsignmentFocus.state().via(ConsignmentStatePrisms.dispatched());
     Affine<Consignment, ConsignmentState.Dispatched> dispatched = dispatchedPath.toAffine();
 
-    TraversalPath<Order, Integer> quantityPath = OrderFocus.lines().via(LineItemFocus.quantity());
+    TraversalPath<Order, Integer> quantityPath = OrderFocus.lines().quantity();
     Traversal<Order, Integer> quantities = quantityPath.toTraversal();
 ```
 

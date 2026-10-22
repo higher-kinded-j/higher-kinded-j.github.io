@@ -86,8 +86,7 @@ That loop works. It knows the order's shape, though, and it ends in a list you s
 ```
 
 ``` java
-    Traversal<Order, BigDecimal> prices =
-        OrderFocus.lines().via(LineItemFocus.price()).toTraversal();
+    Traversal<Order, BigDecimal> prices = OrderFocus.lines().price().toTraversal();
 
     Validated<List<String>, Order> checked =
         OpticOps.modifyAllValidated(order, prices, FluentBook::checkPrice);
@@ -251,7 +250,7 @@ The four methods cover `Either`, `Maybe` and `Validated`. For any other effect, 
 ``` java
     Applicative<CompletableFutureKind.Witness> futures = Instances.applicative(completableFuture());
 
-    TraversalPath<Order, BigDecimal> prices = OrderFocus.lines().via(LineItemFocus.price());
+    TraversalPath<Order, BigDecimal> prices = OrderFocus.lines().price();
 
     Kind<CompletableFutureKind.Witness, Order> pending =
         prices.modifyF(price -> FUTURE.widen(currentPrice(price)), order, futures);

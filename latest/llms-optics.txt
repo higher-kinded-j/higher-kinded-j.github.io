@@ -39,12 +39,10 @@ A wither knows only its own record, so the list is streamed, each line rebuilt, 
 ``` java
     // The Focus DSL: one generated path reaches every price, and rebuilds what it passes through
     Order discounted =
-        OrderFocus.lines()
-            .via(LineItemFocus.price())
-            .modifyAll(price -> price.multiply(new BigDecimal("0.9")), order);
+        OrderFocus.lines().price().modifyAll(price -> price.multiply(new BigDecimal("0.9")), order);
 ```
 
-For Ada's order of a £40.00 lamp and four £2.50 bulbs, both versions price the lines at 36.000 and 2.250. The difference is what you can do next: name `OrderFocus.lines().via(LineItemFocus.price())` once, and the same path rounds the prices on the [Quickstart](quickstart.md) and checks them on [Updates That Can Fail](fluent_api.md).
+For Ada's order of a £40.00 lamp and four £2.50 bulbs, both versions price the lines at 36.000 and 2.250. The difference is what you can do next: name `OrderFocus.lines().price()` once, and the same path rounds the prices on the [Quickstart](quickstart.md) and checks them on [Updates That Can Fail](fluent_api.md).
 
 The annotation processor writes `OrderFocus` and `LineItemFocus` from `@GenerateFocus` on each record, which can sit beside Lombok's `@With` when Lombok comes first on the processor path. These records are the chapter's running cast, the order service the [Mapping chapter's capstone](../mapping/capstone.md) also uses:
 
@@ -363,13 +361,11 @@ public record LineItem(String sku, Integer quantity, BigDecimal price) {}
 ``` java
     Order rounded =
         OrderFocus.lines()
-            .via(LineItemFocus.price())
+            .price()
             .modifyAll(price -> price.setScale(2, RoundingMode.HALF_EVEN), order);
 ```
 
-`OrderFocus.lines()` already walks every element of the `List<LineItem>`: the generated accessor ends in `.each()` for you, so it hands back a path focused on a `LineItem`, not on the list. `.via(LineItemFocus.price())` zooms each element down to the price field, and `modifyAll` applies the function in one pass to return a new `Order`. The introduction's discount left the lines at 36.000 and 2.250; rounding gives 36.00 and 2.25.
-
-A hop from a `List` field is always `.via(...)`: a navigator shortens a hop into a single record field, as `.email()` does in section 1.
+`OrderFocus.lines()` already walks every element of the `List<LineItem>`: the generated accessor ends in `.each()` for you, so it hands back a path focused on a `LineItem`, not on the list. It is a navigator, as `customer()` is in section 1, so `.price()` zooms each element down to the price field. `modifyAll` applies the function in one pass to return a new `Order`. The introduction's discount left the lines at 36.000 and 2.250; rounding gives 36.00 and 2.25.
 
 ~~~admonish warning title="Do not add your own `.each()`"
 `OrderFocus.lines().each()` compiles and then fails at run time. The extra `each()` tries to read a `LineItem` as a `List`; its type parameter is inferred from whatever you assign it to, which is why the compiler lets it through. `TraversalPath.each()` is for a focus that is *itself* a list, and its javadoc documents the `ClassCastException`.
@@ -606,7 +602,7 @@ You arrive holding a field, not an optic type. Find its declaration in the table
 |---|---|---|
 | [`Customer customer`](focus_navigation.md#fluent-navigation-with-generated-navigators), a record with `@GenerateFocus` | a navigator, which is also a `FocusPath<Basket, Customer>` | `.email()` |
 | `String reference` | `FocusPath<Basket, String>` | `.get(basket)`, `.set(value, basket)`, `.modify(f, basket)` |
-| [`List<LineItem> lines`](focus_navigation.md#collection-navigation), or a `Set` or `Collection` | `TraversalPath<Basket, LineItem>`, already on the elements | `.via(LineItemFocus.quantity())` |
+| [`List<LineItem> lines`](focus_navigation.md#collection-navigation), or a `Set` or `Collection` | a navigator, which is also a `TraversalPath<Basket, LineItem>`, already on the elements | `.quantity()` |
 | [`Optional<String> giftMessage`](focus_navigation.md#some-unwrap-optional) | `AffinePath<Basket, String>` | `.getOptional(basket)` |
 | [`@Nullable String couponCode`](focus_navigation.md#nullable-handle-null-values), with a recognised `@Nullable` | `AffinePath<Basket, String>` | `.getOptional(basket)` |
 | [`String legacyNote`](focus_navigation.md#nullable-handle-null-values), which may hold null but is not annotated | `FocusPath<Basket, String>` | `.nullable()` |
@@ -644,8 +640,8 @@ record Basket(
     // A plain value: read and write it
     FocusPath<Basket, String> reference = BasketFocus.reference();
 
-    // A List, Set or Collection: already on the elements, so the next hop is .via(...)
-    TraversalPath<Basket, Integer> quantities = BasketFocus.lines().via(LineItemFocus.quantity());
+    // A List, Set or Collection of records: a navigator already on the elements
+    TraversalPath<Basket, Integer> quantities = BasketFocus.lines().quantity();
 
     // An Optional, or a component with a recognised @Nullable: zero or one
     AffinePath<Basket, String> giftMessage = BasketFocus.giftMessage();
@@ -717,7 +713,7 @@ The generated companion has one method per record component, and the field's *ty
 
 ### Chain with `.via()` {#chain-with-via}
 
-Paths compose with `.via()`. Composing a path with a wider one widens the result, so one focus joined to many focuses is many focuses, and anything joined to a traversal is a traversal:
+Paths compose with `.via()`. Composing a path with a wider one widens the result, so one focus joined to many focuses is many focuses, and anything joined to a traversal is a traversal. The navigator `OrderFocus.lines().sku()` is this same path, written as a method call:
 
 ``` java
     TraversalPath<Order, String> skus = OrderFocus.lines().via(LineItemFocus.sku());
@@ -841,9 +837,9 @@ Where this lives: [AffinePath: Zero or One Element](#affinepath-zero-or-one-elem
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-focus-types-answer"
-**A navigator for `Address`, so `.city()` chains straight on; a `FocusPath<Consignment, ConsignmentState>`, because a sealed field is not narrowed until a prism picks a variant; and an `AffinePath<CustomerProfile, EmailAddress>`.**
+**A navigator for `Address`, so `.city()` chains straight on; a `FocusPath<Consignment, ConsignmentState>`, because a sealed field is not narrowed until a prism picks a variant; and a navigator for `EmailAddress`.** That last is an `AffinePath<CustomerProfile, EmailAddress>`, on which `.value()` chains.
 
-Where this lives: [Find your field](#find-your-field).
+Where this lives: [Find your field](#find-your-field), and [Which fields get a navigator](focus_navigation.md#which-fields-get-a-navigator).
 ~~~
 
 ---
@@ -1097,16 +1093,16 @@ Not every field does, and knowing which is the difference between a chain that c
 ```mermaid
 flowchart LR
     accTitle: Which fields get a navigator
-    accDescr: A record annotated with GenerateFocus, whose Focus class was generated and whose type parameters the field names, gets a navigator, and so does an SPI container of such a record that the declaring record widens. Optional, Maybe, List, Set and Collection fields are widened to a path chained with via. A generic record given a wildcard or no type arguments gets no navigator, so chain a lens you write with via. Anything else keeps a plain path chained with via.
+    accDescr: A record annotated with GenerateFocus, whose Focus class was generated and whose type parameters the field names, gets a navigator. So does an Optional, Maybe, List, Set, Collection or Kind of such a record, and an SPI container of one that the declaring record widens. A generic record given a wildcard or no type arguments gets no navigator, so chain a lens you write with via. Anything else keeps a plain path chained with via.
     F{"The field's<br/>type is..."}
     F --- R1["a record with<br/>@GenerateFocus, its Focus<br/>class generated and each<br/>type parameter named"]
-    F --- R2["a widened SPI<br/>container of<br/>such a record"]
-    F --- R3["Optional, Maybe, List,<br/>Set, Collection"]
+    F --- R2["an Optional, Maybe, List,<br/>Set, Collection or Kind<br/>of such a record"]
+    F --- R3["a widened SPI<br/>container of<br/>such a record"]
     F --- R4["a generic record<br/>given a wildcard or<br/>no type arguments"]
     F --- R5["anything else"]
     R1 --> N["Navigator<br/>chain with<br/>a method call"]
     R2 --> N
-    R3 --> W["Widened path<br/>chain with .via()"]
+    R3 --> N
     R4 --> Q["No navigator<br/>chain a lens you<br/>write with .via()"]
     R5 --> P["Plain path<br/>chain with .via()"]
 
@@ -1115,17 +1111,41 @@ flowchart LR
     classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
     class F decision
     class R1,R2,R3,R4,R5 step
-    class N,W,Q,P tier
+    class N,Q,P tier
 ```
 
-The middle branch is the one that surprises people. `Optional`, `Maybe`, `List`, `Set` and `Collection` are widened by the processor before navigators are considered, so a `List<LineItem> lines` field gives you a `TraversalPath<Order, LineItem>` and never a `LinesNavigator`. SPI containers (a `Map`, an array, an Eclipse Collections `ImmutableList`, an `Either`) *are* eligible. One gets a navigator when its element type is itself annotated and the record widens the container: an `Either` always, a `Map` or an array under `widenCollections`, or when `widenFields` names the field. A record with type parameters of its own gets one when the field names a type for each of them, as [A target with type parameters](#a-target-with-type-parameters) explains.
+A container of such records gets a navigator over the path its method already returns, so the next hop is a method call there too. An `Optional`, `Maybe`, `List`, `Set` or `Collection` is always stepped into: a `List<LineItem> lines` field gives you a `LinesNavigator`, which is a `TraversalPath<Order, LineItem>` with a method for each `LineItem` field.
 
 ``` java
-    // customer is a plain navigable field: navigator, so .email() chains
+    // customer is a navigable record: a navigator, so .email() chains
     String email = OrderFocus.customer().email().value().get(order);
 
-    // lines is a List: a TraversalPath, so the next hop is .via()
-    List<String> skus = OrderFocus.lines().via(LineItemFocus.sku()).getAll(order);
+    // lines is a List of them: a navigator over every line, so .sku() chains too
+    TraversalPath<Order, String> skuPath = OrderFocus.lines().sku();
+    List<String> skus = skuPath.getAll(order);
+```
+
+An SPI container (a `Map`, an array, an Eclipse Collections `ImmutableList`, an `Either`) gets a navigator only where the record widens it. An `Either` is always widened; a `Map` or an array is widened under `widenCollections`, or when `widenFields` names the field. Containers nested in one another compose to the record they hold, so `List<Optional<LineItem>>` gets a navigator over each `LineItem` too. So does a [`Kind<F, A>` field](kind_field_support.md) of such records. A record with type parameters of its own gets one when the field names a type for each of them, as [A target with type parameters](#a-target-with-type-parameters) explains.
+
+A navigation method hands on the next field's navigator only where the composed path has the type of that field's own path. An order history holds a list of orders:
+
+``` java
+// A customer's past orders: a list of orders, each holding a list of lines
+@GenerateFocus
+record OrderHistory(List<Order> orders) {}
+
+```
+
+`OrderFocus.lines()` is a traversal, as `orders()` is, so `orders().lines().price()` chains. `OrderFocus.customer()` is a `FocusPath`, and `orders().customer()` is a traversal, so it returns the plain `TraversalPath<OrderHistory, Customer>`. Its next hop is `.via(CustomerFocus.email())`:
+
+``` java
+    // A hop into each order's list keeps the traversal, so lines() hands on its navigator
+    List<BigDecimal> prices = OrderHistoryFocus.orders().lines().price().getAll(history);
+
+    // A hop into one record lands on a traversal, so customer() hands back the plain path
+    TraversalPath<OrderHistory, Customer> customers = OrderHistoryFocus.orders().customer();
+    List<String> emails =
+        customers.via(CustomerFocus.email()).via(EmailAddressFocus.value()).getAll(history);
 ```
 
 ### What a navigator provides {#what-a-navigator-provides}
@@ -1142,7 +1162,7 @@ A navigator is its path, with one method added per field of the target type. Eve
                 consignment);
 ```
 
-`toPath()` hands back the path without the navigation methods, where a type must name the plain path.
+`toPath()` hands back the path without the navigation methods, where a type must name the plain path. Every other path method returns a plain path too, so after `OrderFocus.lines().filter(...)` the next hop is `.via(LineItemFocus.price())`.
 
 ### When to use navigators {#when-to-use-navigators}
 
@@ -1164,17 +1184,17 @@ You want to replace only the first line of an order with a sofa. Which of `Order
 Where this lives: [Access by index](#access-by-index).
 ~~~
 
-~~~admonish question title="Checkpoint: a hop from a list" id="check-navigation-list-hop"
-`Order` and `LineItem` both carry `@GenerateFocus`. Does this compile?
+~~~admonish question title="Checkpoint: a hop from a map" id="check-navigation-map-hop"
+`OrderFocus.lines().sku()` compiles. A `Backorders` record holds `Map<String, LineItem> bySku`, and it carries a bare `@GenerateFocus`, as `LineItem` does. Does this compile?
 
 <!-- verify:rejects "cannot find symbol" -->
 ```java
-var skus = OrderFocus.lines().sku();
+var skus = BackordersFocus.bySku().sku();
 ```
 ~~~
 
-~~~admonish success title="Answer and why" collapsible=true id="check-navigation-list-hop-answer"
-**No: the compiler reports `cannot find symbol`.** A `List` field is widened to a `TraversalPath` before navigators are considered, so it never gets one. Spell the hop `.via(LineItemFocus.sku())`.
+~~~admonish success title="Answer and why" collapsible=true id="check-navigation-map-hop-answer"
+**No: the compiler reports `cannot find symbol`.** A `List` is always stepped into, but a `Map` is stepped into only where the record widens it. So `bySku()` is a `FocusPath<Backorders, Map<String, LineItem>>` with no navigator. Add `widenFields = "bySku"` to the annotation on `Backorders` to navigate into its values.
 
 Where this lives: [Which fields get a navigator](#which-fields-get-a-navigator).
 ~~~
@@ -1263,7 +1283,7 @@ Three things can keep such a navigator from being generated in full, and the pro
 
 ### Controlling navigator generation {#controlling-navigator-generation}
 
-**Depth limiting**: only a `maxNavigatorDepth` of 1 or less changes the generated code. It makes a navigator's own navigation methods return plain paths, so only the first hop chains fluently. A larger value, the default 3 included, does not stop a chain, though a hop that widens the path into a record still does, such as one from a navigator over an `Either`. Each hop into another navigable record returns the navigator that the `Focus` class of the record it leaves declares for that field. Under the default, `OrderFocus.customer().email()` returns `CustomerFocus.EmailNavigator`.
+**Depth limiting**: only a `maxNavigatorDepth` of 1 or less changes the generated code. It makes a navigator's own navigation methods return plain paths, so only the first hop chains fluently. A larger value, the default 3 included, does not stop a chain, though a hop that widens the path into a record still does, such as `orders().customer()` from a navigator over a `List`. Every other hop into a navigable record returns the navigator that the `Focus` class of the record it leaves declares for that field. Under the default, `OrderFocus.customer().email()` returns `CustomerFocus.EmailNavigator`.
 
 <!-- verify -->
 ```java
@@ -1423,7 +1443,8 @@ Beyond three levels, compose the rest with `.via()`.
 * **A generated collection method is element-level; a generated `Map` method is not.** `.at(i)` and `ListPrisms` start from `FocusPath.of(theLens())`, because there is no generated `order.line(0)`. `.atKey(k)` applies straight to the generated path, because that path still focuses the whole map.
 * **An `Optional`, or a recognised `@Nullable`, is already an `AffinePath`.** Chain `.nullable()` yourself for a field nobody annotated, or one carrying Spring's `@Nullable`.
 * **One variant of a sealed type is a prism away.** `@GeneratePrisms` names each variant of a type you own; `AffinePath.instanceOf` matches by runtime type in one you do not.
-* **Navigators cover a field whose type is another annotated record.** An `Either` of one gets a navigator too, and so does a `Map` or an array the record widens. `Optional`, `Maybe`, `List`, `Set` and `Collection` are widened first and never produce one, so those hops use `.via()`.
+* **A navigator covers an annotated record, or a container of one.** An `Optional`, `Maybe`, `List`, `Set`, `Collection` or `Either` of one always gets a navigator, nested or not, and so does a `Kind` the processor traverses. A `Map` or an array gets one where the record widens it.
+* **A record hop from a wider path returns a plain path.** `orders().customer()` is a `TraversalPath`, so its next hop is `.via(CustomerFocus.email())`.
 * **A navigator is a path.** Every path method works on it, and it goes wherever a path of its type goes.
 ~~~
 
@@ -1536,7 +1557,7 @@ Each path gives up its optic:
         ConsignmentFocus.state().via(ConsignmentStatePrisms.dispatched());
     Affine<Consignment, ConsignmentState.Dispatched> dispatched = dispatchedPath.toAffine();
 
-    TraversalPath<Order, Integer> quantityPath = OrderFocus.lines().via(LineItemFocus.quantity());
+    TraversalPath<Order, Integer> quantityPath = OrderFocus.lines().quantity();
     Traversal<Order, Integer> quantities = quantityPath.toTraversal();
 ```
 
@@ -1777,8 +1798,7 @@ That loop works. It knows the order's shape, though, and it ends in a list you s
 ```
 
 ``` java
-    Traversal<Order, BigDecimal> prices =
-        OrderFocus.lines().via(LineItemFocus.price()).toTraversal();
+    Traversal<Order, BigDecimal> prices = OrderFocus.lines().price().toTraversal();
 
     Validated<List<String>, Order> checked =
         OpticOps.modifyAllValidated(order, prices, FluentBook::checkPrice);
@@ -1942,7 +1962,7 @@ The four methods cover `Either`, `Maybe` and `Validated`. For any other effect, 
 ``` java
     Applicative<CompletableFutureKind.Witness> futures = Instances.applicative(completableFuture());
 
-    TraversalPath<Order, BigDecimal> prices = OrderFocus.lines().via(LineItemFocus.price());
+    TraversalPath<Order, BigDecimal> prices = OrderFocus.lines().price();
 
     Kind<CompletableFutureKind.Witness, Order> pending =
         prices.modifyF(price -> FUTURE.widen(currentPrice(price)), order, futures);
@@ -2536,8 +2556,7 @@ A path is a value, so the desk builds each one once and names it for what it rea
 
   static final FocusPath<Order, OrderStatus> STATUS = OrderFocus.status();
 
-  static final TraversalPath<Order, BigDecimal> PRICES =
-      OrderFocus.lines().via(LineItemFocus.price());
+  static final TraversalPath<Order, BigDecimal> PRICES = OrderFocus.lines().price();
 
   static final TraversalPath<Order, BigDecimal> BULK_PRICES =
       OrderFocus.lines().filter(line -> line.quantity() >= 4).via(LineItemFocus.price());
@@ -2901,7 +2920,7 @@ Write one expression that sets the quantity of every line of an `order` to 1.
 **A traversal into the lines, then the quantity, then `setAll`:**
 
 ``` java
-    Order oneOfEach = OrderFocus.lines().via(LineItemFocus.quantity()).setAll(1, order);
+    Order oneOfEach = OrderFocus.lines().quantity().setAll(1, order);
 ```
 
 Where this lives: [TraversalPath: Zero or More Elements](focus_dsl.md#traversalpath-zero-or-more-elements).
@@ -2921,9 +2940,7 @@ Write a method that accepts an order only if every line has at least one item, a
 
   static Validated<List<String>, Order> acceptQuantities(Order order) {
     return OpticOps.modifyAllValidated(
-        order,
-        OrderFocus.lines().via(LineItemFocus.quantity()).toTraversal(),
-        SelfCheckBook::checkQuantity);
+        order, OrderFocus.lines().quantity().toTraversal(), SelfCheckBook::checkQuantity);
   }
 
 ```
@@ -17443,7 +17460,7 @@ ConfigMap result = value.modify(String::trim, config);
 
 ---
 
-The [Focus DSL](focus_dsl.md) and [Collections, Optionals and Sealed Types](focus_navigation.md) cover the paths most code needs. This group covers what those pages leave out: running a path under an effect, containers the processor does not know, and record fields typed `Kind<F, A>`. It also has the prisms and extension methods that join optics to the library's core types. Read a page when one of those comes up, and skip the group until then. As a reminder of where the everyday pages left off, here are a deep read and a bulk update over the chapter's order, where `Order` and `Customer` carry `@GenerateFocus`. The build compiles and runs it, and a test holds each value the comments show:
+The [Focus DSL](focus_dsl.md) and [Collections, Optionals and Sealed Types](focus_navigation.md) cover the paths most code needs. This group covers what those pages leave out: running a path under an effect, containers the processor does not know, and record fields typed `Kind<F, A>`. It also has the prisms and extension methods that join optics to the library's core types. Read a page when one of those comes up, and skip the group until then. As a reminder of where the everyday pages left off, here are a deep read and a bulk update over the chapter's order, where `Order`, `Customer` and `LineItem` carry `@GenerateFocus`. The build compiles and runs it, and a test holds each value the comments show:
 
 ``` java
     // Order -> customer -> email -> value: chained hops, generated
@@ -17453,7 +17470,7 @@ The [Focus DSL](focus_dsl.md) and [Collections, Optionals and Sealed Types](focu
     // Order -> lines[] -> price: every price, in one expression
     Order afterRise =
         OrderFocus.lines()
-            .via(LineItemFocus.price())
+            .price()
             .modifyAll(price -> price.multiply(new BigDecimal("1.10")), order);
     // every price is 10% higher; order itself is untouched
 ```
@@ -17462,7 +17479,7 @@ The [Focus DSL](focus_dsl.md) and [Collections, Optionals and Sealed Types](focu
 That chain is not a string, a reflective path expression, or a runtime lookup. `customer()`, `email()`, `lines()` and `price()` are ordinary methods generated at compile time, so a renamed field is a compilation error rather than a `NullPointerException` in production, and the IDE autocompletes each step. It is also a *value*: store the path in a static field, pass it to a method, reuse it. The chain reads like a field access and behaves like an optic.
 ~~~
 
-`customer` chains `.email()` straight off a generated *navigator*, while `lines` is a `List`, which the processor unwraps to a `TraversalPath` over its elements, so its next hop is spelled `.via(...)`. [Collections, Optionals and Sealed Types](focus_navigation.md#fluent-navigation-with-generated-navigators) sets out which fields get which. A path hands its underlying optic to `OpticOps` through `toLens()`, `toAffine()` or `toTraversal()`, so starting with the Focus DSL never locks the other APIs out.
+`customer` chains `.email()` straight off a generated *navigator*. `lines` is a `List`, which the processor unwraps to a `TraversalPath` over its elements, and that path is a navigator too, so `.price()` chains the same way. [Collections, Optionals and Sealed Types](focus_navigation.md#which-fields-get-a-navigator) sets out which fields get a navigator. A path hands its underlying optic to `OpticOps` through `toLens()`, `toAffine()` or `toTraversal()`, so starting with the Focus DSL never locks the other APIs out.
 
 ---
 
@@ -17915,7 +17932,7 @@ TraversalPath<WidenedCandidate, Integer> widened = WidenedCandidateFocus.scores(
 
 To widen some containers and keep others whole, name the fields instead: `@GenerateFocus(widenFields = "scores")` steps into `scores` and leaves every other container as it is. A name that matches no component is an error. A name `widenFields` cannot change draws a warning: a `List`, which its method widens anyway, or a `String`, which holds no container. See [Compiler Messages](compiler_errors.md#generatefocus-widenfields-cannot-widen).
 
-Navigators follow the same rule rather than adding to it. A container whose *element* is itself a `@GenerateFocus` record gets a navigator over its elements only where the record widens it. So `Map<String, Address>` stays a path to the whole map until `widenCollections` or `widenFields` says otherwise, and then its method returns a navigator over the values. Turning navigators on therefore never changes what a field's method focuses on.
+Navigators follow the same rule rather than adding to it. A container whose *element* is itself a `@GenerateFocus` record gets a navigator over its elements wherever its method steps into them. A `List<Address>` always does, so its method returns a navigator and the next hop, such as `.city()`, chains. `Map<String, Address>` stays a path to the whole map until `widenCollections` or `widenFields` says otherwise, and then its method returns a navigator over the values. Turning navigators on therefore never changes what a field's method focuses on.
 
 Whichever way you reach a field, by the static method or by a navigator on a record that holds this one, you get the same path type. The setting that decides it belongs to the record that *declares* the component, not to the one navigating to it.
 
@@ -18071,7 +18088,7 @@ Lens<Box<? extends Widget>, Widget> value =
 TraversalPath<Crate, Widget> widgets = CrateFocus.boxes().via(value);
 ```
 
-The setter needs only the new value because `Box` has one component. With more, it copies the others from `box`, and `LensLaws` checks the result, as [Every Write Runs the Canonical Constructor](lenses.md#every-write-runs-the-canonical-constructor) shows. If nothing needs the wildcard, declare `List<Box<Widget>>` instead, and `.via(BoxFocus.value())` composes as generated.
+The setter needs only the new value because `Box` has one component. With more, it copies the others from `box`, and `LensLaws` checks the result, as [Every Write Runs the Canonical Constructor](lenses.md#every-write-runs-the-canonical-constructor) shows. If nothing needs the wildcard, declare `List<Box<Widget>>` instead: `boxes()` then returns a navigator, and `boxes().value()` chains.
 
 ### Cross-Ecosystem Navigation
 
@@ -18174,17 +18191,14 @@ _Navigate a `Kind<F, A>` record field as you would a plain `List` field, with th
 [KindFieldFocusExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/focus/KindFieldFocusExample.java)
 ~~~
 
-Domain records in a Higher-Kinded-J codebase often hold their contents in a `Kind<F, A>`: a team's members as `Kind<ListKind.Witness, Member>`, an optional lead as `Kind<MaybeKind.Witness, Member>`. The processor recognises those witnesses and generates the traversal for you, so the field reads exactly like a plain `List` field would:
+Domain records in a Higher-Kinded-J codebase often hold their contents in a `Kind<F, A>`: a team's members as `Kind<ListKind.Witness, Member>`, an optional lead as `Kind<MaybeKind.Witness, Member>`. The processor recognises those witnesses and generates the traversal for you, so the field reads exactly like a plain `List` field would, its [navigator](focus_navigation.md#which-fields-get-a-navigator) included:
 
 <!-- verify -->
 ```java
 // Kind<ListKind.Witness, Member> members, and yet:
 List<Member> everyone = SkillsTeamFocus.members().getAll(team);
 
-SkillsTeam levelled =
-    SkillsTeamFocus.members()
-        .via(MemberFocus.skills())
-        .modifyAll(Fixture::improve, team);
+SkillsTeam levelled = SkillsTeamFocus.members().skills().modifyAll(Fixture::improve, team);
 ```
 
 `Fixture` is the compiled example's own setup: sample records, hand-written optics and validators. Nothing in it is library API.
@@ -24650,7 +24664,7 @@ private static final Lens<Company, String> COMPANY_NAME =
     CompanyLenses.name();
 
 private static final TraversalPath<Order, BigDecimal> ALL_PRICES =
-    OrderFocus.lines().via(LineItemFocus.price());
+    OrderFocus.lines().price();
 ```
 
 This matters most for paths constructed by `andThen` chains, where the whole composition is rebuilt on every call. The saving is smaller but real for a single accessor too, because a generated accessor is a factory rather than a constant: `CompanyLenses.name()` calls `Lens.of(...)` and allocates a fresh `Lens` every time, and `CompanyFocus.name()` allocates a `Lens` and a `FocusPath`.
@@ -25197,8 +25211,7 @@ You want to replace one value three records down, such as the email on an order'
 A customer profile's alternative email is an `Optional<EmailAddress>`, and you want to change the address when there is one.
 
 ``` java
-    AffinePath<CustomerProfile, String> altEmail =
-        CustomerProfileFocus.altEmail().via(EmailAddressFocus.value());
+    AffinePath<CustomerProfile, String> altEmail = CustomerProfileFocus.altEmail().value();
 
     CustomerProfile lowered = altEmail.modify(String::toLowerCase, profile);
 
@@ -25234,8 +25247,7 @@ record OrderHistory(List<Order> orders) {}
 ```
 
 ``` java
-    TraversalPath<OrderHistory, BigDecimal> prices =
-        OrderHistoryFocus.orders().via(OrderFocus.lines()).via(LineItemFocus.price());
+    TraversalPath<OrderHistory, BigDecimal> prices = OrderHistoryFocus.orders().lines().price();
 
     OrderHistory rounded =
         prices.modifyAll(price -> price.setScale(2, RoundingMode.HALF_EVEN), history);
@@ -25253,7 +25265,7 @@ record OrderHistory(List<Order> orders) {}
 ```
 ~~~
 
-A `List` component's generated method already steps into the elements, so `OrderHistoryFocus.orders()` focuses each `Order`. Each `.via(...)` goes one level deeper, and `modifyAll` returns a new history with every price rounded. In plain Java the same change is two nested streams, each ending in a record's constructor.
+A `List` component's generated method already steps into the elements, so `OrderHistoryFocus.orders()` focuses each `Order`. It is a navigator over them, so each hop goes one level deeper, and `modifyAll` returns a new history with every price rounded. In plain Java the same change is two nested streams, each ending in a record's constructor.
 
 ---
 
@@ -25513,8 +25525,7 @@ final class Quantities {
 ```
 
 ``` java
-    Traversal<Order, Integer> quantities =
-        OrderFocus.lines().via(LineItemFocus.quantity()).toTraversal();
+    Traversal<Order, Integer> quantities = OrderFocus.lines().quantity().toTraversal();
 
     // Every bad quantity, reported together
     Validated<List<String>, Order> checked =
@@ -25547,7 +25558,7 @@ For an order whose lines hold 0 and -1 items, `checked` is `Invalid([No items: 0
 You want the number of items on an order, whether any line is a bulk line, and the order's total.
 
 ``` java
-    TraversalPath<Order, Integer> quantities = OrderFocus.lines().via(LineItemFocus.quantity());
+    TraversalPath<Order, Integer> quantities = OrderFocus.lines().quantity();
 
     int items = quantities.foldMap(Monoids.integerAddition(), quantity -> quantity, order);
     boolean anyBulk = quantities.exists(quantity -> quantity >= 4, order);
@@ -25597,7 +25608,7 @@ A customer profile always has a name, and sometimes a nickname. You want them as
         Fold.sum(
             CustomerProfileFocus.name().asFold(),
             CustomerProfileFocus.nickname().asFold(),
-            CustomerProfileFocus.altEmail().via(EmailAddressFocus.value()).asFold());
+            CustomerProfileFocus.altEmail().value().asFold());
 ```
 
 ~~~admonish example collapsible=true title="The same with raw optics"
@@ -25643,7 +25654,7 @@ A path reads fewer values than you expected, and you want to see what it finds.
     List<String> log = new ArrayList<>();
     TraversalPath<Order, String> skus =
         OrderFocus.lines()
-            .via(LineItemFocus.sku())
+            .sku()
             .traced((_, found) -> log.add("read " + found.size() + " SKUs: " + found));
 
     List<String> read = skus.getAll(order);
@@ -26305,7 +26316,7 @@ A stream over a list field reads the elements, and a wither puts the new list ba
 
 | You write today | With optics | Note |
 |---|---|---|
-| `stream().map(f).toList()` over a list field, put back with a wither | `OrderFocus.lines().via(LineItemFocus.price()).modifyAll(f, order)` | the path does the rebuild, however deep the list |
+| `stream().map(f).toList()` over a list field, put back with a wither | `OrderFocus.lines().price().modifyAll(f, order)` | the path does the rebuild, however deep the list |
 | `stream().filter(p).map(f).toList()` | `.filter(p)` on the path, then `modifyAll(f, order)` | the stream drops what `p` rejects; the filtered path keeps it, unchanged |
 | `stream().map(f).toList()`, to read the values | `path.getAll(order)` | |
 | `reduce`, `anyMatch`, `count` | `foldMap(monoid, f, order)`, `exists(p, order)` and `count(order)` on the path | only reads; `exists` stops at its first match, as [What reads cost](production_readiness.md#read-cost) explains |
@@ -26353,7 +26364,7 @@ A [prism](prisms.md) is an `instanceof` pattern and the variant's constructor in
 | `new Returned(reason)`, the variant's constructor | `returned().build(new Returned(reason))`, the variant as a `ConsignmentState` | for a sealed variant, `build` only widens the type; `Prisms.some().build(x)` wraps, as `Optional.of(x)` does |
 | A sealed `switch` that changes one case and passes the rest through | `ConsignmentFocus.state().via(returned()).via(ReturnedFocus.reason()).modify(f, consignment)` | the `switch` stops compiling when a variant is added; the prism passes the new one through |
 | A `switch` that moves the state to another variant, `Pending` to `Dispatched` | `ConsignmentFocus.state().via(pending()).matches(consignment)`, then `ConsignmentFocus.state().set(new Dispatched(at), consignment)` | `modify` through a prism keeps the variant, so a move is a check and a write, as [Send goods out](capstone.md#send-goods-out) shows |
-| `profile.altEmail().map(EmailAddress::value)`, and a copy to write it back | `CustomerProfileFocus.altEmail().via(EmailAddressFocus.value())` | reads as the chain does, and writes too; `modify` leaves an empty `Optional` alone |
+| `profile.altEmail().map(EmailAddress::value)`, and a copy to write it back | `CustomerProfileFocus.altEmail().value()` | reads as the chain does, and writes too; `modify` leaves an empty `Optional` alone |
 
 A sealed `switch` that tidies a returned consignment's reason, and passes every other state through:
 
@@ -26542,8 +26553,7 @@ In `lens` a prism is also a traversal, so `set` writes a match, and Monocle's `r
 In Monocle, `headOption` on a fold or a traversal reads the first focus, as `firstOf` does in `lens`, and the `Cons` instance's `headOption` optional writes only the head. Here `headOption()` on a `TraversalPath` gives an `AffinePath` that reads the first element and writes every one:
 
 ``` java
-    AffinePath<Order, Integer> firstQuantity =
-        OrderFocus.lines().via(LineItemFocus.quantity()).headOption();
+    AffinePath<Order, Integer> firstQuantity = OrderFocus.lines().quantity().headOption();
 
     // The read is the first line's quantity
     Optional<Integer> read = firstQuantity.getOptional(order);

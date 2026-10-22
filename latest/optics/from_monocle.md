@@ -118,8 +118,7 @@ In `lens` a prism is also a traversal, so `set` writes a match, and Monocle's `r
 In Monocle, `headOption` on a fold or a traversal reads the first focus, as `firstOf` does in `lens`, and the `Cons` instance's `headOption` optional writes only the head. Here `headOption()` on a `TraversalPath` gives an `AffinePath` that reads the first element and writes every one:
 
 ``` java
-    AffinePath<Order, Integer> firstQuantity =
-        OrderFocus.lines().via(LineItemFocus.quantity()).headOption();
+    AffinePath<Order, Integer> firstQuantity = OrderFocus.lines().quantity().headOption();
 
     // The read is the first line's quantity
     Optional<Integer> read = firstQuantity.getOptional(order);

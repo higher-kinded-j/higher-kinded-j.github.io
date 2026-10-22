@@ -134,8 +134,7 @@ You want to replace one value three records down, such as the email on an order'
 A customer profile's alternative email is an `Optional<EmailAddress>`, and you want to change the address when there is one.
 
 ``` java
-    AffinePath<CustomerProfile, String> altEmail =
-        CustomerProfileFocus.altEmail().via(EmailAddressFocus.value());
+    AffinePath<CustomerProfile, String> altEmail = CustomerProfileFocus.altEmail().value();
 
     CustomerProfile lowered = altEmail.modify(String::toLowerCase, profile);
 
@@ -171,8 +170,7 @@ record OrderHistory(List<Order> orders) {}
 ```
 
 ``` java
-    TraversalPath<OrderHistory, BigDecimal> prices =
-        OrderHistoryFocus.orders().via(OrderFocus.lines()).via(LineItemFocus.price());
+    TraversalPath<OrderHistory, BigDecimal> prices = OrderHistoryFocus.orders().lines().price();
 
     OrderHistory rounded =
         prices.modifyAll(price -> price.setScale(2, RoundingMode.HALF_EVEN), history);
@@ -190,7 +188,7 @@ record OrderHistory(List<Order> orders) {}
 ```
 ~~~
 
-A `List` component's generated method already steps into the elements, so `OrderHistoryFocus.orders()` focuses each `Order`. Each `.via(...)` goes one level deeper, and `modifyAll` returns a new history with every price rounded. In plain Java the same change is two nested streams, each ending in a record's constructor.
+A `List` component's generated method already steps into the elements, so `OrderHistoryFocus.orders()` focuses each `Order`. It is a navigator over them, so each hop goes one level deeper, and `modifyAll` returns a new history with every price rounded. In plain Java the same change is two nested streams, each ending in a record's constructor.
 
 ---
 
@@ -450,8 +448,7 @@ final class Quantities {
 ```
 
 ``` java
-    Traversal<Order, Integer> quantities =
-        OrderFocus.lines().via(LineItemFocus.quantity()).toTraversal();
+    Traversal<Order, Integer> quantities = OrderFocus.lines().quantity().toTraversal();
 
     // Every bad quantity, reported together
     Validated<List<String>, Order> checked =
@@ -484,7 +481,7 @@ For an order whose lines hold 0 and -1 items, `checked` is `Invalid([No items: 0
 You want the number of items on an order, whether any line is a bulk line, and the order's total.
 
 ``` java
-    TraversalPath<Order, Integer> quantities = OrderFocus.lines().via(LineItemFocus.quantity());
+    TraversalPath<Order, Integer> quantities = OrderFocus.lines().quantity();
 
     int items = quantities.foldMap(Monoids.integerAddition(), quantity -> quantity, order);
     boolean anyBulk = quantities.exists(quantity -> quantity >= 4, order);
@@ -534,7 +531,7 @@ A customer profile always has a name, and sometimes a nickname. You want them as
         Fold.sum(
             CustomerProfileFocus.name().asFold(),
             CustomerProfileFocus.nickname().asFold(),
-            CustomerProfileFocus.altEmail().via(EmailAddressFocus.value()).asFold());
+            CustomerProfileFocus.altEmail().value().asFold());
 ```
 
 ~~~admonish example collapsible=true title="The same with raw optics"
@@ -580,7 +577,7 @@ A path reads fewer values than you expected, and you want to see what it finds.
     List<String> log = new ArrayList<>();
     TraversalPath<Order, String> skus =
         OrderFocus.lines()
-            .via(LineItemFocus.sku())
+            .sku()
             .traced((_, found) -> log.add("read " + found.size() + " SKUs: " + found));
 
     List<String> read = skus.getAll(order);

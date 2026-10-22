@@ -172,7 +172,7 @@ Write one expression that sets the quantity of every line of an `order` to 1.
 **A traversal into the lines, then the quantity, then `setAll`:**
 
 ``` java
-    Order oneOfEach = OrderFocus.lines().via(LineItemFocus.quantity()).setAll(1, order);
+    Order oneOfEach = OrderFocus.lines().quantity().setAll(1, order);
 ```
 
 Where this lives: [TraversalPath: Zero or More Elements](focus_dsl.md#traversalpath-zero-or-more-elements).
@@ -192,9 +192,7 @@ Write a method that accepts an order only if every line has at least one item, a
 
   static Validated<List<String>, Order> acceptQuantities(Order order) {
     return OpticOps.modifyAllValidated(
-        order,
-        OrderFocus.lines().via(LineItemFocus.quantity()).toTraversal(),
-        SelfCheckBook::checkQuantity);
+        order, OrderFocus.lines().quantity().toTraversal(), SelfCheckBook::checkQuantity);
   }
 
 ```
