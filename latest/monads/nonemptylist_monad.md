@@ -100,7 +100,7 @@ Because non-emptiness is part of the type, operations that are *partial* on an o
     int max = nel.max(Comparator.naturalOrder()); // 3
 ```
 
-It is also `Iterable`, so it works directly in for-each loops and streams, and `toJavaList()` gives an immutable `java.util.List` for interop.
+It is also `Iterable`, so it works directly in for-each loops. `stream()` gives a `Stream`, and `toJavaList()` gives an immutable `java.util.List` for interop.
 
 ---
 

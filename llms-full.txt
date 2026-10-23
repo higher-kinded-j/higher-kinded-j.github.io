@@ -16370,7 +16370,7 @@ For larger sagas, the builder provides a more readable structure:
 
 <!-- verify -->
 ```java
-Saga<String> orderSaga = SagaBuilder.<Unit>start()
+Saga<String> orderSaga = SagaBuilder.start()
     .step("charge-payment",
         VTask.of(() -> paymentService.charge(order)),
         paymentService::refund)
@@ -16385,13 +16385,22 @@ Saga<String> orderSaga = SagaBuilder.<Unit>start()
 
 Step names appear in error reporting, making it clear which step failed and which compensations ran.
 
+A saga needs at least one step. `SagaBuilder.start()` returns a `SagaBuilder.Start`, which offers the step methods but no `build()`. So a builder with no steps fails to compile with `cannot find symbol` for `method build()`. The builder each step returns has a `build()` that never fails.
+
+<!-- verify:rejects "method build()" -->
+```java
+Saga<Unit> empty = SagaBuilder.start().build(); // does not compile: Start has no build()
+```
+
+Where the steps come from data, see [Steps From Data](#steps-from-data).
+
 ### Async Compensation
 
 When compensation itself requires an asynchronous operation, use `stepAsync`:
 
 <!-- verify -->
 ```java
-SagaBuilder.<Unit>start()
+SagaBuilder.start()
     .stepAsync("charge-payment",
         _ -> VTask.of(() -> paymentService.charge(order)),
         paymentId -> VTask.of(() -> {
@@ -16407,7 +16416,7 @@ Some steps are idempotent or represent final actions that do not need undoing:
 
 <!-- verify -->
 ```java
-SagaBuilder.<Unit>start()
+SagaBuilder.start()
     .step("charge-payment",
         VTask.of(() -> paymentService.charge(order)),
         paymentService::refund)
@@ -16415,6 +16424,26 @@ SagaBuilder.<Unit>start()
         paymentId -> VTask.of(() -> emailService.sendConfirmation(order, paymentId)))
     .build();
 ```
+
+### Steps From Data {#steps-from-data}
+
+When the steps come from data, such as one reservation per item, there may be none. Hold the builder as a `SagaSteps<Unit>`, the type both stages share. Switching on it to build must then cover `SagaBuilder.Start`, the stage with no steps:
+
+<!-- verify -->
+```java
+SagaSteps<Unit> steps = SagaBuilder.start();
+for (String sku : skus) {
+    steps = steps.step("reserve-" + sku,
+        VTask.exec(() -> inventoryService.reserveItem(sku)),
+        _ -> inventoryService.releaseItem(sku));
+}
+Maybe<Saga<Unit>> reserveAll = switch (steps) {
+    case SagaBuilder<Unit> builder -> Maybe.just(builder.build());
+    case SagaBuilder.Start _ -> Maybe.nothing();   // no items, so no saga to run
+};
+```
+
+Each step the loop adds gives `Unit`, so its compensation takes what it undoes from the loop variable, as `releaseItem(sku)` does. The two stages are closed by design, so the switch needs no default.
 
 ## Running a Saga
 
@@ -16520,7 +16549,7 @@ blocking call is not cut short.
 | `saga.flatMap(fn)` | Chain with another saga |
 
 ~~~admonish info title="Key Takeaways"
-* **Each compensatable completed step registers an undo**: compensations run in reverse order over the steps that finished; the failed step itself, a `stepNoCompensation` step, and anything a partially applied action did before failing have nothing registered to undo
+* **Each completed step registers an undo**: compensations run in reverse order over the steps that finished. A `stepNoCompensation` step's undo does nothing, and `SagaError` lists it as succeeded. The failed step, and anything its action did before failing, have nothing to undo
 * **Saga is for business cleanup, Resource for infrastructure**: refunds and releases belong here; files, connections, and locks belong to `Resource`
 * **`runSafe()` tells the whole story**: `SagaError` names the failed step and carries every compensation result, so partial compensation is detectable, not silent
 * **Compensation is best-effort**: all compensations are attempted even when some fail; design them idempotent so a repeated undo is harmless
@@ -75788,7 +75817,7 @@ Because non-emptiness is part of the type, operations that are *partial* on an o
     int max = nel.max(Comparator.naturalOrder()); // 3
 ```
 
-It is also `Iterable`, so it works directly in for-each loops and streams, and `toJavaList()` gives an immutable `java.util.List` for interop.
+It is also `Iterable`, so it works directly in for-each loops. `stream()` gives a `Stream`, and `toJavaList()` gives an immutable `java.util.List` for interop.
 
 ---
 
@@ -83567,13 +83596,17 @@ inserts or batch API calls.
 
 ### chunk(size)
 
-Groups elements into lists of at most `size` elements. The last chunk may have fewer:
+Groups elements into non-empty lists of at most `size` elements. The last chunk may have fewer:
 
 <!-- verify -->
 ```java
-VStream<List<Integer>> chunks = VStream.range(1, 11).chunk(3);
-// [[1,2,3], [4,5,6], [7,8,9], [10]]
+VStream<NonEmptyList<Integer>> chunks = VStream.range(1, 11).chunk(3);
+// four chunks: 1 to 3, 4 to 6, 7 to 9, then 10 alone
 ```
+
+Each chunk is a [`NonEmptyList`](nonemptylist_monad.md), because a chunk is only emitted once it
+holds an element. So `head()`, `reduce` and `max` on a chunk always give a value, with no empty
+case to handle. An empty stream gives no chunks.
 
 ### chunkWhile(predicate)
 
@@ -83582,19 +83615,21 @@ grouping sorted data:
 
 <!-- verify -->
 ```java
-VStream<List<Integer>> groups = VStream.of(1, 1, 2, 2, 2, 3)
+VStream<NonEmptyList<Integer>> groups = VStream.of(1, 1, 2, 2, 2, 3)
     .chunkWhile(Integer::equals);
-// [[1,1], [2,2,2], [3]]
+// three groups: 1, 1 then 2, 2, 2 then 3
 ```
 
 ### mapChunked(size, batchFn)
 
-Combines chunking, batch transformation, and flattening into a single operation:
+Combines chunking, batch transformation, and flattening into a single operation. The batch
+function receives each chunk as a `NonEmptyList`, so pass `batch.toJavaList()` to an API that
+takes a `List`:
 
 <!-- verify -->
 ```java
 VStream<InsertResult> results = recordStream.mapChunked(100, batch -> {
-    return db.batchInsert(batch); // Process 100 records at a time
+    return db.batchInsert(batch.toJavaList()); // Process 100 records at a time
 });
 ```
 
@@ -83629,7 +83664,7 @@ bulk I/O operations:
 VStream<List<InsertResult>> results = VStreamPar.parEvalMap(
     recordStream.chunk(100), // Group into batches of 100
     4,                       // Process 4 batches concurrently
-    batch -> VTask.of(() -> db.batchInsert(batch))
+    batch -> VTask.of(() -> db.batchInsert(batch.toJavaList()))
 );
 ```
 
@@ -88684,7 +88719,7 @@ them into fixed-size windows and compute summary statistics like VWAP (Volume-We
 Average Price).
 
 **HKJ features:**
-- `VStream.chunk(size)`: groups consecutive elements into `List<A>` batches
+- `VStream.chunk(size)`: groups consecutive elements into `NonEmptyList<A>` batches, so every window has a first tick
 - `VStream.flatMap(f)`: expands per-symbol groups into individual views
 
 <!-- verify -->
@@ -105384,6 +105419,9 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A lazy computation always gives a value** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `IO`, `VTask`, `VStream`, `State`, `Lazy` and the other lazy types, and every Path over them, refuse a null value, as `Either` and `Try` do. A value passed in throws at the call, and a function that returns null fails the computation when it runs. See [A Task Always Gives a Value](../monads/vtask_monad.md#a-task-always-gives-a-value).
 - **Every `raiseError` refuses a null error** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `MonadError.raiseError` takes an error that is never null, so a nullness checker flags `raiseError(null)` on any instance. `Maybe`, `Optional`, `MaybeT` and `OptionalT`, whose failure carries no detail, take `Unit.INSTANCE`. See [The Solution: `raiseError` and `handleErrorWith`](../functional/monad_error.md#the-solution-raiseerror-and-handleerrorwith).
 - **The Path SPI answers with an `Optional` where it has nothing to give** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `PathProvider.monadError()` and `PathRegistry.unregister` return an `Optional`, as `PathRegistry.getProvider` and `GenericPath.monadError()` do, where they returned null. See [PathProvider SPI Registration](../monads/vstream_advanced.md#pathprovider-spi-registration).
+- **A `VStream` chunk is a `NonEmptyList`** ([#580](https://github.com/higher-kinded-j/higher-kinded-j/issues/580)): `chunk` and `chunkWhile`, and `chunk` on `VStreamPath` and `VStreamContext`, emit a `NonEmptyList`, and `mapChunked` passes one to its batch function. So `head()`, `reduce` and `max` on a chunk always give a value. Pass `chunk.toJavaList()` to an API that takes a `List`. See [Chunking Operations](../monads/vstream_parallel.md#chunking-operations).
+- **`NonEmptyList` has `stream()`** ([#580](https://github.com/higher-kinded-j/higher-kinded-j/issues/580)): it streams the head, then the tail, without copying. So a batch function that streams its chunk, such as `chunk -> chunk.stream().map(f).toList()`, compiles unchanged. See [Total Accessors](../monads/nonemptylist_monad.md#total-accessors).
+- **A saga builder with no steps does not compile** ([#580](https://github.com/higher-kinded-j/higher-kinded-j/issues/580)): `SagaBuilder.start()` returns a `SagaBuilder.Start`, which has the step methods but no `build()`. Each step returns a `SagaBuilder` whose `build()` never fails. An empty builder threw `IllegalStateException`. Steps that come from data are held as a `SagaSteps`. See [Steps From Data](../resilience/saga.md#steps-from-data).
 
 ---
 
@@ -105469,6 +105507,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **Replace `Void` with `Unit` where a success has nothing to return** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `Either<E, Void>` and `Try<Void>` can no longer hold their null. A `VTask<Void>`, `IOPath<Void>` or other lazy computation fails when its step returns null. `VTask.exec`, `Path.vtaskExec` and `Path.ioRunnable` give `Unit`. The `MigrateDeprecationsTo0_5_0` run marks each site.
 
 - **Recompile what was compiled against a generated Focus class** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033), [#1214](https://github.com/higher-kinded-j/higher-kinded-j/issues/1214)): a field or a hop that gains a navigator returns a navigator class. A module compiled against the earlier class fails with `NoSuchMethodError` until it is rebuilt.
+- **Recompile what calls `chunk`, `chunkWhile`, `mapChunked` or `SagaBuilder.start()`** ([#580](https://github.com/higher-kinded-j/higher-kinded-j/issues/580)): `start()` returns a new type, so a module compiled against 0.4.11 fails with `NoSuchMethodError`. A chunk keeps its erased type, so such a module links, then fails with `ClassCastException` where it reads a chunk as a `List`.
 
 ### What a running program can notice {#runtime-changes}
 
@@ -105563,6 +105602,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`raiseError(null)` throws on `Maybe`, `Optional`, `MaybeT` and `OptionalT`** ([#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): it gave `Nothing` or an empty `Optional`. Pass `Unit.INSTANCE`. Every `MonadError` now refuses a null error.
 - **A null error throws** ([#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077)): `Either.left(null)`, `EitherT.left`, `raiseError(null)` on `EitherMonad` and `EitherTMonad`, and a `mapLeft` or `bimap` whose error function returns null throw `NullPointerException`, where they built `Left(null)`.
 - **The conversions into an `Either` check their error even when it is not needed** ([#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077)): `Maybe.toEither` checks its error, or its supplier, even on a `Just`. The optics helpers `getEither`, `getValidated`, `modifyEither` and `modifyValidated` check theirs even when the focus is there. `Try.toEither` throws `NullPointerException` for a mapper that returns null, where it threw `KindUnwrapException`.
+- **A chunk is not a `List`** ([#580](https://github.com/higher-kinded-j/higher-kinded-j/issues/580)): what `chunk`, `chunkWhile` and `mapChunked` hand over prints as `NonEmptyList[1, 2]` and never equals a `List`, even one holding the same elements. Compare `chunk.toJavaList()` where code checked a chunk against a `List`.
 
 #### Spring {#runtime-spring}
 
@@ -105625,6 +105665,9 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Effect Paths | Under a nullness checker, a nullable error passed to `raiseError` on any `MonadError`, such as `MaybeMonad` or `OptionalMonad` | Pass an error that says what went wrong, or `Unit.INSTANCE` where the error type is `Unit` | [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078) |
 | Effect Paths | A `PathProvider` that overrides `monadError()`, or code that reads `monadError()` or `PathRegistry.unregister` as a value that may be null | Return `Optional.of(...)` from the override, and read the `Optional` | [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078) |
 | Effect Paths | Under a nullness checker reading `hkj-core` from the classpath, a nullable argument to a type it treated as unannotated: `VStream`, `Const`, `WriterT`, the Path SPI or the validation helpers | Pass a value, or route one that may be missing through `Maybe` | [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078) |
+| Effect Paths | Code that treats a chunk from `chunk`, `chunkWhile` or `mapChunked` as a `List`: a type such as `VStream<List<A>>` or `List<List<A>>`, a reference to a method taking `List<A>`, such as `VStream::fromList`, a `List` method such as `get`, `getLast` or `isEmpty`, or a stored `Function<List<A>, List<B>>` passed to `mapChunked` | Declare `NonEmptyList<A>`, and use `head()` and `last()` for `get(0)` and `getLast()`. Pass `chunk.toJavaList()` where a `List` is needed, add `.map(NonEmptyList::toJavaList)` to keep a `VStream<List<A>>`, or pass a stored function as `fn.compose(NonEmptyList::toJavaList)` | [#580](https://github.com/higher-kinded-j/higher-kinded-j/issues/580) |
+| Effect Paths | A variable, `var` included, or a parameter that holds `SagaBuilder.start()`, such as one a loop adds steps to | Declare it a `SagaSteps`, the type both stages share, and switch on it to build, as [Steps From Data](../resilience/saga.md#steps-from-data) shows | [#580](https://github.com/higher-kinded-j/higher-kinded-j/issues/580) |
+| Effect Paths | `build()` on `SagaBuilder.start()` with no step added, which threw `IllegalStateException` | Add a step before `build()` | [#580](https://github.com/higher-kinded-j/higher-kinded-j/issues/580) |
 | Spring | An `@HkjHttpClient` method whose success type is `Void` | Replace `Void` with `org.higherkindedj.hkt.Unit` | [#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065) |
 | Testing | `EitherAssert.hasRightNull()` | Delete the assertion: a `Right` can no longer hold null | [#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065) |
 | Testing | `EitherAssert.hasLeftNull()` | Delete the assertion: a `Left` can no longer hold null | [#1077](https://github.com/higher-kinded-j/higher-kinded-j/issues/1077) |
