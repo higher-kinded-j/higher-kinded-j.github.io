@@ -19897,7 +19897,7 @@ A container of such records gets a navigator over the path its method already re
 
 An SPI container (a `Map`, an array, an Eclipse Collections `ImmutableList`, an `Either`) gets a navigator only where the record widens it. An `Either` is always widened; a `Map` or an array is widened under `widenCollections`, or when `widenFields` names the field. Containers nested in one another compose to the record they hold, so `List<Optional<LineItem>>` gets a navigator over each `LineItem` too. So does a [`Kind<F, A>` field](kind_field_support.md) of such records. A record with type parameters of its own gets one when the field names a type for each of them, as [A target with type parameters](#a-target-with-type-parameters) explains.
 
-A navigation method hands on the next field's navigator only where the composed path has the type of that field's own path. An order history holds a list of orders:
+A chain keeps navigating where a hop widens the path. An order history holds a list of orders:
 
 ``` java
 // A customer's past orders: a list of orders, each holding a list of lines
@@ -19906,16 +19906,17 @@ record OrderHistory(List<Order> orders) {}
 
 ```
 
-`OrderFocus.lines()` is a traversal, as `orders()` is, so `orders().lines().price()` chains. `OrderFocus.customer()` is a `FocusPath`, and `orders().customer()` is a traversal, so it returns the plain `TraversalPath<OrderHistory, Customer>`. Its next hop is `.via(CustomerFocus.email())`:
+`OrderFocus.customer()` is a `FocusPath`, but `orders().customer()` reaches every order's customer, so it is a traversal. Each navigator has a form for each wider path type, nested in it as `AffineForm` and `TraversalForm`. So `orders().customer()` returns `OrderFocus.CustomerNavigator.TraversalForm`, and `.email()` chains:
 
 ``` java
     // A hop into each order's list keeps the traversal, so lines() hands on its navigator
     List<BigDecimal> prices = OrderHistoryFocus.orders().lines().price().getAll(history);
 
-    // A hop into one record lands on a traversal, so customer() hands back the plain path
-    TraversalPath<OrderHistory, Customer> customers = OrderHistoryFocus.orders().customer();
-    List<String> emails =
-        customers.via(CustomerFocus.email()).via(EmailAddressFocus.value()).getAll(history);
+    // A hop into one customer lands on a traversal too, so customer() hands on the traversal
+    // form of the order's customer navigator, and the chain goes on
+    OrderFocus.CustomerNavigator.TraversalForm<OrderHistory> customers =
+        OrderHistoryFocus.orders().customer();
+    List<String> emails = customers.email().value().getAll(history);
 ```
 
 ### What a navigator provides {#what-a-navigator-provides}
@@ -19936,7 +19937,7 @@ A navigator is its path, with one method added per field of the target type. Eve
 
 ### When to use navigators {#when-to-use-navigators}
 
-**They are on by default.** A navigator adds one small class per navigable field. Its type is a subtype of the plain path's, so code that names the path type keeps compiling, and your IDE can autocomplete the whole path.
+**They are on by default.** A navigable field gets up to three small classes: its navigator, and a form nested in it for each wider path type. Each is a subtype of the plain path it wraps, so code that names the path type keeps compiling, and your IDE can autocomplete the whole path.
 
 **Turn them off** with `@GenerateFocus(generateNavigators = false)` when generated-code size matters more than fluent hops, or the structures are shallow enough that `.via()` costs nothing.
 
@@ -20053,7 +20054,7 @@ Three things can keep such a navigator from being generated in full, and the pro
 
 ### Controlling navigator generation {#controlling-navigator-generation}
 
-**Depth limiting**: only a `maxNavigatorDepth` of 1 or less changes the generated code. It makes a navigator's own navigation methods return plain paths, so only the first hop chains fluently. A larger value, the default 3 included, does not stop a chain, though a hop that widens the path into a record still does, such as `orders().customer()` from a navigator over a `List`. Every other hop into a navigable record returns the navigator that the `Focus` class of the record it leaves declares for that field. Under the default, `OrderFocus.customer().email()` returns `CustomerFocus.EmailNavigator`.
+**Depth limiting**: only a `maxNavigatorDepth` of 1 or less changes the generated code. It makes a navigator's own navigation methods return plain paths, so only the first hop chains fluently. A larger value, the default 3 included, does not stop a chain. Each hop into a navigable record returns the navigator that the `Focus` class of the record it leaves declares for that field, or its form for a wider path. Under the default, `OrderFocus.customer().email()` returns `CustomerFocus.EmailNavigator`.
 
 <!-- verify -->
 ```java
@@ -20087,7 +20088,7 @@ Set one list or the other. Beside a non-empty `includeFields`, `excludeFields` i
 
 ### A field named like a path method {#a-field-named-like-a-path-method}
 
-A navigator already has its path's methods, so it cannot navigate to a field named like one that takes no arguments, such as `last`, `head` or `segments`. On a record that leaves navigators to the default, the field that reaches such a record keeps its plain path, with a note; on one that writes `generateNavigators = true`, the processor refuses it. [Compiler Messages](compiler_errors.md#generatefocus-navigator-cannot-navigate) gives both and their fixes. A field named like a method that takes arguments, such as `get` or `count`, navigates as usual.
+A navigator already has its path's methods, so it cannot navigate to a field named like one that takes no arguments, such as `last`, `head` or `segments`. On a record that leaves navigators to the default, the field that reaches such a record keeps its plain path, with a note; on one that writes `generateNavigators = true`, the processor refuses it. [Compiler Messages](compiler_errors.md#generatefocus-navigator-cannot-navigate) gives both and their fixes. A field named like a method that takes arguments, such as `get` or `count`, navigates as usual. A navigator's form for a wider path follows the same rule. A navigator into a record with a field named `headOption`, which only a `TraversalPath` has, has no `TraversalForm`, so a hop into that record from a list returns the plain path. The record that declares the field reaching it gets [a note](compiler_errors.md#generatefocus-no-form) naming the field to rename, if it writes `generateNavigators = true`.
 
 ### A target with type parameters {#a-target-with-type-parameters}
 
@@ -20128,7 +20129,7 @@ The note names the path the field's method returns, which follows the field's [p
 
 The processor reads each recognised annotation wherever its own `@Target` puts it: JSpecify's `TYPE_USE` on the component's type, JetBrains', AndroidX's and SpotBugs' on the accessor, JSR-305's and Jakarta's on the component itself. A nullable container widens through `.nullable()`, then its own step if it has one: `@Nullable List<T>` is `.nullable().each()`, so a null list has no elements. Position counts as Java defines it, so `String @Nullable []` is a nullable array, while `@Nullable String[]` and `List<@Nullable String>` annotate the elements.
 
-Under a JSpecify checker such as NullAway, every optic and Focus path type takes a nullable focus. So a path typed `FocusPath<LegacyContact, @Nullable String>` checks, and its `.nullable()` is the non-null `AffinePath<LegacyContact, String>`. A read that hands the focus back in an `Optional` or a `Maybe`, such as `getOptional`, `preview` or `toMaybePath`, reads a null focus as absent, since neither can hold one. `toEitherPath` and `toTryPath` each have a form that says what a null focus becomes, as [A focus that may be null](focus_effects.md#a-focus-that-may-be-null) shows. To focus an Effect Path through such a path, pass `path.nullable()` to the Effect Path's `focus`, with the error that form takes.
+Under a JSpecify checker such as NullAway, every optic and Focus path type takes a nullable focus. So a path typed `FocusPath<LegacyContact, @Nullable String>` checks, and its `.nullable()` is the non-null `AffinePath<LegacyContact, String>`. A read that hands the focus back in an `Optional` or a `Maybe`, such as `getOptional`, `preview` or `toMaybePath`, reads a null focus as absent, since neither can hold one. `toEitherPath` and `toTryPath` each have an overload that says what a null focus becomes, as [A focus that may be null](focus_effects.md#a-focus-that-may-be-null) shows. To focus an Effect Path through such a path, pass `path.nullable()` to the Effect Path's `focus`, with the error that overload takes.
 
 ### Path widening {#path-widening}
 
@@ -20214,7 +20215,6 @@ Beyond three levels, compose the rest with `.via()`.
 * **An `Optional`, or a recognised `@Nullable`, is already an `AffinePath`.** Chain `.nullable()` yourself for a field nobody annotated, or one carrying Spring's `@Nullable`.
 * **One variant of a sealed type is a prism away.** `@GeneratePrisms` names each variant of a type you own; `AffinePath.instanceOf` matches by runtime type in one you do not.
 * **A navigator covers an annotated record, or a container of one.** An `Optional`, `Maybe`, `List`, `Set`, `Collection` or `Either` of one always gets a navigator, nested or not, and so does a `Kind` the processor traverses. A `Map` or an array gets one where the record widens it.
-* **A record hop from a wider path returns a plain path.** `orders().customer()` is a `TraversalPath`, so its next hop is `.via(CustomerFocus.email())`.
 * **A navigator is a path.** Every path method works on it, and it goes wherever a path of its type goes.
 ~~~
 
@@ -36704,7 +36704,7 @@ To widen some containers and keep others whole, name the fields instead: `@Gener
 
 Navigators follow the same rule rather than adding to it. A container whose *element* is itself a `@GenerateFocus` record gets a navigator over its elements wherever its method steps into them. A `List<Address>` always does, so its method returns a navigator and the next hop, such as `.city()`, chains. `Map<String, Address>` stays a path to the whole map until `widenCollections` or `widenFields` says otherwise, and then its method returns a navigator over the values. Turning navigators on therefore never changes what a field's method focuses on.
 
-Whichever way you reach a field, by the static method or by a navigator on a record that holds this one, you get the same path type. The setting that decides it belongs to the record that *declares* the component, not to the one navigating to it.
+Whichever way you reach a field, by the static method or by a navigator on a record that holds this one, it widens the same way. The setting that decides it belongs to the record that *declares* the component, not to the one navigating to it.
 
 ---
 
@@ -45727,6 +45727,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`cannot navigate to`](#generatefocus-navigator-cannot-navigate) | A record that writes `generateNavigators = true` reaches a record with a field named like a no-argument path method |
 | [`has no navigator into`](#generatefocus-no-navigator-into) | **Note.** The same clash, on a record that leaves navigators to the default: the field keeps its plain path |
 | [`has no navigator over its`](#generatefocus-no-navigator-over-elements) | **Note.** A record that writes `generateNavigators = true` leaves a container of navigable records unwidened |
+| [`has no AffineForm`, `has no TraversalForm`](#generatefocus-no-form) | **Note.** A record that writes `generateNavigators = true` reaches a record with a field named like a wider path's own method, so a hop from that path returns the plain path |
 | [`which is not a component of`](#generatefocus-field-list-unknown-name) | `includeFields`, `excludeFields` or `widenFields` names a field the record does not have |
 | [`whose field cannot have a navigator`](#generatefocus-includefields-no-navigator) | **Warning.** `includeFields` names a component that cannot return a navigator |
 | [`changes nothing, because`](#generatefocus-field-list-unread) | **Warning.** A field list the record's other settings never read |
@@ -46174,6 +46175,31 @@ record Hamper(Bottle[] bottles) {}
 
 ```
 Note: @GenerateFocus: record component 'Hamper.bottles' has no navigator over its Bottle elements. A navigator steps into a container only where the record widens it, and Hamper does not widen 'bottles'. Add widenFields = "bottles" to @GenerateFocus on Hamper to navigate into its elements.
+```
+~~~
+
+### "@GenerateFocus: the navigator for 'X.y' has no TraversalForm" (a note) {#generatefocus-no-form}
+
+`X` writes `generateNavigators = true`, and its field `y` holds another `@GenerateFocus` record, `T`. `T` has a field named like a no-argument method that only a wider path has: `headOption` or `toTraversal` on a `TraversalPath`, or `toAffine` on an `AffinePath`. `y` keeps its own navigator, but not its form for that path, so a hop into `y` from such a path returns the plain path. The note names `AffineForm` where that is the form left out. It goes to `X`, which declares `y`, since the form belongs to `y`'s navigator; a record whose hop into `y` returns the plain path is not told.
+
+**Fix.** Rename the field of `T`, as the note says, and the navigator gets its form. To keep the name and go without the form, drop `generateNavigators = true` from `X`, since it is the default, and the note goes with it.
+
+~~~admonish note title="Why" collapsible=true
+A form is a navigator over the wider path, so it has that path's methods, and a navigation method of the same name would clash with one. Leaving the field out of the form would let `channels().feed().headOption()`, from a `List<Channel>`, compile against the path's own `headOption()`, which reads the first feed. So the form is left out. It is a note rather than an error because `y`'s own navigator is generated, and every hop from a path of its own type still chains.
+~~~
+
+~~~admonish example title="A declaration that draws it" collapsible=true
+<!-- verify:reports "the navigator for 'Channel.feed' has no TraversalForm" -->
+```java
+@GenerateFocus
+record Feed(String name, String headOption) {}
+
+@GenerateFocus(generateNavigators = true)
+record Channel(Feed feed) {}
+```
+
+```
+Note: @GenerateFocus: the navigator for 'Channel.feed' has no TraversalForm. A TraversalForm would be a TraversalPath, which has its own headOption(), so it could not navigate to 'Feed.headOption', and a hop into 'feed' from a TraversalPath returns a plain TraversalPath. Rename 'Feed.headOption' to give the navigator for 'feed' a TraversalForm, or remove generateNavigators = true from @GenerateFocus on Channel to go without this note.
 ```
 ~~~
 
@@ -104346,7 +104372,7 @@ public interface UserMapping extends MappingSpec<User, UserDto> {}
 | `List<Address> addresses` | `AddressesNavigator<User>`, a `TraversalPath<User, Address>` |
 | `Map<String, Address> sites`, named in `widenFields` | `SitesNavigator<User>`, a `TraversalPath<User, Address>` |
 
-Navigators are on by default; `@GenerateFocus(generateNavigators = false)` turns them off.
+Each navigator has a form for each wider path type, nested in it, such as `AddressNavigator.TraversalForm`. A hop from a wider path, such as from a `List` of users into each one's `address`, returns that form, so the chain goes on. Navigators are on by default; `@GenerateFocus(generateNavigators = false)` turns them off.
 
 **Related:** [Collections, Optionals and Sealed Types](../optics/focus_navigation.md#fluent-navigation-with-generated-navigators), [Focus DSL](#focus-dsl), [Focus path type](#focus-path-type)
 
@@ -105188,6 +105214,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`@GenerateFocus` generates navigators by default, and a navigator is a path** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033)). `UserFocus.address().street()` works on a bare annotation, and `generateNavigators = false` turns navigators off. A navigator can be held as a `FocusPath` or passed to an Effect Path's `focus`, and every path method works on it. See [Fluent navigation with generated navigators](../optics/focus_navigation.md#fluent-navigation-with-generated-navigators).
 - **A navigator steps into a container only where the record widens it** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033)). A `Map`, an array or a third-party collection of `@GenerateFocus` records gets a navigator under `widenCollections = true`, or when the new `widenFields` names the field. So turning navigators on never changes what a field's method focuses on. See [The `ZERO_OR_MORE` Asymmetry](../optics/focus_containers.md#the-zero_or_more-asymmetry-and-widencollections).
 - **`OrderFocus.lines().quantity()` chains with no `.via(...)`** ([#1103](https://github.com/higher-kinded-j/higher-kinded-j/issues/1103)). A `List`, `Set`, `Collection`, `Optional` or `Maybe` of records gets a navigator, and so does one nested in another, such as `List<Optional<LineItem>>`, or a `Kind` the processor traverses. The navigator is the path the method returned before, so code that declares that path type still compiles. See [Which fields get a navigator](../optics/focus_navigation.md#which-fields-get-a-navigator).
+- **`OrderHistoryFocus.orders().customer().email()` keeps navigating after a hop that widens the path** ([#1214](https://github.com/higher-kinded-j/higher-kinded-j/issues/1214)). Each navigator nests a form for each wider path type, `AffineForm` and `TraversalForm`, and a widening hop into a record field returns it instead of the plain path. A record that writes `generateNavigators = true` is told when a form is left out. See [Which fields get a navigator](../optics/focus_navigation.md#which-fields-get-a-navigator).
 - **A navigator never reaches a field named like a path method** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033)). A record that writes `generateNavigators = true` is refused when its field reaches a record with a field such as `last`, since `name().last()` would call `FocusPath.last()`. A record on the default keeps that field's plain path, with a note. See [A field named like a path method](../optics/focus_navigation.md#a-field-named-like-a-path-method).
 - **A field named `get`, `set` or `count` gets a navigation method** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033)): a navigator skipped it, with a note, because its own method had that name. See [A field named like a path method](../optics/focus_navigation.md#a-field-named-like-a-path-method).
 - **`@GenerateFocus` checks the names in `includeFields`, `excludeFields` and `widenFields`** ([#1104](https://github.com/higher-kinded-j/higher-kinded-j/issues/1104)). A name that matches no component is an error at the value, offering the component meant, such as `positions` for `"postions"` or `"Positions"`. A list the record never reads warns, as does a `widenFields` name whose field cannot widen. See [Compiler Messages](../optics/compiler_errors.md#generatefocus-field-list-unknown-name).
@@ -105333,7 +105360,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **Run `MigrateDeprecationsTo0_5_0` before you move to 0.5.0** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445), [#452](https://github.com/higher-kinded-j/higher-kinded-j/issues/452)): take `hkj-openrewrite` 0.5.0 for the run, and keep the project on 0.4.11 until it finishes. Its `StateT` and `Try.fold` recipes match the 0.4.x signatures, so they rewrite nothing once the build resolves 0.5.0. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
 - **Replace `Void` with `Unit` where a success has nothing to return** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `Either<E, Void>` and `Try<Void>` can no longer hold their null. A `VTask<Void>`, `IOPath<Void>` or other lazy computation fails when its step returns null. `VTask.exec`, `Path.vtaskExec` and `Path.ioRunnable` give `Unit`. The `MigrateDeprecationsTo0_5_0` run marks each site.
 
-- **Recompile what was compiled against a generated Focus class** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033)): a field that gains a navigator returns a navigator class, so a module compiled against the earlier class fails with `NoSuchMethodError` until it is rebuilt.
+- **Recompile what was compiled against a generated Focus class** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033), [#1214](https://github.com/higher-kinded-j/higher-kinded-j/issues/1214)): a field or a hop that gains a navigator returns a navigator class. A module compiled against the earlier class fails with `NoSuchMethodError` until it is rebuilt.
 
 ### What a running program can notice {#runtime-changes}
 
@@ -105346,7 +105373,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 #### Optics {#runtime-optics}
 
-- **A `@GenerateFocus` record field, or a container of one, returns a navigator** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033), [#1103](https://github.com/higher-kinded-j/higher-kinded-j/issues/1103)): a `getClass()` check sees the navigator class. A navigator equals only a navigator over an equal path, never the plain path it wraps.
+- **A `@GenerateFocus` record field, or a container of one, returns a navigator** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033), [#1103](https://github.com/higher-kinded-j/higher-kinded-j/issues/1103), [#1214](https://github.com/higher-kinded-j/higher-kinded-j/issues/1214)): a `getClass()` check sees the navigator class, as it does the form a hop from a wider navigator returns. A navigator equals only a navigator of the same class over an equal path, never the plain path it wraps.
 - **A navigator is a path** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033)): one from a record that wrote `generateNavigators = true` passes `instanceof FocusPath`, and an overload taking a `FocusPath` is chosen over one taking `Object`.
 - **A map an optic writes iterates in the source's order** ([#1022](https://github.com/higher-kinded-j/higher-kinded-j/pull/1022)): it came back in hash order, so printed output or a test of a map's iteration order can change. `FocusPaths.mapValues` over an empty map returns a new map.
 - **A `TreeMap` keeps its order but not its type** ([#1022](https://github.com/higher-kinded-j/higher-kinded-j/pull/1022)): `forMapValuesCollecting(TreeMap::new)` keeps both when the keys sort in their natural order. A `TreeMap` with its own comparator needs a collector that builds the new `TreeMap` with that comparator.
@@ -105473,7 +105500,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Optics | Under `-Werror`, a `@GenerateFocus` field list that changes nothing: `excludeFields` beside a non-empty `includeFields`, `includeFields` or `excludeFields` with `generateNavigators = false`, `widenFields` beside `widenCollections = true`, or a `widenFields` name whose field is widened anyway or holds no container | Remove the list or the name, or the setting that leaves it unread, as the warning says | [#1104](https://github.com/higher-kinded-j/higher-kinded-j/issues/1104) |
 | Optics | Under `-Werror`, an `includeFields` name matching a component that cannot return a navigator, such as a `String`, an unannotated record or an unwidened `Map` of annotated records, including wildcard targets and wildcard containers | Follow the [warning's fix line](../optics/compiler_errors.md#generatefocus-includefields-no-navigator): name a navigator field, annotate the target record, widen the container, or remove `includeFields` and turn navigators off | [#1181](https://github.com/higher-kinded-j/higher-kinded-j/issues/1181), [#1201](https://github.com/higher-kinded-j/higher-kinded-j/issues/1201) |
 | Optics | With `generateNavigators = true` and no `widenCollections`, a `Map` or a third-party collection of `@GenerateFocus` records, such as `ImmutableList<Position> positions`, used as the navigator over its elements: `.positions().ticker()`, `getAll`, `modifyAll`, `count`, or assigned to a `TraversalPath` | Add the field to `widenFields`, as the note at the field says, or set `widenCollections = true` | [#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033) |
-| Optics | A Focus method's result for a field of another `@GenerateFocus` record, or of a `List`, `Optional` or other container of one, with its type inferred: a `var` then assigned another path, such as `lines = lines.filter(p)`, or a generic call such as `Stream.of(OrderFocus.customer()).toList()` assigned to a `List<FocusPath<Order, Customer>>` | Name the path type: declare the variable, or give the call its type argument | [#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033), [#1103](https://github.com/higher-kinded-j/higher-kinded-j/issues/1103) |
+| Optics | A Focus method's result for a field of another `@GenerateFocus` record, or of a `List`, `Optional` or other container of one, with its type inferred: a `var` then assigned another path, such as `lines = lines.filter(p)`, or a generic call such as `Stream.of(OrderFocus.customer()).toList()` assigned to a `List<FocusPath<Order, Customer>>`. A navigator's hop into one record from a wider path, such as `orders().customer()`, is inferred the same way | Name the path type: declare the variable, or give the call its type argument | [#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033), [#1103](https://github.com/higher-kinded-j/higher-kinded-j/issues/1103), [#1214](https://github.com/higher-kinded-j/higher-kinded-j/issues/1214) |
 | Optics | Two components whose names differ only in the case of their first letter, such as `items` and `Items`, that both reach `@GenerateFocus` records, now that a `List` or `Optional` of records gets a navigator too: javac reports the navigator class already defined in the generated `Focus` class | Rename one of the components, or add one to `excludeFields` | [#1103](https://github.com/higher-kinded-j/higher-kinded-j/issues/1103) |
 | Optics | Code calling a lens `@ImportOptics` generated through a word, such as `draw()` through `withdraw(long)` beside `getDraw()`; a class whose only wither was such a word is now refused | Drop the call: `withdraw` never set `draw`. Where the class has a method that does set the field, name it with `@Wither` in a [spec interface](../optics/optics_spec_interfaces.md) | [#1128](https://github.com/higher-kinded-j/higher-kinded-j/issues/1128) |
 | Effect Paths | A `Monad` passed to `new StateT<>(fn, monad)`, `StateT.create`, `StateTKindHelper.stateT` or `StateT.mapT` | Run the recipe as [Before you upgrade](#before-you-upgrade) says, or drop the argument by hand | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
