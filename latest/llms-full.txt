@@ -19164,10 +19164,10 @@ public record LineItem(String sku, Integer quantity, BigDecimal price) {}
             .modifyAll(price -> price.setScale(2, RoundingMode.HALF_EVEN), order);
 ```
 
-`OrderFocus.lines()` already walks every element of the `List<LineItem>`: the generated accessor ends in `.each()` for you, so it hands back a path focused on a `LineItem`, not on the list. It is a navigator, as `customer()` is in section 1, so `.price()` zooms each element down to the price field. `modifyAll` applies the function in one pass to return a new `Order`. The introduction's discount left the lines at 36.000 and 2.250; rounding gives 36.00 and 2.25.
+`OrderFocus.lines()` already walks every element of the `List<LineItem>`: the generated accessor ends in `.each(EachInstances.listEach())` for you, so it hands back a path focused on a `LineItem`, not on the list. It is a navigator, as `customer()` is in section 1, so `.price()` zooms each element down to the price field. `modifyAll` applies the function in one pass to return a new `Order`. The introduction's discount left the lines at 36.000 and 2.250; rounding gives 36.00 and 2.25.
 
-~~~admonish warning title="Do not add your own `.each()`"
-`OrderFocus.lines().each()` compiles and then fails at run time. The extra `each()` tries to read a `LineItem` as a `List`; its type parameter is inferred from whatever you assign it to, which is why the compiler lets it through. `TraversalPath.each()` is for a focus that is *itself* a list, and its javadoc documents the `ClassCastException`.
+~~~admonish warning title="Do not add your own `each`"
+`OrderFocus.lines().each(EachInstances.listEach())` does not compile: the path already focuses a `LineItem`, and a `LineItem` is not a `List`. The deprecated no-argument `.each()` does compile, because its element type is inferred from whatever you assign it to, and then fails at run time with a `ClassCastException`.
 ~~~
 
 **Match a variant, and move to another.** A consignment's state is a sealed interface, and `@GeneratePrisms` writes one prism per variant:
@@ -19295,7 +19295,7 @@ Where this lives: [Sum types and collections, the same way](#2-sum-types-and-col
 ~~~admonish info title="Key Takeaways"
 * **The annotations generate plain Java at compile time.** `XLenses`, `XFocus`, `XPrisms` and `XTraversals` are ordinary classes you call with ordinary method chains. Nothing here uses runtime reflection.
 * **`@GenerateLenses` and `@GenerateFocus` are the pair to reach for.** Lenses give you `withFoo` and the classic optics; Focus gives you the path DSL, whose navigators let a hop into another record chain as a method call.
-* **A collection accessor is already element-level.** `OrderFocus.lines()` focuses a `LineItem`, because the generated method ends in `.each()` for you. Adding another `.each()` compiles and then fails at run time.
+* **A collection accessor is already element-level.** `OrderFocus.lines()` focuses a `LineItem`, because the generated method ends in `.each(EachInstances.listEach())` for you. Adding another does not compile.
 * **A prism rebuilds the variant it narrowed to.** `modify` is `A -> A`, so it cannot turn a `Pending` into a `Dispatched`; that is a read through the prism followed by building the new variant.
 * **Types you do not own join the same vocabulary.** An `OpticsSpec` interface plus `@ImportOptics` generates optics for `JsonNode`, JOOQ records or JDK types, and they compose with everything else.
 ~~~
@@ -19405,7 +19405,7 @@ You arrive holding a field, not an optic type. Find its declaration in the table
 | [`Optional<String> giftMessage`](focus_navigation.md#some-unwrap-optional) | `AffinePath<Basket, String>` | `.getOptional(basket)` |
 | [`@Nullable String couponCode`](focus_navigation.md#nullable-handle-null-values), with a recognised `@Nullable` | `AffinePath<Basket, String>` | `.getOptional(basket)` |
 | [`String legacyNote`](focus_navigation.md#nullable-handle-null-values), which may hold null but is not annotated | `FocusPath<Basket, String>` | `.nullable()` |
-| [`Map<String, String> attributes`](focus_navigation.md#access-by-index) | `FocusPath<Basket, Map<String, String>>`, by default | `.atKey("channel")` |
+| [`Map<String, String> attributes`](focus_navigation.md#access-by-index) | `FocusPath<Basket, Map<String, String>>`, by default | `.via(FocusPaths.mapAt("channel"))` |
 | [`String[] tags`](focus_navigation.md#eacheach-traverse-with-a-custom-each-instance) | `FocusPath<Basket, String[]>`, by default | `.each(EachInstances.arrayEach())` |
 | [`Either<String, String> approvedBy`](focus_navigation.md#someaffine-navigate-spi-container-types), or a `Maybe`, `Try` or `Validated` | `AffinePath<Basket, String>`, on the success side | `.getOptional(basket)` |
 | [`Payment payment`](focus_navigation.md#working-with-sum-types-using-instanceof), a sealed interface | `FocusPath<Basket, Payment>` | `.via(PaymentPrisms.card())`, or `.via(AffinePath.instanceOf(Card.class))` |
@@ -19449,8 +19449,8 @@ record Basket(
     // A reference that may hold null, with no annotation: say so with .nullable()
     AffinePath<Basket, String> legacyNote = BasketFocus.legacyNote().nullable();
 
-    // A Map: the path focuses the whole map, and .atKey(k) picks one value
-    AffinePath<Basket, String> channel = BasketFocus.attributes().atKey("channel");
+    // A Map: the path focuses the whole map, and mapAt(k) picks one value
+    AffinePath<Basket, String> channel = BasketFocus.attributes().via(FocusPaths.mapAt("channel"));
 
     // An array: the path focuses the whole array, and .each(...) steps into it
     TraversalPath<Basket, String> tags = BasketFocus.tags().each(EachInstances.arrayEach());
@@ -19584,7 +19584,7 @@ Focus DSL provides three path types, one for each answer to "how many values doe
 ~~~admonish warning title="Set on an absent focus writes anyway"
 `set` through an `AffinePath` is not conditional. `CustomerProfileFocus.nickname().set(x, profile)` on a profile with no nickname returns a profile *with* that nickname, because the last step's setter rebuilds the present case unconditionally. As `Affine.set`'s javadoc puts it, an affine makes an absent focus present when its last step can build the value and every step before that is present. `modify` is the operation that no-ops on an absent focus.
 
-The rule is positional. A miss at the *last* step writes through and creates the focus when that step can build the value (a prism, `.some()`, `.nullable()`). A miss at an *earlier* step of a multi-step path skips the whole set, because `Affine.andThen(Affine)` does guard. When absence must be preserved, reach for `modify`, or test with `matches` first.
+The rule is positional. A miss at the *last* step writes through and creates the focus when that step can build the value (a prism, `.some(FocusPaths.optionalSome())`, `.nullable()`). A miss at an *earlier* step of a multi-step path skips the whole set, because `Affine.andThen(Affine)` does guard. When absence must be preserved, reach for `modify`, or test with `matches` first.
 ~~~
 
 ### TraversalPath: Zero or More Elements
@@ -19658,7 +19658,7 @@ Where this lives: [Find your field](#find-your-field), and [Which fields get a n
 
 ~~~admonish tip title="See Also"
 - [Collections, Optionals and Sealed Types](focus_navigation.md): collection navigation, `.via()` composition, and generated navigators
-- [Type Class and Effect Integration](focus_effects.md): `modifyF()`, `foldMap()`, `traverseOver()`, and Effect path bridging
+- [Type Class and Effect Integration](focus_effects.md): `modifyF()`, `foldMap()`, `EachInstances.fromTraverse()`, and Effect path bridging
 - [Custom Containers and Code Generation](focus_containers.md): generated class structure, SPI container types, and registration
 - [Focus DSL Reference](focus_reference.md): decision guide, common patterns, pitfalls, and FAQ
 ~~~
@@ -19693,22 +19693,23 @@ The previous page gave you one method per record component. This page is about t
 
 ## Collections {#collection-navigation}
 
-### `.each()`: traverse all elements {#each-traverse-all-elements}
+### Traverse all elements {#each-traverse-all-elements}
 
-`.each()` steps from a collection into its elements. For a `List`, `Set` or `Collection` field the generated method has already applied the right one, which is why `OrderFocus.lines()` focuses each `LineItem`:
+`.each(...)` steps from a collection into its elements. For a `List`, `Set` or `Collection` field the generated method has already applied the right one, which is why `OrderFocus.lines()` focuses each `LineItem`:
 
 ``` java
-    // Generated: FocusPath.of(lens).each()
+    // Generated: FocusPath.of(lens).each(EachInstances.listEach())
     TraversalPath<Order, LineItem> allLines = OrderFocus.lines();
     List<LineItem> lines = allLines.getAll(order);
 
-    // Applying .each() yourself, starting from the lens to the whole list
-    TraversalPath<Order, LineItem> sameThing = FocusPath.of(OrderLenses.lines()).each();
+    // Applying the Each yourself, starting from the lens to the whole list
+    TraversalPath<Order, LineItem> sameThing =
+        FocusPath.of(OrderLenses.lines()).each(EachInstances.listEach());
 ```
 
 ### `.each(Each)`: traverse with a custom `Each` instance {#eacheach-traverse-with-a-custom-each-instance}
 
-The no-argument `.each()` carries a `List` traversal and nothing else. Every other container (a `Set`, a `Collection`, a `Map`, an array, a third-party collection) takes an explicit `Each` instead. An `Each` is a small strategy object, as a `Comparator` is for sorting, that says how to visit a container's elements. The generated method already does this for you: `EachInstances.setEach()` for a `Set` field, `EachInstances.collectionEach()` for a `Collection`. Hand-built paths have to say it themselves, and this works on `FocusPath`, `AffinePath` and `TraversalPath` alike. A price list keeps its prices in a `Map` keyed by SKU:
+Every container takes an explicit `Each`: a `List`, a `Set`, a `Collection`, a `Map`, an array, a third-party collection. An `Each` is a small strategy object, as a `Comparator` is for sorting, that says how to visit a container's elements. Its type names the container, so `.each(EachInstances.listEach())` does not compile on a path that focuses anything but a `List`. The generated method already does this for you: `EachInstances.listEach()` for a `List` field, `EachInstances.setEach()` for a `Set`, `EachInstances.collectionEach()` for a `Collection`. Hand-built paths have to say it themselves, and this works on `FocusPath`, `AffinePath` and `TraversalPath` alike. A price list keeps its prices in a `Map` keyed by SKU:
 
 ``` java
 @GenerateLenses
@@ -19733,23 +19734,28 @@ record PriceList(String name, Map<String, BigDecimal> prices) {}
 
 For available `Each` instances and how to create your own, see [Each](each_typeclass.md).
 
+~~~admonish tip title="Shorter with static imports"
+`import static org.higherkindedj.optics.each.EachInstances.listEach;` turns `.each(EachInstances.listEach())` into `.each(listEach())`, and `FocusPaths.optionalSome` and `FocusPaths.mapAt` shorten the same way. Import `listAt`, `listHead` and `listLast` from one class only, since `FocusPaths`, `Affines` and `Prisms` each have their own.
+~~~
+
 ### Access by index {#access-by-index}
 
-`.at(index)` focuses a single element of a list, and `.atKey(key)` a single value of a map. On a `FocusPath` or an `AffinePath` both return an `AffinePath`, because the position may not be occupied; on a `TraversalPath` the result stays a `TraversalPath`.
+`.via(FocusPaths.listAt(index))` focuses a single element of a list, and `.via(FocusPaths.mapAt(key))` a single value of a map. On a `FocusPath` or an `AffinePath` both give an `AffinePath`, because the position may not be occupied; on a `TraversalPath` the result stays a `TraversalPath`.
 
-The generated Focus class has exactly one method per record component, so there is no generated `order.line(0)` accessor. Index from the path that still focuses the list. When the result feeds straight into another composition, spell the element type out (`FocusPath.of(OrderLenses.lines()).<LineItem>at(0)`): nothing in the argument list mentions `LineItem`, so inference has nothing to work from.
+The generated Focus class has exactly one method per record component, so there is no generated `order.line(0)` accessor. Index from the path that still focuses the list. The element type comes from that path, so the result composes further with no type witness.
 
 ``` java
     // A List field: start from the lens, because the generated path is element-level
-    AffinePath<Order, LineItem> firstLine = FocusPath.of(OrderLenses.lines()).at(0);
+    AffinePath<Order, LineItem> firstLine =
+        FocusPath.of(OrderLenses.lines()).via(FocusPaths.listAt(0));
     Optional<LineItem> first = firstLine.getOptional(order); // empty if out of bounds
 
     // Or narrow the generated traversal to its first element. Mind the asymmetry:
     // headOption reads the first element but writes to all of them
     AffinePath<Order, LineItem> alsoFirst = OrderFocus.lines().headOption();
 
-    // A Map field: the generated path still focuses the whole map, so .atKey() applies
-    AffinePath<PriceList, BigDecimal> lamp = PriceListFocus.prices().atKey("LAMP");
+    // A Map field: the generated path still focuses the whole map, so mapAt applies
+    AffinePath<PriceList, BigDecimal> lamp = PriceListFocus.prices().via(FocusPaths.mapAt("LAMP"));
     Optional<BigDecimal> lampPrice = lamp.getOptional(priceList);
 ```
 
@@ -19761,9 +19767,9 @@ The generated Focus class has exactly one method per record component, so there 
 
 ## Optional and nullable values {#optional-and-nullable-values}
 
-### `.some()`: unwrap an `Optional` {#some-unwrap-optional}
+### Unwrap an `Optional` {#some-unwrap-optional}
 
-An `Optional<T>` field is unwrapped for you: the generated method applies `.some()` and returns an `AffinePath`. Call `.some()` yourself when the `Optional` sits behind a hand-written lens.
+An `Optional<T>` field is unwrapped for you: the generated method applies `.some(FocusPaths.optionalSome())` and returns an `AffinePath`. Apply it yourself when the `Optional` sits behind a hand-written lens.
 
 ### `.nullable()`: read a null as absent {#nullable-handle-null-values}
 
@@ -19975,11 +19981,11 @@ You can now step into a collection, read an optional or nullable value, pick one
 ~~~
 
 ~~~admonish question title="Checkpoint: replace the first line only" id="check-navigation-headoption"
-You want to replace only the first line of an order with a sofa. Which of `OrderFocus.lines().headOption().set(sofa, order)` and `FocusPath.of(OrderLenses.lines()).<LineItem>at(0).set(sofa, order)` does that, and what does the other do?
+You want to replace only the first line of an order with a sofa. Which of `OrderFocus.lines().headOption().set(sofa, order)` and `FocusPath.of(OrderLenses.lines()).via(FocusPaths.listAt(0)).set(sofa, order)` does that, and what does the other do?
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-navigation-headoption-answer"
-**The second.** `at(0)` indexes the list itself, so it writes only the first line. `headOption()` narrows the reads to the first element, but its writes go to every element the traversal reaches, so it replaces every line with the sofa.
+**The second.** `listAt(0)` indexes the list itself, so it writes only the first line. `headOption()` narrows the reads to the first element, but its writes go to every element the traversal reaches, so it replaces every line with the sofa.
 
 Where this lives: [Access by index](#access-by-index).
 ~~~
@@ -20065,7 +20071,7 @@ For a runnable example covering all container types, see [ContainerNavigationExa
 | `ListPrisms.cons()` | `Prism<List<A>, Pair<A, List<A>>>` | Decompose as (head, tail) |
 | `ListPrisms.snoc()` | `Prism<List<A>, Pair<List<A>, A>>` | Decompose as (init, last) |
 
-The same decompositions are available directly on a path focusing a list, as `.head()`, `.last()`, `.tail()`, `.init()`, `.cons()` and `.snoc()`.
+On a path focusing a list, compose the same decompositions with `.via`, from `FocusPaths.listHead()`, `listLast()`, `listTail()`, `listInit()`, `listCons()` and `listSnoc()`.
 
 For the full treatment, including stack-safe operations on large lists, see [List Decomposition](list_decomposition.md).
 
@@ -20156,7 +20162,7 @@ The note names the path the field's method returns, which follows the field's [p
 
 ### Where a `@Nullable` counts {#where-a-nullable-counts}
 
-The processor reads each recognised annotation wherever its own `@Target` puts it: JSpecify's `TYPE_USE` on the component's type, JetBrains', AndroidX's and SpotBugs' on the accessor, JSR-305's and Jakarta's on the component itself. A nullable container widens through `.nullable()`, then its own step if it has one: `@Nullable List<T>` is `.nullable().each()`, so a null list has no elements. Position counts as Java defines it, so `String @Nullable []` is a nullable array, while `@Nullable String[]` and `List<@Nullable String>` annotate the elements.
+The processor reads each recognised annotation wherever its own `@Target` puts it: JSpecify's `TYPE_USE` on the component's type, JetBrains', AndroidX's and SpotBugs' on the accessor, JSR-305's and Jakarta's on the component itself. A nullable container widens through `.nullable()`, then its own step if it has one: `@Nullable List<T>` is `.nullable().each(EachInstances.listEach())`, so a null list has no elements. Position counts as Java defines it, so `String @Nullable []` is a nullable array, while `@Nullable String[]` and `List<@Nullable String>` annotate the elements.
 
 Under a JSpecify checker such as NullAway, every optic and Focus path type takes a nullable focus. So a path typed `FocusPath<LegacyContact, @Nullable String>` checks, and its `.nullable()` is the non-null `AffinePath<LegacyContact, String>`. A read that hands the focus back in an `Optional` or a `Maybe`, such as `getOptional`, `preview` or `toMaybePath`, reads a null focus as absent, since neither can hold one. `toEitherPath` and `toTryPath` each have an overload that says what a null focus becomes, as [A focus that may be null](focus_effects.md#a-focus-that-may-be-null) shows. To focus an Effect Path through such a path, pass `path.nullable()` to the Effect Path's `focus`, with the error that overload takes.
 
@@ -20203,16 +20209,16 @@ If you write a `TraversableGenerator` for your own container type, override `gen
 
 #### Nested container widening {#nested-container-widening}
 
-A field whose type nests containers gets a composed chain, up to three levels deep:
+A field whose type nests containers gets a composed chain, up to three levels deep. In the table, `optionalSome()` is `FocusPaths.optionalSome()` and `listEach()` is `EachInstances.listEach()`:
 
 | Field Type | Generated Chain | Return Type |
 |-----------|----------------|-------------|
-| `Optional<List<String>>` | `.some().each()` | `TraversalPath` |
-| `List<Optional<String>>` | `.each().some()` | `TraversalPath` |
-| `Optional<Optional<String>>` | `.some().some()` | `AffinePath` |
-| `List<List<String>>` | `.each().each()` | `TraversalPath` |
-| `Optional<Either<E, String>>` | `.some().some(Affines.eitherRight())` | `AffinePath` |
-| `Either<E, List<Integer>>` | `.some(Affines.eitherRight()).each()` | `TraversalPath` |
+| `Optional<List<String>>` | `.some(optionalSome()).each(listEach())` | `TraversalPath` |
+| `List<Optional<String>>` | `.each(listEach()).some(optionalSome())` | `TraversalPath` |
+| `Optional<Optional<String>>` | `.some(optionalSome()).some(optionalSome())` | `AffinePath` |
+| `List<List<String>>` | `.each(listEach()).each(listEach())` | `TraversalPath` |
+| `Optional<Either<E, String>>` | `.some(optionalSome()).some(Affines.eitherRight())` | `AffinePath` |
+| `Either<E, List<Integer>>` | `.some(Affines.eitherRight()).each(listEach())` | `TraversalPath` |
 | `Either<E, Map<K, V>>` | `.some(Affines.eitherRight())` | `AffinePath` to the `Map` |
 | `Either<E, Map<K, V>>` with `widenCollections = true` | `.some(Affines.eitherRight()).each(EachInstances.mapValuesEach())` | `TraversalPath` |
 
@@ -20240,7 +20246,7 @@ Beyond three levels, compose the rest with `.via()`.
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **A generated collection method is element-level; a generated `Map` method is not.** `.at(i)` and `ListPrisms` start from `FocusPath.of(theLens())`, because there is no generated `order.line(0)`. `.atKey(k)` applies straight to the generated path, because that path still focuses the whole map.
+* **A generated collection method is element-level; a generated `Map` method is not.** `FocusPaths.listAt(i)` and `ListPrisms` start from `FocusPath.of(theLens())`, because there is no generated `order.line(0)`. `FocusPaths.mapAt(k)` composes straight onto the generated path, because that path still focuses the whole map.
 * **An `Optional`, or a recognised `@Nullable`, is already an `AffinePath`.** Chain `.nullable()` yourself for a field nobody annotated, or one carrying Spring's `@Nullable`.
 * **One variant of a sealed type is a prism away.** `@GeneratePrisms` names each variant of a type you own; `AffinePath.instanceOf` matches by runtime type in one you do not.
 * **A navigator covers an annotated record, or a container of one.** An `Optional`, `Maybe`, `List`, `Set`, `Collection` or `Either` of one always gets a navigator, nested or not, and so does a `Kind` the processor traverses. A `Map` or an array gets one where the record widens it.
@@ -21625,7 +21631,7 @@ What does `PriceListFocus.prices()` return, and how do you read the price of `LA
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-self-map-answer"
-**A `FocusPath` to the whole map; `.atKey("LAMP")` gives an `AffinePath` to one price.** A `Map` field is not stepped into by default, so its path still focuses the map, and `.atKey` picks one value, which may be absent.
+**A `FocusPath` to the whole map; `.via(FocusPaths.mapAt("LAMP"))` gives an `AffinePath` to one price.** A `Map` field is not stepped into by default, so its path still focuses the map, and `mapAt` picks one value, which may be absent.
 
 Where this lives: [Access by index](focus_navigation.md#access-by-index).
 ~~~
@@ -26730,7 +26736,7 @@ This adaptability is what lets you keep well-tested optics through data-format c
 
 ---
 
-Read this group when you want to know what the Focus DSL's `.each()` does underneath, or need a traversal the generated paths do not give you. Until then, you can skip it.
+Read this group when you want to know what the Focus DSL's `.each(...)` does underneath, or need a traversal the generated paths do not give you. Until then, you can skip it.
 
 Single values are straightforward enough. The challenge arrives when you need to handle *many* of them: a discount on every price in an order means a stream, a map, a collector, and the suspicion that there must be a better way. There is. Here is the destination, before any theory: one reusable path from a league to every player's score, and a bulk update through it. The build compiles and runs it, and a test holds each value the comments show:
 
@@ -35151,7 +35157,7 @@ TraversalPath<Depot, Integer> allLevels = allStock.each(EachInstances.mapValuesE
 Depot restocked = allLevels.modifyAll(level -> level + 10, depot);
 ```
 
-This is particularly useful when the container type isn't a standard `List` that `.each()` recognises automatically.
+This is how a path steps into any container: a `Map`'s values here, a `List` with `EachInstances.listEach()`, and your own container with the instance you give it.
 
 ---
 
@@ -36308,7 +36314,7 @@ _Run an update through an effect, fold a traversal into one value, and cross bet
 ~~~admonish info title="What You'll Learn"
 - Validate or fetch inside an update with `modifyF`, choosing the effect by the `Applicative` you pass
 - Sum or join every value a traversal reaches with `foldMap` and a `Monoid`
-- Traverse a `Kind<F, A>` field with `traverseOver`, giving the type witnesses Java cannot infer
+- Traverse a `Kind<F, A>` field with an `Each` built from its `Traverse` instance
 - Change only the elements that match with `modifyWhen`, and print what a path focused with `traced`
 - Cross between Focus and Effect paths in either direction, and predict when an `AffinePath` must name its absent case
 ~~~
@@ -36384,29 +36390,28 @@ String roster = agents.foldMap(Monoids.string(), Agent::name, agency);
 
 ---
 
-## Generic Collection Traversal with `traverseOver()`
+## Generic Collection Traversal with `fromTraverse` {#generic-collection-traversal-with-traverseover}
 
-When a field holds `Kind<F, A>` rather than a plain collection, `traverseOver()` steps into it with a `Traverse` instance:
+When a field holds `Kind<F, A>` rather than a plain collection, `.each(...)` steps into it with an `Each` built from a `Traverse` instance:
 
 <!-- verify -->
 ```java
 FocusPath<RoleBox, Kind<ListKind.Witness, Role>> rolesPath = FocusPath.of(Fixture.rolesLens);
 
 TraversalPath<RoleBox, Role> allRoles =
-    rolesPath.<ListKind.Witness, Role>traverseOver(ListTraverse.INSTANCE);
+    rolesPath.each(EachInstances.fromTraverse(ListTraverse.INSTANCE));
 
 List<Role> roles = allRoles.getAll(roleBox);
 RoleBox promoted = allRoles.modifyAll(Fixture::promote, roleBox);
 ```
 
-The explicit type witnesses are load-bearing: Java cannot infer `F` and `E` from the `Traverse` argument alone. (A *witness* is the marker type that stands in for the higher-kinded `F`; see [Higher-Kinded Types](../hkts/hkt_introduction.md) if the term is new.)
+`EachInstances.fromTraverse` takes the witness `F` from the `Traverse` and the element type from the path, so the chain spells out neither. (A *witness* is the marker type that stands in for the higher-kinded `F`; see [Higher-Kinded Types](../hkts/hkt_introduction.md) if the term is new.)
 
 | Field shape | Use |
 |-------------|-----|
-| `List<T>` | `each()`, already applied by the generated method |
-| `Set<T>`, `Collection<T>` | `each(EachInstances.setEach())` / `each(EachInstances.collectionEach())`, already applied by the generated method; the no-argument `each()` is `List`-only |
-| `Kind<F, T>` on an annotated record | nothing: the processor applies `traverseOver` for you |
-| `Kind<F, T>` behind a hand-written lens | `traverseOver(SomeTraverse.INSTANCE)` |
+| `List<T>`, `Set<T>`, `Collection<T>` | `each(EachInstances.listEach())`, `each(EachInstances.setEach())` or `each(EachInstances.collectionEach())`, already applied by the generated method |
+| `Kind<F, T>` on an annotated record | nothing: the processor applies `each(EachInstances.fromTraverse(...))` for you |
+| `Kind<F, T>` behind a hand-written lens | `each(EachInstances.fromTraverse(SomeTraverse.INSTANCE))` |
 
 ~~~admonish tip title="See Also"
 When the `Kind<F, A>` field is on a `@GenerateFocus` record, the processor recognises the witness and generates the traversal itself. See [Kind Field Support](kind_field_support.md).
@@ -36608,7 +36613,7 @@ EitherPath<String, Integer> salary =
 ~~~admonish info title="Key Takeaways"
 * **`modifyF` is the effectful `modify`.** The instance you pass picks the effect; the path is unchanged. Widen going in, narrow coming out.
 * **`foldMap` turns a traversal into a query.** Any `Monoid` will do, so sums, joins and set unions are the same call.
-* **`traverseOver` is `each` for `Kind<F, A>`.** Explicit type witnesses are required, because inference cannot recover `F` from the `Traverse` argument.
+* **`EachInstances.fromTraverse` makes any `Traverse` an `Each`.** `.each(EachInstances.fromTraverse(traverse))` steps into a `Kind<F, A>` field as `.each(EachInstances.listEach())` steps into a `List`.
 * **The bridge runs both ways, and the effect sets the toll.** `toMaybePath`/`toEitherPath`/`toTryPath` move optics results into an effect; `focus()` moves optic navigation inside one. In either direction an `AffinePath` meeting a failure-carrying effect must name the absent case, as must a focus that may be null, while `Maybe` and `Optional` take absence as it comes.
 ~~~
 
@@ -36670,8 +36675,8 @@ the processor generates one method per component, each already carrying the wide
 FocusPath<Candidate, String> name = CandidateFocus.name();          // plain field
 FocusPath<Candidate, Integer> age = CandidateFocus.age();           // boxed primitive
 
-AffinePath<Candidate, String> email = CandidateFocus.email();       // .some()
-TraversalPath<Candidate, Skill> skills = CandidateFocus.skills();   // .each()
+AffinePath<Candidate, String> email = CandidateFocus.email();       // .some(optionalSome())
+TraversalPath<Candidate, Skill> skills = CandidateFocus.skills();   // .each(listEach())
 
 // SPI ZERO_OR_ONE: .some(Affines.eitherRight())
 AffinePath<Candidate, Integer> timeout = CandidateFocus.timeout();
@@ -36681,7 +36686,7 @@ FocusPath<Candidate, Map<String, Integer>> scores = CandidateFocus.scores();
 TraversalPath<Candidate, Integer> allScores = scores.each(EachInstances.mapValuesEach());
 ```
 
-Two things are worth noticing. There is exactly one method per component, so indexed accessors such as `skill(0)` are not generated; index with `.at(0)` from `FocusPath.of(CandidateLenses.skills())` instead. And the `Map` field is the odd one out, which the next section explains.
+Two things are worth noticing. There is exactly one method per component, so indexed accessors such as `skill(0)` are not generated; index with `.via(FocusPaths.listAt(0))` from `FocusPath.of(CandidateLenses.skills())` instead. And the `Map` field is the odd one out, which the next section explains.
 
 ---
 
@@ -36710,7 +36715,7 @@ In words: a plain field implies a `FocusPath`, a container of zero or one an `Af
 
 The diagram gives the tier a container's cardinality *implies*. Which of them a static Focus method actually widens to is the next section's subject: `List`, `Set` and `Collection` always do, and the rest wait for `widenCollections` or `widenFields`.
 
-Nested containers compose the same rule up to three levels: `Optional<List<String>>` becomes `.some().each()` and lands on a `TraversalPath`. See [Nested Container Widening](focus_navigation.md#nested-container-widening).
+Nested containers compose the same rule up to three levels: `Optional<List<String>>` becomes `.some(FocusPaths.optionalSome()).each(EachInstances.listEach())` and lands on a `TraversalPath`. See [Nested Container Widening](focus_navigation.md#nested-container-widening).
 
 ### The `ZERO_OR_MORE` Asymmetry, and `widenCollections`
 
@@ -36743,19 +36748,19 @@ Whichever way you reach a field, by the static method or by a navigator on a rec
 
 | Container | Source | Optic used |
 |-----------|--------|------------|
-| `Optional<A>` | JDK | `.some()` (recognised directly) |
+| `Optional<A>` | JDK | `FocusPaths.optionalSome()` (recognised directly) |
 | `Maybe<A>` | HKJ | `Affines.just()` (recognised directly) |
 | `Either<L, R>` | HKJ | `Affines.eitherRight()` |
 | `Try<A>` | HKJ | `Affines.trySuccess()` |
 | `Validated<E, A>` | HKJ | `Affines.validatedValid()` |
 
-`Optional` and `Maybe` are recognised by name rather than by the SPI, and they do not share an optic. The no-argument `.some()` reads an `Optional` only, so a `Maybe` field widens through `.some(Affines.just())`.
+`Optional` and `Maybe` are recognised by name rather than by the SPI, and they do not share an optic: an `Optional` field widens through `.some(FocusPaths.optionalSome())`, a `Maybe` field through `.some(Affines.just())`.
 
 `ZERO_OR_MORE` containers, which produce a `TraversalPath` (at the static method for the first three rows, which are recognised by name, and for the rest only under `widenCollections = true`):
 
 | Container | Source | Optic used |
 |-----------|--------|------------|
-| `List<A>` | JDK | `.each()` (recognised directly) |
+| `List<A>` | JDK | `EachInstances.listEach()` (recognised directly) |
 | `Set<A>` | JDK | `EachInstances.setEach()` (recognised directly) |
 | `Collection<A>` | JDK | `EachInstances.collectionEach()` (recognised directly) |
 | `Map<K, V>` | JDK | `EachInstances.mapValuesEach()` |
@@ -36767,7 +36772,7 @@ Whichever way you reach a field, by the static method or by a navigator on a rec
 | `PVector`, `PStack`, `PSet`, `PSortedSet`, `PBag` | PCollections | `EachInstances.fromIterableCollecting(...)` |
 | `PMap`, `PSortedMap` | PCollections | `EachInstances.mapValuesEachCollecting(...)` |
 
-The three JDK collections are recognised by name rather than by the SPI, but they do not share one traversal: the no-argument `.each()` carries a `List` one, so a `Set` field is widened with `EachInstances.setEach()` and a `Collection` field with `EachInstances.collectionEach()`. Each rebuilds a value the component can take back, which is what lets the modified result go home:
+The three JDK collections are recognised by name rather than by the SPI, but they do not share one traversal: a `List` field is widened with `EachInstances.listEach()`, a `Set` field with `EachInstances.setEach()` and a `Collection` field with `EachInstances.collectionEach()`. Each rebuilds a value the component can take back, which is what lets the modified result go home:
 
 <!-- verify -->
 ```java
@@ -36815,7 +36820,7 @@ Allocation rebalanced =
 ```
 
 ~~~admonish warning title="Raw and wildcard container type arguments"
-Most containers widen by naming an optic **instance**: `.some(Affines.eitherRight())`, `.each(EachInstances.mapValuesEach())`. Javac works out that instance's own type arguments from the field's type. A raw container gives it nothing to work from, and a wildcard stands for no one type, so there is nothing to name. Rather than write a call that cannot compile, `@GenerateFocus` rejects the component:
+Most containers widen by naming an optic **instance**: `.some(Affines.eitherRight())`, `.each(EachInstances.mapValuesEach())`. Javac works out that instance's own type arguments from the field's type. A raw container gives it nothing to work from, and a wildcard stands for no one type, so there is nothing to name. Rather than write a call that cannot compile, `@GenerateFocus` rejects the component. An `Optional` or a `List` is the exception: the processor names its instance for the element type and casts it to the type the field declares.
 
 <!-- verify:rejects "has a wildcard type argument" -->
 ```java
@@ -36835,7 +36840,7 @@ Which fields the rule reaches follows from how each one widens:
 
 | Field | Widens by | Raw or wildcard argument |
 |-------|-----------|--------------------------|
-| `Optional`, `List` | `.some()` and `.each()`, which take no argument | ✅ Accepted. `List<? extends Widget>` widens to `TraversalPath<Holder, Widget>` |
+| `Optional`, `List` | `FocusPaths.optionalSome()` or `EachInstances.listEach()`, cast to the type the field declares | ✅ Accepted. `List<? extends Widget>` widens to `TraversalPath<Holder, Widget>` |
 | `Maybe`, `Set`, `Collection` | naming an optic instance: `Affines.just()` or an `Each` | ❌ Rejected, the same as an SPI container |
 | `Either`, `Try`, `Validated`, `Map`, third-party collections | naming the optic its SPI generator supplies | ❌ Rejected, but only when the field is actually widened |
 | `Kind<W, A>` | the `Traverse` registered for the witness `W` | ✅ Accepted. A wildcard element resolves to its bound, so `Kind<ListKind.Witness, ? extends Widget>` widens to `TraversalPath<Holder, Widget>`; a wildcard *witness* names no `Traverse` at all, so `Kind<?, Widget>` stays a plain `FocusPath` (see [Kind Field Support](kind_field_support.md#convention-based-detection)) |
@@ -36843,7 +36848,7 @@ Which fields the rule reaches follows from how each one widens:
 
 Three things narrow the rule further.
 
-**Only the container's own type arguments count**, focused or not. `Either<?, Widget>` is rejected even though the wildcard sits on the side the path never looks at. One level down is fine, because the container itself is still fully named: `Either<String, List<? extends Widget>>` widens to `.some(Affines.eitherRight()).each()`. Once the walk steps into the `List`, its own arguments are the ones that count. An element it does not step into keeps any wildcard it carries, as [A wildcard inside the element](#a-wildcard-inside-the-element) shows. An array has no type arguments of its own, so the array itself is never rejected, and the walk judges its element as any other. Under `widenCollections = true`, `List<? extends Widget>[]` widens to `TraversalPath<Holder, Widget>`, while `Set<? extends Widget>[]` is rejected.
+**Only the container's own type arguments count**, focused or not. `Either<?, Widget>` is rejected even though the wildcard sits on the side the path never looks at. One level down is fine, because the container itself is still fully named: `Either<String, List<? extends Widget>>` widens to `.some(Affines.eitherRight()).each(EachInstances.listEach())`, with the `Each` cast to one over `List<? extends Widget>`. Once the walk steps into the `List`, its own arguments are the ones that count. An element it does not step into keeps any wildcard it carries, as [A wildcard inside the element](#a-wildcard-inside-the-element) shows. An array has no type arguments of its own, so the array itself is never rejected, and the walk judges its element as any other. Under `widenCollections = true`, `List<? extends Widget>[]` widens to `TraversalPath<Holder, Widget>`, while `Set<? extends Widget>[]` is rejected.
 
 **A `ZERO_OR_MORE` SPI container is only rejected when something widens it**, which means `widenCollections = true`, or `widenFields` naming the field. At the default settings the path stops at the container, no optic is named, and the wildcard costs nothing. That covers wildcards below it too: `Map<String, Either<String, ? extends Widget>>` compiles at the default settings, because the `Map` is never widened and so the `Either` inside it is never asked for an optic.
 
@@ -36982,7 +36987,7 @@ _Navigate a `Kind<F, A>` record field as you would a plain `List` field, with th
 - Read and modify a `Kind<F, A>` field through its generated path, with no `Traverse` passed by hand
 - Predict the path type each library witness generates, from `ListKind` to `IdKind`, by its `KindSemantics`
 - Write `@TraverseField` to give a witness of your own its `Traverse` instance and cardinality
-- Predict when a `Kind` field falls back to a plain `FocusPath`, and apply `traverseOver` yourself
+- Predict when a `Kind` field falls back to a plain `FocusPath`, and widen it yourself with `EachInstances.fromTraverse`
 - Narrow a traversal with `headOption()`, knowing it reads the first element but writes to every one
 ~~~
 
@@ -37012,7 +37017,7 @@ Without automatic detection, every `Kind` field would need its `Traverse` instan
 ```java
 // What you would otherwise write, once per field, per call site
 TraversalPath<SkillsTeam, Member> memberPath =
-    FocusPath.of(SkillsTeamLenses.members()).<ListKind.Witness, Member>traverseOver(ListTraverse.INSTANCE);
+    FocusPath.of(SkillsTeamLenses.members()).each(EachInstances.fromTraverse(ListTraverse.INSTANCE));
 ```
 
 The processor knows which `Traverse` belongs to `ListKind.Witness`, so the generated method has already applied it.
@@ -37040,7 +37045,7 @@ A *witness* is the marker type that stands in for the higher-kinded `F` (see [Hi
 
 Parameterised witnesses are handled too: an `EitherKind.Witness<String>` field generates a call to `EitherTraverse.<String>instance()` with the type argument carried through.
 
-A wildcard resolves to the type it stands for, as it does for `List<? extends Member>` through `.each()`: `Kind<ListKind.Witness, ? extends Member>` widens to `TraversalPath<SkillsTeam, Member>`, and an unbounded or super-bounded wildcard focuses `Object`. A wildcard inside a parameterised witness resolves the same way, so `Kind<EitherKind.Witness<? extends CharSequence>, Member>` reads `EitherTraverse.<CharSequence>instance()`. The traversal rebuilds the container rather than writing into it, so a component declared with the wildcard comes back holding a `Kind<ListKind.Witness, Member>`, which its declaration admits. A wildcard in the witness position itself, `Kind<?, Member>`, names no `Traverse` instance, and the field keeps its plain `FocusPath`, with or without `@TraverseField`, and with the annotation a note says so.
+A wildcard resolves to the type it stands for, as it does for `List<? extends Member>`: `Kind<ListKind.Witness, ? extends Member>` widens to `TraversalPath<SkillsTeam, Member>`, and an unbounded or super-bounded wildcard focuses `Object`. A wildcard inside a parameterised witness resolves the same way, so `Kind<EitherKind.Witness<? extends CharSequence>, Member>` reads `EitherTraverse.<CharSequence>instance()`. The traversal rebuilds the container rather than writing into it, so a component declared with the wildcard comes back holding a `Kind<ListKind.Witness, Member>`, which its declaration admits. A wildcard in the witness position itself, `Kind<?, Member>`, names no `Traverse` instance, and the field keeps its plain `FocusPath`, with or without `@TraverseField`, and with the annotation a note says so.
 
 <!-- verify -->
 ```java
@@ -37059,12 +37064,12 @@ List<String> allWarnings = warnings.getAll(response);
 
 `KindSemantics` is cardinality for witnesses: it classifies a witness by how many values its type can hold, exactly as a container's `Cardinality` does for a plain field, and that classification picks the path type:
 
-- **`ZERO_OR_MORE`** (`ListKind`, `StreamKind`): a `TraversalPath`, straight from `traverseOver`.
+- **`ZERO_OR_MORE`** (`ListKind`, `StreamKind`): a `TraversalPath`, straight from `each(EachInstances.fromTraverse(...))`.
 - **`ZERO_OR_ONE`** (`MaybeKind`, `OptionalKind`, `TryKind`, `EitherKind`, `ValidatedKind`): a `TraversalPath` narrowed with `headOption()` to an `AffinePath`.
 - **`EXACTLY_ONE`** (`IdKind`): also narrowed to an `AffinePath`.
 
 ~~~admonish note title="Why `AffinePath` for `EXACTLY_ONE`?"
-An `IdKind` always holds exactly one value, so a `FocusPath` would be the honest type. The generation route does not allow it: `traverseOver` returns a `TraversalPath`, and the only narrowing available is `headOption()`, which lands on `AffinePath`. The result is correct at runtime, and one step weaker than the type could be.
+An `IdKind` always holds exactly one value, so a `FocusPath` would be the honest type. The generation route does not allow it: `each` returns a `TraversalPath`, and the only narrowing available is `headOption()`, which lands on `AffinePath`. The result is correct at runtime, and one step weaker than the type could be.
 ~~~
 
 ---
@@ -37098,7 +37103,7 @@ The expression is emitted verbatim, so any of these forms works:
 @TraverseField(traverse = "com.example.TreeTraverse.TRAVERSE")     // static field
 ```
 
-A `Kind<F, A>` field with an unrecognised witness and no `@TraverseField` is not an error: the processor falls back to a plain `FocusPath` focusing the raw `Kind`, and you apply `traverseOver` yourself. For one of the library's own witnesses it says so with a note, since a Higher-Kinded-J witness with no registered `Traverse` is a gap rather than a choice.
+A `Kind<F, A>` field with an unrecognised witness and no `@TraverseField` is not an error: the processor falls back to a plain `FocusPath` focusing the raw `Kind`, and you widen it yourself with `each(EachInstances.fromTraverse(traverse))`. For one of the library's own witnesses it says so with a note, since a Higher-Kinded-J witness with no registered `Traverse` is a gap rather than a choice.
 
 The same fallback applies to a witness that names no `Traverse` instance, whether or not `@TraverseField` is present: a bare or `? super` wildcard, one of the record's own type variables, or a wildcard bounded by one (`Kind<? extends F, Member>` resolves to `F`), since a `Traverse` is written for one witness and a type variable stands for any. With `@TraverseField` on a `Kind` whose witness is any of those, on a raw `Kind`, or on a component that is not declared as a `Kind` at all, the processor says so with a note naming the component and what would make the annotation apply, so an annotation that asked for a traversal is never dropped in silence. See the two notes' entries in [Compiler Errors](compiler_errors.md#traversefield-the-annotation-on-record-component-xy-is-not-applied-a-note).
 
@@ -37120,7 +37125,7 @@ The same fallback applies to a witness that names no `Traverse` instance, whethe
 ```
 
 ~~~admonish warning title="The set is a `setAll`"
-For a `ZERO_OR_ONE` witness this is exactly right: there is at most one element, so setting "all" of them sets the one. On a genuinely multi-element traversal it is a trap. When you mean the first element only, index it (`.at(0)` from the path focusing the container) rather than narrowing with `headOption()`.
+For a `ZERO_OR_ONE` witness this is exactly right: there is at most one element, so setting "all" of them sets the one. On a genuinely multi-element traversal it is a trap. When you mean the first element only, index a `List` with `.via(FocusPaths.listAt(0))` rather than narrowing with `headOption()`.
 ~~~
 
 ---
@@ -37153,12 +37158,12 @@ SkillsTeam afterTraining =
 * **`KindSemantics` is cardinality for witnesses**, and picks the path type nearly as a container type does: zero-or-more gives a `TraversalPath`, zero-or-one an `AffinePath`. `EXACTLY_ONE` is the exception, landing on `AffinePath` where the type would justify a `FocusPath`.
 * **`@TraverseField` opens the door to your own `Kind` types**, with the `Traverse` given as a verbatim expression.
 * **`headOption()` reads the first and writes to all.** Sound for zero-or-one witnesses, a trap on a real traversal.
-* **An unknown witness degrades gracefully** to a `FocusPath` over the raw `Kind`, which you can still `traverseOver` by hand.
+* **An unknown witness degrades gracefully** to a `FocusPath` over the raw `Kind`, which you can still widen by hand with `each(EachInstances.fromTraverse(traverse))`.
 ~~~
 
 ~~~admonish tip title="See Also"
 - [Focus DSL](focus_dsl.md): core concepts and path types
-- [Type Class and Effect Integration](focus_effects.md): `traverseOver()` in the general case
+- [Type Class and Effect Integration](focus_effects.md): `EachInstances.fromTraverse` in the general case
 - [Foldable and Traverse](../functional/foldable_and_traverse.md): the `Traverse` type class itself
 - [Core Type Integration](core_type_integration.md): `Maybe`, `Either` and `Validated` alongside optics
 ~~~
@@ -43404,7 +43409,7 @@ These are engineering estimates from the shape of the generated code, not benchm
 
 `Traversals.modify(traversal, f, source)` over a `List<A>` allocates one new list, plus a small constant number of short-lived objects *per element*: the traversal threads each result through the `Id` applicative and an immutable cons-list before flattening. Budget O(n) allocations, not O(1). (Reads and writes on a bare `Traversal` go through the `Traversals` utility; the interface itself declares no plain read or write.) If the function returns the same value for every element (a no-op modify), the list is still rebuilt; optics do not compare references to skip rebuilding.
 
-A Focus path's `.each()` on a `List` is `Traversals.forList()`, and `EachInstances.arrayEach()` is `Traversals.forArray()`, as `FocusPaths.listElements` and `EachInstances.arrayEach` show. Both rebuild this way, in time linear in the length, into a new unmodifiable list or a new array.
+A Focus path's `.each(EachInstances.listEach())` is `Traversals.forList()`, and `EachInstances.arrayEach()` is `Traversals.forArray()`, as `EachInstances.listEach` and `EachInstances.arrayEach` show. Both rebuild this way, in time linear in the length, into a new unmodifiable list or a new array.
 
 ### What each collection optic builds {#collection-optics}
 
@@ -43412,7 +43417,7 @@ Each collection optic rebuilds its container in its own way, and several return 
 
 | Optic | What it builds | When nothing changes | Implemented in |
 |---|---|---|---|
-| `Traversals.forList()`, a Focus path's `.each()`, `EachInstances.arrayEach().each()` | Collects the results on an immutable cons list, then builds one new unmodifiable list, or one new array. | An empty list or array still gets a new, empty one. | `Traversals.forList`, `Traversals.forArray` |
+| `Traversals.forList()`, a Focus path's `.each(EachInstances.listEach())`, `EachInstances.arrayEach().each()` | Collects the results on an immutable cons list, then builds one new unmodifiable list, or one new array. | An empty list or array still gets a new, empty one. | `Traversals.forList`, `Traversals.forArray` |
 | `Traversals.forMapValues()` | Copies the keys and values into two lists, traverses the values, then builds one new `LinkedHashMap` in the source's order. | An empty map still gets a new, empty map. | `Traversals.traverseMapValues` |
 | `Traversals.forMap(key)` | Copies the whole map to replace one value. | An absent key returns the source itself. | `Traversals.forMap` |
 | `filtered(p)`, `filterBy(query, p)` | Tests each element once, in the same pass as the update; `filterBy`'s test is a `Fold.exists`, which stops at the first queried focus that matches. | A rejected element passes through with `of`, keeping its reference. | `Traversal.filtered`, `Traversal.filterBy` |
@@ -43510,7 +43515,7 @@ The annotation surface (`@GenerateLenses`, `@GenerateFocus`, `@GeneratePrisms`, 
 
 The shapes of generated classes (`XLenses`, `XFocus`, etc.) are also stable; existing fields and methods do not disappear without a deprecation cycle. New fields and methods may be added to support new annotation parameters; this is additive and source-compatible.
 
-The Focus DSL surface (`FocusPath`, `AffinePath`, `TraversalPath`, methods like `.each()`, `.via()`, `.modifyAll()`) is stable. The Free Monad DSL APIs (`OpticPrograms`, `OpticInterpreters`) are also stable but used by fewer projects; if you adopt them, weigh the smaller adoption surface accordingly.
+The Focus DSL surface (`FocusPath`, `AffinePath`, `TraversalPath`, methods like `.each(...)`, `.via(...)`, `.modifyAll(...)`) is stable. The Free Monad DSL APIs (`OpticPrograms`, `OpticInterpreters`) are also stable but used by fewer projects; if you adopt them, weigh the smaller adoption surface accordingly.
 
 `Profunctor` adaptations (`contramap`, `map`, `dimap`) are stable.
 
@@ -44191,8 +44196,8 @@ record Stockroom(String name, Map<String, Integer> stock, Either<String, String>
 ```
 
 ``` java
-    AffinePath<Stockroom, Integer> desks = StockroomFocus.stock().atKey("DESK");
-    AffinePath<Stockroom, Integer> lamps = StockroomFocus.stock().atKey("LAMP");
+    AffinePath<Stockroom, Integer> desks = StockroomFocus.stock().via(FocusPaths.mapAt("DESK"));
+    AffinePath<Stockroom, Integer> lamps = StockroomFocus.stock().via(FocusPaths.mapAt("LAMP"));
 
     // A missing key reads as the fallback
     int desksInStock = desks.getOrElse(0, stockroom);
@@ -44212,7 +44217,7 @@ record Stockroom(String name, Map<String, Integer> stock, Either<String, String>
 ```
 ~~~
 
-A `Map` component's path focuses the whole map, and `.atKey(key)` narrows it to one value that may be missing. `getOrElse` supplies the fallback for a missing key.
+A `Map` component's path focuses the whole map, and `.via(FocusPaths.mapAt(key))` narrows it to one value that may be missing. `getOrElse` supplies the fallback for a missing key.
 
 ---
 
@@ -45270,9 +45275,9 @@ Each call in the third column takes the source after the function or value, as `
 | `Getter`, and `to f` | `Getter` | `Getter`, and `Getter.to(f)` |
 | `Setter'`, and `sets f` | `Setter` | `Setter`, and `Setter.of(f)` for `sets f` |
 | `Iso'`, `iso f g` and `from` | `Iso`, and `reverse` | `Iso.of(get, reverseGet)`, and `reverse()` |
-| `each`, from the `Each` class | `each`, from `Each` | `each()` on an `Each` instance such as `EachInstances.listEach()`, or `.each()` on a path |
+| `each`, from the `Each` class | `each`, from `Each` | `each()` on an `Each` instance such as `EachInstances.listEach()`, or `.each(EachInstances.listEach())` on a path |
 | `at k`, from `At`: a lens onto a `Maybe` | `at(i)`, from `At` | `at(i)` on an `At` instance such as `AtInstances.mapAt()`: a lens onto an `Optional` |
-| `ix i`, from `Ixed`: a traversal | `index(i)`, from `Index`: an `Optional` | `ix(i)` on an `Ixed` instance such as `IxedInstances.listIx()`: a traversal; on a `FocusPath`, `.at(i)` or `.atKey(k)` gives an `AffinePath` |
+| `ix i`, from `Ixed`: a traversal | `index(i)`, from `Index`: an `Optional` | `ix(i)` on an `Ixed` instance such as `IxedInstances.listIx()`: a traversal; on a `FocusPath`, `.via(FocusPaths.listAt(i))` or `.via(FocusPaths.mapAt(k))` gives an `AffinePath` |
 | `makeLenses`, `makePrisms` | `GenLens`, `GenPrism`, `Focus`, and `@Lenses` in Scala 2 | `@GenerateLenses`, `@GeneratePrisms`, `@GenerateFocus` |
 
 Monocle's `Optional` is this library's `Affine`, a name chosen so it never reads as `java.util.Optional`.
@@ -45363,7 +45368,7 @@ In Monocle, `headOption` on a fold or a traversal reads the first focus, as `fir
     // To write the first line alone, index the list
     Order firstLine =
         FocusPath.of(OrderLenses.lines())
-            .<LineItem>at(0)
+            .via(FocusPaths.listAt(0))
             .via(LineItemFocus.quantity())
             .set(7, order);
 ```
@@ -45397,7 +45402,7 @@ As `makeLenses` and Monocle's `GenLens` do, an annotation processor writes the o
 1. **Start from a Focus path, not a raw optic.** `OrderFocus.customer().email()` is the `Focus` you know. It is a path, whose `.via(...)` takes a lens, prism, affine, iso or traversal.
 2. **Write `modify` where you mean the `set` of `lens`.** An affine's `set` may write to an absent focus, and `modify` never does.
 3. **Pass the effect's instance yourself.** `modifyF` takes the `Applicative` as an argument; for validation, `OpticOps.modifyAllValidated` needs none.
-4. **Index the list, not the traversal.** `.at(0)` on a path that focuses the list, such as `FocusPath.of(OrderLenses.lines())`, writes one element. On a `TraversalPath` of lines it indexes into each line instead, and fails when run.
+4. **Index the list, not the traversal.** `.via(FocusPaths.listAt(0))` on a path that focuses the list, such as `FocusPath.of(OrderLenses.lines())`, writes one element. On a `TraversalPath` of lines it does not compile, because each focus is a line rather than a list.
 5. **Check hand-written optics with `hkj-test`.** `LensLaws`, `PrismLaws`, `AffineLaws`, `TraversalLaws` and `IsoLaws` state the laws you already know.
 
 **The code on this page is [FromMonocleBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/comingfrom/FromMonocleBook.java) and its [FromMonocleBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/optics/comingfrom/FromMonocleBookTest.java)**: the page includes the first, and the test holds each difference this page states about the library.
@@ -45482,7 +45487,7 @@ Index into a collection from the path that still focuses it, then keep navigatin
 ```java
 Optional<String> firstEmail =
     FocusPath.of(OrgChartLenses.units())
-        .<OrgUnit>at(0)
+        .via(FocusPaths.listAt(0))
         .via(OrgUnitFocus.members())
         .via(OrgMemberFocus.email())
         .preview(company);
@@ -45490,7 +45495,7 @@ Optional<String> firstEmail =
 String email = firstEmail.orElse("nobody@example.com");
 ```
 
-Two details earn their place. `.at(0)` needs its element type spelled out, because nothing in the argument list mentions `OrgUnit`. And `.at(0)` yields an `AffinePath`, which composing with a traversal widens back out, so the read is `preview` (the first focus, if any) rather than `getOptional`.
+`FocusPaths.listAt(0)` takes `OrgUnit` from the list the path focuses on, so nothing needs spelling out. It yields an `AffinePath`, which composing with a traversal widens back out, so the read is `preview` (the first focus, if any) rather than `getOptional`.
 
 ### Pattern 3: Validation Across a Traversal
 
@@ -45616,23 +45621,14 @@ Java takes the witness from the `Traverse` argument, but the element type only f
 List<Role> roles = rolesPath.traverseOver(ListTraverse.INSTANCE).getAll(user);
 ```
 
-Assigned to a declared `TraversalPath`, both type arguments are inferred:
+Widen through `each(EachInstances.fromTraverse(...))` instead. It takes the element type from the `Kind` the path focuses on, so it holds in a chain:
 
 <!-- verify -->
 ```java
-TraversalPath<Operator, Role> allRoles = rolesPath.traverseOver(ListTraverse.INSTANCE);
-List<Role> roles = allRoles.getAll(user);
+List<Role> roles = rolesPath.each(EachInstances.fromTraverse(ListTraverse.INSTANCE)).getAll(user);
 ```
 
-In a chain, supply both type arguments:
-
-<!-- verify -->
-```java
-List<Role> roles =
-    rolesPath.<ListKind.Witness, Role>traverseOver(ListTraverse.INSTANCE).getAll(user);
-```
-
-The same holds for any generic call whose result nothing pins, such as `Instances.validated(Semigroups.<String>list())` at the head of a chain. [Common Compiler Errors](compiler_errors.md#traverseover-and-the-higher-kinded-witness-type) has the entry for the message.
+`traverseOver` is deprecated for removal in 0.6.0. The same inference gap holds for any generic call whose result nothing pins, such as `Instances.validated(Semigroups.<String>list())` at the head of a chain. [Common Compiler Errors](compiler_errors.md#traverseover-and-the-higher-kinded-witness-type) has the entry for the message.
 
 ### "Incompatible types" on a long chain
 
@@ -45654,14 +45650,14 @@ Check, in order: whether an `AffinePath` in the chain actually matches (`matches
 
 ## FAQ
 
-### When should I use `each()` versus `traverseOver()`?
+### Which `Each` does a field need? {#when-should-i-use-each-versus-traverseover}
 
 | Field is | Use |
 |----------|-----|
-| `List<T>` | `each()`, already applied by the generated method |
-| `Set<T>`, `Collection<T>` | `each(EachInstances.setEach())` / `each(EachInstances.collectionEach())`, already applied by the generated method; the no-argument `each()` is `List`-only |
+| `List<T>` | `each(EachInstances.listEach())`, already applied by the generated method |
+| `Set<T>`, `Collection<T>` | `each(EachInstances.setEach())` / `each(EachInstances.collectionEach())`, already applied by the generated method |
 | `Kind<F, T>` on a `@GenerateFocus` record | nothing: the processor generates the traversal |
-| `Kind<F, T>` behind a hand-written lens | `traverseOver(SomeTraverse.INSTANCE)` |
+| `Kind<F, T>` behind a hand-written lens | `each(EachInstances.fromTraverse(SomeTraverse.INSTANCE))`; `traverseOver` is deprecated |
 
 ### Why pass `Instances.monadError(maybe())` to `modifyF()` rather than an Applicative?
 
@@ -45681,12 +45677,12 @@ Yes. Navigate as far as the generated paths go, then `.via()` a hand-written or 
 
 In order of preference:
 
-1. **Model the absence as `Optional<T>`.** The generated method applies `.some()` and hands you an `AffinePath`, with no extra step at all.
+1. **Model the absence as `Optional<T>`.** The generated method applies `.some(FocusPaths.optionalSome())` and hands you an `AffinePath`, with no extra step at all.
 2. **Annotate the component `@Nullable`.** Any of the six recognised annotations will do, wherever that annotation's own `@Target` puts it, and the generated method applies `.nullable()` for you.
 3. **Chain `.nullable()`** on the generated `FocusPath`. It turns null into an empty focus.
 4. **Build the path with `AffinePath.ofNullable(getter, setter)`** when there is no generated companion to start from.
 
-Two rules govern the annotated form. A nullable container widens through `.nullable()` and then its own step, where it has one, so `@Nullable List<T>` is `.nullable().each()`, and a null list has no elements. A nullable container inside another is ruled out the same way, and a navigator passes over a null element it would read. And position counts as Java defines it: `String @Nullable []` is a nullable array, while `@Nullable String[]` and `List<@Nullable String>` annotate the elements and leave the field itself non-null.
+Two rules govern the annotated form. A nullable container widens through `.nullable()` and then its own step, where it has one, so `@Nullable List<T>` is `.nullable().each(EachInstances.listEach())`, and a null list has no elements. A nullable container inside another is ruled out the same way, and a navigator passes over a null element it would read. And position counts as Java defines it: `String @Nullable []` is a nullable array, while `@Nullable String[]` and `List<@Nullable String>` annotate the elements and leave the field itself non-null.
 
 ### Can I build Focus paths at runtime?
 
@@ -45845,9 +45841,11 @@ Rows below and headings on the page say which, wherever it is not an error.
 
 | The message says | What it means |
 |------------------|---------------|
-| [`List<Object> cannot be converted to`, after `traverseOver`](#traverseover-and-the-higher-kinded-witness-type) | `traverseOver`'s element type is not pinned |
+| [`List<Object> cannot be converted to`, after `traverseOver`](#traverseover-and-the-higher-kinded-witness-type) | `traverseOver`'s element type is not pinned; `each(EachInstances.fromTraverse(...))` pins it |
 | [`Incompatible types`, after `.each().via()`](#incompatible-types-when-chaining-eachvia) | Usually one `.each()` too many |
-| [`Cannot infer type argument(s)`](#cannot-infer-type-arguments-on-an-intermediate-each) | Only the final `each()` in a chain can infer its element type |
+| [`Cannot infer type argument(s)`](#cannot-infer-type-arguments-on-an-intermediate-each) | Only the final untyped `each()` in a chain can infer its element type |
+| [`no suitable method found for each(...)`, or for `some` or `via`](#no-suitable-method-found-for-each) | The path does not focus on the container the typed step names |
+| [`each() in org.higherkindedj.optics.focus.FocusPath has been deprecated and marked for removal`](#untyped-shortcut-marked-for-removal) | **Warning.** A no-argument shortcut, due to go in 0.6.0, has a typed form |
 | [`::new` rejected as a `BiFunction`](#method-reference-new-doesnt-work-with-single-field-records-as-bifunction) | A single-component record has no two-argument constructor |
 | [`Sealed or non-sealed local classes are not allowed`](#sealed-or-non-sealed-local-classes-are-not-allowed) | A sealed interface is declared inside a method body |
 | [`Cannot resolve method 'flatMap(...)'`](#cannot-resolve-method-flatmapfunction) | Two `Free` witness types are being mixed |
@@ -46121,7 +46119,7 @@ A container that the processor widens through an optic **instance** is declared 
 **Fix.** Name the type argument, `Set<Widget>` rather than `Set<? extends Widget>`. For a wildcard, you can instead drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance and take the component as written. A raw container has no element type for `@GenerateTraversals` to focus, so it draws a note and no traversal there; keep `@GenerateLenses` alone for one. See [Custom Containers](focus_containers.md#supported-container-types).
 
 ~~~admonish note title="Why" collapsible=true
-That instance, `EachInstances.setEach()` or `Affines.eitherRight()`, has its own type arguments worked out from the component's type. A raw container gives javac nothing to work from, and a wildcard stands for no one type. `Optional` and `List` are exempt: they widen through the no-argument `.some()` and `.each()`, whose element type is free to be whatever the field says.
+That instance, `EachInstances.setEach()` or `Affines.eitherRight()`, has its own type arguments worked out from the component's type. A raw container gives javac nothing to work from, and a wildcard stands for no one type. `Optional` and `List` are exempt: the processor names their instance for the element the arguments stand for, and casts it to the type the field declares.
 ~~~
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
@@ -46139,7 +46137,7 @@ record Bag<T>(Set<? extends T> items) {}
 **Fix.** Rename the field, or keep `y` a plain path, as the message says. It names the change that does that on `X`: add `y` to `excludeFields`, remove it from `includeFields`, or, where `includeFields` names only `y`, remove `includeFields` and set `generateNavigators = false`. A plain path still reaches the clashing field through `.via(TFocus.z())`.
 
 ~~~admonish note title="Why" collapsible=true
-A navigator is a path, so it already has each of those methods. A navigation method of the same name would clash with it, and leaving the field out would let `name().last()` compile against the path's own `last()`. That method reads the last element of a list, so on a record it throws `ClassCastException` when the path runs. A record that asks for navigators in so many words is refused; one that leaves the default draws [a note](#generatefocus-no-navigator-into) instead. A name that takes arguments, such as `get` or `count`, does not clash, because `get()` and `get(source)` are two methods.
+A navigator is a path, so it already has each of those methods. A navigation method of the same name would clash with it, and leaving the field out would let `name().last()` compile against the path's own `last()`. That method reads the last element of a list, so on a record it throws `ClassCastException` when the path runs. It is deprecated, and a deprecated method clashes all the same while the path has it. A record that asks for navigators in so many words is refused; one that leaves the default draws [a note](#generatefocus-no-navigator-into) instead. A name that takes arguments, such as `get` or `count`, does not clash, because `get()` and `get(source)` are two methods.
 ~~~
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
@@ -46466,10 +46464,10 @@ Selection is still deterministic, the first registered wins, but which one that 
 
 `@TraverseField` names a `Traverse` for a `Kind<F, A>` component with a declared witness, and this component is not one.
 
-**Fix.** Declare the component as the `Kind<F, A>` the `Traverse` is written for, `Kind<TreeKind.Witness, Tree>` for a `Traverse<TreeKind.Witness>`, with both type arguments given and a witness that is a type rather than a bare or `? super` wildcard, a type variable of the record, or a wildcard bounded by one; or drop the annotation and take the path the component gets on its own, applying `traverseOver` yourself where the witness is known. See [Custom `Kind` Types with `@TraverseField`](kind_field_support.md#custom-kind-types-with-traversefield).
+**Fix.** Declare the component as the `Kind<F, A>` the `Traverse` is written for, `Kind<TreeKind.Witness, Tree>` for a `Traverse<TreeKind.Witness>`, with both type arguments given and a witness that is a type rather than a bare or `? super` wildcard, a type variable of the record, or a wildcard bounded by one; or drop the annotation and take the path the component gets on its own, widening it yourself with `each(EachInstances.fromTraverse(traverse))` where the witness is known. See [Custom `Kind` Types with `@TraverseField`](kind_field_support.md#custom-kind-types-with-traversefield).
 
 ~~~admonish note title="Why" collapsible=true
-The second sentence says which way: the component is not declared as a `Kind` at all (`List<String> is not declared as a Kind<F, A> component`), the `Kind` is written raw and so names neither a witness nor an element, its witness is a bare or `? super` wildcard (`Kind<?, String>`) that stands for no type and so names no `Traverse` instance, or its witness is one of the record's own type variables (`Kind<F, String>` in a `Holder<F>`, or `Kind<? extends F, String>`, whose wildcard resolves to `F`), which stands for any witness, while a `Traverse` is written for one. The component keeps the path it would have had without the annotation, a plain `FocusPath`, or `.each()` for a `List`, which compiles and is correct as far as it goes; what is missing is the traversal the annotation asked for.
+The second sentence says which way: the component is not declared as a `Kind` at all (`List<String> is not declared as a Kind<F, A> component`), the `Kind` is written raw and so names neither a witness nor an element, its witness is a bare or `? super` wildcard (`Kind<?, String>`) that stands for no type and so names no `Traverse` instance, or its witness is one of the record's own type variables (`Kind<F, String>` in a `Holder<F>`, or `Kind<? extends F, String>`, whose wildcard resolves to `F`), which stands for any witness, while a `Traverse` is written for one. The component keeps the path it would have had without the annotation, a plain `FocusPath`, or `.each(EachInstances.listEach())` for a `List`, which compiles and is correct as far as it goes; what is missing is the traversal the annotation asked for.
 
 It is a note rather than an error because nothing is broken: the generated class is sound, and the same declaration without the annotation passes without comment. A warning cannot be suppressed and would fail a `-Werror` build with no remedy short of editing the record.
 ~~~
@@ -46488,7 +46486,7 @@ record Inbox(
 
 The component is a `Kind<F, A>` whose witness is one of Higher-Kinded-J's own, but not one the Focus processor has a `Traverse` registered for. Nothing widens it, so the generated method is a plain `FocusPath` focusing the `Kind`.
 
-**Fix.** Add `@TraverseField` naming the `Traverse` instance for the witness, or keep the plain path and apply `traverseOver` yourself. See [Kind Field Support](kind_field_support.md#convention-based-detection).
+**Fix.** Add `@TraverseField` naming the `Traverse` instance for the witness, or keep the plain path and widen it yourself with `each(EachInstances.fromTraverse(traverse))`. See [Kind Field Support](kind_field_support.md#convention-based-detection).
 
 ~~~admonish note title="Why" collapsible=true
 A witness of your own draws no note, since not traversing it is an ordinary choice; a library witness with no registered `Traverse` is a gap you would want to hear about. The note is written once for the component, however many navigators reach the record.
@@ -48246,16 +48244,16 @@ interface Orders {
 
 `traverseOver` takes its witness type from the `Traverse` argument, but its element type only from where the result goes. In a chain such as `.traverseOver(...).getAll(user)`, the element type falls back to `Object`, and javac reports `incompatible types: List<Object> cannot be converted to List<Role>`.
 
-**Fix.** Assign the result to a declared `TraversalPath`, or state both type parameters where the call sits in a chain:
+**Fix.** Widen through `each(EachInstances.fromTraverse(...))`, which takes the element type from the `Kind` the path focuses on, so it holds in a chain too:
 
 <!-- verify -->
 ```java
 TraversalPath<Operator, Role> allRoles =
-    rolesPath.<ListKind.Witness, Role>traverseOver(ListTraverse.INSTANCE);
+    rolesPath.each(EachInstances.fromTraverse(ListTraverse.INSTANCE));
 ```
 
 ~~~admonish note title="Why" collapsible=true
-The element type appears only in the return type, so Java can infer it only from a target type, such as the variable the result is assigned to. The phantom error type in [Effect §1](../effect/compiler_errors.md#1-the-phantom-error-type-e-on-pathright) is inferred the same way. The receiver of a further method call is not a target, so the element type takes its bound, `Object`. The witness is never the problem, since the `Traverse<F>` argument fixes it. [Focus DSL Reference](focus_reference.md#object-turns-up-after-traverseover) shows the failing chain beside both fixes.
+`traverseOver`'s element type appears only in its return type, so Java can infer it only from a target type, such as the variable the result is assigned to. The phantom error type in [Effect §1](../effect/compiler_errors.md#1-the-phantom-error-type-e-on-pathright) is inferred the same way. The receiver of a further method call is not a target, so the element type takes its bound, `Object`. `fromTraverse` returns an `Each` typed from the `Kind` it reads, as every `Each` is, so the path's own focus fixes the element. `traverseOver` is deprecated for removal in 0.6.0. [Focus DSL Reference](focus_reference.md#object-turns-up-after-traverseover) shows the failing chain beside the fix.
 ~~~
 
 ### "Incompatible types when chaining .each().via()"
@@ -48276,24 +48274,56 @@ A generated accessor for a collection component is *already* element-level, so `
 ~~~
 
 ~~~admonish warning title="The extra `.each()` compiles"
-`each()` is `<E> TraversalPath<S, E>` and infers `E` from the assignment target, so a surplus hop type-checks and then fails at runtime when the list traversal is applied to something that is not a list. It is not caught by the compiler, which is why it belongs on this page rather than in a debugging note.
+The untyped `each()` is `<E> TraversalPath<S, E>` and infers `E` from the assignment target, so a surplus hop type-checks and then fails at runtime when the list traversal is applied to something that is not a list. It is deprecated for removal in 0.6.0. Its typed form, `each(EachInstances.listEach())`, does not compile on a focus that is not a `List`.
 ~~~
 
 ### "Cannot infer type argument(s)" on an intermediate `.each()`
 
-Only the *final* `each()` in a chain can infer its element type from the target type. An intermediate one has nothing to infer from.
+Only the *final* untyped `each()` in a chain can infer its element type from the target type. An intermediate one has nothing to infer from.
 
-**Fix.** Spell the element type at the intermediate hop:
+**Fix.** Use the typed form at each hop. It takes the element type from the `List` the path focuses on, so no hop needs it spelled out:
 
 <!-- verify -->
 ```java
 TraversalPath<OrgChart, Integer> allSalaries =
     FocusPath.of(OrgChartLenses.units())
-        .<OrgUnit>each()
+        .each(EachInstances.listEach())
         .via(OrgUnitLenses.members())
-        .<OrgMember>each()
+        .each(EachInstances.listEach())
         .via(OrgMemberLenses.salary());
 ```
+
+### "No suitable method found for each(...)" on a typed step {#no-suitable-method-found-for-each}
+
+The path does not focus on the container the step names: `EachInstances.listEach()` takes a path that focuses on a `List`, and `FocusPaths.optionalSome()` one that focuses on an `Optional`.
+
+**Fix.** Give the step the instance for what the path does focus on. A generated collection path already focuses on each element, so it needs no step of its own, and a `Set`, a `Map` or another container takes its own `Each`. A path over a `List<? extends T>` takes an `Iso` to `List<T>` first, and one over a `Kind<F, ? extends T>` an `Iso` to `Kind<F, T>`, as [0.6.0 deprecation migration](../tooling/openrewrite.md#060-deprecation-migration) shows.
+
+<!-- verify:rejects "no suitable method found for each" -->
+```java
+// Rejected: the generated path already focuses on each OrgUnit, not on a List
+TraversalPath<OrgChart, OrgUnit> units = OrgChartFocus.units().each(EachInstances.listEach());
+```
+
+~~~admonish note title="Why" collapsible=true
+`listEach()` is an `Each<List<A>, A>`, and `each` takes an `Each` whose first type is the path's focus, so javac looks for an `A` that makes `List<A>` an `OrgUnit` and finds none. The deprecated no-argument `each()` compiled here, because it does not read its element type from the focus, and failed with `ClassCastException` when it ran. `some(FocusPaths.optionalSome())` on a focus that is not an `Optional`, and `via(FocusPaths.listAt(0))` on one that is not a `List`, give the same message, naming `some` or `via`.
+~~~
+
+### "each() in org.higherkindedj.optics.focus.FocusPath has been deprecated and marked for removal" (a warning) {#untyped-shortcut-marked-for-removal}
+
+A Focus path's no-argument `each()`, `some()`, `head()`, `last()`, `tail()`, `init()`, `cons()`, `snoc()`, `headTail()` or `initLast()` is deprecated for removal in 0.6.0, and so are its `at(index)`, `atKey(key)` and `traverseOver(traverse)`. The warning names the method and the path type, a navigator included.
+
+**Fix.** Write its typed form: the same verb, given an instance that names the container, such as `each(EachInstances.listEach())` or `some(FocusPaths.optionalSome())`. [Removals in 0.6.0](../release-history/upgrading.md#removals-in-060) gives each one. The `MigrateDeprecationsTo0_6_0` recipe rewrites the calls it can and marks the rest, as [0.6.0 deprecation migration](../tooling/openrewrite.md#060-deprecation-migration) says.
+
+<!-- verify:reports "each() in org.higherkindedj.optics.focus.FocusPath has been deprecated and marked for removal" -->
+```java
+// Warned: each() takes its element type from the assignment, not from the path
+TraversalPath<OrgChart, OrgUnit> units = FocusPath.of(OrgChartLenses.units()).each();
+```
+
+~~~admonish note title="Why" collapsible=true
+The shortcut does not read its element type from the path's focus. So it compiles on any focus, and fails with `ClassCastException` when it runs on one that is not its container. The typed form reads the element from the focus, so on the wrong focus it does not compile, with [No suitable method found for each(...)](#no-suitable-method-found-for-each). The warning fails a build only under `-Werror`.
+~~~
 
 ### "Method reference ::new doesn't work with single-field records as BiFunction"
 
@@ -89604,7 +89634,7 @@ annotation processor handles each one via the SPI:
 | `Optional<StopLoss>` | JDK | ZERO_OR_ONE | `AffinePath` | `OptionalGenerator` |
 | `Map<String, Double>` | JDK | ZERO_OR_MORE | `FocusPath`, or `TraversalPath` under `widenCollections` | `MapValueGenerator` |
 
-The generated code calls the appropriate `each()` or `some()` for you. A `ZERO_OR_MORE`
+The generated code calls the appropriate `each(...)` or `some(...)` for you. A `ZERO_OR_MORE`
 container stops at the container until the record declaring it widens it. Here `widenFields`
 names the two `ImmutableList` fields. `widenCollections = true` widens every such field, as
 the `WidenedAssetClass` record in the example demonstrates for the `Map`. Static Focus methods and
@@ -93516,7 +93546,7 @@ After completing this journey:
 <!-- exercises: optics/Tutorial12_FocusDSL optics/Tutorial13_AdvancedFocusDSL optics/Tutorial14_FocusEffectBridge optics/Tutorial15_ListPrisms optics/Tutorial16_OpticsSpecInterfaces optics/Tutorial17_VStreamOptics optics/Tutorial18_FoldCombination optics/Tutorial19_NavigatorGeneration optics/Tutorial20_ContainerNavigation -->
 
 ~~~admonish tip title="Where This Fits in the Bigger Picture"
-The Focus DSL is the ergonomic layer that lets us write `.focus().attributes().at(key)` from [One Line, Six Layers](../../hkts/one_line_six_layers.md) as a single fluent path. Tutorials 12-13 cover the basics; Tutorial 14 is the bridge to Effect Paths; Tutorials 15-20 cover specialised cases (list prisms, external types, VStream integration, fold combination, navigator generation, container-type navigation). Each tutorial opens with a Pain → Promise header showing the imperative-Java pattern it replaces.
+The Focus DSL is the ergonomic layer behind the `.focus().attributes().at(key)` token in [One Line, Six Layers](../../hkts/one_line_six_layers.md): it composes those steps as a single fluent path. Tutorials 12-13 cover the basics; Tutorial 14 is the bridge to Effect Paths; Tutorials 15-20 cover specialised cases (list prisms, external types, VStream integration, fold combination, navigator generation, container-type navigation). Each tutorial opens with a Pain → Promise header showing the imperative-Java pattern it replaces.
 ~~~
 
 **Prerequisites**: [Optics: Lens & Prism Journey](lens_prism_journey.md), and Tutorials 05-06 of the [Traversals Journey](traversals_journey.md)
@@ -93541,9 +93571,9 @@ Learn the Focus DSL for ergonomic, type-safe path navigation through nested data
 **What you'll learn**:
 - Creating `FocusPath` from a Lens with `FocusPath.of()`
 - Composing paths with `via()` for deep navigation
-- `AffinePath` for optional values using `some()`
-- `TraversalPath` for collections using `each()`
-- Accessing specific elements with `at(index)` and `atKey(key)`
+- `AffinePath` for optional values using `some(FocusPaths.optionalSome())`
+- `TraversalPath` for collections using `each(EachInstances.listEach())`
+- Accessing specific elements with `FocusPaths.listAt(index)` and `FocusPaths.mapAt(key)`
 - Filtering traversals with `filter()`
 - Converting paths with `toLens()`, `asAffine()`, `asTraversal()`
 
@@ -93556,13 +93586,13 @@ FocusPath (Lens-like: exactly 1)
     ├── via(Lens)     → FocusPath
     ├── via(Prism)    → AffinePath
     ├── via(Affine)   → AffinePath
-    └── each()        → TraversalPath
+    └── each(Each)    → TraversalPath
 
 AffinePath (0 or 1)
     │
     ├── via(Lens)     → AffinePath
     ├── via(Prism)    → AffinePath
-    └── each()        → TraversalPath
+    └── each(Each)    → TraversalPath
 
 TraversalPath (0 to many)
     │
@@ -93575,7 +93605,7 @@ TraversalPath (0 to many)
 // Build a path through nested structure
 var path = FocusPath.of(companyLens)       // FocusPath<Root, Company>
     .via(departmentsLens)                   // FocusPath<Root, List<Dept>>
-    .<Dept>each()                           // TraversalPath<Root, Dept>
+    .each(EachInstances.listEach())         // TraversalPath<Root, Dept>
     .via(managerLens)                       // TraversalPath<Root, Manager>
     .via(emailLens);                        // TraversalPath<Root, String>
 
@@ -93600,12 +93630,12 @@ Master advanced Focus DSL features including type class integration, monoid aggr
 **What you'll learn**:
 - `modifyF()` for effectful modifications with Applicative/Monad
 - `foldMap()` for aggregating values using Monoid
-- `traverseOver()` for generic collection traversal via Traverse type class
+- `EachInstances.fromTraverse()` for generic collection traversal via the Traverse type class
 - `modifyWhen()` for conditional modifications
 - `instanceOf()` for sum type navigation
 - `traced()` for debugging path navigation
 
-**Key insight**: `traverseOver()` bridges the HKT Traverse type class with optics, letting you navigate into `Kind<F, A>` wrapped collections. This is the foundation for automatic Kind field support in `@GenerateFocus`.
+**Key insight**: `EachInstances.fromTraverse()` bridges the HKT Traverse type class with optics, letting you navigate into `Kind<F, A>` wrapped collections. This is the foundation for automatic Kind field support in `@GenerateFocus`.
 
 **Effectful modifications**:
 <!-- verify -->
@@ -93646,10 +93676,10 @@ String allNames = namePath.foldMap(
 **Kind field support**:
 <!-- verify -->
 ```java
-// Manual traverseOver for Kind<ListKind.Witness, Role> field
+// Widen a Kind<ListKind.Witness, Role> field by hand
 FocusPath<User, Kind<ListKind.Witness, Role>> rolesKindPath = FocusPath.of(userRolesLens);
 TraversalPath<User, Role> allRolesPath = rolesKindPath
-    .<ListKind.Witness, Role>traverseOver(ListTraverse.INSTANCE);
+    .each(EachInstances.fromTraverse(ListTraverse.INSTANCE));
 
 // With @GenerateFocus, this is generated automatically:
 // TraversalPath<User, Role> roles = UserFocus.roles();
@@ -93758,8 +93788,8 @@ Optional<MarketPrice> price = pricePath.getOptional(position);
 | Type | Focus Count | Created By |
 |------|-------------|------------|
 | `FocusPath<S,A>` | Exactly 1 | `FocusPath.of(lens)` |
-| `AffinePath<S,A>` | 0 or 1 | `.via(prism)`, `.some()` |
-| `TraversalPath<S,A>` | 0 to many | `.each()`, `.via(traversal)` |
+| `AffinePath<S,A>` | 0 or 1 | `.via(prism)`, `.some(affine)` |
+| `TraversalPath<S,A>` | 0 to many | `.each(eachInstance)`, `.via(traversal)` |
 
 ### Common Operations
 
@@ -93779,10 +93809,10 @@ Optional<MarketPrice> price = pricePath.getOptional(position);
 |--------|--------|
 | `via(lens)` | Navigate through required field |
 | `via(prism)` | Navigate to sum type variant (widens to Affine) |
-| `some()` | Navigate into Optional (widens to Affine) |
-| `each()` | Navigate into collection (widens to Traversal) |
-| `at(index)` | Navigate to specific index (widens to Affine) |
-| `atKey(key)` | Navigate to map key (widens to Affine) |
+| `some(FocusPaths.optionalSome())` | Navigate into Optional (widens to Affine) |
+| `each(EachInstances.listEach())` | Navigate into a List (widens to Traversal) |
+| `via(FocusPaths.listAt(index))` | Navigate to specific index (widens to Affine) |
+| `via(FocusPaths.mapAt(key))` | Navigate to map key (widens to Affine) |
 | `filter(pred)` | Filter traversal targets |
 
 ---
@@ -93806,12 +93836,12 @@ Optional<String> value = affinePath.getOptional(source);
 path.<EitherKind.Witness<AppError>>modifyF(Instances.monadError(either()), ...)
 ```
 
-### 3. Forgetting traverseOver for Kind Fields
+### 3. Forgetting the Traverse for Kind Fields
 **Problem**: Can't navigate into `Kind<ListKind.Witness, A>` field.
 
-**Solution**: Use `traverseOver` with the appropriate Traverse instance:
+**Solution**: Build an `Each` from the appropriate Traverse instance:
 ```java
-path.traverseOver(ListTraverse.INSTANCE)
+path.each(EachInstances.fromTraverse(ListTraverse.INSTANCE))
 ```
 
 ---
@@ -96424,13 +96454,14 @@ mvn rewrite:run      # apply changes
 
 ## Recipe Catalogue
 
-Three recipe groups are shipped; each one has a composite that runs every recipe in the group, plus individual recipes you can activate on their own.
+Four recipe groups are shipped; each one has a composite that runs every recipe in the group, plus individual recipes you can activate on their own.
 
 | Group | Composite | Mode |
 |-------|-----------|------|
 | Arity migration (0.2.x to 0.3.0) | `org.higherkindedj.openrewrite.AddArityBounds` | rewrites source |
 | Effect algebra helpers | `org.higherkindedj.openrewrite.EffectAlgebraMigration` | detection only |
 | 0.5.0 deprecations | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | rewrites source, and marks null successes, null errors and containers whose elements have a field named like a path method |
+| 0.6.0 deprecations | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_6_0` | rewrites source, and marks calls a typed form does not fit |
 
 ### Arity migration (0.2.x to 0.3.0)
 
@@ -96512,12 +96543,58 @@ rewrite {
 - **A note can remain where 0.4.x gave no navigator,** such as at a `Map` of `List`s, since widening it would change what its method returns. A note does not fail the build.
 - **An element whose module never ran the processor is widened anyway.** 0.5.0's note at the field says so; take the field out of `widenFields` to keep the container whole, as 0.4.x did.
 
+### 0.6.0 deprecation migration
+
+Rewrites call sites of APIs deprecated in 0.5.0 for removal in 0.6.0 to their replacements. A Focus path's untyped shortcuts, which do not read their element type from the focus, become their typed forms, which do. `ScopeJoiner.resultEither()`, the other API due to go, has no recipe; [Removals in 0.6.0](../release-history/upgrading.md#removals-in-060) gives its replacement.
+
+Run it before your build moves to 0.6.0, with `hkj-openrewrite` 0.5.x on the rewrite classpath, since 0.6.0 removes the methods it matches. The typed forms compile against 0.4.x and later, so the rewritten code builds on the release you are on.
+
+| Recipe | Change |
+|--------|--------|
+| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_6_0` | Composite; runs the recipe below |
+| `org.higherkindedj.openrewrite.ReplaceUntypedPathShortcutsRecipe` | On a `FocusPath`, an `AffinePath`, a `TraversalPath` or a navigator, `each()` becomes `each(EachInstances.listEach())`, `some()` becomes `some(FocusPaths.optionalSome())`, `at(index)` and `atKey(key)` become `via(FocusPaths.listAt(index))` and `via(FocusPaths.mapAt(key))`, and `traverseOver(traverse)` becomes `each(EachInstances.fromTraverse(traverse))`. `head()`, `last()`, `tail()`, `init()`, `cons()`, `snoc()`, `headTail()` and `initLast()` become `via` with the `FocusPaths` list optic of the same name, such as `via(FocusPaths.listHead())`. A type witness written on the shortcut, as in `<Role>each()`, is dropped, since the typed form reads the element type from the path |
+
+```kotlin
+rewrite {
+    activeRecipe("org.higherkindedj.openrewrite.MigrateDeprecationsTo0_6_0")
+}
+```
+
+A typed form fits only a path that focuses on its container exactly, such as a `List<Role>`. The recipe marks each call it cannot rewrite, and `rewriteRun` leaves the mark in the source as a `/*~~(…)~~>*/` comment, to remove once the call is replaced:
+
+- **A raw or wildcard container**, such as a lens onto a `List<? extends Number>`. The shortcut read it correctly, and no typed form takes it. View it as the container exactly through an `Iso`, as the code after this list shows, then step in. Give a raw container its type argument.
+- **A subtype such as `ArrayList`, or a type variable bounded by the container**: declare the focus as the container itself, such as `List` or `Map`. For `each()` on an `ArrayList`, `each(EachInstances.fromIterableCollecting(ArrayList::new))` also works, and rebuilds an `ArrayList`.
+- **Another type altogether.** The call threw `ClassCastException` when it ran; compose the optic for what the path does focus on.
+- **A key or a `Traverse` that does not fit the path**, such as an `Object` key on a `Map<String, Integer>`. Pass a key of the map's key type, or the `Traverse` for the `Kind`'s witness.
+- **A result read with another element type**: a witness, as in `<CharSequence>each()` on a `List<String>`, or a wider type the result is assigned to. Write the typed form, and make the code around it take the element the path holds.
+- **A call made on the result with no target type**, such as `path.each().getAll(source)`, where the shortcut focused on `Object`. Write the typed form, and check the code that reads its result.
+- **A method reference to a shortcut**: write the typed form in a lambda.
+
+A call whose result nothing reads, or that another shortcut is called on, is rewritten.
+
+Each of these views sees a wildcard container as the container exactly, so the typed form fits. The `List` is seen through a read-only view, and the `Kind` is mapped with its own `Traverse`:
+
+<!-- verify -->
+```java
+TraversalPath<Basket, Number> amounts =
+    amountsPath
+        .via(Iso.<List<? extends Number>, List<Number>>of(Collections::unmodifiableList, l -> l))
+        .each(EachInstances.listEach());
+
+TraversalPath<Basket, CharSequence> labels =
+    labelsPath
+        .via(
+            Iso.<Kind<ListKind.Witness, ? extends CharSequence>, Kind<ListKind.Witness, CharSequence>>of(
+                k -> ListTraverse.INSTANCE.map(c -> c, k), k -> k))
+        .each(EachInstances.fromTraverse(ListTraverse.INSTANCE));
+```
+
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **Three groups, three modes.** Arity migration and 0.5.0 deprecations rewrite source, apart from the marks they leave for you; the effect algebra helpers only flag call sites because their targets are user-specific generated code.
+* **Four groups, three modes.** Arity migration and the 0.5.0 and 0.6.0 deprecations rewrite source, apart from the marks the two deprecation groups leave for you. The effect algebra helpers only flag call sites, because their targets are user-specific generated code.
 * **Always dry-run first.** `rewriteDryRun` (Gradle) or `mvn rewrite:dryRun` (Maven) shows the diff; `rewriteRun` applies it.
-* **Use the composite recipe.** Activating one of the three composites runs the whole group and avoids ordering mistakes; the individual recipes are there when you need finer control.
+* **Use the composite recipe.** Activating a group's composite runs the whole group and avoids ordering mistakes; the individual recipes are there when you need finer control.
 * **Recipe coverage tracks the library.** The same migrations also surface as compile-time checks in `hkj-checker`; pick whichever feedback loop fits the team.
 ~~~
 
@@ -96528,6 +96605,7 @@ rewrite {
 - [Build Plugins](gradle_plugin.md) - The Gradle and Maven plugins that set up the rest of the tooling; add `hkj-openrewrite` to the rewrite plugin as the [Quick Start](#quick-start) shows
 - [Release History](../release-history.md) - Per-version notes; recipe groups are documented in the release that introduces them
 - [Removals in 0.5.0](../release-history/upgrading.md#removals-in-050) - Every API deprecated for removal, the release that deprecated it, and the recipe that migrates it
+- [Removals in 0.6.0](../release-history/upgrading.md#removals-in-060) - The APIs deprecated in 0.5.0, and the recipe that migrates them
 ~~~
 
 ---
@@ -97560,7 +97638,7 @@ Each skill provides condensed reference material optimised for Claude to use whe
 
 **hkj-guide** provides a Path type decision tree, creation/extraction cheatsheet for all Path types (including `VResultPath` and `EitherOrBothPath`), operator quick reference (`map`, `via`, `recover`, `mapError`, `focus`), type conversion matrix, ForPath comprehension entry points, `NonEmptyList`, the open-arity accumulating assembly (`fields()` / `accumulate()`), and Gradle/Maven setup instructions. Supporting files cover migration recipes (try/catch to TryPath, Optional to MaybePath, etc.), service layer patterns, and resilience patterns, now led by the path-native combinators (`withRetry`, `withTimeout`, `withCircuitBreaker`, `withBulkhead`) and the railway-aware semantics of `VResultPath`, where a typed `Left` is never retried and never trips the breaker.
 
-**hkj-optics** provides an annotation reference table, step-by-step Focus DSL walkthrough, FocusPath/AffinePath/TraversalPath hierarchy, optic-path labelling (`segments()` / `pathString()`), collection navigation methods (`.each()`, `.at()`, `.some()`, `.nullable()`), the `Edits` multi-edit builder with `Update<S>`, `ValidatedPrism` for parse-don't-validate boundaries, and external type import with `@ImportOptics` and `@OpticsSpec`. Supporting files cover the full optic composition matrix, a cookbook of recipes, container type support (23 types across JDK, Eclipse Collections, Guava, Vavr, Apache Commons), and indexed optics.
+**hkj-optics** provides an annotation reference table, step-by-step Focus DSL walkthrough, FocusPath/AffinePath/TraversalPath hierarchy, optic-path labelling (`segments()` / `pathString()`), collection navigation (`.each(Each)`, `.some(Affine)`, `.via(FocusPaths.listAt(i))`, `.nullable()`), the `Edits` multi-edit builder with `Update<S>`, `ValidatedPrism` for parse-don't-validate boundaries, and external type import with `@ImportOptics` and `@OpticsSpec`. Supporting files cover the full optic composition matrix, a cookbook of recipes, container type support (23 types across JDK, Eclipse Collections, Guava, Vavr, Apache Commons), and indexed optics.
 
 **hkj-mapping** covers the compile-time data-assembly generators: `@GenerateMapping` for bidirectional record <-> DTO mapping (spec interfaces, `@MapField` renames, `ValidatedPrism` leaves, derived wire fields, `@OptionalBridge` for a nullable wire component, elementwise lifting through `List`, `Set`, reference arrays, `Optional` and `Map`, nested and recursive records), `@GenerateMerge` for building one target from N sources, `@GenerateAssembly` for staged validated construction, and `@GenerateErrorEnvelope` for sealed error hierarchies with a typed context record. The unifying rule it teaches: `build` is total, `parse` is fallible and accumulates every `FieldError`. A supporting file walks through a complete DTO boundary, including law-checking the round-trip with `MappingLaws`.
 
@@ -105299,10 +105377,18 @@ Sections run newest first: start at the top and read down to the section for the
 
 ## Removals in 0.6.0 {#removals-in-060}
 
-Each of these compiles with javac's `[removal]` warning, which fails a `-Werror` build.
+Each of these compiles with javac's `[removal]` warning, which fails a `-Werror` build. A Focus path shortcut's replacement is its typed form: the same verb, given an instance that reads the element type from the path. So a typed form fits only a path that focuses on its container exactly. The `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_6_0` recipe runs every recipe the table names, and marks each call a typed form does not fit rather than rewriting it. [0.6.0 deprecation migration](../tooling/openrewrite.md#060-deprecation-migration) gives each such call its replacement.
 
 | Deprecated | Since | Use instead | Recipe |
 |---|---|---|---|
+| A Focus path's `each()`, on `FocusPath`, `AffinePath`, `TraversalPath` and a navigator | 0.5.0 | `each(EachInstances.listEach())` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `some()` | 0.5.0 | `some(FocusPaths.optionalSome())` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `at(index)` | 0.5.0 | `via(FocusPaths.listAt(index))` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `atKey(key)` | 0.5.0 | `via(FocusPaths.mapAt(key))` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `traverseOver(traverse)` | 0.5.0 | `each(EachInstances.fromTraverse(traverse))` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `head()`, `last()`, `tail()` and `init()` | 0.5.0 | `via(FocusPaths.listHead())`, `via(FocusPaths.listLast())`, `via(FocusPaths.listTail())` and `via(FocusPaths.listInit())` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `cons()` and `headTail()` | 0.5.0 | `via(FocusPaths.listCons())` and `via(FocusPaths.listHeadTail())` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `snoc()` and `initLast()` | 0.5.0 | `via(FocusPaths.listSnoc())` and `via(FocusPaths.listInitLast())` | `ReplaceUntypedPathShortcutsRecipe` |
 | `ScopeJoiner.resultEither()` | 0.5.0 | `joinEither()` on the `Scope`, in place of `join()`; for a `StructuredTaskScope` you open yourself, the value its `join()` returns, or the cause of the `FailedException` it throws | By hand |
 
 ---
@@ -105425,6 +105511,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `Right` or a `Success` always holds a value**: `Either`, `Try` and their Paths refuse null as a success, as `Validated` and `EitherOrBoth` do, and `Unit` stands for a step with nothing to return.
 - **A `Left` always holds an error**: the core `Either` and `EitherT` refuse a null error, as every Effect Path already did.
 - **A lazy computation always gives a value**: `IO`, `VTask`, `VStream`, `State`, `Lazy` and the other lazy types, and every Path over them, refuse a null value, as `Either` and `Try` do. Only `Id` keeps one, for the optics.
+- **A Focus path names the container it steps into**: `each()`, `some()` and the other shortcuts that compiled on any focus are deprecated for removal in 0.6.0. `MigrateDeprecationsTo0_6_0` rewrites them.
 ~~~
 
 ---
@@ -105487,11 +105574,12 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`@InstanceOf` refuses a test that could never match, where it crashed on one** ([#1091](https://github.com/higher-kinded-j/higher-kinded-j/issues/1091)). A `Grid<Y> extends Node<Y[]>` reached from a `Node<int[]>` crashed the processor. It is now refused at the spec method, as is a class that writes a different type from the source's where no choice of its parameters makes the two agree. See [the message's entry](../optics/compiler_errors.md#instanceof-never-matches).
 - **An `@InstanceOf` message no longer offers a focus the next check refuses** ([#1091](https://github.com/higher-kinded-j/higher-kinded-j/issues/1091)). Where what the test earns is no source type, as a `Box<?>` is no `Node<U>`, it says no focus would do, and offers another class or a spec of its own over `Node<List<X>>`. See [the message's entry](../optics/compiler_errors.md#instanceof--declares-its-focus-as-circlet-which-the-test-cannot-narrow-to).
 - **A method named after a Java keyword takes a trailing underscore** ([#1056](https://github.com/higher-kinded-j/higher-kinded-j/pull/1056)). An enum constant such as `NEW` or `TRUE`, a sealed subtype named `Default`, an `@EffectAlgebra` permit named `Throw`, or an imported `withDefault` crashed the processor. Their methods are now `new_()`, `true_()`, `default_()` and `throw_()`, and so are `@GenerateErrorEnvelope` factories. See [Prisms](../optics/prisms.md).
-- **`.each()` on a `List` path takes time in proportion to the list** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)). A Focus path's `.each()`, which every generated `List` path uses, now rebuilds the list once instead of copying it at every element. On 100,000 elements that took several seconds, and now takes about a millisecond. `EachInstances.arrayEach()` rebuilds an array the same way. See [Traversal allocation](../optics/production_readiness.md#traversal-allocation).
+- **A Focus path steps into a `List` in time proportional to the list** ([#1063](https://github.com/higher-kinded-j/higher-kinded-j/issues/1063)). Its `.each(EachInstances.listEach())`, which every generated `List` path uses, now rebuilds the list once instead of copying it at every element. On 100,000 elements that took several seconds, and now takes about a millisecond. `EachInstances.arrayEach()` rebuilds an array the same way. See [Traversal allocation](../optics/production_readiness.md#traversal-allocation).
 - **`modifyAllEither`, `modifyAllValidated` and `modifyAllMaybe` keep a null element their traversal passes over** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065)): over `filtered` or a prism that leaves a null element alone, `modifyAllValidated` threw and `modifyAllMaybe` gave `Nothing`. Each now keeps the null, and still rebuilds nothing once a step fails. So do `OpticOps`' validating modifiers. See [`modifyAllEither`: First Error Only](../optics/optics_extensions.md#modifyalleither-first-error-only).
 - **`@GenerateFocus` widens an array, as the Focus pages say** ([#1062](https://github.com/higher-kinded-j/higher-kinded-j/issues/1062)). Under `widenCollections = true`, a `String[]` or other array of a reference type is a `TraversalPath` over its elements, and an array of `@GenerateFocus` records gets a navigator over them. A primitive array stays a plain path. See [Supported Container Types](../optics/focus_containers.md#supported-container-types).
 - **A `@Nullable` container's Focus path is empty when the container is null** ([#1062](https://github.com/higher-kinded-j/higher-kinded-j/issues/1062)). A `@Nullable` `List`, `Set`, `Optional`, `Either` or other container that its path steps into now widens through `.nullable()` first, where its path threw `NullPointerException`. So does a nullable container inside another, such as `List<@Nullable List<String>>`. The path type is the same. See [Where a `@Nullable` counts](../optics/focus_navigation.md#where-a-nullable-counts).
 - **A navigator passes over a null element it would read** ([#1062](https://github.com/higher-kinded-j/higher-kinded-j/issues/1062)). A navigator into `Map<String, @Nullable Address>`, or into an array of nullable records, failed a nullness checker and threw `NullPointerException` on a null element. It now reads the other elements and leaves the null in place.
+- **A Focus path's untyped shortcuts are deprecated for removal in 0.6.0** ([#1105](https://github.com/higher-kinded-j/higher-kinded-j/issues/1105)). `each()`, `some()`, `at(index)` and the others compile on any focus, then throw `ClassCastException` on the wrong one. Each typed form, such as `each(EachInstances.listEach())`, reads the element type from the path and does not compile on another focus. Generated Focus classes use them. See [Deprecated for removal in 0.6.0](#deprecated).
 
 ---
 
@@ -105545,6 +105633,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **Checker severity settings work under every default locale** ([#1168](https://github.com/higher-kinded-j/higher-kinded-j/issues/1168)): `severity=WARNING` and per-check `severity:<id>=WARNING` now select warnings under Turkish, where they were silently ignored. Library formatting and generated identifier case conversions now use `Locale.ROOT` too.
 - **`MigrateDeprecationsTo0_5_0` drops the `Monad` that `StateT` no longer takes** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): its new `RemoveStateTMonadArgument` recipe rewrites the constructor, `create`, `stateT` and `mapT` calls. Run it from `hkj-openrewrite` 0.5.0 while the project is on 0.4.11, since it matches the 0.4.x signatures. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
 - **`MigrateDeprecationsTo0_5_0` widens the containers a 0.4.x navigator stepped into** ([#1106](https://github.com/higher-kinded-j/higher-kinded-j/issues/1106)): its new `AddWidenFieldsForNavigatedContainersRecipe` adds each such `Map` or third-party collection of records to `widenFields`, on a record that writes `generateNavigators = true`. It marks one whose elements have a field named like a path method, since 0.5.0 can give it no navigator. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
+- **`MigrateDeprecationsTo0_6_0` replaces a Focus path's untyped shortcuts** ([#1105](https://github.com/higher-kinded-j/higher-kinded-j/issues/1105)): the new group's `ReplaceUntypedPathShortcutsRecipe` rewrites each call to its typed form, such as `each()` to `each(EachInstances.listEach())`. It drops a needless type witness, and marks each call it cannot rewrite, such as one over a `List<? extends T>`, with its fix. See [0.6.0 deprecation migration](../tooling/openrewrite.md#060-deprecation-migration).
 - **A generator extending the built-in `Optional`, `Maybe`, `List`, `Set` or `Collection` generator inherits no optic expression** ([#757](https://github.com/higher-kinded-j/higher-kinded-j/issues/757)): `@GenerateFocus` recognises those types by name and never asks a generator. So `generateOpticExpression()` and `getRequiredImports()` on them return the defaults, and a subclass claiming another type takes no part in `@GenerateFocus` until it names its own. See [Registering your own container type](../optics/focus_containers.md#the-fine-print-registering-your-own-container-type).
 - **The `state-t-mapt-arity` check is retired** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445)): every `mapT` now takes the function alone, so there is no missing argument to report. A `disable=` or `severity:` entry that names it has no effect. The `kind-value-narrow` message now names the right accessor: `run()` on `ReaderT` and `WriterT`, and `runStateT(state)` on `StateT`. See [Compile-Time Checks](../tooling/compile_checks.md).
 - **`MigrateDeprecationsTo0_5_0` marks the null successes to replace** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): its new `DetectNullSuccessValuesRecipe` marks a `null` given to a success or value factory, and a lambda that returns one where it now fails. It also marks `Void` used as a value type. It rewrites nothing, and `rewriteRun` leaves each mark as a comment to remove. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
@@ -105603,6 +105692,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 ### Before you upgrade {#before-you-upgrade}
 
 - **Run `MigrateDeprecationsTo0_5_0` before you move to 0.5.0** ([#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445), [#452](https://github.com/higher-kinded-j/higher-kinded-j/issues/452)): take `hkj-openrewrite` 0.5.0 for the run, and keep the project on 0.4.11 until it finishes. Its `StateT` and `Try.fold` recipes match only the 0.4.x signatures. Rename each element field its `widenFields` recipe ([#1106](https://github.com/higher-kinded-j/higher-kinded-j/issues/1106)) marks before you move, so the compiler finds the calls through it. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
+- **Under `-Werror`, run `MigrateDeprecationsTo0_6_0` in the same pass** ([#1105](https://github.com/higher-kinded-j/higher-kinded-j/issues/1105)): on 0.5.0 a call to a deprecated Focus path shortcut fails a `-Werror` build. Every typed form the recipe writes is in 0.4.11, so it can run beside `MigrateDeprecationsTo0_5_0`. Replace by hand each call it marks.
 - **Replace `Void` with `Unit` where a success has nothing to return** ([#1065](https://github.com/higher-kinded-j/higher-kinded-j/issues/1065), [#1078](https://github.com/higher-kinded-j/higher-kinded-j/issues/1078)): `Either<E, Void>` and `Try<Void>` can no longer hold their null. A `VTask<Void>`, `IOPath<Void>` or other lazy computation fails when its step returns null. `VTask.exec`, `Path.vtaskExec` and `Path.ioRunnable` give `Unit`. The `MigrateDeprecationsTo0_5_0` run marks each site.
 
 - **Recompile what was compiled against a generated Focus class** ([#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033), [#1214](https://github.com/higher-kinded-j/higher-kinded-j/issues/1214)): a field or a hop that gains a navigator returns a navigator class. A module compiled against the earlier class fails with `NoSuchMethodError` until it is rebuilt.
@@ -105752,6 +105842,7 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Optics | A Focus method's result for a field of another `@GenerateFocus` record, or of a `List`, `Optional` or other container of one, with its type inferred: a `var` then assigned another path, such as `lines = lines.filter(p)`, or a generic call such as `Stream.of(OrderFocus.customer()).toList()` assigned to a `List<FocusPath<Order, Customer>>`. A navigator's hop into one record from a wider path, such as `orders().customer()`, is inferred the same way | Name the path type: declare the variable, or give the call its type argument | [#1033](https://github.com/higher-kinded-j/higher-kinded-j/issues/1033), [#1103](https://github.com/higher-kinded-j/higher-kinded-j/issues/1103), [#1214](https://github.com/higher-kinded-j/higher-kinded-j/issues/1214) |
 | Optics | Two components whose names differ only in the case of their first letter, such as `items` and `Items`, that both reach `@GenerateFocus` records, now that a `List` or `Optional` of records gets a navigator too: javac reports the navigator class already defined in the generated `Focus` class | Rename one of the components, or add one to `excludeFields` | [#1103](https://github.com/higher-kinded-j/higher-kinded-j/issues/1103) |
 | Optics | Code calling a lens `@ImportOptics` generated through a word, such as `draw()` through `withdraw(long)` beside `getDraw()`; a class whose only wither was such a word is now refused | Drop the call: `withdraw` never set `draw`. Where the class has a method that does set the field, name it with `@Wither` in a [spec interface](../optics/optics_spec_interfaces.md) | [#1128](https://github.com/higher-kinded-j/higher-kinded-j/issues/1128) |
+| Optics | A call to a Focus path's `each()`, `some()`, `at(index)`, `atKey(key)`, `traverseOver(traverse)`, `head()`, `last()`, `tail()`, `init()`, `cons()`, `snoc()`, `headTail()` or `initLast()` (a `[removal]` warning) | Run `MigrateDeprecationsTo0_6_0`, or use the typed form that [Deprecated for removal in 0.6.0](#deprecated) names | [#1105](https://github.com/higher-kinded-j/higher-kinded-j/issues/1105) |
 | Effect Paths | A `Monad` passed to `new StateT<>(fn, monad)`, `StateT.create`, `StateTKindHelper.stateT` or `StateT.mapT` | Run the recipe as [Before you upgrade](#before-you-upgrade) says, or drop the argument by hand | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | A two-component `StateT` record pattern, or `StateT::create` or `StateT::new` as a `BiFunction` | Match the one component, or take a `Function`, by hand | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
 | Effect Paths | A `StateT` in `var` or a chained call over a witness with a type argument, such as `EitherKind.Witness<E>`, which now infers `Object` for it | Name the types, as in `StateT.<S, EitherKind.Witness<E>, A>create(fn)`, or declare the variable | [#445](https://github.com/higher-kinded-j/higher-kinded-j/issues/445) |
@@ -105777,8 +105868,18 @@ To try them, depend on `0.5.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 ### Deprecated for removal in 0.6.0 {#deprecated}
 
+The `MigrateDeprecationsTo0_6_0` recipe runs each recipe the table names. See [0.6.0 deprecation migration](../tooling/openrewrite.md#060-deprecation-migration).
+
 | Deprecated | Replacement | Recipe |
 |---|---|---|
+| A Focus path's `each()`, on `FocusPath`, `AffinePath`, `TraversalPath` and a navigator | `each(EachInstances.listEach())` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `some()` | `some(FocusPaths.optionalSome())` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `at(index)` | `via(FocusPaths.listAt(index))` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `atKey(key)` | `via(FocusPaths.mapAt(key))` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `traverseOver(traverse)` | `each(EachInstances.fromTraverse(traverse))` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `head()`, `last()`, `tail()` and `init()` | `via(FocusPaths.listHead())`, `via(FocusPaths.listLast())`, `via(FocusPaths.listTail())` and `via(FocusPaths.listInit())` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `cons()` and `headTail()` | `via(FocusPaths.listCons())` and `via(FocusPaths.listHeadTail())` | `ReplaceUntypedPathShortcutsRecipe` |
+| A Focus path's `snoc()` and `initLast()` | `via(FocusPaths.listSnoc())` and `via(FocusPaths.listInitLast())` | `ReplaceUntypedPathShortcutsRecipe` |
 | `ScopeJoiner.resultEither()` | `joinEither()` on the `Scope`, in place of `join()`; for a `StructuredTaskScope` you open yourself, the value its `join()` returns, or the cause of the `FailedException` it throws | By hand |
 
 ---
@@ -106988,7 +107089,7 @@ Each of these runs at two sizes, ten times apart, so a test can check that the c
 | Benchmark | What It Measures |
 |-----------|-----------------|
 | `AccumulationBenchmark` | Collecting every failure of a bulk parse, `Edits.accumulate`, `PathOps.traverseValidated` and a generated mapping's null scan |
-| `EachRebuildBenchmark` | Modifying every element through a Focus path's `.each()` on a `List`, and through `EachInstances.arrayEach()` |
+| `EachRebuildBenchmark` | Modifying every element through a Focus path's `.each(EachInstances.listEach())` on a `List`, and through `EachInstances.arrayEach()` |
 
 ---
 

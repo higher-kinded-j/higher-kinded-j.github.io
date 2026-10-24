@@ -315,8 +315,8 @@ record Stockroom(String name, Map<String, Integer> stock, Either<String, String>
 ```
 
 ``` java
-    AffinePath<Stockroom, Integer> desks = StockroomFocus.stock().atKey("DESK");
-    AffinePath<Stockroom, Integer> lamps = StockroomFocus.stock().atKey("LAMP");
+    AffinePath<Stockroom, Integer> desks = StockroomFocus.stock().via(FocusPaths.mapAt("DESK"));
+    AffinePath<Stockroom, Integer> lamps = StockroomFocus.stock().via(FocusPaths.mapAt("LAMP"));
 
     // A missing key reads as the fallback
     int desksInStock = desks.getOrElse(0, stockroom);
@@ -336,7 +336,7 @@ record Stockroom(String name, Map<String, Integer> stock, Either<String, String>
 ```
 ~~~
 
-A `Map` component's path focuses the whole map, and `.atKey(key)` narrows it to one value that may be missing. `getOrElse` supplies the fallback for a missing key.
+A `Map` component's path focuses the whole map, and `.via(FocusPaths.mapAt(key))` narrows it to one value that may be missing. `getOrElse` supplies the fallback for a missing key.
 
 ---
 
