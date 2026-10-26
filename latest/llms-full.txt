@@ -38291,7 +38291,21 @@ Each prism takes the constant's camelCase name, and a name that would be a Java 
 Immutable JDK types and many library types follow the wither pattern: `getX()` reads, `withX(value)` returns a modified copy.
 
 ~~~admonish warning title="The pairing rule, exactly"
-A lens is generated for `withXxx(T)` only when the type also has a public no-arg method named `xxx()`, `getXxx()` or `isXxx()` **returning exactly `T`**, and `withXxx` itself returns the type under its own type arguments, or a subtype of it. That is stricter than it looks. `LocalDate` gets `year()`, `dayOfMonth()` and `dayOfYear()`, but *not* a month lens: `withMonth` takes an `int`, while `getMonth()` returns `Month`, so the pair does not typecheck and the field is skipped. A wither on a `Tagged<T>` that returns a raw `Tagged`, or a `Tagged<String>`, is skipped the same way, since the lens hands its result back as a `Tagged<T>`; a retag, `<U> Tagged<U> withId(String)`, pairs, because the call infers `U` back to `T`. A lower-case letter straight after `with` makes a word, not a wither, unless a capital follows it, as in `witheMail`: `withdraw(long)` beside `getDraw()` gives no `draw` lens. The generated lens calls the wither that paired, even where an overload of its name would take the boxed value the lens holds: a `withN(int)` beside a `withN(Integer)` or a `withN(Object)` is called as `source.withN((int) newValue)`, so the boxed overload does not take the call. Where a class spells one field's accessor two ways and has a wither for each, both pair with the same field name, and only the pair whose spelling the rule prefers is generated; the other is reported in a note. When a wither you expected is missing from the generated class, this rule is almost always why. Where the getter is the mismatch, reach for a [spec interface](optics_spec_interfaces.md) and name the getter yourself. Where the return is, a spec over the type the wither does return, `OpticsSpec<Tagged<String>>`, can use it; a raw return cannot be used by either route.
+A lens is generated for `withXxx(T)` only when the type also has a public no-arg method named `xxx()`, `getXxx()` or `isXxx()` **returning exactly `T`**, and `withXxx` itself returns the type under its own type arguments, or a subtype of it. That is stricter than it looks. `LocalDate` gets `year()`, `dayOfMonth()` and `dayOfYear()`, but *not* a month lens: `withMonth` takes an `int`, while `getMonth()` returns `Month`, so the pair does not typecheck and the field is skipped. A wither on a `Tagged<T>` that returns a raw `Tagged`, or a `Tagged<String>`, is skipped the same way, since the lens hands its result back as a `Tagged<T>`; a retag, `<U> Tagged<U> withId(String)`, pairs, because the call infers `U` back to `T`.
+
+The lens is named after what follows `with`, and how that is spelt decides what pairs:
+
+| The class declares | `@ImportOptics` generates |
+|---|---|
+| `withdraw(long)` beside `getDraw()` | No `draw` lens. A lower-case letter straight after `with` makes a word, not a wither |
+| `witheMail(String)` beside `geteMail()`, as Lombok's `beanspec` capitalisation writes them | An `eMail()` lens, as `withEMail(String)` beside `getEMail()` gives. A capital after the lower-case letter makes it a wither, and its getter may be spelt the same way |
+| `withEMail(String)` beside only `geteMail()` | No lens. A `geteMail()` pairs only with a wither spelt the same way, `witheMail` |
+| `withURL(String)` beside `getURL()` | A `uRL()` lens: the name is what follows `with`, its first letter in lower case. To name it `url()`, declare it in a [spec interface](optics_spec_interfaces.md) with `@Wither(value = "withURL", getter = "getURL")` |
+| `with2D(int)` beside `get2D()` | No lens: it would be named `2D()`, and no method's name can start with a digit |
+| `withN(int)` beside `n()`, and `withN(String)` beside `getN()` | One `n()` lens, through `withN(int)`. The rule prefers `n()`, then `getN()`, then `isN()`, and a note reports the other wither |
+| `withEMail(String)` and `witheMail(String)`, both beside `eMail()` | One `eMail()` lens, through `withEMail`, whichever the class declares first. A note reports the other wither |
+
+The generated lens calls the wither that paired, even where an overload of its name would take the boxed value the lens holds: a `withN(int)` beside a `withN(Integer)` or a `withN(Object)` is called as `source.withN((int) newValue)`, so the boxed overload does not take the call. When a wither you expected is missing from the generated class, the pairing rule is almost always why. Where the getter is the mismatch, reach for a [spec interface](optics_spec_interfaces.md) and name the getter yourself. Where the return is, a spec over the type the wither does return, `OpticsSpec<Tagged<String>>`, can use it; a raw return cannot be used by either route.
 ~~~
 
 An inner class of a generic class is imported under its enclosing class's type parameters, since that is how the type has to be written once the enclosing class takes arguments: `@ImportOptics({Outer.Line.class})` on a `class Outer<X>` gives `<X> Lens<Outer<X>.Line, String>`.
@@ -47944,12 +47958,12 @@ interface FeeOpticsSpec extends OpticsSpec<Fee> {
 
 ### "@ImportOptics: '...' pairs more than one wither with the field '...'" (a note)
 
-A class imported by class literal spells one field's accessor more than one way, and has a wither for each: `int n()` with `withN(int)`, and `String getN()` with `withN(String)`. Both pair with the field `n`, and a class can carry only one lens of that name.
+A class imported by class literal spells one field's accessor more than one way, and has a wither for each: `int n()` with `withN(int)`, and `String getN()` with `withN(String)`. Both pair with the field `n`, and a class can carry only one lens of that name. A class with both `withEMail` and the JavaBeans `witheMail` draws the note too, since both set the field `eMail`.
 
 **Fix.** Nothing, where the lens you wanted is the one generated: the note says which. Where you wanted the other, import the type through a [spec interface](optics_spec_interfaces.md) and name the pair yourself with `@Wither(value = "withN", getter = "getN")`, importing it there rather than by class literal, or the note stays on every build.
 
 ~~~admonish note title="Why" collapsible=true
-The pairing rule tries the accessor spellings in order, `n()`, then `getN()`, then `isN()`, and the first that matches is the one generated. Reading them in that order rather than in the order the class happens to declare its members means the same class always yields the same lens. A note rather than a warning, because the class is someone else's to spell, and a note does not fail a `-Werror` build.
+The pairing rule tries the accessor spellings in order, `n()`, then `getN()`, then `isN()`, and the first that matches is the one generated. Reading them in that order rather than in the order the class happens to declare its members means the same class always yields the same lens. Where two withers pair with one getter, the processor prefers the capitalised spelling, `withEMail` ahead of `witheMail`, for the same reason. A note rather than a warning, because the class is someone else's to spell, and a note does not fail a `-Werror` build.
 ~~~
 
 ~~~admonish example title="A declaration that produces it" collapsible=true
@@ -105624,7 +105638,7 @@ _Not released yet: these changes are on `main`, and the `latest` book describes 
 To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradle SNAPSHOT Configuration](../tooling/manual_setup.md#gradle-snapshot-configuration) shows.
 
 ~~~admonish info title="At a glance"
-- **Nothing has changed since 0.5.0 yet.** The [0.5.0 notes](v0_5_0.md) describe the latest release.
+- **`@ImportOptics` pairs a JavaBeans-spelt wither with its getter**: a `witheMail` beside `geteMail()` gives an `eMail()` lens.
 ~~~
 
 ---
@@ -105634,6 +105648,8 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 ---
 
 ## Optics {#optics}
+
+- **`@ImportOptics` pairs a JavaBeans-spelt wither with its getter** ([#1148](https://github.com/higher-kinded-j/higher-kinded-j/issues/1148)). A `witheMail(String)` beside `geteMail()`, as Lombok's `beanspec` capitalisation writes them, gives an `eMail()` lens, as `withEMail` beside `getEMail()` does. The processor says why it refuses a class whose only wither is `with2D(int)`. See [Wither Classes to Lenses](../optics/importing_optics.md#wither-classes-to-lenses).
 
 ---
 
@@ -105662,6 +105678,10 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 ### Before you upgrade {#before-you-upgrade}
 
 ### What a running program can notice {#runtime-changes}
+
+#### Optics {#runtime-optics}
+
+- **Of two withers for one getter, `@ImportOptics` sets through the capitalised spelling** ([#1148](https://github.com/higher-kinded-j/higher-kinded-j/issues/1148)): the lens for a class with both `withEMail` and `witheMail` beside `eMail()` set through whichever the class declared first. It now sets through `withEMail`, and a note names `witheMail`, which a spec interface's `@Wither` can choose.
 
 ### What stops a build that compiled {#build-changes}
 
