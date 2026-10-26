@@ -1,0 +1,557 @@
+# Common Data Structure Traversals
+
+_Update the value inside an `Optional`, every value of a `Map`, or both halves of a `Tuple2`._
+
+~~~admonish info title="What You'll Learn"
+- Update an optional value with `Traversals.forOptional()`, leaving an empty `Optional` alone
+- Change every value of a map with `Traversals.forMapValues()`, keeping its keys and its iteration order
+- Traverse a persistent or third-party map's values with `forMapValuesCollecting`, choosing the map type it rebuilds
+- Update both elements of a same-typed pair with `TupleTraversals.both()`
+- Compose these traversals with lenses into deeper paths, and decide when direct access or a stream is clearer
+~~~
+
+~~~admonish example title="See Example Code"
+[OptionalMapTraversalsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/OptionalMapTraversalsExample.java)
+
+[TupleTraversalsExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/TupleTraversalsExample.java)
+~~~
+
+So far, we've explored traversals for collections: lists, sets, and arrays. But Java applications work with many other data structures that benefit from traversal operations: Optional values that might be empty, Map collections where we need to transform values whilst preserving keys, and Tuple pairs that represent related data.
+
+These structures share a common need: **apply a transformation uniformly across their contents whilst maintaining structural integrity**. Higher-Kinded-J's traversal combinators make this declarative, composable, and type-safe.
+
+---
+
+## How many values each one reaches {#how-many-values-each-one-reaches}
+
+`forOptional` and `forMapValues` play the part of `Optional.map`, and of streaming a map's entries and collecting them back under the same keys. Unlike those, each is an optic, so it composes into a longer path, and `forMapValues` keeps the map's iteration order, which `Collectors.toMap` does not. None of them is a special case. Each is a traversal, and what differs is how many values it reaches:
+- `Optional<A>`: 0 or 1 element (affine traversal)
+- `Map<K, V>`: 0 to N values, preserving keys
+- `Tuple2<A, A>`: Exactly 2 elements (when same type)
+
+---
+
+## The Structure Traversal Toolkit
+
+Higher-Kinded-J provides factory methods in `Traversals` and dedicated utility classes:
+
+| Structure | Method | Cardinality | Use Case |
+|-----------|--------|-------------|----------|
+| **Optional** | `Traversals.forOptional()` | 0 or 1 | Nullable fields, configuration values |
+| **Map Values** | `Traversals.forMapValues()` | 0 to N | Bulk value transforms, preserving keys |
+| **Persistent/3rd-party Map Values** | `Traversals.forMapValuesCollecting(...)` | 0 to N | Same, for `PMap`, Guava/Eclipse/Vavr maps |
+| **Tuple2 Pairs** | `TupleTraversals.both()` | Exactly 2 | Coordinate systems, min/max pairs |
+
+---
+
+## Optional Traversals: Handling Absent Values Declaratively
+
+### The Problem with Nested Optionals
+
+Traditional Optional handling becomes verbose when working with nested structures:
+
+<!-- verify -->
+```java
+@GenerateLenses
+public record ServerConfig(
+    String hostname,
+    Optional<Integer> port,
+    Optional<String> sslCertPath
+) {}
+
+@GenerateLenses
+public record ApplicationConfig(
+    String appName,
+    Optional<ServerConfig> server
+) {}
+
+// Traditional: Nested map() calls and manual reconstruction
+ApplicationConfig updated = config.server()
+    .map(server -> server.port()
+        .map(p -> new ServerConfig(server.hostname(), Optional.of(p + 1000), server.sslCertPath()))  // Offset ports
+        .orElse(server)
+    )
+    .map(newServer -> new ApplicationConfig(config.appName(), Optional.of(newServer)))
+    .orElse(config);
+```
+
+This pattern doesn't compose with other optics and mixes traversal logic with transformation logic.
+
+### The Solution: `forOptional()` Traversal
+
+The `forOptional()` method, on `org.higherkindedj.optics.util.Traversals`, creates an **affine traversal**, focusing on 0 or 1 element.
+
+``` java
+    // Create an Optional traversal
+    Traversal<Optional<Integer>, Integer> optTraversal = Traversals.forOptional();
+
+    // Modify the value if present
+    Optional<Integer> maybePort = Optional.of(8080);
+    Optional<Integer> offsetPort = Traversals.modify(optTraversal, p -> p + 1000, maybePort);
+    // Result: Optional[9080]
+
+    // Empty Optional remains empty
+    Optional<Integer> empty = Optional.empty();
+    Optional<Integer> stillEmpty = Traversals.modify(optTraversal, p -> p + 1000, empty);
+    // Result: Optional.empty
+
+    // Extract value as a list
+    List<Integer> values = Traversals.getAll(optTraversal, maybePort);
+    // Result: [8080]  (or [] for empty)
+```
+
+### Composing with Lenses for Nested Optionals
+
+<!-- verify -->
+```java
+// Compose Optional traversal with lens traversal
+Traversal<ApplicationConfig, Integer> serverPorts =
+    ApplicationConfigLenses.server()
+        .andThen(Traversals.forOptional())
+        .andThen(ServerConfigLenses.port())
+        .andThen(Traversals.forOptional());
+
+// Offset all server ports in one operation
+ApplicationConfig updated = Traversals.modify(serverPorts, p -> p + 1000, config);
+// Works whether server and port are present or absent
+```
+
+### Real-World Example: Feature Flag Management
+
+<!-- verify -->
+```java
+@GenerateLenses
+public record FeatureFlags(Map<String, Optional<Boolean>> flags) {}
+
+public class FeatureFlagService {
+
+    // Enable all flags that are currently set (respect absent flags)
+    public static FeatureFlags enableAllSet(FeatureFlags config) {
+        Traversal<Map<String, Optional<Boolean>>, Optional<Boolean>> allFlagValues =
+            Traversals.forMapValues();
+
+        Traversal<Map<String, Optional<Boolean>>, Boolean> presentFlags =
+            allFlagValues.andThen(Traversals.forOptional());
+
+        Map<String, Optional<Boolean>> updated = Traversals.modify(
+            presentFlags,
+            flag -> true,  // Enable all present flags
+            config.flags()
+        );
+
+        return new FeatureFlags(updated);
+    }
+}
+```
+
+---
+
+## Map Value Traversals: Bulk Transformations Preserving Keys
+
+### The Problem with Map Streams
+
+Transforming Map values whilst preserving keys requires ceremony:
+
+``` java
+    // a TreeMap rather than Map.of, so the prices iterate in a fixed key order
+    Map<String, BigDecimal> prices =
+        new TreeMap<>(
+            Map.of(
+                "widget", new BigDecimal("10.00"),
+                "gadget", new BigDecimal("25.00"),
+                "gizmo", new BigDecimal("15.00")));
+
+    // Traditional: Stream + collect, for a 10% price increase kept to whole pence
+    Map<String, BigDecimal> inflated =
+        prices.entrySet().stream()
+            .collect(
+                Collectors.toMap(
+                    Map.Entry::getKey,
+                    e ->
+                        e.getValue()
+                            .multiply(new BigDecimal("1.1"))
+                            .setScale(2, RoundingMode.HALF_EVEN)));
+```
+
+This pattern doesn't compose and requires reconstructing the entire map.
+
+### The Solution: `forMapValues()` Traversal
+
+The `forMapValues()` method creates a traversal focusing on **all values** whilst preserving key structure. The map it hands back keeps the source's iteration order; a `Map.of` has no fixed order of its own, so start from a `LinkedHashMap` or `TreeMap` when order matters.
+
+``` java
+    // Create a Map values traversal
+    Traversal<Map<String, BigDecimal>, BigDecimal> priceTraversal = Traversals.forMapValues();
+
+    // Add a flat 1.50 handling charge to every value
+    Map<String, BigDecimal> inflated =
+        Traversals.modify(priceTraversal, price -> price.add(new BigDecimal("1.50")), prices);
+    // Result: {gadget=26.50, gizmo=16.50, widget=11.50}
+
+    // Extract all values
+    List<BigDecimal> allPrices = Traversals.getAll(priceTraversal, prices);
+    // Result: [25.00, 15.00, 10.00]
+
+    // Compose with filtered for conditional updates
+    // (filtered optics are covered properly in the Precision and Filtering group)
+    Traversal<Map<String, BigDecimal>, BigDecimal> expensiveItems =
+        priceTraversal.filtered(price -> price.compareTo(new BigDecimal("20.00")) > 0);
+
+    // 10% discount on expensive items only, kept to whole pence
+    Map<String, BigDecimal> discounted =
+        Traversals.modify(
+            expensiveItems,
+            price -> price.multiply(new BigDecimal("0.9")).setScale(2, RoundingMode.HALF_EVEN),
+            prices);
+    // Result: {gadget=22.50, gizmo=15.00, widget=10.00}
+```
+
+### Real-World Example: Configuration Value Normalisation
+
+<!-- verify -->
+```java
+@GenerateLenses
+public record ConnectionProperties(
+    Map<String, String> connectionProperties
+) {}
+
+public class ConfigNormaliser {
+
+    // Trim all connection property values
+    public static ConnectionProperties normaliseProperties(ConnectionProperties config) {
+        Traversal<Map<String, String>, String> allPropertyValues =
+            Traversals.forMapValues();
+
+        Map<String, String> trimmed = Traversals.modify(
+            allPropertyValues,
+            String::trim,
+            config.connectionProperties()
+        );
+
+        return new ConnectionProperties(trimmed);
+    }
+
+    // Redact sensitive values (password, token)
+    public static ConnectionProperties redactSensitive(ConnectionProperties config) {
+        // An indexed traversal sees both key and value (see Indexed Optics, in Precision and Filtering)
+        IndexedTraversal<String, Map<String, String>, String> allProperties =
+            IndexedTraversals.forMap();
+
+        Map<String, String> redacted = IndexedTraversals.imodify(
+            allProperties,
+            (key, value) -> {
+                if (key.toLowerCase().contains("password") || key.toLowerCase().contains("token")) {
+                    return "***REDACTED***";
+                }
+                return value;
+            },
+            config.connectionProperties()
+        );
+
+        return new ConnectionProperties(redacted);
+    }
+}
+```
+
+### Composing Map Traversals with Nested Structures
+
+<!-- verify -->
+```java
+@GenerateLenses
+public record ServiceRegistry(
+    Map<String, ServerConfig> services
+) {}
+
+// Transform all server ports across all services
+Traversal<ServiceRegistry, Integer> allServicePorts =
+    ServiceRegistryLenses.services()
+        .andThen(Traversals.forMapValues())
+        .andThen(ServerConfigLenses.port())
+        .andThen(Traversals.forOptional());
+
+ServiceRegistry updated = Traversals.modify(
+    allServicePorts,
+    port -> port + 1000,  // Offset all ports
+    registry
+);
+```
+
+### Persistent and Third-Party Maps: `forMapValuesCollecting()`
+
+`forMapValues()` hands back a plain `java.util.Map` whatever map it was given: the source's iteration order survives, its type does not. To traverse the values of a *persistent* or *specialised* map (PCollections `PMap` / `PSortedMap`, Guava `ImmutableMap`, Eclipse Collections `ImmutableMap`, Vavr `io.vavr.collection.Map`), use `forMapValuesCollecting()`. It is the map-shaped companion to `forIterableCollecting()`, which does the same job for collections.
+
+For any map type that *implements* `java.util.Map` (PCollections maps, Guava `ImmutableMap`, Apache Commons map decorators, …), pass a single rebuild function:
+
+<!-- verify -->
+```java
+import org.pcollections.PMap;
+import org.pcollections.HashTreePMap;
+
+Traversal<PMap<String, Integer>, Integer> pmapValues =
+    Traversals.forMapValuesCollecting(HashTreePMap::from);
+
+PMap<String, Integer> scores =
+    HashTreePMap.<String, Integer>empty().plus("math", 90).plus("science", 95);
+PMap<String, Integer> updated =
+    Traversals.modify(pmapValues, score -> score + 10, scores);   // keys preserved
+```
+
+For map types that are *not* `java.util.Map` (Eclipse Collections `ImmutableMap`, Vavr `Map`), pass a view function as well, one that exposes the container as a JDK `Map`, plus one that rebuilds it:
+
+```java
+// Vavr HashMap
+Traversal<io.vavr.collection.HashMap<String, Integer>, Integer> vavrValues =
+    Traversals.forMapValuesCollecting(
+        io.vavr.collection.HashMap::toJavaMap, io.vavr.collection.HashMap::ofAll);
+```
+
+The same two overloads exist on `EachInstances` for use in the Focus DSL (`EachInstances.mapValuesEachCollecting(HashTreePMap::from)`), which is how `@GenerateFocus` widens `PMap` / `PSortedMap` fields into `TraversalPath`s. See [PCollections Optics](../tooling/pcollections_optics.md).
+
+> Like `forMapValues()`, the value transformation never touches keys. Sorted-map collectors (`TreePMap::from`, Vavr `TreeMap::ofAll`) re-apply natural ordering; custom comparators are not preserved.
+
+---
+
+## Tuple Traversals: Parallel Transformations on Pairs
+
+### The Problem with Manual Tuple Updates
+
+Applying the same operation to both elements of a tuple requires duplication:
+
+<!-- verify -->
+```java
+Tuple2<Integer, Integer> range = new Tuple2<>(10, 20);
+
+// Traditional: Manual, repetitive
+Tuple2<Integer, Integer> doubled = new Tuple2<>(
+    range._1() * 2,
+    range._2() * 2
+);
+```
+
+When tuples represent related data (coordinates, ranges, min/max pairs), we want to express "apply this transformation to both elements" declaratively.
+
+### The Solution: `TupleTraversals.both()`
+
+The `both()` method, on `org.higherkindedj.optics.util.TupleTraversals`, creates a traversal that focuses on **both elements** of an `org.higherkindedj.hkt.tuple.Tuple2` when they share a type.
+
+``` java
+    // Create a tuple traversal (when both elements are same type)
+    Traversal<Tuple2<Integer, Integer>, Integer> bothInts = TupleTraversals.both();
+
+    // Double both elements
+    Tuple2<Integer, Integer> range = new Tuple2<>(10, 20);
+    Tuple2<Integer, Integer> doubled = Traversals.modify(bothInts, x -> x * 2, range);
+    // Result: Tuple2[_1=20, _2=40]
+
+    // Extract both elements
+    List<Integer> values = Traversals.getAll(bothInts, range);
+    // Result: [10, 20]
+
+    // Works with any shared type
+    Traversal<Tuple2<String, String>, String> bothStrings = TupleTraversals.both();
+    Tuple2<String, String> names = new Tuple2<>("alice", "bob");
+    Tuple2<String, String> capitalised =
+        Traversals.modify(
+            bothStrings, s -> s.substring(0, 1).toUpperCase() + s.substring(1), names);
+    // Result: Tuple2[_1=Alice, _2=Bob]
+```
+
+### Real-World Example: Geographic Coordinate Transformations
+
+<!-- verify -->
+```java
+@GenerateLenses
+public record Location(
+    String name,
+    Tuple2<Double, Double> coordinates  // (latitude, longitude)
+) {}
+
+public class CoordinateTransforms {
+
+    // Apply precision rounding to both lat/lon
+    public static Location roundCoordinates(Location location, int decimals) {
+        Traversal<Tuple2<Double, Double>, Double> bothCoords = TupleTraversals.both();
+
+        double factor = Math.pow(10, decimals);
+        Tuple2<Double, Double> rounded = Traversals.modify(
+            bothCoords,
+            coord -> Math.round(coord * factor) / factor,
+            location.coordinates()
+        );
+
+        return new Location(location.name(), rounded);
+    }
+
+    // Offset coordinates by a fixed delta
+    public static Location offsetCoordinates(Location location, double delta) {
+        Traversal<Tuple2<Double, Double>, Double> bothCoords = TupleTraversals.both();
+
+        Tuple2<Double, Double> offset = Traversals.modify(
+            bothCoords,
+            coord -> coord + delta,
+            location.coordinates()
+        );
+
+        return new Location(location.name(), offset);
+    }
+}
+```
+
+### Composing with Nested Structures
+
+<!-- verify -->
+```java
+@GenerateLenses
+public record BoundingBox(
+    Tuple2<Integer, Integer> topLeft,
+    Tuple2<Integer, Integer> bottomRight
+) {}
+
+// Scale coordinates in the top-left corner
+Traversal<BoundingBox, Integer> topLeftCoords =
+    BoundingBoxLenses.topLeft()
+        .andThen(TupleTraversals.both());
+
+BoundingBox scaled = Traversals.modify(topLeftCoords, coord -> coord * 2, box);
+
+// To scale all coordinates, you would compose traversals for each field separately
+// or create a custom traversal that focuses on all four coordinates
+```
+
+---
+
+## When to Use Structure Traversals vs Other Approaches
+
+### Use Structure Traversals When
+
+* **Reusable transformations**: Define once, compose with other optics
+* **Nested optionals**: Avoiding `.map().map().map()` chains
+* **Bulk map updates**: Transforming all values whilst preserving keys
+* **Parallel tuple operations**: Same transformation to both elements
+* **Immutable updates**: Structure preserved, only focused elements transformed
+
+<!-- verify -->
+```java
+// Perfect: Declarative, composable, reusable
+Traversal<ServiceConfig, Integer> allTimeouts =
+    ServiceConfigLenses.endpoints()
+        .andThen(Traversals.forMapValues())
+        .andThen(ServiceEndpointLenses.timeout())
+        .andThen(Traversals.forOptional());
+
+ServiceConfig increased = Traversals.modify(allTimeouts, t -> t + 1000, serviceConfig);
+```
+
+### Use Direct Access When
+
+* **Single Optional**: Simple `map()` or `orElse()` is clearer
+* **Specific Map key**: `map.get(key)` is more direct
+* **Type-specific logic**: Different transformations per tuple element
+
+<!-- verify -->
+```java
+// Better with direct access: Single Optional
+Optional<Integer> port = serverConfig.port().map(p -> p + 1000);
+
+// Better with get: Specific key
+BigDecimal price =
+    prices.getOrDefault("widget", BigDecimal.ZERO)
+        .multiply(new BigDecimal("1.1"))
+        .setScale(2, RoundingMode.HALF_EVEN);
+
+// Better with manual: Different operations per element
+Tuple2<Integer, String> result = new Tuple2<>(
+    tuple._1() * 2,        // Double the integer
+    tuple._2().toUpperCase()  // Uppercase the string
+);
+```
+
+### Use Stream API When
+
+* **Complex filtering**: Multiple conditions
+* **Aggregations**: Collecting to new structures
+* **No structural preservation**: Extracting or transforming to different shape
+
+<!-- verify -->
+```java
+// Better with streams: Complex filtering
+List<Integer> values = map.values().stream()
+    .filter(v -> v > 10)
+    .filter(v -> v < 100)
+    .collect(toList());
+```
+
+---
+
+## Common Pitfalls
+
+### Don't Do This
+
+<!-- verify -->
+```java
+// Inefficient: Creating traversals in loops
+for (Map.Entry<String, BigDecimal> entry : prices.entrySet()) {
+    Traversal<Map<String, BigDecimal>, BigDecimal> values = Traversals.forMapValues();
+    // Process each value... inefficient!
+}
+
+// Over-engineering: Using traversals for simple cases
+Traversal<Optional<String>, String> opt = Traversals.forOptional();
+String result = optional.map(s -> s.toUpperCase()).orElse("default");
+// Just use: optional.map(String::toUpperCase).orElse("default")
+
+// Type confusion: Trying to use both() with different types
+Tuple2<Integer, String> mixed = new Tuple2<>(42, "hello");
+// TupleTraversals.both() won't work here; types must match!
+```
+
+### Do This Instead
+
+<!-- verify -->
+```java
+// Efficient: Create traversal once, apply to entire structure
+Traversal<Map<String, BigDecimal>, BigDecimal> priceTraversal = Traversals.forMapValues();
+Map<String, BigDecimal> updated =
+    Traversals.modify(
+        priceTraversal,
+        p -> p.multiply(new BigDecimal("1.1")).setScale(2, RoundingMode.HALF_EVEN),
+        prices);
+
+// Right tool: Use direct methods for simple cases
+String result = optional.map(String::toUpperCase).orElse("default");
+
+// Correct types: Use separate lenses for mixed tuples
+Lens<Tuple2<Integer, String>, Integer> first = Tuple2Lenses._1();
+Lens<Tuple2<Integer, String>, String> second = Tuple2Lenses._2();
+Tuple2<Integer, String> updatedPair = new Tuple2<>(
+    first.get(mixed) * 2,
+    second.get(mixed).toUpperCase()
+);
+```
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **`forOptional()` treats absence as zero targets**: modifications on an empty `Optional` are safe no-ops, so nested optional fields compose without `.map()` chains
+* **`forMapValues()` rewrites values, never keys**: the key set survives a bulk transformation intact, and the result keeps the source's iteration order, so a `TreeMap` keeps its order but not its type
+* **`forMapValuesCollecting()` reaches beyond JDK maps**: persistent and third-party maps traverse through a collector you supply, and that collector, not the traversal, decides the rebuilt map's type and ordering
+* **`TupleTraversals.both()` updates a pair in one pass**: homogeneous pairs stop needing two separate reconstructions
+* **They are ordinary traversals**: everything from `modifyF` effects to `asFold()` queries applies unchanged
+~~~
+
+~~~admonish tip title="See Also"
+- [Traversals](traversals.md): the core bulk-update optic these combinators extend
+- [Affines](affine.md): the zero-or-one optic behind `Optional` field access
+- [Limiting Traversals](limiting_traversals.md): slicing lists instead of traversing every element
+- [Production Readiness](production_readiness.md#collection-optics): what each of these traversals builds, and when to cache a composed optic
+~~~
+
+~~~admonish tip title="Further Reading"
+- **Pickering, Gibbons & Wu**: [Profunctor Optics: Modular Data Accessors](https://arxiv.org/abs/1703.10857): the theoretical foundation
+- **Chris Penner**: [Optics By Example](https://leanpub.com/optics-by-example): comprehensive optics guide (Haskell)
+~~~
+
+---
+
+**Previous:** [Setters](setters.md)
+**Next:** [Limiting Traversals](limiting_traversals.md)

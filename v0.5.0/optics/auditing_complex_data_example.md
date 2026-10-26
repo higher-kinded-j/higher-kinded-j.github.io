@@ -1,0 +1,431 @@
+# Auditing Complex Data with Optics
+
+_Find and decode every live GCP password in a config with one composed optic, not nested loops._
+
+~~~admonish info title="What You'll Learn"
+- Compose lenses, prisms and a traversal into one `Traversal<ServiceManifest, byte[]>` that filters and decodes as it goes
+- Put a condition in the path with a filtering `Prism`, so only live GCP configs are audited
+- Decode through a `Prism` rather than an `Iso` when decoding can fail, and keep the reason with a `ValidatedPrism`
+- Reuse the same optic to re-encrypt with `Traversals.modify`, or adapt it to a DTO with an `Iso` or `dimap`
+- Decide when optic composition beats a stream pipeline or a manual loop
+~~~
+
+~~~admonish example title="See Example Code"
+- [Config Audit example](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-examples/src/main/java/org/higherkindedj/example/configaudit): the worked audit this page builds
+- [Optics examples](https://github.com/higher-kinded-j/higher-kinded-j/tree/main/hkj-examples/src/main/java/org/higherkindedj/example/optics): the wider optics example set
+~~~
+
+In modern software, we often work with complex, nested data structures. Performing a seemingly simple task, like "find and decode all production database passwords", can lead to messy, error-prone code with nested loops, `if` statements, and manual type casting.
+
+This page builds a single, declarative, type-safe optic that performs a deep, conditional data transformation.
+
+---
+
+## The Challenge: A Conditional Config Audit
+
+Imagine you're responsible for auditing application configurations, each a `ServiceManifest` holding a name, its settings and a deployment target. Your task is:
+
+> Find every encrypted database password, but **only** for applications deployed to the **Google Cloud Platform (`gcp`)** that are running in the **`live` environment**. For each password found, **decode it from Base64** into a raw `byte[]` for an audit service.
+
+This single sentence implies several operations:
+
+1. **Deep Traversal**: Navigate from a top-level config object down into a list of settings.
+2. **Filtering**: Select only settings of a specific type (`EncryptedValue`).
+3. **Conditional Logic**: Apply this logic *only* if the top-level config meets specific criteria (`gcp` and `live`).
+4. **Data Transformation**: Decode the Base64 string into another type (`byte[]`).
+
+Doing this imperatively is a recipe for complexity. Let's build it with optics instead.
+
+---
+
+## The Four Tools for the Job
+
+Our solution will compose the four primary optic types, each solving a specific part of the problem. [Choosing an optic](optics_intro.md#choosing-an-optic) gives the Java idiom each one stands in for.
+
+### 1. **Lens**: one field of a record {#1-lens-the-magnifying-glass}
+
+A `Lens` provides focused access to a field within a product type (like a Java `record`). We'll use lenses to look inside our configuration objects.
+
+* `ServiceManifestLenses.settings()`: Zooms from a `ServiceManifest` to its `List<Setting>`.
+* `SettingLenses.value()`: Zooms from a `Setting` to its `SettingValue`.
+
+### 2. **Iso**: a conversion that loses nothing {#2-iso-the-universal-translator}
+
+An `Iso` (Isomorphism) defines a lossless, two-way conversion between two types. It's perfect for handling different representations of the same data.
+
+* `DeploymentTarget <-> String`: the example renders a structured target as a raw string like `"gcp|live"`, and only reads that way. Parsing a string from outside could fail, which is a [Validated Prism](validated_prism.md)'s job.
+* `String -> byte[]` looks like a second Iso, but decoding fails on malformed Base64, so the solution decodes through a **prism**: a bad value is skipped rather than thrown. [Safe Decoding with a `ValidatedPrism`](#1-safe-decoding-with-a-validatedprism) also keeps the reason.
+
+### 3. **Prism**: one case of a sealed type {#3-prism-the-safe-filter}
+
+A `Prism` provides focused access to a specific case within a sum type (like a `sealed interface`). It lets us safely attempt to "zoom in" on one variant, failing gracefully if the data is of a different kind.
+
+* `SettingValuePrisms.encryptedValue()`: This is our key filter. It will look at a `SettingValue` and only succeed if it's the `EncryptedValue` variant.
+
+### 4. **Traversal**: every element of a list {#4-traversal-the-bulk-operator}
+
+A `Traversal` lets us operate on zero or more targets within a larger structure. It's the ideal optic for working with collections.
+
+* `ServiceManifestTraversals.settings()`: This generated optic gives us a single tool to go from a `ServiceManifest` to every `Setting` inside its list.
+
+---
+
+## When to Use This Approach vs Alternatives
+
+### Use Optic Composition When
+
+- **Complex conditional filtering**: Multiple levels of filtering based on different criteria
+- **Reusable audit logic**: The same audit pattern applies to different config types
+- **Type-safe data extraction**: Ensuring compile-time safety for complex transformations
+- **Declarative data processing**: Building self-documenting processing pipelines
+
+<!-- verify -->
+```java
+// Perfect for reusable, conditional audit logic
+Traversal<DeploymentPipeline, byte[]> sensitiveDataAuditor =
+    DeploymentPipelineTraversals.environments()
+        .andThen(EnvironmentPrisms.production())
+        .andThen(ProductionTraversals.credentials())
+        .andThen(CredentialPrisms.encryptedCredential())
+        .andThen(EncryptedCredentialLenses.base64Secret())
+        .andThen(base64Decoded);   // decoding can fail, so a prism
+```
+
+### Use Stream Processing When
+
+- **Simple filtering**: Basic collection operations without complex nesting
+- **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+- **Aggregation logic**: Computing statistics or summaries
+
+<!-- verify -->
+```java
+// Better with streams for simple collection processing
+List<String> allConfigNames = configs.stream()
+    .map(ServiceManifest::name)
+    .filter(name -> name.startsWith("prod-"))
+    .collect(toList());
+```
+
+### Use Manual Iteration When
+
+- **Early termination**: You might want to stop processing on first match
+- **Complex business logic**: Multiple conditions and branches that don't map cleanly
+- **Legacy integration**: Working with existing imperative codebases
+
+<!-- verify -->
+```java
+// Sometimes manual loops are clearest for complex logic
+for (ServiceManifest config : configs) {
+    if (shouldAudit(config) && hasEncryptedData(config)) {
+        auditResults.add(performDetailedAudit(config));
+        if (auditResults.size() >= MAX_AUDITS) break;
+    }
+}
+```
+
+---
+
+## Common Pitfalls
+
+### Don't Do This
+
+<!-- verify -->
+```java
+// Over-engineering simple cases
+Traversal<String, String> stringIdentity = Iso.<String, String>of(s -> s, s -> s).asTraversal();
+// Just use the string directly
+
+// Creating complex compositions inline
+var passwords = ServiceManifestTraversals.settings()
+    .andThen(SettingLenses.value())
+    .andThen(SettingValuePrisms.encryptedValue())
+    // ... ten more lines of composition
+    ;
+var inlineResult = Traversals.getAll(passwords, config);
+// Hard to understand, impossible to reuse
+
+// Ignoring error handling in transformations
+Iso<String, byte[]> unsafeBase64 = Iso.of(
+    Base64.getDecoder()::decode,        // can throw IllegalArgumentException
+    Base64.getEncoder()::encodeToString);
+
+// Forgetting to test round-trip properties:
+// nothing verifies that encode(decode(x)) == x
+```
+
+### Do This Instead
+
+<!-- verify -->
+```java
+// Use appropriate tools for simple cases
+String configName = config.name();   // direct access is fine
+
+// Handle errors gracefully: decoding can fail, so decode through a prism
+public static final Prism<String, byte[]> BASE64_DECODED = Prism.of(
+    str -> {
+        try {
+            return Optional.of(Base64.getDecoder().decode(str));
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
+    },
+    bytes -> Base64.getEncoder().encodeToString(bytes));
+
+// Create well-named, reusable compositions
+public static final Traversal<ServiceManifest, byte[]> GCP_LIVE_ENCRYPTED_PASSWORDS =
+    gcpLiveOnlyPrism
+        .andThen(ServiceManifestTraversals.settings())
+        .andThen(SettingLenses.value())
+        .andThen(SettingValuePrisms.encryptedValue())
+        .andThen(EncryptedValueLenses.base64Value())
+        .andThen(BASE64_DECODED);
+
+// Test your compositions
+@Test
+public void testBase64RoundTrip() {
+    String original = "test data";
+    String encoded = Base64.getEncoder().encodeToString(original.getBytes());
+    byte[] decoded = BASE64_DECODED.getOptional(encoded).orElseThrow();
+    assertEquals(original, new String(decoded));
+}
+```
+
+---
+
+## Composing the Solution
+
+Here's how we chain these optics together. Each `andThen` returns the most precise optic its two steps allow, and the chain starts from a traversal over the settings, so the result is a `Traversal`, with no conversions along the way. The last step decodes the Base64 through a prism, so a malformed value drops out of the audit rather than throwing.
+
+The final composed optic has the type `Traversal<ServiceManifest, byte[]>` and reads like a declarative path: **`ServiceManifest -> (Filter for GCP/Live) -> each Setting -> its Value -> (Filter for Encrypted) -> the inner String -> the raw bytes`**
+
+<!-- verify -->
+```java
+// Inside ConfigAuditExample.java
+
+// A. First, create a Prism to act as our top-level filter.
+Prism<ServiceManifest, ServiceManifest> gcpLiveOnlyPrism = Prism.of(
+    config -> {
+        String rawTarget = DeploymentTarget.toRawString().get(config.target());
+        return "gcp|live".equals(rawTarget) ? Optional.of(config) : Optional.empty();
+    },
+    config -> config // The 'build' function is just identity
+);
+
+// B. Decoding Base64 can fail, so it is a prism rather than an Iso.
+Prism<String, byte[]> base64Decoded = Prism.of(
+    str -> {
+        try {
+            return Optional.of(Base64.getDecoder().decode(str));
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
+    },
+    bytes -> Base64.getEncoder().encodeToString(bytes));
+
+// C. Define the main traversal path to get to the data we want to audit.
+Traversal<ServiceManifest, byte[]> auditTraversal =
+    ServiceManifestTraversals.settings()                       // Traversal<ServiceManifest, Setting>
+        .andThen(SettingLenses.value())        // Traversal<ServiceManifest, SettingValue>
+        .andThen(SettingValuePrisms.encryptedValue()) // Traversal<ServiceManifest, EncryptedValue>
+        .andThen(EncryptedValueLenses.base64Value())  // Traversal<ServiceManifest, String>
+        .andThen(base64Decoded);                      // Traversal<ServiceManifest, byte[]>
+
+// D. Combine the filter and the main traversal into the final optic.
+Traversal<ServiceManifest, byte[]> finalAuditor = gcpLiveOnlyPrism.andThen(auditTraversal);
+
+// E. Using the final optic is now trivial.
+// We call a static helper method from our Traversals utility class.
+List<byte[]> passwords = Traversals.getAll(finalAuditor, someConfig);
+```
+
+When we call `Traversals.getAll(finalAuditor, config)`, it performs the entire, complex operation and returns a simple `List<byte[]>` containing only the data we care about.
+
+---
+
+## Why This is a Powerful Approach
+
+* **Declarative & Readable**: The optic chain describes *what* data to get, not *how* to loop and check for it. The logic reads like a path, making it self-documenting.
+* **Composable & Reusable**: Every optic, and every composition, is a reusable component. We could reuse `gcpLiveOnlyPrism` for other tasks, or swap out the final decoding prism to perform a different transformation.
+* **Type-Safe**: The entire operation is checked by the Java compiler. It's impossible to, for example, try to decode a `StringValue` as if it were encrypted. A mismatch in the optic chain results in a compile-time error, not a runtime `ClassCastException`.
+* **Architectural Purity**: By having all optics share a common abstract parent (`Optic`), the library provides universal, lawful composition while each optic type keeps its own implementation.
+* **Testable**: Each component can be tested independently, and the composition can be tested as a whole.
+
+---
+
+## Taking It Further
+
+This example is just the beginning. Here are some ideas for extending this solution into a real-world application:
+
+### 1. **Safe Decoding with a `ValidatedPrism`**
+
+`Base64.getDecoder().decode()` can throw an `IllegalArgumentException`. A plain `Prism` can make the decode safe, but its match is an `Optional`: it **throws the reason away**, forcing the call site to reconstruct it. This is exactly the boundary [`ValidatedPrism`](validated_prism.md) names: the parse carries its reasons, and the build (Base64 encode) is genuinely total and faithful, so both round-trip laws hold:
+
+<!-- verify -->
+```java
+public static final ValidatedPrism<String, byte[]> SAFE_BASE64 = ValidatedPrism.of(
+    encoded -> {
+        try {
+            return Validated.validNel(Base64.getDecoder().decode(encoded));
+        } catch (IllegalArgumentException e) {
+            return Validated.invalidNel(FieldError.of("invalid base64: " + encoded));
+        }
+    },
+    bytes -> Base64.getEncoder().encodeToString(bytes)
+);
+
+// The reason now lives where the failure happens - no reconstruction at the call site:
+Validated<NonEmptyList<FieldError>, byte[]> decoded = SAFE_BASE64.parse(encodedValue);
+ValidationPath<NonEmptyList<FieldError>, byte[]> railway = SAFE_BASE64.parsePath(encodedValue);
+
+// Need the reason-less form for composing into the audit traversal? Forget on demand:
+Traversal<ServiceManifest, byte[]> lossy = base64Strings.andThen(SAFE_BASE64.toPrism());
+```
+
+To audit a whole config and report **every** bad entry at once, parse each string through `SAFE_BASE64.parse` and accumulate the results with the [assembly builders](../monads/validated_assembly.md). Sibling accumulation is their job; `ValidatedPrism` supplies the located leaf.
+
+### 2. **Data Migration with `modify`**
+
+What if you need to re-encrypt all passwords with a new algorithm? The same `finalAuditor` optic can be used with a modify function from the `Traversals` utility class. You'd write a function `byte[] -> byte[]` and apply it:
+
+
+<!-- verify -->
+```java
+// A function that re-encrypts the raw password bytes
+Function<byte[], byte[]> reEncryptFunction = oldBytes -> newCipher.encrypt(oldBytes);
+
+// Use the *exact same optic* to update the config in-place
+ServiceManifest updatedConfig = Traversals.modify(finalAuditor, reEncryptFunction, originalConfig);
+```
+
+### 3. **Profunctor Adaptations for Legacy Systems**
+
+Suppose your audit service expects a different data format: perhaps it works with `ConfigDto` objects instead of `ServiceManifest`. Rather than rewriting your carefully crafted optic, you can adapt it.
+
+If the DTO and the domain config hold the same information, the conversion pair is an [Iso](iso.md), and composing through it keeps the full `Traversal` API:
+
+<!-- verify -->
+```java
+// A lossless pair: ConfigDto <-> ServiceManifest
+Iso<ConfigDto, ServiceManifest> dtoIso = Iso.of(Auditing::toServiceManifest, Auditing::toConfigDto);
+
+// An Iso followed by a Traversal is a Traversal
+Traversal<ConfigDto, byte[]> legacyAuditor = dtoIso.andThen(finalAuditor);
+
+List<byte[]> passwords = Traversals.getAll(legacyAuditor, someDto);
+```
+
+When the conversion is one-way or lossy, use the `Optic`-level `dimap` bridge instead, and drive it through `modifyF`:
+
+<!-- verify -->
+```java
+// dimap adapts the SOURCE (ConfigDto -> ServiceManifest) and the STRUCTURE the update
+// produces (ServiceManifest -> ConfigDto); the focus stays byte[] throughout.
+Optic<ConfigDto, ConfigDto, byte[], byte[]> dtoAuditor =
+    finalAuditor.dimap(Auditing::toServiceManifest, Auditing::toConfigDto);
+```
+
+Either way your core business logic (the auditing path) remains unchanged whilst adapting to different system interfaces. [Profunctor Optics](profunctor_optics.md) explains when each route applies.
+
+### 4. **More Complex Filters**
+
+Create an optic that filters for deployments on *either*`gcp` or `aws` but *only* in the `live` environment. The composable nature of optics makes building up these complex predicate queries straightforward.
+
+
+<!-- verify -->
+```java
+// Multi-cloud live environment filter
+public static final Prism<ServiceManifest, ServiceManifest> cloudLiveOnlyPrism = Prism.of(
+    config -> {
+        String rawTarget = DeploymentTarget.toRawString().get(config.target());
+        boolean isLiveCloud = rawTarget.equals("gcp|live") || 
+                             rawTarget.equals("aws|live") || 
+                             rawTarget.equals("azure|live");
+        return isLiveCloud ? Optional.of(config) : Optional.empty();
+    },
+    config -> config
+);
+
+// Environment-specific processing
+public static final Map<String, Traversal<ServiceManifest, byte[]>> ENVIRONMENT_AUDITORS = Map.of(
+    "development", devEnvironmentPrism.andThen(auditTraversal),
+    "staging", stagingEnvironmentPrism.andThen(auditTraversal),
+    "production", cloudLiveOnlyPrism.andThen(auditTraversal)
+);
+
+public static List<byte[]> auditForEnvironment(String environment, ServiceManifest config) {
+    // Traversal has no static empty() and no instance getAll: reads go through
+    // the Traversals utility, and the absent case is handled here.
+    Traversal<ServiceManifest, byte[]> auditor = ENVIRONMENT_AUDITORS.get(environment);
+    return auditor == null ? List.of() : Traversals.getAll(auditor, config);
+}
+```
+
+### 5. **Configuration Validation**
+
+Use the same optics to validate your configuration. You could compose a traversal that finds all `IntValue` settings with the key `"server.port"` and use `.getAll()` to check if their values are within a valid range (e.g., > 1024).
+
+
+<!-- verify -->
+```java
+// Narrowing by key is a filter, not a generated optic; and IntValue needs
+// @GenerateLenses on the record before IntValueLenses exists.
+public static final Traversal<ServiceManifest, Integer> SERVER_PORTS =
+    ServiceManifestTraversals.settings()
+        .andThen(Traversals.filtered(setting -> setting.key().equals("server.port")))
+        .andThen(SettingLenses.value())
+        .andThen(SettingValuePrisms.intValue())
+        .andThen(IntValueLenses.value());
+
+public static List<String> validatePorts(ServiceManifest config) {
+    return Traversals.getAll(SERVER_PORTS, config).stream()
+        .filter(port -> port <= 1024 || port > 65535)
+        .map(port -> "Invalid port: " + port + " (must be 1024-65535)")
+        .collect(toList());
+}
+```
+
+### 6. **Audit Trail Generation**
+
+Extend the auditor to generate comprehensive audit trails:
+
+
+<!-- verify -->
+```java
+public record AuditEntry(String configName, String settingKey, String encryptedValue, 
+                        Instant auditTime, String auditorId) {}
+
+public static final Traversal<ServiceManifest, AuditEntry> AUDIT_TRAIL_GENERATOR =
+    gcpLiveOnlyPrism
+        .andThen(ServiceManifestTraversals.settings())
+        .andThen(settingFilter)
+        .andThen(auditEntryMapper);
+
+// Generate complete audit report
+public static AuditReport generateAuditReport(List<ServiceManifest> configs, String auditorId) {
+    List<AuditEntry> entries = configs.stream()
+        .flatMap(config -> Traversals.getAll(AUDIT_TRAIL_GENERATOR, config).stream())
+        .collect(toList());
+  
+    return new AuditReport(entries, Instant.now(), auditorId);
+}
+```
+
+~~~admonish info title="Key Takeaways"
+* **An audit is a read-only traversal with a shape.** The same composition that would update settings instead projects each one into an `AuditEntry`, and nothing in the source is touched.
+* **The prism carries the condition.** "Only live GCP configs" lives in the path rather than in an `if` at the call site, so the filter cannot be forgotten by the next caller.
+* **Filtering and mapping both belong in the optic.** By the time you call `getAll`, the selection rule and the projection are already part of the value you named.
+* **The composition is the specification.** Reading the optic tells you which records qualify and what is recorded, which is the property that makes it reviewable by someone who does not read Java well.
+* **It survives shape changes.** When the config format moves, the optic is what changes; the reporting code above it does not.
+~~~
+
+~~~admonish tip title="See Also"
+- [Deep Validation with `modifyF`](composing_optics.md): the same four-optic composition, used for validation instead of reporting
+- [Filtered Optics](filtered_optics.md): the predicate narrowing this example depends on
+- [Folds](folds.md): the read-only optic to reach for when nothing will be written
+- [Production Readiness](production_readiness.md#runtime-cost): what each optic allocates, and when to cache a composed optic
+~~~
+
+---
+
+**Previous:** [Plan Introspection and Guardrails](optic_batching_guardrails.md)
+**Next:** [Programs as Data](ch6_intro.md)

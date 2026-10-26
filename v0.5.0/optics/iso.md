@@ -1,0 +1,528 @@
+# Isomorphisms: A Practical Guide
+
+_Convert between two types that hold the same information, losslessly in both directions._
+
+~~~admonish info title="What You'll Learn"
+- Define a lossless conversion with `Iso.of(get, reverseGet)`, and flip it with `reverse()`
+- Compose an iso with a lens, prism, affine or traversal, and keep that optic's type
+- Convert through an iso inside a `For` or `ForState` workflow with `through`, `modifyVia` and `updateVia`
+- Check an iso's round trip, and choose a one-way method or a Validated Prism when a conversion loses data or can fail
+- Generate a static iso field with `@GenerateIsos`, and fix a method it refuses
+~~~
+
+~~~admonish example title="See Example Code"
+[IsoUsageExample](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/IsoUsageExample.java)
+~~~
+
+In the previous guides, we explored two essential optics: the **`Lens`**, for targeting data that *must* exist (a "has-a" relationship), and the **`Prism`**, for safely targeting data that *might* exist in a specific shape (an "is-a" relationship).
+
+This leaves one final, fundamental question: what if you have two data types that are different in structure but hold the exact same information? How do you switch between them losslessly? For this, we need our final core optic: the **`Iso`**.
+
+---
+
+## The Scenario: Translating Between Equivalent Types
+
+An **`Iso`** (Isomorphism) is an optic that represents a perfectly reversible, lossless conversion between two equivalent types. It plays the part of a wrapper record's constructor and accessor, such as `new UserId(value)` and `id.value()`: two functions that undo each other. Unlike a loose pair of functions, it is one value that composes with other optics and turns around with `reverse()`, and `IsoLaws` checks that nothing is lost. [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
+
+An `Iso` is the right tool when you need to:
+
+* Convert a wrapper type to its raw value (e.g., `UserId(String value)` <-> `String`).
+* Change units or representation without losing anything (e.g., whole cents <-> the same amount written to two decimal places).
+* Bridge two data structures that are informationally identical (e.g., a custom record and a generic tuple).
+
+Let us explore that last case. Imagine we have a `Point` record and want to convert it to a generic `Tuple2` to use with a library that operates on tuples.
+
+**The Data Model:**
+
+``` java
+record Point(int x, int y) {}
+
+```
+
+`Tuple2` is the library's own pair, the record `Tuple2<A, B>(A _1, B _2)` in `org.higherkindedj.hkt.tuple`, and `Tuple.of(a, b)` builds one. The two records can hold the same information. An `Iso` is the perfect way to formalise this relationship.
+
+---
+
+## A Step-by-Step Walkthrough
+
+### Step 1: Defining an Iso
+
+Unlike Lenses and Prisms, which are often generated from annotations, Isos are almost always defined manually. This is because the logic for converting between two types is unique to your specific domain.
+
+You create an `Iso` using the static `Iso.of(get, reverseGet)` constructor.
+
+``` java
+class Converters {
+  static Iso<Point, Tuple2<Integer, Integer>> pointToTuple() {
+    return Iso.of(
+        // Function to get the Tuple from the Point
+        point -> Tuple.of(point.x(), point.y()),
+        // Function to get the Point from the Tuple
+        tuple -> new Point(tuple._1(), tuple._2()));
+  }
+}
+```
+
+#### Using `@GenerateIsos` for Method-Based Isos
+
+Whilst most Isos are defined manually, the `@GenerateIsos` annotation can be applied to methods that return Iso instances to generate a companion class with static fields. You can also customise the generated package:
+
+```java
+public class Converters {
+    // Generated class will be placed in org.example.generated.optics
+    @GenerateIsos(targetPackage = "org.example.generated.optics")
+    public static Iso<Point, Tuple2<Integer, Integer>> pointToTuple() {
+        return Iso.of(
+            point -> Tuple.of(point.x(), point.y()),
+            tuple -> new Point(tuple._1(), tuple._2())
+        );
+    }
+}
+```
+
+This is useful when you need to avoid name collisions or organise generated code separately.
+
+The annotated method has to be `static`, take no arguments, be reachable from the generated package, and return an `Iso` whose two type arguments name no type variable. Each of those is a question about the *field*: `@GenerateIsos` publishes the iso as a `public static final` field, and a field has nowhere to declare a `<T>` and no receiver to call an instance method on. It is alone in this among the optics annotations: the rest generate static *methods*, which can declare type parameters and do.
+
+So `<T> Iso<Box<T>, T> boxIso()` is refused where it is written rather than generating a field naming a `T` that nothing declares. Note the rule is about what the **iso** names, not what the method declares: `<T> Iso<Box, String> boxIso()` generates fine, because `T` is inferred at the call and never reaches the field's type. Give the iso concrete type arguments (`Iso<Box<String>, String>`), or call the method directly and skip the generated field.
+
+### Step 2: The Core Iso Operations
+
+An `Iso` provides two fundamental, lossless operations:
+
+* **`get(source)`**: The "forward" conversion (e.g., from `Point` to `Tuple2`).
+* **`reverseGet(target)`**: The "backward" conversion (e.g., from `Tuple2` back to `Point`).
+
+Furthermore, every `Iso` is trivially reversible using the **`.reverse()`** method, which returns a new `Iso` with the "get" and "reverseGet" functions swapped.
+
+``` java
+    var pointToTupleIso = Converters.pointToTuple();
+    var myPoint = new Point(10, 20);
+
+    // Forward conversion: Tuple2[_1=10, _2=20]
+    Tuple2<Integer, Integer> myTuple = pointToTupleIso.get(myPoint);
+
+    // Backward conversion using the reversed Iso: Point[x=10, y=20], equal to myPoint
+    Point convertedBack = pointToTupleIso.reverse().get(myTuple);
+```
+
+### Step 3: Composing Isos as a Bridge
+
+The most powerful feature of an `Iso` is its ability to act as an adapter or "glue" between other optics. Because the conversion is lossless, an `Iso` preserves the "shape" of the optic it is composed with.
+
+* `Iso + Iso = Iso`
+* **`Iso + Lens = Lens`**
+* **`Iso + Prism = Prism`**
+* **`Iso + Affine = Affine`**
+* **`Iso + Traversal = Traversal`**
+
+This second rule is incredibly useful. We can compose our `Iso<Point, Tuple2>` with a `Lens` that operates on a `Tuple2` to create a brand new `Lens` that operates directly on our `Point`:
+
+``` java
+    // A standard Lens that gets the first element of any Tuple2
+    Lens<Tuple2<Integer, Integer>, Integer> tupleFirstElementLens =
+        Lens.of(Tuple2::_1, (t, v) -> Tuple.of(v, t._2()));
+
+    // The composition: Iso<Point, Tuple2> + Lens<Tuple2, Integer> = Lens<Point, Integer>
+    Lens<Point, Integer> pointToX = pointToTupleIso.andThen(tupleFirstElementLens);
+
+    // We can now use this new Lens to modify the 'x' coordinate: Point[x=15, y=20]
+    Point movedPoint = pointToX.modify(x -> x + 5, myPoint);
+```
+
+The `Iso` acted as a bridge, allowing a generic `Lens` for tuples to work on our specific `Point` record.
+
+### Step 4: Isos in Comprehension Workflows
+
+Composition with individual lenses is useful, but Isos truly come into their own when they are woven into [comprehension](../functional/for_comprehension.md) workflows. Instead of scattering `iso.get()` and `iso.reverseGet()` calls throughout your code, you can let the comprehension handle the conversion for you, keeping both representations in scope at once.
+
+The `For` comprehension's `through()` method does exactly this. It converts the currently bound value via an Iso and accumulates both the original and the converted value, so you can reason in whichever representation suits each step:
+
+``` java
+    // Whole cents, and the same amount in dollars to two decimal places
+    Iso<Integer, BigDecimal> centsToDollars =
+        Iso.of(
+            cents -> BigDecimal.valueOf(cents, 2),
+            dollars -> dollars.movePointRight(2).intValueExact());
+
+    // An Id holding "Budget: 50000 cents = $500.00"
+    Kind<IdKind.Witness, String> result =
+        For.from(idMonad, Id.of(50000))
+            .through(centsToDollars)
+            .yield((cents, dollars) -> "Budget: " + cents + " cents = $" + dollars);
+```
+
+This Iso is lossless only for amounts in whole cents: `intValueExact` refuses a value with more than two decimal places. That is why the `ForState` example in this section rounds back to whole cents before it stores the result.
+
+Both values are available in `yield()` without any manual conversion. When used with a `MonadZero` such as `Maybe` or `List`, `through()` preserves the ability to apply `when()` guards on the converted values:
+
+<!-- verify -->
+```java
+Kind<ListKind.Witness, String> result =
+    For.from(listMonad, LIST.widen(temperatures))
+        .through(celsiusToFahrenheitIso)
+        .when(t -> t._2().value() > 50.0)  // filter on the Fahrenheit value
+        .yield((celsius, fahrenheit) -> celsius.value() + "C");
+```
+
+Within a [ForState](../functional/forstate_comprehension.md) workflow, two additional operations let you modify or set a field through an Iso without ever touching the internal representation directly:
+
+<!-- verify -->
+```java
+// Increase budget by 10%, reasoning in dollars, rounding back to whole cents
+ForState.withState(idMonad, Id.of(department))
+    .modifyVia(budgetLens, centsToDollars,
+        dollars -> dollars.multiply(new BigDecimal("1.1")).setScale(2, RoundingMode.HALF_EVEN))
+    .yield();
+
+// Set budget to exactly $750.00 (stored internally as 75000 cents)
+ForState.withState(idMonad, Id.of(department))
+    .updateVia(budgetLens, centsToDollars, new BigDecimal("750.00"))
+    .yield();
+```
+
+The `modifyVia` flow is: `lens.get` &#8594; `iso.get` &#8594; `modifier` &#8594; `iso.reverseGet` &#8594; `lens.set`. The `updateVia` flow is simpler: `iso.reverseGet(value)` &#8594; `lens.set`. Both honour the Iso's round-trip property.
+
+~~~admonish tip title="See Also"
+For the full range of optics operations within comprehensions (including traversals, pattern matching, and bulk transforms), see [Optics Integration](../functional/for_optics.md).
+~~~
+
+---
+
+## When to Use Isos vs Other Approaches
+
+### Use Isos When
+
+* **Data format conversion**: Converting between equivalent representations
+* **Legacy system integration**: Bridging old and new data formats
+* **Library interoperability**: Adapting your types to work with external libraries
+* **Composable adapters**: Building reusable conversion components
+
+<!-- verify -->
+```java
+// A wrapper and the value it wraps: the same information, convertible both ways for every value
+Iso<UserId, String> userIdIso = Iso.of(UserId::value, UserId::new);
+
+// Use with any lens that focuses a UserId
+@GenerateLenses record UserAccount(UserId id, String owner) {}
+Lens<UserAccount, String> rawAccountId = UserAccountLenses.id().andThen(userIdIso);
+```
+
+### Use Direct Conversion Methods When
+
+* **One-way conversion**: You do not need the reverse operation
+* **Non-lossless conversion**: Information is lost in the conversion
+* **A hot loop you have measured**: [Production Readiness](production_readiness.md#runtime-cost) says what each call allocates
+
+<!-- verify -->
+```java
+// Simple one-way conversion
+String pointDescription = point.x() + "," + point.y();
+```
+
+### Use Manual Adapters When
+
+* **Complex conversion logic**: Multi-step or conditional conversions
+* **Validation required**: Conversion might fail
+* **Side effects needed**: Logging, caching, etc.
+
+<!-- verify -->
+```java
+// Complex conversion that might fail
+public Optional<Point> parsePoint(String input) {
+    try {
+        String[] parts = input.split(",");
+        return Optional.of(new Point(
+            Integer.parseInt(parts[0].trim()),
+            Integer.parseInt(parts[1].trim())
+        ));
+    } catch (Exception e) {
+        return Optional.empty();
+    }
+}
+```
+
+---
+
+## Common Pitfalls
+
+### Do Not Do This
+
+<!-- verify -->
+```java
+// Lossy conversion - not a true isomorphism
+Iso<Double, Integer> lossyIso = Iso.of(
+    d -> d.intValue(),    // Loses decimal precision!
+    i -> i.doubleValue()  // Cannot recover original value
+);
+
+// One-way thinking - forgetting about reverseGet
+Iso<Point, String> badPointIso = Iso.of(
+    point -> point.x() + "," + point.y(),
+    str -> new Point(0, 0)  // Ignores the input!
+);
+
+// Creating Isos repeatedly instead of reusing
+var iso1 = Iso.of(Point::x, x -> new Point(x, 0));
+var iso2 = Iso.of(Point::x, x -> new Point(x, 0));
+var iso3 = Iso.of(Point::x, x -> new Point(x, 0));
+```
+
+### Do This Instead
+
+<!-- verify -->
+```java
+// True isomorphism: every Point has exactly one Tuple2, and back
+Iso<Point, Tuple2<Integer, Integer>> goodPointIso = Iso.of(
+    point -> Tuple.of(point.x(), point.y()),
+    tuple -> new Point(tuple._1(), tuple._2())
+);
+
+// Test your isomorphisms, in a unit test, with IsoLaws from hkj-test
+IsoLaws.assertIsoLaws(goodPointIso, new Point(10, 20), Tuple.of(10, 20));
+
+// Reuse Isos as constants
+public static final Iso<Point, Tuple2<Integer, Integer>> POINT_TO_TUPLE =
+    Iso.of(
+        point -> Tuple.of(point.x(), point.y()),
+        tuple -> new Point(tuple._1(), tuple._2())
+    );
+```
+
+`IsoLaws.assertIsoLaws(iso, s, a)`, from the `hkj-test` [law harness](../tooling/test_assertions.md#optic-laws), checks both round trips: `reverseGet(get(s))` must give back `s`, and `get(reverseGet(a))` must give back `a`.
+
+---
+
+## Real-World Example: Wrapper Type Integration
+
+<!-- verify -->
+```java
+// Strongly-typed wrappers
+public record VariantId(UUID value) {}
+public record CategoryId(UUID value) {}
+
+public class WrapperIsos {
+    public static final Iso<VariantId, UUID> VARIANT_ID_UUID =
+        Iso.of(VariantId::value, VariantId::new);
+
+    public static final Iso<CategoryId, UUID> CATEGORY_ID_UUID =
+        Iso.of(CategoryId::value, CategoryId::new);
+
+    // Use with any UUID-based operations
+    public static String formatVariantId(VariantId id) {
+        return VARIANT_ID_UUID
+            .andThen(Iso.of(UUID::toString, UUID::fromString))
+            .get(id);
+    }
+}
+```
+
+~~~admonish warning title="When it is not an Iso"
+A tempting use of an Iso is a bridge between a domain record and its wire DTO (`Customer` <-> `CustomerDto` with a date rendered as a string). It is **not** one: parsing the string back can fail, and a conversion that can fail in either direction has no lawful `reverseGet`. That boundary belongs to the fallible optic built for it, the [Validated Prism](validated_prism.md), and to [`@GenerateMapping`](../mapping/ch_intro.md), which derives the whole record conversion. Where a pair really is lossless, the generated mapping exposes it as an Iso, so the two worlds meet exactly where the laws allow.
+~~~
+
+## Complete, Runnable Example
+
+This example puts all the steps together to show both direct conversion and composition. Its records pass `targetPackage` to `@GenerateLenses`, so `DeliveryZoneLenses` is generated into `org.higherkindedj.example.optics.iso` and imported from there; your own records can leave the attribute out.
+
+``` java
+import org.higherkindedj.example.optics.iso.DeliveryZoneLenses;
+import org.higherkindedj.hkt.tuple.Tuple;
+import org.higherkindedj.hkt.tuple.Tuple2;
+import org.higherkindedj.hkt.tuple.Tuple2Lenses;
+import org.higherkindedj.optics.Iso;
+import org.higherkindedj.optics.Lens;
+import org.higherkindedj.optics.annotations.GenerateIsos;
+import org.higherkindedj.optics.annotations.GenerateLenses;
+
+/**
+ * A runnable example demonstrating how to use an Iso (Isomorphism) to perform lossless, two-way
+ * conversions between equivalent types.
+ */
+public class IsoUsageExample {
+
+  @GenerateLenses(targetPackage = "org.higherkindedj.example.optics.iso")
+  public record Point(int x, int y) {}
+
+  @GenerateLenses(targetPackage = "org.higherkindedj.example.optics.iso")
+  public record DeliveryZone(Point centre, int radius) {}
+
+  public static class Converters {
+    @GenerateIsos
+    public static Iso<Point, Tuple2<Integer, Integer>> pointToTuple() {
+      return Iso.of(
+          point -> Tuple.of(point.x(), point.y()), tuple -> new Point(tuple._1(), tuple._2()));
+    }
+
+    // Additional useful Isos
+    public static final Iso<Point, String> POINT_STRING =
+        Iso.of(
+            point -> point.x() + "," + point.y(),
+            str -> {
+              String[] parts = str.split(",");
+              return new Point(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
+            });
+  }
+
+  // Test helper
+  private static <A, B> void testRoundTrip(Iso<A, B> iso, A original, String description) {
+    B converted = iso.get(original);
+    A roundTrip = iso.reverse().get(converted);
+    System.out.println(description + ":");
+    System.out.println("  Original:  " + original);
+    System.out.println("  Converted: " + converted);
+    System.out.println("  Round-trip: " + roundTrip);
+    System.out.println("  Success: " + original.equals(roundTrip));
+    System.out.println();
+  }
+
+  public static void main(String[] args) {
+    // 1. Define a point and a delivery zone.
+    var myPoint = new Point(10, 20);
+    var myZone = new DeliveryZone(myPoint, 5);
+
+    System.out.println("=== ISO USAGE EXAMPLE ===");
+    System.out.println("Original Point: " + myPoint);
+    System.out.println("Original Zone: " + myZone);
+    System.out.println("------------------------------------------");
+
+    // 2. Get the generated Iso.
+    var pointToTupleIso = ConvertersIsos.pointToTuple;
+
+    // --- SCENARIO 1: Direct conversions and round-trip testing ---
+    System.out.println("--- Scenario 1: Direct Conversions ---");
+    testRoundTrip(pointToTupleIso, myPoint, "Point to Tuple conversion");
+    testRoundTrip(Converters.POINT_STRING, myPoint, "Point to String conversion");
+
+    // --- SCENARIO 2: Using reverse() ---
+    System.out.println("--- Scenario 2: Reverse Operations ---");
+    var tupleToPointIso = pointToTupleIso.reverse();
+    var myTuple = Tuple.of(30, 40);
+    Point pointFromTuple = tupleToPointIso.get(myTuple);
+    System.out.println("Tuple: " + myTuple + " -> Point: " + pointFromTuple);
+    System.out.println();
+
+    // --- SCENARIO 3: Composition with lenses ---
+    System.out.println("--- Scenario 3: Composition with Lenses ---");
+
+    // Create a lens manually that works with Point directly
+    Lens<Point, Integer> pointToXLens =
+        Lens.of(Point::x, (point, newX) -> new Point(newX, point.y()));
+
+    // Use the lens
+    Point movedPoint = pointToXLens.modify(x -> x + 5, myPoint);
+    System.out.println("Original point: " + myPoint);
+    System.out.println("After moving X by 5: " + movedPoint);
+    System.out.println();
+
+    // --- SCENARIO 4: Demonstrating Iso composition ---
+    System.out.println("--- Scenario 4: Iso Composition ---");
+
+    // Show how the Iso can be used to convert and work with tuples
+    Tuple2<Integer, Integer> tupleRepresentation = pointToTupleIso.get(myPoint);
+    System.out.println("Point as tuple: " + tupleRepresentation);
+
+    // Modify the tuple using tuple operations
+    Lens<Tuple2<Integer, Integer>, Integer> tupleFirstLens = Tuple2Lenses._1();
+    Tuple2<Integer, Integer> modifiedTuple = tupleFirstLens.modify(x -> x * 2, tupleRepresentation);
+
+    // Convert back to Point
+    Point modifiedPoint = pointToTupleIso.reverse().get(modifiedTuple);
+    System.out.println("Modified tuple: " + modifiedTuple);
+    System.out.println("Back to point: " + modifiedPoint);
+    System.out.println();
+
+    // --- SCENARIO 5: String format conversions ---
+    System.out.println("--- Scenario 5: String Format Conversions ---");
+
+    String pointAsString = Converters.POINT_STRING.get(myPoint);
+    System.out.println("Point as string: " + pointAsString);
+
+    Point recoveredFromString = Converters.POINT_STRING.reverse().get(pointAsString);
+    System.out.println("Recovered from string: " + recoveredFromString);
+    System.out.println("Perfect round-trip: " + myPoint.equals(recoveredFromString));
+    System.out.println();
+
+    // --- SCENARIO 6: Working with a delivery zone's centre through Iso ---
+    System.out.println("--- Scenario 6: Zone Centre Manipulation ---");
+
+    // Get the centre as a tuple, modify it, and put it back
+    Point originalCentre = myZone.centre();
+    Tuple2<Integer, Integer> centreAsTuple = pointToTupleIso.get(originalCentre);
+    Tuple2<Integer, Integer> shiftedCentre =
+        Tuple.of(centreAsTuple._1() + 10, centreAsTuple._2() + 10);
+    Point newCentre = pointToTupleIso.reverse().get(shiftedCentre);
+    DeliveryZone newZone = DeliveryZoneLenses.centre().set(newCentre, myZone);
+
+    System.out.println("Original zone: " + myZone);
+    System.out.println("Centre as tuple: " + centreAsTuple);
+    System.out.println("Shifted centre tuple: " + shiftedCentre);
+    System.out.println("New zone: " + newZone);
+  }
+}
+```
+
+**Expected Output:**
+
+```
+=== ISO USAGE EXAMPLE ===
+Original Point: Point[x=10, y=20]
+Original Zone: DeliveryZone[centre=Point[x=10, y=20], radius=5]
+------------------------------------------
+--- Scenario 1: Direct Conversions ---
+Point to Tuple conversion:
+  Original:  Point[x=10, y=20]
+  Converted: Tuple2[_1=10, _2=20]
+  Round-trip: Point[x=10, y=20]
+  Success: true
+
+Point to String conversion:
+  Original:  Point[x=10, y=20]
+  Converted: 10,20
+  Round-trip: Point[x=10, y=20]
+  Success: true
+
+--- Scenario 2: Reverse Operations ---
+Tuple: Tuple2[_1=30, _2=40] -> Point: Point[x=30, y=40]
+
+--- Scenario 3: Composition with Lenses ---
+Original point: Point[x=10, y=20]
+After moving X by 5: Point[x=15, y=20]
+
+--- Scenario 4: Iso Composition ---
+Point as tuple: Tuple2[_1=10, _2=20]
+Modified tuple: Tuple2[_1=20, _2=20]
+Back to point: Point[x=20, y=20]
+
+--- Scenario 5: String Format Conversions ---
+Point as string: 10,20
+Recovered from string: Point[x=10, y=20]
+Perfect round-trip: true
+
+--- Scenario 6: Zone Centre Manipulation ---
+Original zone: DeliveryZone[centre=Point[x=10, y=20], radius=5]
+Centre as tuple: Tuple2[_1=10, _2=20]
+Shifted centre tuple: Tuple2[_1=20, _2=30]
+New zone: DeliveryZone[centre=Point[x=20, y=30], radius=5]
+```
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **An Iso is a lossless two-way street**: `get` and `reverseGet` convert between equivalent representations, and `reverse()` flips the direction for free
+* **Isos are the composition bridge**: composed with a Lens, Prism, Affine or Traversal they preserve that optic's shape, so a generic optic works on your domain type
+* **Losslessness is the law**: a conversion that drops information or can fail in either direction is not an Iso; test the round trip, and reach for [Validated Prisms](validated_prism.md) when parsing can fail
+* **Reuse as constants**: define each Iso once, test it, and compose it everywhere the representation boundary appears
+~~~
+
+~~~admonish tip title="See Also"
+- [Composition Rules](composition_rules.md): why `Iso.andThen(X)` is an `X` for each of the five optics in its table
+- [Validated Prisms](validated_prism.md): the fallible sibling for conversions that can reject
+- [What Your Spec Generates](../mapping/tiers.md): where a lossless generated record mapping earns its `asIso()`
+- [Production Readiness](production_readiness.md#runtime-cost): what each optic allocates, and when to cache a composed optic
+~~~
+
+---
+
+**Previous:** [Affines](affine.md)
+**Next:** [Profunctor Optics](profunctor_optics.md)

@@ -1,0 +1,608 @@
+# Optics Cookbook
+
+_Find the problem you hold, then copy its recipe: a Focus path first, raw optics collapsed._
+
+## Find your recipe {#find-your-recipe}
+
+| You want to | Recipe |
+|---|---|
+| Update a field nested several records deep, such as an order's customer email | [1: A field several records deep](#deep-field) |
+| Change a value inside an `Optional`, only when one is present | [2: A field inside an `Optional`](#optional-field) |
+| Change every element of a list inside a list, such as every price in an order history | [3: Every element, at any depth](#every-element) |
+| Change only the list elements that match a condition | [4: Only the elements that match](#matching-elements) |
+| Change one case of a sealed interface (a sum type), and leave the others | [5: One variant of a sealed type](#one-variant) |
+| Read or change one subtype in a list of mixed types, as `instanceof` would | [6: One variant in a list of mixed types](#variants-in-a-list) |
+| Read a `Map` value with a default for a missing key, or set one key | [7: A map entry, with a fallback](#map-entry) |
+| Change the `Right` of an `Either` field, and leave a `Left` alone | [8: The value inside an `Either` field](#either-field) |
+| Validate a PATCH and report every bad field by name | [9: A PATCH that reports every bad field](#patch) |
+| Validate every element, collecting every error or stopping at the first | [10: Every value a path reaches, checked](#check-values) |
+| Sum, count or test the values in a list | [11: Totals, counts and tests](#totals) |
+| Read values from several fields as one list | [12: Values from several places](#several-places) |
+| Sort or reverse a list's elements in place | [13: Sorting and reversing](#sort) |
+| Log what a path reads, to debug it | [14: Tracing a path](#trace) |
+
+The recipes use the chapter's order-service cast, and declare any supporting type they need. Most also show their raw-optics form in a collapsed block, for a codebase that composes generated lenses by hand.
+
+~~~admonish example title="The cast these recipes use" collapsible=true
+``` java
+@GenerateLenses
+@GenerateFocus
+@GenerateTraversals
+public record Order(
+    UUID id,
+    Customer customer,
+    List<LineItem> lines,
+    Instant placedAt,
+    Currency currency,
+    OrderStatus status) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record Customer(String name, EmailAddress email) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record EmailAddress(String value) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record LineItem(String sku, Integer quantity, BigDecimal price) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record CustomerProfile(
+    String name, Optional<String> nickname, Optional<EmailAddress> altEmail) {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record Consignment(UUID orderId, Address to, ConsignmentState state) {}
+```
+
+``` java
+/** Where a consignment has got to. */
+@GeneratePrisms
+public sealed interface ConsignmentState
+    permits ConsignmentState.Pending, ConsignmentState.Dispatched, ConsignmentState.Returned {
+
+  record Pending() implements ConsignmentState {}
+
+  @GenerateFocus
+  record Dispatched(Instant at) implements ConsignmentState {}
+
+  @GenerateFocus
+  record Returned(String reason) implements ConsignmentState {}
+}
+```
+
+``` java
+@GeneratePrisms
+public sealed interface Payment permits Card, Bank {}
+```
+
+``` java
+@GenerateFocus
+public record Card(String pan) implements Payment {}
+```
+
+``` java
+@GenerateFocus
+public record Bank(String iban) implements Payment {}
+```
+
+``` java
+@GenerateLenses
+@GenerateFocus
+public record Address(String street, String city, String postcode) {}
+```
+~~~
+
+---
+
+## Recipe 1: A field several records deep {#deep-field}
+
+You want to replace one value three records down, such as the email on an order's customer, without rebuilding each record by hand.
+
+``` java
+    Order updated = OrderFocus.customer().email().value().set("ada@example.org", order);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Lens<Order, String> email =
+        OrderLenses.customer().andThen(CustomerLenses.email()).andThen(EmailAddressLenses.value());
+
+    Order updated = email.set("ada@example.org", order);
+```
+~~~
+
+`set` returns a new `Order`: it rebuilds the records on the path and reuses everything off it, the lines included. Chaining `.email().value()` straight on uses the navigators `@GenerateFocus` generates, here on `Order` and `Customer`. With them turned off, each hop is a `.via(...)`.
+
+---
+
+## Recipe 2: A field inside an `Optional` {#optional-field}
+
+A customer profile's alternative email is an `Optional<EmailAddress>`, and you want to change the address when there is one.
+
+``` java
+    AffinePath<CustomerProfile, String> altEmail = CustomerProfileFocus.altEmail().value();
+
+    CustomerProfile lowered = altEmail.modify(String::toLowerCase, profile);
+
+    // With no alternative email, the profile comes back unchanged
+    CustomerProfile untouched = altEmail.modify(String::toLowerCase, withoutAltEmail);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Affine<CustomerProfile, String> altEmail =
+        CustomerProfileLenses.altEmail()
+            .andThen(Prisms.<EmailAddress>some())
+            .andThen(EmailAddressLenses.value());
+
+    CustomerProfile lowered = altEmail.modify(String::toLowerCase, profile);
+```
+~~~
+
+An `Optional` component makes the generated path an `AffinePath`, which focuses zero or one value. `modify` leaves an empty `Optional` alone, and so does `set` here, because the path ends in a lens. A path whose last step is the `Optional`'s prism, such as `CustomerProfileFocus.altEmail()`, writes even when the `Optional` is empty: see [When the focus is absent](affine.md#when-the-focus-is-absent).
+
+---
+
+## Recipe 3: Every element, at any depth {#every-element}
+
+An order history holds orders, and each order holds lines. You want to round every line's price to pence, across all of them.
+
+``` java
+// A customer's past orders: a list of orders, each holding a list of lines
+@GenerateFocus
+@GenerateTraversals
+record OrderHistory(List<Order> orders) {}
+
+```
+
+``` java
+    TraversalPath<OrderHistory, BigDecimal> prices = OrderHistoryFocus.orders().lines().price();
+
+    OrderHistory rounded =
+        prices.modifyAll(price -> price.setScale(2, RoundingMode.HALF_EVEN), history);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Traversal<OrderHistory, BigDecimal> prices =
+        OrderHistoryTraversals.orders()
+            .andThen(OrderTraversals.lines())
+            .andThen(LineItemLenses.price());
+
+    OrderHistory rounded =
+        Traversals.modify(prices, price -> price.setScale(2, RoundingMode.HALF_EVEN), history);
+```
+~~~
+
+A `List` component's generated method already steps into the elements, so `OrderHistoryFocus.orders()` focuses each `Order`. It is a navigator over them, so each hop goes one level deeper, and `modifyAll` returns a new history with every price rounded. In plain Java the same change is two nested streams, each ending in a record's constructor.
+
+---
+
+## Recipe 4: Only the elements that match {#matching-elements}
+
+You want to discount only the order lines with a quantity of four or more, and leave the others as they are.
+
+``` java
+    // Ten per cent off every line of four or more
+    Order discounted =
+        OrderFocus.lines()
+            .filter(line -> line.quantity() >= 4)
+            .via(LineItemFocus.price())
+            .modifyAll(price -> price.multiply(new BigDecimal("0.90")), order);
+
+    // The same test, with a change to the whole line
+    Order doubled =
+        OrderFocus.lines()
+            .modifyWhen(
+                line -> line.quantity() >= 4,
+                line -> LineItemFocus.quantity().modify(quantity -> quantity * 2, line),
+                order);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Traversal<Order, BigDecimal> bulkPrices =
+        OrderTraversals.lines()
+            .filtered(line -> line.quantity() >= 4)
+            .andThen(LineItemLenses.price());
+
+    Order discounted =
+        Traversals.modify(bulkPrices, price -> price.multiply(new BigDecimal("0.90")), order);
+```
+~~~
+
+`filter` narrows the path to the matching lines, so the hops after it reach only those, and the other lines come back unchanged. `modifyWhen(condition, f, order)` is `filter` followed by `modifyAll`, for a change to the whole element.
+
+~~~admonish tip title="Plain Java wins here"
+For a condition on one record rather than on the elements of a list, an `if` around a single `set` reads best. A filter earns its place when the condition picks elements out of a list.
+~~~
+
+---
+
+## Recipe 5: One variant of a sealed type {#one-variant}
+
+A consignment's state is the sealed `ConsignmentState`: `Pending`, `Dispatched` or `Returned`. You want to tidy the reason on a returned consignment, and leave every other state alone.
+
+``` java
+    AffinePath<Consignment, String> returnReason =
+        ConsignmentFocus.state().via(ConsignmentStatePrisms.returned()).via(ReturnedFocus.reason());
+
+    Consignment tidied = returnReason.modify(String::strip, returned);
+
+    // A consignment in any other state comes back unchanged
+    Consignment untouched = returnReason.modify(String::strip, pending);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Affine<Consignment, ConsignmentState.Returned> returnedState =
+        ConsignmentLenses.state().andThen(ConsignmentStatePrisms.returned());
+
+    // Returned has no generated lenses, so the function rebuilds the variant
+    Consignment tidied =
+        returnedState.modify(
+            state -> new ConsignmentState.Returned(state.reason().strip()), consignment);
+```
+~~~
+
+The generated prism `ConsignmentStatePrisms.returned()` matches one variant, so the path is an `AffinePath` that is empty for any other state. `modify` keeps the variant it matched. Moving a consignment to another state is a read followed by a build, as [the Quickstart's sealed type](quickstart.md#2-sum-types-and-collections-the-same-way) shows.
+
+---
+
+## Recipe 6: One variant in a list of mixed types {#variants-in-a-list}
+
+A payment history holds a list of `Payment`, each a `Card` or a `Bank`. You want every card number, or every card number masked, and the bank payments skipped.
+
+``` java
+// The Collections, Optionals and Sealed Types page's payment history
+@GenerateFocus
+@GenerateTraversals
+record PaymentHistory(UUID customerId, List<Payment> payments) {}
+
+```
+
+``` java
+    TraversalPath<PaymentHistory, String> cardNumbers =
+        PaymentHistoryFocus.payments().via(PaymentPrisms.card()).via(CardFocus.pan());
+
+    // The bank payments are skipped
+    List<String> pans = cardNumbers.getAll(history);
+
+    PaymentHistory masked =
+        cardNumbers.modifyAll(pan -> "**** " + pan.substring(pan.length() - 4), history);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    // Card carries no @GenerateLenses, so its lens is written by hand
+    Lens<Card, String> pan = Lens.of(Card::pan, (_, newPan) -> new Card(newPan));
+
+    Traversal<PaymentHistory, String> cardNumbers =
+        PaymentHistoryTraversals.payments().andThen(PaymentPrisms.card()).andThen(pan);
+
+    List<String> pans = Traversals.getAll(cardNumbers, history);
+```
+~~~
+
+After `payments()` steps into the list, the prism keeps the cards and passes over the rest. The read skips the bank payments, and the write leaves them as they were. For a sealed type you cannot annotate, `AffinePath.instanceOf(Card.class)` takes the prism's place.
+
+---
+
+## Recipe 7: A map entry, with a fallback {#map-entry}
+
+A stockroom keeps its stock by SKU in a `Map<String, Integer>`. You want a count that is zero for a SKU it has never held, and to change one entry.
+
+``` java
+// The stockroom an order is picked from: stock by SKU, and a name verified by a check
+@GenerateLenses
+@GenerateFocus
+record Stockroom(String name, Map<String, Integer> stock, Either<String, String> verifiedName) {}
+
+```
+
+``` java
+    AffinePath<Stockroom, Integer> desks = StockroomFocus.stock().via(FocusPaths.mapAt("DESK"));
+    AffinePath<Stockroom, Integer> lamps = StockroomFocus.stock().via(FocusPaths.mapAt("LAMP"));
+
+    // A missing key reads as the fallback
+    int desksInStock = desks.getOrElse(0, stockroom);
+
+    // modify changes a key that is there, and leaves a missing one alone
+    Stockroom picked = lamps.modify(count -> count - 1, stockroom);
+
+    // set adds a missing key
+    Stockroom stocked = desks.set(5, stockroom);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Affine<Stockroom, Integer> desks = StockroomLenses.stock().andThen(FocusPaths.mapAt("DESK"));
+
+    int desksInStock = desks.getOptional(stockroom).orElse(0);
+```
+~~~
+
+A `Map` component's path focuses the whole map, and `.via(FocusPaths.mapAt(key))` narrows it to one value that may be missing. `getOrElse` supplies the fallback for a missing key.
+
+---
+
+## Recipe 8: The value inside an `Either` field {#either-field}
+
+A stockroom's `verifiedName` is an `Either<String, String>`: a `Right` once a check has passed, and a `Left` holding the reason when it has not. You want to tidy the name only when it was verified.
+
+``` java
+    AffinePath<Stockroom, String> verifiedName = StockroomFocus.verifiedName();
+
+    // A Right is changed
+    Stockroom tidied = verifiedName.modify(String::strip, verified);
+
+    // A Left comes back unchanged
+    Stockroom untouched = verifiedName.modify(String::strip, unverified);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Affine<Stockroom, String> verifiedName =
+        StockroomLenses.verifiedName().andThen(Prisms.<String, String>right());
+
+    Stockroom tidied = verifiedName.modify(String::strip, verified);
+```
+~~~
+
+The processor generates an `Either` component's path on its `Right` side, as an `AffinePath`, so a `Left` comes back unchanged.
+
+~~~admonish tip title="Plain Java wins here"
+For an `Either` on its own rather than a field inside a record, `either.map(String::strip)` does what the path's `modify` does. The path earns its place when the `Either` sits inside a record.
+~~~
+
+---
+
+## Recipe 9: A PATCH that reports every bad field {#patch}
+
+A PATCH request may carry a new name, a new email, both or neither. You want to apply what it carries, and to report every bad field at once, each by its name.
+
+``` java
+/** A sparse PATCH of a customer: a null component means "not supplied", not "set to null". */
+record CustomerPatch(@Nullable String name, @Nullable String email) {}
+
+/** The boundary parsers the recipe hands to {@code parseIfPresent}. */
+final class Names {
+  static Validated<NonEmptyList<FieldError>, String> parse(String raw) {
+    String name = raw.strip();
+    return name.isEmpty()
+        ? Validated.invalidNel(FieldError.of("must not be blank"))
+        : Validated.validNel(name);
+  }
+
+  private Names() {}
+}
+
+final class Emails {
+  static Validated<NonEmptyList<FieldError>, EmailAddress> parse(String raw) {
+    String email = raw.strip();
+    return email.contains("@")
+        ? Validated.validNel(new EmailAddress(email))
+        : Validated.invalidNel(FieldError.of("not an address"));
+  }
+
+  private Emails() {}
+}
+
+```
+
+``` java
+    Validated<NonEmptyList<FieldError>, Customer> patched =
+        Edits.accumulate(
+                parseIfPresent(CustomerFocus.name(), patch.name(), Names::parse),
+                parseIfPresent(CustomerFocus.email(), patch.email(), Emails::parse))
+            .apply(customer);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    // A path built from a lens carries no label, so at(...) names each field
+    Validated<NonEmptyList<FieldError>, Customer> patched =
+        Edits.accumulate(
+                parseIfPresent(FocusPath.of(CustomerLenses.name()), patch.name(), Names::parse)
+                    .at("name"),
+                parseIfPresent(FocusPath.of(CustomerLenses.email()), patch.email(), Emails::parse)
+                    .at("email"))
+            .apply(customer);
+```
+~~~
+
+For a patch with a blank name and an email that has no `@`, `patched` is `Invalid(NonEmptyList[name: must not be blank, email: not an address])`. A patch that supplies only a good email changes only the email.
+
+`parseIfPresent` does nothing for a `null` field. `Edits.accumulate` collects every failure in edit order, and writes only when every edit has parsed. A generated path carries its component's name, which is where `name:` and `email:` come from. A navigator such as `CustomerFocus.email()` is a path itself, so it goes straight in. [Many Edits at Once](multi_edit.md) covers the rest of the builder.
+
+---
+
+## Recipe 10: Every value a path reaches, checked {#check-values}
+
+Every line of an order must hold at least one item. You want to check every quantity, and report either each bad one or only the first.
+
+``` java
+/** The check the check-values recipe runs on every quantity. */
+final class Quantities {
+  static Validated<String, Integer> check(Integer quantity) {
+    return quantity >= 1 ? Validated.valid(quantity) : Validated.invalid("No items: " + quantity);
+  }
+
+  private Quantities() {}
+}
+
+```
+
+``` java
+    Traversal<Order, Integer> quantities = OrderFocus.lines().quantity().toTraversal();
+
+    // Every bad quantity, reported together
+    Validated<List<String>, Order> checked =
+        OpticOps.modifyAllValidated(order, quantities, Quantities::check);
+
+    // Or keep only the first
+    Either<String, Order> firstFailure =
+        OpticOps.modifyAllEither(
+            order, quantities, quantity -> Quantities.check(quantity).toEither());
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Traversal<Order, Integer> quantities =
+        OrderTraversals.lines().andThen(LineItemLenses.quantity());
+
+    Validated<List<String>, Order> checked =
+        OpticOps.modifyAllValidated(order, quantities, Quantities::check);
+```
+~~~
+
+For an order whose lines hold 0 and -1 items, `checked` is `Invalid([No items: 0, No items: -1])` and `firstFailure` is `Left(No items: 0)`. A good order comes back valid and unchanged.
+
+`OpticOps` takes a `Traversal`, which a `TraversalPath` hands over with `toTraversal()`. `modifyAllEither` keeps only the first error, but it still runs the check on every value. [Updates That Can Fail](fluent_api.md) has the forms for one field, and `modifyF` for an effect such as a remote price lookup.
+
+---
+
+## Recipe 11: Totals, counts and tests {#totals}
+
+You want the number of items on an order, whether any line is a bulk line, and the order's total.
+
+``` java
+    TraversalPath<Order, Integer> quantities = OrderFocus.lines().quantity();
+
+    int items = quantities.foldMap(Monoids.integerAddition(), quantity -> quantity, order);
+    boolean anyBulk = quantities.exists(quantity -> quantity >= 4, order);
+    boolean noEmptyLines = quantities.all(quantity -> quantity >= 1, order);
+    int lineCount = OrderFocus.lines().count(order);
+
+    // A money total over one list field is plain Java: Monoids offers no BigDecimal sum
+    BigDecimal total =
+        order.lines().stream()
+            .map(line -> line.price().multiply(BigDecimal.valueOf(line.quantity())))
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Fold<Order, Integer> quantities =
+        OrderTraversals.lines().andThen(LineItemLenses.quantity()).asFold();
+
+    int items = quantities.foldMap(Monoids.integerAddition(), quantity -> quantity, order);
+    boolean anyBulk = quantities.exists(quantity -> quantity >= 4, order);
+    int lineCount = quantities.length(order);
+```
+~~~
+
+For Ada's order of one lamp at 40.00 and four bulbs at 2.50, `items` is 5, `lineCount` is 2 and `total` is 50.00. A `TraversalPath` answers `exists`, `all`, `count` and `find` itself, and `foldMap` combines the values with a monoid such as `Monoids.integerAddition()`.
+
+~~~admonish tip title="Plain Java wins here"
+For a read of one list field, a stream over `order.lines()` is as short. The path earns its place when the values sit deeper, or when the same path also writes.
+~~~
+
+---
+
+## Recipe 12: Values from several places {#several-places}
+
+A customer profile always has a name, and sometimes a nickname. You want them as one list, or to ask one question of all of them.
+
+``` java
+    // The names a profile answers to: always a name, sometimes a nickname
+    Fold<CustomerProfile, String> names =
+        CustomerProfileFocus.name().asFold().plus(CustomerProfileFocus.nickname().asFold());
+
+    List<String> all = names.getAll(profile);
+    boolean known = names.exists(name -> name.equalsIgnoreCase("countess"), profile);
+
+    // Three or more at once
+    Fold<CustomerProfile, String> searchTerms =
+        Fold.sum(
+            CustomerProfileFocus.name().asFold(),
+            CustomerProfileFocus.nickname().asFold(),
+            CustomerProfileFocus.altEmail().value().asFold());
+```
+
+~~~admonish example collapsible=true title="The same with raw optics"
+``` java
+    Fold<CustomerProfile, String> names =
+        CustomerProfileLenses.name()
+            .asFold()
+            .plus(CustomerProfileLenses.nickname().andThen(Prisms.<String>some()).asFold());
+```
+~~~
+
+For a profile named Ada Lovelace with the nickname Countess, `all` is `[Ada Lovelace, Countess]`. `asFold()` turns a path into a read-only `Fold`, and `plus` joins two folds, the first one's values coming first. `Fold.sum` joins three or more, so `searchTerms` adds the alternative email when there is one.
+
+~~~admonish tip title="Plain Java wins here"
+For one read, `Stream.concat(Stream.of(profile.name()), profile.nickname().stream()).toList()` is as short. A `Fold` earns its place as a value you hand to other code, which can ask it `exists`, `all` or `foldMap`.
+~~~
+
+---
+
+## Recipe 13: Sorting and reversing {#sort}
+
+You want an order's lines in price order, or in reverse order.
+
+No Focus path sorts. `Traversals.sorted` and `Traversals.reversed` take a `Traversal`, such as the generated `OrderTraversals.lines()`, or a `TraversalPath`'s `toTraversal()`.
+
+``` java
+    Order byPrice =
+        Traversals.sorted(OrderTraversals.lines(), Comparator.comparing(LineItem::price), order);
+
+    Order reversed = Traversals.reversed(OrderTraversals.lines(), order);
+```
+
+Both read every focused value into a list, reorder the list, and write the values back to the places the traversal visits, in turn. A filtered traversal therefore sorts only the elements it keeps, and the others stay where they were. Sorting a traversal of prices, rather than of lines, moves the prices between lines.
+
+---
+
+## Recipe 14: Tracing a path {#trace}
+
+A path reads fewer values than you expected, and you want to see what it finds.
+
+``` java
+    // In a service, the observer would call your logger
+    List<String> log = new ArrayList<>();
+    TraversalPath<Order, String> skus =
+        OrderFocus.lines()
+            .sku()
+            .traced((_, found) -> log.add("read " + found.size() + " SKUs: " + found));
+
+    List<String> read = skus.getAll(order);
+    // the log now holds "read 2 SKUs: [LAMP, BULB]"
+```
+
+On a `TraversalPath`, the observer runs on `getAll` and on the queries, such as `count` and `exists`, which on a traced path read through `getAll`. A write such as `modifyAll` does not call it, and nor does `foldMap`, which reads through the traversal. A `via` or `filter` after `traced` returns a path without the observer, so trace last. Tracing belongs to the Focus paths, and has no raw-optics form.
+
+---
+
+The recipes are [CookbookBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/optics/cookbook/CookbookBook.java), and [CookbookBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/optics/cookbook/CookbookBookTest.java) holds every result this page states.
+
+~~~admonish tip title="See Also"
+- [Collections, Optionals and Sealed Types](focus_navigation.md): every navigation step these recipes take
+- [Many Edits at Once](multi_edit.md): the PATCH recipe in full, with combined and sparse edits
+- [Updates That Can Fail](fluent_api.md): checks on one field, and effects with `modifyF`
+- [Composition Rules](composition_rules.md): the type each raw `andThen` returns
+- [Production Readiness](production_readiness.md): caching a path, and the team conventions that keep paths readable
+~~~
+
+~~~admonish info title="Hands-On Learning"
+Practise real-world optics patterns in [Tutorial 08: Real World Optics](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial08_RealWorldOptics.java) (6 exercises).
+~~~
+
+---
+
+**Previous:** [Decision Trees](decision_trees.md)
+**Next:** [Optic Capabilities](optic_capabilities.md)

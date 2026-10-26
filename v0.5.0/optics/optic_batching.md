@@ -1,0 +1,294 @@
+# Optic-Driven Request Batching
+
+_Load every id a traversal reaches in one batched backend call, not one call per element._
+
+~~~admonish info title="What You'll Learn"
+- Batch a traversal's per-element loads into one backend call by passing `FetchApplicative` to `modifyF`, and check it with `RunResult.backendCalls()`
+- Load each id in a list field into its entity with `FetchOptics.fetchEach`, where the focus type changes
+- Route keys to several backends with `SourceRouter.routed`, and cap each request's size with `BatchLoaders.chunked`
+- Get failures back as `Either` values rather than exceptions with `SafeFetch`, and split per-key results with `SafeFetch.partition`
+- Predict how many rounds a program costs: `map2`, `ap` and traversals collapse into one, and each `flatMap` adds another
+~~~
+
+~~~admonish example title="See Example Code"
+- [Tutorial 21: Optic-Driven Request Batching](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial21_OpticBatching.java)
+- [Solution](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/solutions/optics/Tutorial21_OpticBatching_Solution.java)
+~~~
+
+## The Bug You've Written More Than Once
+
+You have a list of ids. For each one, you load the entity. The code is one line in a stream and looks blameless. In staging, with three rows, it flies. In production, with two hundred rows, it stalls, and the trace shows two hundred near-identical queries lined up in single file.
+
+This is the N+1, and optics by themselves do not save you from it. A `Traversal` is the *shape* of the problem ("every element"); it does not have an opinion about *how* the per-element work runs. Hand a sequential strategy to a traversal of N foci, you get N round-trips.
+
+The `org.higherkindedj.optics.fetch` package changes the strategy and leaves the optic alone:
+
+```mermaid
+sequenceDiagram
+    accTitle: N+1 calls, then one batched round
+    accDescr: Without batching, modifyF over N ids makes the traversal call the backend once per id, N times. With FetchApplicative, ap() merges the pending request sets, so the traversal sends every id to the batch resolver in one call and gets back a map of id to entity.
+    autonumber
+    participant C as Caller
+    participant T as Traversal<br/>over N ids
+    participant B as Backend
+
+    Note over C,B: Without batching: N+1
+    C->>T: modifyF(loadOne, ids)
+    loop N times, one per focus
+        T->>B: loadOne(id)
+        B-->>T: entity
+    end
+    T-->>C: List of entities
+
+    Note over C,B: With FetchApplicative: one round
+    C->>T: modifyF(Fetch.fetch, ids,<br/>FetchApplicative)
+    Note over T: ap() merges pending<br/>request sets, so foci<br/>share a single round
+    T->>B: batchResolver(<br/>{id_1 ... id_N})
+    B-->>T: Map of id to entity
+    T-->>C: List of entities
+```
+
+Top half: the loop you didn't mean to write. Bottom half: the same traversal, the same source, the same backend, plus one new piece, `FetchApplicative`. One round, one batched call, every focus resolved.
+
+---
+
+~~~admonish tip title="Why this matters"
+The usual fix for an N+1 is a hand-written pre-fetch: collect the ids, load them in one query, build a map, then thread that map through the code that needed it. It works, and it decays, because nothing stops the next edit reintroducing a per-element load. Here the batching lives in the strategy attached to the traversal, and `RunResult.backendCalls()` makes the guarantee assertable in a unit test, so a regression fails the build instead of the pager.
+~~~
+
+## The Pattern, Drawn
+
+The pipeline has three pieces. The optic owns the shape. The applicative is the strategy. The runner is the boundary that actually talks to the backend:
+
+```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 30}}}%%
+flowchart TD
+    accTitle: The optic, the strategy and the runner
+    accDescr: A Traversal, or any optic, runs modifyF with FetchApplicative, which produces a Fetch value rather than an action. Fetch.runCached runs it synchronously against a function from a key set to a map, Fetch.runAsync against a BatchLoader, a SourceRouter.routed fan-out or a BatchLoaders.chunked cap, and SafeFetch.runCached on the Either railway.
+    OP@{ shape: st-rect, label: "Traversal<br/>(or any Optic)" } -->|"modifyF(f, s,<br/>applicative)"| FA["FetchApplicative"]
+    FA -->|"produces"| F["Fetch&lt;K, V, A&gt;<br/>a value, not an action"]
+
+    F -->|"sync"| RC["Fetch<br/>.runCached"]
+    F -->|"async"| RA["Fetch<br/>.runAsync"]
+    F -->|"railway<br/>(Either)"| SC["SafeFetch<br/>.runCached"]
+
+    RC -->|"one keyset<br/>per round"| FN["Function&lt;<br/>Set&lt;K&gt;,<br/>Map&lt;K, V&gt;&gt;"]
+    RA -->|"one keyset<br/>per round"| BL["BatchLoader"]
+    RA -->|"fan out<br/>per source"| SR["SourceRouter<br/>.routed"]
+    RA -->|"cap dispatch<br/>size"| BC["BatchLoaders<br/>.chunked"]
+
+    classDef rw fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef shape fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef wire fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef tier fill:#a6d189,stroke:#40a02b,color:#232634
+    class OP rw
+    class FA shape
+    class F,RC,RA,SC wire
+    class FN,BL,SR,BC tier
+```
+
+Everything else on this page is a variation on those three pieces.
+
+``` java
+    // 1. The optic describes the shape (a list-traversal here).
+    Traversal<List<Integer>, Integer> ids = FocusPaths.listElements();
+
+    // 2. The applicative is the strategy: FetchApplicative batches.
+    var program =
+        ids.modifyF(
+            id -> FETCH.widen(Fetch.<Integer, Integer>fetch(id)),
+            List.of(1, 2, 3, 4, 5),
+            FetchApplicative.<Integer, Integer>instance());
+
+    // 3. The runner hands a whole round's keyset to the resolver in one call.
+    Fetch.RunResult<Integer, List<Integer>> result =
+        Fetch.runCached(FETCH.narrow(program), backend::loadAll);
+
+    // result.rounds() and result.backendCalls() are both 1: one round, one batched call
+```
+
+The trick is in step 2. `FetchApplicative.ap` merges the pending request sets of its two independent arguments. The optic walks the foci, applicative composition stacks them up, and the runner sees a single keyset by the time the dust settles.
+
+~~~admonish note title="What just happened?"
+You did not write a `loadAll`. You did not write a for-loop, a buffer, or a `thenCombine` chain. You handed the optic a different value (`FetchApplicative.instance()`) and the same traversal you would have written for a one-element case suddenly batches. The optic is the *shape*; the applicative is the *plan*; the runner is the *boundary*. Swap the plan, change the world.
+~~~
+
+---
+
+## When the Optic Can't Spell It: `Id -> Entity`
+
+The codegen produces type-preserving optics: a `Traversal<StoredTeam, UserId>` is `UserId` in and `UserId` out. So how do you express "load each `UserId` into a `UserSummary`" when the focus type *changes*?
+
+`FetchOptics.fetchEach` builds the type-changing list-traversal the codegen does not produce:
+
+<!-- verify -->
+```java
+record StoredTeam(String name, List<UserId> memberIds) {}
+record LoadedTeam(String name, List<UserSummary> members) {}
+
+Optic<StoredTeam, LoadedTeam, UserId, UserSummary> memberFetch =
+    FetchOptics.fetchEach(
+        StoredTeam::memberIds,
+        (team, users) -> new LoadedTeam(team.name(), users));
+
+var program = memberFetch.modifyF(
+    id -> FETCH.widen(Fetch.<UserId, UserSummary>fetch(id)),
+    team,
+    FetchApplicative.<UserId, UserSummary>instance());
+
+Fetch.RunResult<UserId, LoadedTeam> result =
+    Fetch.runCached(FETCH.narrow(program), userResolver);
+```
+
+The reader is the list-shaped field. The rebuilder reassembles the parent around the resolved values. One round, one batched call, regardless of how many members are in the team. The aggregate goes in `StoredTeam`, comes out `LoadedTeam`.
+
+---
+
+## When Keys Come From Several Backends
+
+Real rounds are not tidy. You ask for a list of identifiers, and half of them are user ids and half are product skus, served by two different services. The naive shape is a switch statement inside the loader; the result is per-key calls again.
+
+`SourceRouter.routed` composes per-source `BatchLoader`s with a classifier into one loader the runner can call. Each backend sees its own keys, and the round is still one round. Each source's dispatch starts before any is awaited, so asynchronous loaders overlap:
+
+``` java
+    // Each backend answers only the keys it serves
+    BatchLoader<String, String> users =
+        ids ->
+            CompletableFuture.completedFuture(
+                ids.stream().collect(Collectors.toMap(id -> id, id -> "user " + id.substring(2))));
+    BatchLoader<String, String> products =
+        skus ->
+            CompletableFuture.completedFuture(
+                skus.stream()
+                    .collect(Collectors.toMap(sku -> sku, sku -> "product " + sku.substring(2))));
+
+    BatchLoader<String, String> routed =
+        SourceRouter.routed(
+            key -> key.startsWith("u:") ? "users" : "products",
+            Map.of("users", users, "products", products));
+
+    Fetch.RunResult<String, List<String>> result =
+        Fetch.runAsync(FETCH.narrow(program), routed, new ConcurrentHashMap<>()).get();
+```
+
+`BatchLoaders.chunked(loader, maxSize)` caps a single dispatch's size if a downstream backend enforces a per-request limit (an `$in` clause cap, an HTTP query-string ceiling, a GraphQL batch limit). The substrate still sees one round; the loader splits the keyset into chunks behind the curtain.
+
+---
+
+## When Failures Belong on the Value Channel
+
+Exceptions are great when nobody else needs to know about them. The moment a failure has to flow through composition (partition successes and failures, retry only the failures, present the failures to the caller as data) they become a problem. `SafeFetch` wraps a run so that resolver exceptions, missing-key reports, loader failures, and deadlines become `Either.left` values instead of thrown exceptions. The run never throws, and the safe-async future never completes exceptionally:
+
+<!-- verify -->
+```java
+Either<Throwable, Fetch.RunResult<UserId, UserSummary>> outcome =
+    SafeFetch.runCached(program, failingResolver);
+```
+
+When a backend can report per-key failure without poisoning the whole round, the value type is `Either<E, V>` and `SafeFetch.partition` splits the result into successes and failures:
+
+``` java
+    // The backend reports each key on its own: a UserSummary, or the reason there is none
+    Function<Set<UserId>, Map<UserId, Either<String, UserSummary>>> partial =
+        ids -> ids.stream().collect(Collectors.toMap(id -> id, BatchingBook::lookUp));
+
+    Fetch.RunResult<UserId, List<Either<String, UserSummary>>> result =
+        Fetch.runCached(FETCH.narrow(program), partial);
+
+    SafeFetch.Partitioned<String, UserSummary> split = SafeFetch.partition(result.value());
+    List<UserSummary> found = split.successes();
+    List<String> reasons = split.failures();
+```
+
+A backend that returns no entry for a requested key is surfaced as `MissingKeyException`. This is on purpose: a silent `null` in the result list would be a worse signal than a typed failure.
+
+---
+
+## The Wall: Where Batching Stops Working
+
+Applicative composition collapses because the arguments are independent. `flatMap` cannot collapse, because the continuation's requests depend on the value the previous round produced. The library does not paper over this; it lays the boundary out where you can see it:
+
+```mermaid
+sequenceDiagram
+    accTitle: One round for ap, a round per flatMap
+    accDescr: A pure applicative built with ap over fetches of a, b and c reaches the backend once, with all three keys. A flatMap chain fetches a, learns only then to ask for a.next and then a.next.next, and so takes three rounds.
+    participant P as Program
+    participant R as Runner
+    participant B as Backend
+
+    Note over P,B: Pure applicative: N foci, 1 round
+    P->>R: ap(ap(ap(f, fetch a),<br/>fetch b), fetch c)
+    R->>B: { a, b, c }
+    B-->>R: { a:..., b:..., c:... }
+    R-->>P: value
+
+    Note over P,B: flatMap dependency chain: 3 rounds
+    P->>R: fetch(a).flatMap(<br/>x -> fetch(x.next))
+    R->>B: { a }
+    B-->>R: { a:... }
+    Note right of R: only now do we know<br/>what to ask for next
+    R->>B: { a.next }
+    B-->>R: { a.next:... }
+    R->>B: { a.next.next }
+    B-->>R: { ... }
+    R-->>P: value
+```
+
+The practical rule is one line: *anything you can express with `map2`, `ap`, or an optic traversal collapses to one round; every `flatMap` in a chain is another round.* Express data dependencies as `flatMap` when you have one; do not reach for it when you don't.
+
+~~~admonish tip title="A useful litmus test"
+If you can write the program with `FetchApplicative.map2` (or an optic over a collection), batching applies. If you cannot, because step two's request *literally needs* step one's value, you have a real dependency and the round cost is the price you pay. Don't force one into the shape of the other.
+~~~
+
+---
+
+## What the `RunResult` Tells You
+
+`Fetch.RunResult` is a record, so you can inspect, log, and assert against the run:
+
+| Field | Meaning |
+|-------|---------|
+| `value()` | The final value the program produced. |
+| `rounds()` | Number of `Blocked` nodes resolved (one per applicative layer that needed dispatch). |
+| `backendCalls()` | Rounds that actually hit the resolver (a round whose keys are all cached costs zero). |
+| `fetchedBatches()` | The keyset sent to the resolver on each backend call. |
+| `cacheHits()` | Individual keys served from the per-run cache. |
+
+In tests, this is exactly what you want: `assertThat(result.backendCalls()).isEqualTo(1)` is how you prove that you actually killed the N+1 and didn't just hide it. The cache is per-invocation and in-JVM. A key requested again in a later round (say, across a `flatMap` dependency) is served from the cache and never re-fetched.
+
+---
+
+## Limits, Stated Up Front
+
+- **Applicative-only batching.** A `flatMap` data dependency costs an extra round. This is the Haxl law (see further reading), not a defect.
+- **Per-run cache.** No distributed cache; concurrent `runAsync` calls must each be given their own cache map.
+- **No predicate pushdown.** The backend receives a keyset, never the optic's filter expression. A filter placed *before* the fetch still shrinks that keyset, because `filtered` hands non-matching foci to `applicative.of` and never runs the fetch for them; what it cannot do is let the backend evaluate the predicate.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **The optic names the keys; the runtime batches them.** One traversal over a collection becomes one keyset and one backend call, instead of one call per element.
+* **Applicative collapses, `flatMap` does not.** Anything expressible with `map2`, `ap` or a traversal folds into a single round; every genuine data dependency costs another. That is the Haxl law, not a gap in the library.
+* **`RunResult` makes the win assertable.** `backendCalls()` is how you prove in a test that the N+1 is gone rather than merely hidden, and `cacheHits()` shows what the per-run cache absorbed.
+* **The cache is per invocation and in-JVM.** Two concurrent runs need two cache maps; nothing here is a distributed cache.
+* **Optics do not push predicates to the backend.** The backend sees a keyset, never a predicate expression. Narrowing the optic before the fetch still narrows the keyset; it just never becomes a `WHERE` clause.
+~~~
+
+~~~admonish info title="Hands-On Learning"
+Practise the four pieces (batching, heterogeneous fetch, multi-source routing, railway errors) in [Tutorial 21: Optic-Driven Request Batching](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial21_OpticBatching.java) (5 exercises).
+~~~
+
+~~~admonish tip title="See Also"
+- [Traversals](traversals.md): the optic shape this strategy attaches to
+- [Optics Extensions](optics_extensions.md): validated, per-element error handling on the value side
+- [Core Type Integration](core_type_integration.md): `Either`, `Try` and `Validated` as railway types
+~~~
+
+~~~admonish tip title="Further Reading"
+- **Apollo Tutorials**: [Data loaders under the hood](https://www.apollographql.com/tutorials/dataloaders-dgs/03-data-loaders-under-the-hood): a diagrammed, language-agnostic walk through the same batching idea Haxl popularised (Java framing in the worked example, accessible without prior functional-programming background).
+~~~
+
+---
+
+**Previous:** [Deep Validation with modifyF](composing_optics.md)
+**Next:** [Plan Introspection and Guardrails](optic_batching_guardrails.md)

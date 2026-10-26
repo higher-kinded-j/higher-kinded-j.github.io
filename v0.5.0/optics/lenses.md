@@ -1,0 +1,511 @@
+# Nested Updates with Lenses: A Practical Guide
+
+_Update a field three records down in one call, with a lens you build once and reuse._
+
+<img src="../images/lens2.jpg" alt="Visual representation of a lens focusing on a single field within nested immutable data structures" style="width: 100%;" />
+
+~~~admonish info title="What You'll Learn"
+- Generate a lens for each record component with `@GenerateLenses`, and compose them with `andThen` into one path
+- Update a nested field with `set` and `modify`, without writing the copy for each record on the way
+- Decide between a wither, such as Lombok's `@With` or a generated `with*` helper, and a composed lens
+- Check a lens with `LensLaws`, and fix a compact constructor that changes the value you set
+- Write a lens with `Lens.of` for a type you cannot annotate
+~~~
+
+~~~admonish example title="See Example Code"
+[LensUsageExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/optics/LensUsageExample.java)
+~~~
+
+A Lens focuses on a single, required field within a record: the `address` in a `Company`, the `street` in an `Address`. It exposes `get`, `set`, and `modify`, and composes with other lenses to reach any depth without hand-written copy cascades. Where a record's `withX` method copies one record, a lens reaches through nested ones ([Why a lens, when you have `@With`?](#lens-or-wither)). [Choosing an optic](optics_intro.md#choosing-an-optic) sets it beside the other optic types.
+
+---
+
+## The Scenario: Updating an Employee's Address
+
+Let's use a common business scenario involving a deeply nested data structure. Our goal is to update the `street` of an `Employee`'s `Company`'s `Address`.
+
+**The Data Model:**
+
+<!-- verify -->
+```java
+public record Address(String street, String city, String postcode) {}
+public record Company(String name, Address address) {}
+public record Employee(String name, Company company) {}
+```
+
+Without optics, changing the street requires manually rebuilding the entire `Employee` object graph. With optics, we can define a direct path to the `street` and perform the update in a single, declarative line.
+
+---
+
+## A Step-by-Step Walkthrough
+
+### Step 1: Generating the Lenses
+
+Manually writing `Lens` implementations is tedious boilerplate. Higher-Kinded-J's annotation processor (`hkj-processor`) automates this. To begin, we simply annotate our records with **`@GenerateLenses`**.
+
+This process creates a companion class for each record (e.g., `EmployeeLenses`, `CompanyLenses`) that contains two key features:
+
+1. **Lens Factories**: Static methods that create a `Lens` for each field (e.g., `EmployeeLenses.company()`).
+2. **`with*` Helpers**: Static convenience methods for easy, shallow updates (e.g., `EmployeeLenses.withCompany(...)`).
+
+<!-- verify -->
+```java
+import org.higherkindedj.optics.annotations.GenerateLenses;
+
+@GenerateLenses
+public record Address(String street, String city, String postcode) {}
+
+@GenerateLenses
+public record Company(String name, Address address) {}
+
+@GenerateLenses
+public record Employee(String name, Company company) {}
+```
+
+#### Every Write Runs the Canonical Constructor {#every-write-runs-the-canonical-constructor}
+
+A ticket like this one: support changes a customer's email to `Ada@Example.com` in the admin console. The console writes the value through a lens and reads it back to confirm the save. It gets `ada@example.com` and reports the save as unconfirmed, so support retries, and each retry lands in the audit log as another change. The record's compact constructor lowercases every address it is given, `value = value.toLowerCase(Locale.ROOT)`, so the lens hands back something other than what was set. The tests never catch it: every sample address is already lowercase, so setting one and reading it back always agrees.
+
+``` java
+// The record behind the page's ticket: its constructor lowercases every address
+@GenerateLenses
+record NormalisedEmail(String value) {
+  NormalisedEmail {
+    value = value.toLowerCase(Locale.ROOT);
+  }
+}
+
+```
+
+The fix is to normalise where a value comes in, and let the record keep what it is given:
+
+``` java
+@GenerateLenses
+record ContactEmail(String value) {}
+
+```
+
+``` java
+  // The boundary normalises what comes in, and the record keeps what it is given
+  static ContactEmail fromRequest(String raw) {
+    return new ContactEmail(raw.strip().toLowerCase(Locale.ROOT));
+  }
+
+```
+
+Then test the lens with a sample the old constructor would have changed. `LensLaws` passes for `ContactEmail`, and fails for `NormalisedEmail`:
+
+``` java
+    ContactEmail stored = LensesBook.fromRequest("  Ada@Example.com ");
+    // The values set have capitals, which a lowercasing constructor would change
+    LensLaws.assertLensLaws(
+        ContactEmailLenses.value(), stored, "Ada@Example.com", "GRACE@example.com");
+```
+
+~~~admonish warning title="A constructor that changes a component's value breaks the lens"
+A lens must give back what you set. A compact constructor that changes a component's value, by lowercasing, trimming, rounding or deduplicating it, runs on every write, so the value read back is not the value set. Normalise where values come in, keep the constructor to checks that reject and copies that keep the value equal, and test the lens with `LensLaws` on a sample the change would alter.
+~~~
+
+A generated lens's `set`, and the `with*` helper built on it, copies the record through its canonical constructor: every other component as it was, and the focused one replaced. A compact constructor that normalises or checks a component, a defensive copy or a range check, therefore runs on every write.
+
+Another constructor the record declares is never the one called, even one taking as many parameters:
+
+``` java
+@GenerateLenses
+record Money(long cents, String currency) {
+  Money(Number major, String currency) {
+    this(Math.round(major.doubleValue() * 100), currency);
+  }
+}
+
+```
+
+A write through its generated lens:
+
+``` java
+    // 1234 cents, through Money(long, String); never the Number constructor
+    Money updated = MoneyLenses.cents().set(1234L, money);
+```
+
+The setters and Focus paths that `@GenerateSetters` and `@GenerateFocus` generate write the same way, as do the lenses `@ImportOptics` generates for a record.
+
+#### Customising the Generated Package
+
+By default, generated classes are placed in the same package as the annotated record. You can specify a different package using the `targetPackage` attribute to avoid name collisions or to organise generated code separately:
+
+```java
+// Generated class will be placed in org.example.generated.optics
+@GenerateLenses(targetPackage = "org.example.generated.optics")
+public record Address(String street, String city, String postcode) {}
+```
+
+This is particularly useful when:
+- Multiple records in different packages share the same name
+- You want to keep generated code separate from source code
+- You need to control the visibility of generated classes
+
+### Step 2: Composing a Deep Lens
+
+With the lenses generated, we can now compose them using the **`andThen`** method. We'll chain the individual lenses together to create a single, new `Lens` that represents the complete path from the top-level object (`Employee`) to the deeply nested field (`street`).
+
+The result is a new, powerful, and reusable `Lens<Employee, String>`.
+
+<!-- verify -->
+```java
+// Get the generated lenses
+Lens<Employee, Company> employeeToCompany = EmployeeLenses.company();
+Lens<Company, Address> companyToAddress = CompanyLenses.address();
+Lens<Address, String> addressToStreet = AddressLenses.street();
+
+// Compose them to create a single, deep lens
+Lens<Employee, String> employeeToStreet =
+    employeeToCompany
+        .andThen(companyToAddress)
+        .andThen(addressToStreet);
+```
+
+### Step 3: Performing Updates with the Composed Lens
+
+With our optics generated, we have two primary ways to perform updates.
+
+#### A) Simple, Shallow Updates with `with*` Helpers
+
+For simple updates to a top-level field, the generated `with*` methods are the most convenient and readable option.
+
+<!-- verify -->
+```java
+// Create an employee instance
+var employee = new Employee("Alice", new Company("Initech Inc.", initialAddress));
+
+// Use the generated helper to create an updated copy
+var updatedEmployee = EmployeeLenses.withName(employee, "Bob");
+```
+
+This is a cleaner, more discoverable alternative to using the lens directly (`EmployeeLenses.name().set("Bob", employee)`).
+
+#### B) Deep Updates with a Composed Lens
+
+For deep updates into nested structures, the composed lens is the perfect tool. The `Lens` interface provides two primary methods for this:
+
+* `set(newValue, object)`: Replaces the focused value with a new one.
+* `modify(function, object)`: Applies a function to the focused value to compute the new value.
+
+Both methods handle the "copy-and-update" cascade for you, returning a completely new top-level object.
+
+<!-- verify -->
+```java
+// Use the composed lens from Step 2
+Employee updatedEmployee = employeeToStreet.set("456 Main St", initialEmployee);
+```
+
+The `set` rebuilds only the records on the path, and reuses everything off it:
+
+<pre class="hkj-ascii-diagram" role="img" aria-label="Setting the street to 456 Main St rebuilds the employee, its company and its address, the three records on the path. The employee's name, the company's name, the city and the postcode are reused as they were.">
+Employee ●
+├─ name ........... "Alice"
+└─ company ●           company()
+   ├─ name ........ "Initech Inc."
+   └─ address ●        address()
+      ├─ city ..... "Anytown"
+      ├─ postcode . "AN1 1AA"
+      └─ street        street()
+      "123 Fake St" → "456 Main St"
+
+● on the path: rebuilt by set
+. off the path: reused as it was
+</pre>
+
+---
+
+## When to Use `with*` Helpers vs Manual Lenses
+
+Understanding when to use each approach will help you write cleaner, more maintainable code:
+
+### Use `with*` Helpers When
+
+* **Simple, top-level field updates**: Direct field replacement on the immediate object
+* **One-off updates**: You don't need to reuse the update logic
+* **API clarity**: You want the most discoverable, IDE-friendly approach
+
+
+<!-- verify -->
+```java
+// Perfect for simple updates
+var promotedEmployee = EmployeeLenses.withName(employee, "Senior " + employee.name());
+```
+
+### Use Composed Lenses When
+
+* **Deep updates**: Navigating multiple levels of nesting
+* **Reusable paths**: The same update pattern will be used multiple times
+* **Complex transformations**: Using `modify()` with functions
+* **Conditional updates**: Part of larger optic compositions
+
+
+<!-- verify -->
+```java
+// Ideal for reusable deep updates
+Lens<Employee, String> streetLens = employeeToCompany
+    .andThen(companyToAddress)
+    .andThen(addressToStreet);
+
+// Can be reused across your application
+Employee moved = streetLens.set("New Office Street", employee);
+Employee uppercased = streetLens.modify(String::toUpperCase, employee);
+```
+
+~~~admonish tip title="Cross-Optic Composition"
+Lenses can also compose with other optic types. When you compose a `Lens` with a `Prism`, you get an `Affine` (the prism may not match, so the focus becomes zero-or-one):
+
+<!-- verify -->
+```java
+// Lens.andThen(Prism) = Affine
+@GenerateLenses
+record Visitor(Optional<Settings> settings) {}
+Lens<Visitor, Optional<Settings>> settingsLens = VisitorLenses.settings();
+Prism<Optional<Settings>, Settings> somePrism = Prisms.some();
+
+Affine<Visitor, Settings> visitorSettings = settingsLens.andThen(somePrism);
+```
+
+See [Composition Rules](composition_rules.md) for the complete reference on how different optics compose.
+~~~
+
+### Use Manual Lens Creation When {#use-manual-lens-creation-when}
+
+* **A type you cannot annotate**: a JDK or library class. For a whole library of them, [Optics for External Types](importing_optics.md) generates the lenses instead
+
+
+<!-- verify -->
+```java
+// java.time.Duration cannot carry @GenerateLenses, so write its lens by hand
+Lens<Duration, Long> seconds = Lens.of(
+    Duration::getSeconds,
+    (duration, s) -> Duration.ofSeconds(s, duration.getNano())
+);
+```
+
+~~~admonish warning title="A lens over derived data is usually unlawful"
+A lens must give back what you set: `get(set(a, s))` is `a`. A lens over a *computed* value rarely can. A "full address" lens that joins `street + ", " + city` and splits on `", "` to write reads back something else for a street that itself contains a comma. Nothing checks this for you, as the ticket under [Every Write Runs the Canonical Constructor](#every-write-runs-the-canonical-constructor) shows, so test a hand-written lens with `LensLaws.assertLensLaws` from `hkj-test`.
+~~~
+
+---
+
+## Why a lens, when you have `@With`? {#lens-or-wither}
+
+Lombok's `@With`, a hand-written `withX` method and the generated `with*` helpers are all withers: each copies one record with one component replaced. For a change one level deep and made once, a wither is enough, as [When to Use `with*` Helpers vs Manual Lenses](#when-to-use-with-helpers-vs-manual-lenses) says. For a change that goes deeper, is reused, or carries an effect, a lens earns its place.
+
+A wither knows only its own record. A change three records deep takes one wither per level, each nested inside the next. Here it is with the instance withers Lombok's `@With` generates:
+
+``` java
+    Employee moved =
+        employee.withCompany(
+            employee.company().withAddress(employee.company().address().withStreet("456 Main St")));
+```
+
+`employee.company()` appears twice, because each level reads the path again. The composed lens from [Step 2](#step-2-composing-a-deep-lens) makes the same change in one call, `employeeToStreet.set("456 Main St", employee)`, and it is a value you can store and reuse. Two more jobs need a lens:
+
+- **A lens updates by function, and by effect.** `modify` reads and writes the path in one call, and [`modifyF`](#beyond-the-basics-effectful-updates-with-modifyf) runs a check or a lookup on the way. A wither takes only the new value.
+- **Coupled fields need one construction.** Take `Range(int lo, int hi)`, whose constructor refuses `lo > hi`. On `Range(1, 3)`, `withLo(5).withHi(10)` fails on `Range(5, 3)`, and which order works depends on the direction of the move. Two lens writes fail alike; [`Lens.paired`](coupled_fields.md) constructs once.
+
+Neither creates a value, so a lens can replace `@With`, never `@Builder`. A class built with Lombok gets lenses through [`@Wither` or `@ViaBuilder`](copy_strategies.md), with Lombok listed before `hkj-processor` ([Lombok setup](../tooling/manual_setup.md#lombok)).
+
+Java 25, which the library is built on today, has no wither in the language. [JEP 468](https://openjdk.org/jeps/468) proposes one: a `with` block that changes any components of one record through one constructor call. A block constructs once, as `Lens.paired` does, but it changes one record, so the street change nests three blocks where the composed lens is one call.
+
+---
+
+## Common Pitfalls
+
+### Don't Do This
+
+
+<!-- verify -->
+```java
+// Repetitive: Reading through the path, then writing through it again
+var currentStreet = employeeToStreet.get(employee);
+var newEmployee = employeeToStreet.set(currentStreet.toUpperCase(), employee);
+
+// Verbose: Rebuilding lenses repeatedly
+var street1 = EmployeeLenses.company().andThen(CompanyLenses.address()).andThen(AddressLenses.street()).get(emp1);
+var street2 = EmployeeLenses.company().andThen(CompanyLenses.address()).andThen(AddressLenses.street()).get(emp2);
+
+// Mixing approaches unnecessarily
+var tempCompany = EmployeeLenses.company().get(employee);
+var updatedCompany = CompanyLenses.withName(tempCompany, "New Company");
+var finalEmployee = EmployeeLenses.withCompany(employee, updatedCompany);
+```
+
+### Do This Instead
+
+
+<!-- verify -->
+```java
+// Clear: Use modify() for transformations
+var newEmployee = employeeToStreet.modify(String::toUpperCase, employee);
+
+// Reusable: Create the lens once, use many times
+var streetLens = EmployeeLenses.company().andThen(CompanyLenses.address()).andThen(AddressLenses.street());
+var street1 = streetLens.get(emp1);
+var street2 = streetLens.get(emp2);
+
+// Consistent: Use one approach for the entire update
+var finalEmployee = EmployeeLenses.company()
+    .andThen(CompanyLenses.name())
+    .set("New Company", employee);
+```
+
+---
+
+## Complete, Runnable Example
+
+The following standalone example puts all these steps together. You can run it to see the output and the immutability in action.
+
+```java
+
+import org.higherkindedj.optics.Lens;
+import org.higherkindedj.optics.annotations.GenerateLenses;
+
+/**
+ * A runnable example demonstrating how to compose Lenses and use generated helper methods to
+ * perform deep, immutable updates on nested data structures.
+ */
+public class LensUsageExample {
+
+  // 1. Define a nested, immutable data model.
+  // The @GenerateLenses annotation will automatically create Lens implementations
+  // and `with*` helper methods for each record component.
+  @GenerateLenses
+  public record Address(String street, String city, String postcode) {}
+
+  @GenerateLenses
+  public record Company(String name, Address address) {}
+
+  @GenerateLenses
+  public record Employee(String name, Company company) {}
+
+  public static void main(String[] args) {
+    // 2. Create an initial, nested immutable object.
+    var initialAddress = new Address("123 Fake St", "Anytown", "AN1 1AA");
+    var initialCompany = new Company("Initech Inc.", initialAddress);
+    var initialEmployee = new Employee("Alice", initialCompany);
+
+    System.out.println("Original Employee: " + initialEmployee);
+    System.out.println("------------------------------------------");
+
+    // =======================================================================
+    // SCENARIO 1: Using the generated `with*` helper methods for shallow updates
+    // =======================================================================
+
+    // The generated `EmployeeLenses` class contains static `with*` methods.
+    // This is highly discoverable in an IDE by typing `EmployeeLenses.with...`
+    Employee employeeWithNewName = EmployeeLenses.withName(initialEmployee, "Bob");
+    System.out.println("After `withName`:    " + employeeWithNewName);
+
+    // You can easily chain these calls for multiple updates.
+    Employee updatedEmployee =
+        EmployeeLenses.withCompany(
+            initialEmployee, CompanyLenses.withName(initialEmployee.company(), "Megacorp"));
+
+    System.out.println("After chaining `with*`: " + updatedEmployee);
+    System.out.println("------------------------------------------");
+
+    // =======================================================================
+    // SCENARIO 2: Using composed Lenses for deep, precise updates
+    // =======================================================================
+
+    // 3. Compose lenses to create a "deep" focus into a nested field.
+    Lens<Employee, Company> employeeToCompany = EmployeeLenses.company();
+    Lens<Company, Address> companyToAddress = CompanyLenses.address();
+    Lens<Address, String> addressToStreet = AddressLenses.street();
+
+    // The `andThen` method chains lenses together.
+    Lens<Employee, String> employeeToStreet =
+        employeeToCompany.andThen(companyToAddress).andThen(addressToStreet);
+
+    // 4. Use the composed lens to perform immutable updates.
+
+    // --- Using `set` to replace a value ---
+    // This creates a new Employee object with only the street changed.
+    Employee updatedEmployeeSet = employeeToStreet.set("456 Main St", initialEmployee);
+
+    System.out.println("After deep `set`:       " + updatedEmployeeSet);
+    System.out.println("Original is unchanged:  " + initialEmployee);
+    System.out.println("------------------------------------------");
+
+    // --- Using `modify` to apply a function to the value ---
+    // This is useful for updates based on the existing value.
+    Employee updatedEmployeeModify = employeeToStreet.modify(String::toUpperCase, initialEmployee);
+
+    System.out.println("After deep `modify`:    " + updatedEmployeeModify);
+    System.out.println("Original is unchanged:  " + initialEmployee);
+  }
+}
+```
+
+**Expected Output:**
+
+```
+Original Employee: Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
+------------------------------------------
+After `withName`:    Employee[name=Bob, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
+After chaining `with*`: Employee[name=Alice, company=Company[name=Megacorp, address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
+------------------------------------------
+After deep `set`:       Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=456 Main St, city=Anytown, postcode=AN1 1AA]]]
+Original is unchanged:  Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
+------------------------------------------
+After deep `modify`:    Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 FAKE ST, city=Anytown, postcode=AN1 1AA]]]
+Original is unchanged:  Employee[name=Alice, company=Company[name=Initech Inc., address=Address[street=123 Fake St, city=Anytown, postcode=AN1 1AA]]]
+```
+
+As you can see, the generated optics provide a clean, declarative, and type-safe API for working with immutable data, whether your updates are simple and shallow or complex and deep.
+
+---
+
+## Beyond the Basics: Effectful Updates with `modifyF`
+
+While `set` and `modify` are for simple, pure updates, the `Lens` interface also supports effectful operations through `modifyF`. This method allows you to perform updates within a context like an `Optional`, `Validated`, or `CompletableFuture`.
+
+This means you can use the same `employeeToStreet` lens to perform a street name update that involves failable validation or an asynchronous API call.
+
+~~~admonish tip title="Why this matters"
+This is the point where these lenses part company with hand-rolled `withX` helpers and reflective mappers: the *path* and the *effect* are independent. You define `employeeToStreet` once; whether an update through it is pure, validated with every error accumulated, or awaited from an async call is decided at the call site by the `Applicative` you hand to `modifyF`. No second path to maintain, and no way for the effectful variant to drift from the pure one.
+~~~
+
+<!-- verify -->
+```java
+// Example: Street validation that might fail
+Function<String, Kind<ValidatedKind.Witness<String>, String>> validateStreet =
+    street -> street.length() > 0 && street.length() < 100
+        ? VALIDATED.widen(Validated.valid(street))
+        : VALIDATED.widen(Validated.invalid("Street name must be between 1 and 100 characters"));
+
+// Use the same lens with effectful validation
+Kind<ValidatedKind.Witness<String>, Employee> result =
+    employeeToStreet.modifyF(validateStreet, employee, validatedApplicative);
+```
+
+~~~admonish tip title="For Comprehension Integration"
+Lenses integrate with For comprehensions in two ways:
+- Use `focus()` within a For comprehension to extract values via lens-like accessors. See [For Comprehensions: Extracting Values with focus()](../functional/for_optics.md#extracting-nested-values-with-focus).
+- Use `ForState` for stateful lens operations that thread updates through a workflow. See [For Comprehensions: Stateful Updates with ForState](../functional/for_mtl.md#stateful-updates-with-forstate).
+~~~
+
+~~~admonish info title="Key Takeaways"
+* **A lens is a first-class path to a required field**: `get`, `set`, and `modify`, with the copy-and-update cascade handled for you
+* **Compose with `andThen` to any depth**: build the path once, store it as a constant, reuse it everywhere
+* **Withers for shallow, composed lenses for deep**: the generated `with*` helpers, Lombok's `@With` and hand-written withers each change one record; composition covers the rest, and `Lens.paired` changes coupled components at once
+* **Prefer `modify` over get-then-set**, and `modifyF` when the update carries an effect (validation, async) through the same path
+~~~
+
+~~~admonish tip title="See Also"
+- [Production Readiness](production_readiness.md#what-set-and-modify-allocate): what a lens update allocates, and when to cache a composed optic
+~~~
+
+~~~admonish info title="Hands-On Learning"
+Practise lens basics in [Tutorial 01: Lens Basics](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial01_LensBasics.java) (7 exercises) and generated optics in [Tutorial 07: Generated Optics](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial07_GeneratedOptics.java) (7 exercises).
+~~~
+
+---
+
+**Previous:** [The Optic Types](ch1_intro.md)
+**Next:** [Coupled Fields](coupled_fields.md)

@@ -1,0 +1,272 @@
+# ForPath: For-Comprehensions with Effect Paths
+
+> *"Though this be madness, yet there is method in't."*
+>
+> — William Shakespeare, *Hamlet*
+
+And so it is with for-comprehensions: what appears to be arcane syntax hides a
+deeply methodical approach to composing sequential operations.
+
+~~~admonish info title="What You'll Learn"
+- How ForPath bridges the For comprehension system and the Effect Path API
+- Creating comprehensions directly with Path types (no manual `Kind` extraction)
+- Using generators (`.from()`), bindings (`.let()`), guards (`.when()`), and projections (`.yield()`)
+- Choosing between ForPath and the standard For class
+~~~
+
+~~~ admonish example title="See Example Code:"
+[ForPathExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/effect/ForPathExample.java)
+~~~
+
+---
+
+## The Problem: Bridging Two Worlds
+
+The standard [For](../functional/for_comprehension.md) class provides powerful for-comprehension
+syntax, but it operates on raw `Kind<M, A>` values and requires explicit `Monad` instances.
+When working with the Effect Path API, this creates friction:
+
+<!-- verify -->
+```java
+// Using standard For with Path types requires extraction and rewrapping
+Kind<MaybeKind.Witness, Integer> kindResult = For.from(maybeMonad, MAYBE.widen(path1.run()))
+    .from(a -> MAYBE.widen(path2.run()))
+    .yield((a, b) -> a + b);
+
+MaybePath<Integer> result = Path.maybe(MAYBE.narrow(kindResult));
+```
+
+The intent is clear, but the ceremony obscures it. `ForPath` eliminates this friction:
+
+<!-- verify -->
+```java
+// ForPath works directly with Path types
+MaybePath<Integer> result = ForPath.from(path1)
+    .from(a -> path2)
+    .yield((a, b) -> a + b);
+```
+
+The comprehension accepts Path types and returns Path types. No manual extraction,
+no rewrapping, no boilerplate.
+
+---
+
+## Entry Points
+
+`ForPath` provides entry points for each supported Path type:
+
+| Path Type | Entry Point | Supports `when()` |
+|-----------|-------------|-------------------|
+| `MaybePath<A>` | `ForPath.from(maybePath)` | Yes |
+| `OptionalPath<A>` | `ForPath.from(optionalPath)` | Yes |
+| `EitherPath<E, A>` | `ForPath.from(eitherPath)` | No |
+| `TryPath<A>` | `ForPath.from(tryPath)` | No |
+| `IOPath<A>` | `ForPath.from(ioPath)` | No |
+| `VTaskPath<A>` | `ForPath.from(vtaskPath)` | No |
+| `IdPath<A>` | `ForPath.from(idPath)` | No |
+| `NonDetPath<A>` | `ForPath.from(nonDetPath)` | Yes |
+| `GenericPath<F, A>` | `ForPath.from(genericPath)` | Optional |
+
+All nine path types support up to **12 chained bindings**. The `when()` guard operation
+is only available for Path types backed by `MonadZero`, which can represent emptiness
+or failure.
+
+---
+
+## Core Operations
+
+### Generators: `.from()`
+
+The `.from()` operation extracts a value from the current step and chains to a new
+Path-producing computation. This is the monadic bind (`flatMap`) in disguise.
+
+<!-- verify -->
+```java
+MaybePath<String> result = ForPath.from(Path.just("Alice"))
+    .from(name -> Path.just(name.length()))         // a = "Alice", b = 5
+    .from(t -> Path.just(t._1() + ":" + t._2()))    // t is Tuple2<String, Integer>
+    .yield((name, len, combined) -> combined);      // "Alice:5"
+```
+
+Each `.from()` adds a new value to the accumulating tuple, making all previous
+values available to subsequent steps.
+
+### Value Bindings: `.let()`
+
+The `.let()` operation computes a pure value from accumulated results without
+introducing a new effect. It's equivalent to `map` that carries the value forward.
+
+<!-- verify -->
+```java
+MaybePath<String> result = ForPath.from(Path.just(10))
+    .let(a -> a * 2)                    // b = 20 (pure calculation)
+    .let(t -> t._1() + t._2())          // c = 30 (can access tuple)
+    .yield((a, b, c) -> "Sum: " + c);   // "Sum: 30"
+```
+
+### Guards: `.when()`
+
+For Path types with [`MonadZero`](../functional/monad_zero.md) (MaybePath, OptionalPath, NonDetPath), the `.when()`
+operation filters results. When the predicate returns false, the computation
+short-circuits to the monad's zero value (Nothing, empty, etc.).
+
+<!-- verify -->
+```java
+MaybePath<Integer> evenOnly = ForPath.from(Path.just(4))
+    .when(n -> n % 2 == 0)              // passes: 4 is even
+    .yield(n -> n * 10);                // Just(40)
+
+MaybePath<Integer> filtered = ForPath.from(Path.just(3))
+    .when(n -> n % 2 == 0)              // fails: 3 is odd
+    .yield(n -> n * 10);                // Nothing
+```
+
+### Projection: `.yield()`
+
+Every comprehension ends with `.yield()`, which maps the accumulated values to a
+final result. You can access values individually or as a tuple:
+
+<!-- verify -->
+```java
+// Individual parameters
+MaybePath<Integer> byParameter = ForPath.from(Path.just(1))
+    .let(a -> a + 1)
+    .let(t -> t._1() + t._2())
+    .yield((a, b, c) -> a + b + c);
+
+// Or as a tuple for many values
+MaybePath<Integer> byTuple = ForPath.from(Path.just(1))
+    .let(a -> a + 1)
+    .let(t -> t._1() + t._2())
+    .yield(t -> t._1() + t._2() + t._3());
+```
+
+---
+
+## Optics Integration
+
+ForPath integrates with the [Focus DSL](../optics/focus_dsl.md) for structural
+navigation within comprehensions.
+
+### Extracting with `.focus()`
+
+The `.focus()` operation uses a `FocusPath` to extract a nested value:
+
+<!-- verify -->
+```java
+record User(String name, Address address) {}
+record Address(String city, String postcode) {}
+
+// Create lenses for each field
+Lens<User, Address> addressLens = Lens.of(
+    User::address, (u, a) -> new User(u.name(), a));
+Lens<Address, String> cityLens = Lens.of(
+    Address::city, (a, c) -> new Address(c, a.postcode()));
+
+// Compose paths with via() for nested access
+FocusPath<User, Address> addressPath = FocusPath.of(addressLens);
+FocusPath<User, String> userCityPath = addressPath.via(FocusPath.of(cityLens));
+
+MaybePath<String> result = ForPath.from(Path.just(user))
+    .focus(userCityPath)                        // extract city directly
+    .yield((user, city) -> city.toUpperCase());
+```
+
+Alternatively, chain focus operations where the second takes a function:
+
+<!-- verify -->
+```java
+FocusPath<User, Address> addressPath = FocusPath.of(addressLens);
+
+MaybePath<String> result = ForPath.from(Path.just(user))
+    .focus(addressPath)                         // extract address -> Steps2
+    .focus(t -> t._2().city())                  // extract city from tuple
+    .yield((user, address, city) -> city.toUpperCase());
+```
+
+### Pattern Matching with `.match()`
+
+The `.match()` operation uses an `AffinePath` for optional extraction. When the
+focus is absent, the comprehension short-circuits for `MonadZero` types:
+
+<!-- verify -->
+```java
+sealed interface Result permits Success, Failure {}
+record Success(String value) implements Result {}
+record Failure(String error) implements Result {}
+
+AffinePath<Result, Success> successPath = AffinePath.of(
+    Affine.of(
+        r -> r instanceof Success s ? Optional.of(s) : Optional.empty(),
+        (r, s) -> s
+    )
+);
+
+MaybePath<String> result = ForPath.from(Path.just((Result) new Success("data")))
+    .match(successPath)                         // extract Success
+    .yield((r, success) -> success.value().toUpperCase());
+// Just("DATA")
+
+MaybePath<String> empty = ForPath.from(Path.just((Result) new Failure("error")))
+    .match(successPath)                         // fails to match
+    .yield((r, success) -> success.value());
+// Nothing
+```
+
+---
+
+## When to Use ForPath vs For
+
+| Scenario | Use |
+|----------|-----|
+| Working with Effect Path API | `ForPath` |
+| Need Path types as output | `ForPath` |
+| Working with raw `Kind<M, A>` | `For` |
+| Using monad transformers (StateT, EitherT) | `For` |
+| Custom monads without Path wrappers | `For` with `GenericPath` adapter |
+
+For monad transformer stacks, the standard `For` class remains the appropriate choice
+as it works directly with the transformer's `Kind` representation.
+
+---
+
+~~~admonish info title="Key Takeaways"
+* **ForPath eliminates boilerplate** when composing Path types in for-comprehension style
+* **Entry points accept Path types directly** and return Path types
+* **All For operations are supported**: `from()`, `let()`, `when()` (where applicable), `yield()`
+* **`par()` expresses independent computations** with true concurrency for VTaskPath
+* **Optics integration** via `focus()` and `match()` enables structural navigation
+* **Type safety is preserved** throughout the comprehension
+~~~
+
+~~~admonish tip title="See Also"
+- [ForPath Examples](forpath_examples.md) - EitherPath, IOPath, VTaskPath, NonDetPath, and extended arity examples
+- [ForPath Parallel Composition](forpath_par.md) - Express independent computations with `par()`
+- [ForPath Traverse](forpath_traverse.md) - Traverse/Sequence/FlatTraverse within ForPath
+- [For Comprehension](../functional/for_comprehension.md) - The underlying For class for raw `Kind` values
+- [Effect Path Overview](effect_path_overview.md) - Introduction to the Effect Path API
+- [VTaskPath](path_vtask.md) - Virtual thread-based Effect Path for concurrent workloads
+- [Focus DSL](../optics/focus_dsl.md) - Optics integration for structural navigation
+~~~
+
+~~~admonish example title="Benchmarks"
+ForPath has dedicated JMH benchmarks measuring for-comprehension overhead compared to direct chaining. Key expectations:
+
+- **ForPath vs direct chaining:** 10-25% overhead (primarily from tuple allocation)
+- **`let()` vs `from()`:** `let()` is ~20% faster as it avoids Path wrapping
+- ForPath overhead > 50% is a warning sign indicating tuple handling inefficiency
+
+```bash
+./gradlew :hkj-benchmarks:jmh --includes=".*ForPathVTaskBenchmark.*"
+```
+See [Benchmarks & Performance](../benchmarks.md) for full details and how to interpret results.
+~~~
+
+~~~admonish info title="Hands-On Learning"
+Practise parallel composition with ForPath in [Tutorial 02: ForPath Parallel Composition](../tutorials/expression/forpath_parallel_journey.md) (9 exercises).
+~~~
+
+---
+
+**Previous:** [Composition Patterns](composition.md)
+**Next:** [ForPath Examples](forpath_examples.md)

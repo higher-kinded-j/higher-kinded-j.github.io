@@ -1,0 +1,291 @@
+# Focus DSL Reference
+
+_Patterns, pitfalls, generated-code settings and the questions about the Focus DSL that keep recurring._
+
+This page is the lookup shelf. The teaching lives in [Focus DSL](focus_dsl.md), [Collections, Optionals and Sealed Types](focus_navigation.md) and [Type Class and Effect Integration](focus_effects.md); come here when you already know the shape of what you want.
+
+---
+
+## Focus DSL or Manual Composition?
+
+**Reach for the Focus DSL** when you are navigating nested structures and want the IDE to lead:
+
+<!-- verify -->
+```java
+List<String> names =
+    OrgChartFocus.units()
+        .via(OrgUnitFocus.members())
+        .via(OrgMemberFocus.name())
+        .getAll(company);
+```
+
+**Compose optics by hand** for custom optics (computed properties, validated updates), for reusable optic libraries, and where the optic itself carries conditional logic.
+
+**In practice, do both.** Navigate with Focus, then extract the composed optic once and reuse it:
+
+<!-- verify -->
+```java
+// Build the path once, keep the optic
+Traversal<OrgChart, String> allEmails =
+    OrgChartFocus.units()
+        .via(OrgUnitFocus.members())
+        .via(OrgMemberFocus.email())
+        .toTraversal();
+
+List<String> emails = Traversals.getAll(allEmails, company);
+```
+
+A path is an optic underneath: `toLens()`, `toAffine()` and `toTraversal()` hand it to `OpticOps`, `OpticPrograms` or anything else that takes an optic.
+
+---
+
+## Common Patterns
+
+### Pattern 1: Batch Updates, Narrowed by a Predicate
+
+`filter` lives on `TraversalPath`, so narrow first and compose afterwards:
+
+<!-- verify -->
+```java
+OrgChart updated =
+    OrgChartFocus.units()
+        .filter(u -> u.name().equals("Engineering"))
+        .via(OrgUnitFocus.members())
+        .via(OrgMemberFocus.age())
+        .modifyAll(age -> age + 1, company);
+```
+
+### Pattern 2: Safe Deep Access
+
+Index into a collection from the path that still focuses it, then keep navigating:
+
+<!-- verify -->
+```java
+Optional<String> firstEmail =
+    FocusPath.of(OrgChartLenses.units())
+        .via(FocusPaths.listAt(0))
+        .via(OrgUnitFocus.members())
+        .via(OrgMemberFocus.email())
+        .preview(company);
+
+String email = firstEmail.orElse("nobody@example.com");
+```
+
+`FocusPaths.listAt(0)` takes `OrgUnit` from the list the path focuses on, so nothing needs spelling out. It yields an `AffinePath`, which composing with a traversal widens back out, so the read is `preview` (the first focus, if any) rather than `getOptional`.
+
+### Pattern 3: Validation Across a Traversal
+
+<!-- verify -->
+```java
+Validated<List<String>, OrgChart> checked =
+    OpticOps.modifyAllValidated(
+        company,
+        OrgChartFocus.units()
+            .via(OrgUnitFocus.members())
+            .via(OrgMemberFocus.age())
+            .toTraversal(),
+        Fixture::validateAge);
+// every age is checked: Invalid lists each failing age's message, Valid holds the org chart
+```
+
+`Fixture` is the compiled example's own setup: sample records, hand-written optics and validators. Nothing in it is library API.
+
+---
+
+## Customising Generated Code
+
+<!-- verify -->
+```java
+// Fluent cross-type navigation, on by default: address() is a navigator
+@GenerateFocus
+record Company(String name, Address address) {}
+
+// Plain paths only, with no navigators
+@GenerateFocus(generateNavigators = false)
+record Vendor(String name, Address registeredOffice) {}
+
+// maxNavigatorDepth = 1: division() is a navigator, and its own hops return plain paths
+@GenerateFocus(maxNavigatorDepth = 1)
+record Organisation(Division division) {}
+
+// Which fields get a navigator
+@GenerateFocus(includeFields = {"homeAddress"})
+record Commuter(String name, Address homeAddress, Address workAddress) {}
+
+@GenerateFocus(excludeFields = {"backup"})
+record SavedSettings(Settings main, Settings backup) {}
+
+// Widen Map, array and third-party collection fields at the static method
+@GenerateFocus(widenCollections = true)
+record Stocktake(Map<String, Integer> inventory) {}
+
+// Widen one container and keep another whole
+@GenerateFocus(widenFields = "prices")
+record PriceSheet(Map<String, Integer> prices, Map<String, String> notes) {}
+```
+
+Only a `maxNavigatorDepth` of 1 or less changes the generated code; [Controlling navigator generation](focus_navigation.md#controlling-navigator-generation) says what each of these attributes does. A `targetPackage` moves the generated class into another package:
+
+```java
+// Where the generated class lands
+@GenerateFocus(targetPackage = "com.myapp.optics.focus")
+public record Badge(String name) {}
+```
+
+The record must then be `public`, since the generated class in the other package reads it. The processor refuses a package-private one, saying that `record 'Badge' cannot be reached from 'com.myapp.optics.focus'`:
+
+<!-- verify:rejects "record 'Badge' cannot be reached from 'com.myapp.optics.focus'" -->
+```java
+@GenerateFocus(targetPackage = "com.myapp.optics.focus")
+record Badge(String name) {}
+```
+
+---
+
+## Integration with the Free Monad DSL
+
+`OpticPrograms` accepts Focus paths directly, so a path can become a step in a program that is interpreted later:
+
+<!-- verify -->
+```java
+Free<OpticOpKind.Witness, OrgChart> program =
+    OpticPrograms.get(company, OrgChartFocus.name())
+        .flatMap(
+            name ->
+                name.startsWith("Acme")
+                    ? OpticPrograms.modifyAll(
+                        company,
+                        OrgChartFocus.units()
+                            .via(OrgUnitFocus.members())
+                            .via(OrgMemberFocus.age())
+                            .toTraversal(),
+                        age -> age + 1)
+                    : OpticPrograms.pure(company));
+
+OrgChart result = OpticInterpreters.direct().run(program);
+```
+
+Swap `direct()` for `logging()` or `validating()` to run the same program another way. See [Free Monad DSL](free_monad_dsl.md) and [Interpreters](interpreters.md).
+
+---
+
+## Common Pitfalls
+
+**Do not rebuild paths in a loop.** Hoist the path (or the extracted optic) out of the loop, as [Caching optics](production_readiness.md#caching-optics) explains.
+
+**Do not reach for `get` on a path that may miss.** Use the operation the path type guarantees:
+
+<!-- verify -->
+```java
+String name = OrgMemberFocus.name().get(alice);              // FocusPath: always there
+Optional<String> email = OrgMemberFocus.email().getOptional(alice);   // AffinePath: may be empty
+List<OrgMember> all = OrgUnitFocus.members().getAll(unit);            // TraversalPath: many
+```
+
+**Do not expect a collection field to be container-level.** `OrgChartFocus.units()` focuses each unit; the `List` itself lives behind `FocusPath.of(OrgChartLenses.units())`.
+
+---
+
+## Troubleshooting
+
+### `Object` turns up after `traverseOver` {#object-turns-up-after-traverseover}
+
+Java takes the witness from the `Traverse` argument, but the element type only from where the result goes. In a chain such as `.traverseOver(...).getAll(user)`, nothing pins the element type, so it falls back to `Object`, and javac reports `incompatible types: List<Object> cannot be converted to List<Role>`:
+
+<!-- verify:rejects "cannot be converted to" -->
+```java
+List<Role> roles = rolesPath.traverseOver(ListTraverse.INSTANCE).getAll(user);
+```
+
+Widen through `each(EachInstances.fromTraverse(...))` instead. It takes the element type from the `Kind` the path focuses on, so it holds in a chain:
+
+<!-- verify -->
+```java
+List<Role> roles = rolesPath.each(EachInstances.fromTraverse(ListTraverse.INSTANCE)).getAll(user);
+```
+
+`traverseOver` is deprecated for removal in 0.6.0. The same inference gap holds for any generic call whose result nothing pins, such as `Instances.validated(Semigroups.<String>list())` at the head of a chain. [Common Compiler Errors](compiler_errors.md#traverseover-and-the-higher-kinded-witness-type) has the entry for the message.
+
+### "Incompatible types" on a long chain
+
+Break the chain into intermediate variables with declared types. The first line that will not compile is the step that widened differently from your expectation, and naming the types makes it obvious which one.
+
+### "Sealed or non-sealed local classes are not allowed"
+
+Sealed interfaces cannot be declared inside a method. Move them to class level, alongside their permitted records.
+
+### "Method reference `::new` does not work as a BiFunction"
+
+A single-component record's canonical constructor is a `Function`, not a `BiFunction`, so `Lens.of(ShelfLabel::barcode, ShelfLabel::new)` will not compile. Write the lambda: `Lens.of(ShelfLabel::barcode, (label, code) -> new ShelfLabel(code))`.
+
+### `getAll()` returns an empty list
+
+Check, in order: whether an `AffinePath` in the chain actually matches (`matches(source)`), whether an `instanceOf` step matches the runtime type, and whether the source collection is empty. `traced()` shows you which step lost the focus, and `count(source)` tells you how many survived.
+
+---
+
+## FAQ
+
+### Which `Each` does a field need? {#when-should-i-use-each-versus-traverseover}
+
+| Field is | Use |
+|----------|-----|
+| `List<T>` | `each(EachInstances.listEach())`, already applied by the generated method |
+| `Set<T>`, `Collection<T>` | `each(EachInstances.setEach())` / `each(EachInstances.collectionEach())`, already applied by the generated method |
+| `Kind<F, T>` on a `@GenerateFocus` record | nothing: the processor generates the traversal |
+| `Kind<F, T>` behind a hand-written lens | `each(EachInstances.fromTraverse(SomeTraverse.INSTANCE))`; `traverseOver` is deprecated |
+
+### Why pass `Instances.monadError(maybe())` to `modifyF()` rather than an Applicative?
+
+`modifyF` asks for a `Functor` (on `FocusPath`) or an `Applicative` (on the wider paths), and every `Monad` is both. Higher-Kinded-J does not ship a separate `MaybeApplicative` because the monad instance already provides those operations:
+
+<!-- verify -->
+```java
+Kind<MaybeKind.Witness, OrgMember> result =
+    OrgMemberFocus.email().modifyF(Fixture::checkEmail, alice, Instances.monadError(maybe()));
+```
+
+### Can I use the Focus DSL with third-party types?
+
+Yes. Navigate as far as the generated paths go, then `.via()` a hand-written or generated optic for the external type. [Optics for External Types](importing_optics.md) generates those optics for you, and [Focus DSL with External Libraries](focus_external_bridging.md) works through the bridge end to end.
+
+### How do I handle nullable fields?
+
+In order of preference:
+
+1. **Model the absence as `Optional<T>`.** The generated method applies `.some(FocusPaths.optionalSome())` and hands you an `AffinePath`, with no extra step at all.
+2. **Annotate the component `@Nullable`.** Any of the six recognised annotations will do, wherever that annotation's own `@Target` puts it, and the generated method applies `.nullable()` for you.
+3. **Chain `.nullable()`** on the generated `FocusPath`. It turns null into an empty focus.
+4. **Build the path with `AffinePath.ofNullable(getter, setter)`** when there is no generated companion to start from.
+
+Two rules govern the annotated form. A nullable container widens through `.nullable()` and then its own step, where it has one, so `@Nullable List<T>` is `.nullable().each(EachInstances.listEach())`, and a null list has no elements. A nullable container inside another is ruled out the same way, and a navigator passes over a null element it would read. And position counts as Java defines it: `String @Nullable []` is a nullable array, while `@Nullable String[]` and `List<@Nullable String>` annotate the elements and leave the field itself non-null.
+
+### Can I build Focus paths at runtime?
+
+Focus paths are designed for compile-time type safety. When the path is only known at runtime, build the optic dynamically and wrap it: `TraversalPath.of(someTraversal)` and `FocusPath.of(someLens)` accept any optic.
+
+---
+
+~~~admonish info title="Hands-On Learning"
+- [Tutorial 12: Focus DSL](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial12_FocusDSL.java) (10 exercises)
+- [Tutorial 13: Advanced Focus DSL](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial13_AdvancedFocusDSL.java) (8 exercises)
+- [Tutorial 19: Navigator Generation](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial19_NavigatorGeneration.java) (8 exercises)
+- [Tutorial 20: Custom Container Navigation](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/optics/Tutorial20_ContainerNavigation.java) (4 exercises)
+~~~
+
+~~~admonish tip title="See Also"
+- [Focus DSL](focus_dsl.md): core concepts and path types
+- [Lenses](lenses.md): the optic underneath a `FocusPath`
+- [Updates That Can Fail](fluent_api.md): validation-aware modification through `OpticOps`
+- [Free Monad DSL](free_monad_dsl.md): optic programs and interpreters
+- [Production Readiness](production_readiness.md#adapters-and-paths): what a Focus path adds to its optic, and when to cache one
+~~~
+
+~~~admonish tip title="Further Reading"
+- **Monocle**: [Focus DSL](https://www.optics.dev/Monocle/docs/focus): scala's equivalent, and the inspiration for this design
+~~~
+
+---
+
+**Previous:** [Coming from Monocle or Haskell lens](from_monocle.md)
+**Next:** [Common Compiler Errors](compiler_errors.md)
