@@ -759,7 +759,7 @@ When an operation can fail with a typed error, use `EitherPath`:
 import org.higherkindedj.hkt.effect.Path;
 
 var user = Path.maybe(repository.findById(userId))
-    .toEitherPath(new AppError.NotFound(userId));     // Nothing becomes Left(error)
+    .<AppError>toEitherPath(new AppError.NotFound(userId)); // Nothing becomes Left(error)
 
 var order = user
     .via(u -> Path.either(orderService.create(u)))    // chain another operation
@@ -767,6 +767,9 @@ var order = user
 
 var result = order.run();                             // Either<AppError, Order>
 ```
+
+`<AppError>` gives the chain its error type; [Chain It Together](#chain-it-together) explains why it
+is needed.
 
 ---
 
@@ -4981,12 +4984,19 @@ userPath.map(user -> {
 // Right: use peek for side effects
 userPath.peek(user -> database.save(user));
 
-// Or be explicit with IOPath
-userPath.via(user -> Path.io(() -> {
-    database.save(user);
-    return user;
-}));
+// Or, in a chain that is an IOPath, make the save a deferred step
+IOPath<User> saved =
+    Path.io(() -> userService.get(id))
+        .via(user -> Path.io(() -> {
+            database.save(user);
+            return user;
+        }));
 ```
+
+A step must return the same kind of Path as the chain it extends. On `userPath`, an `EitherPath`, a
+step that returns an `IOPath` compiles, then throws when the chain reaches it with a `Right`. A
+`Left` skips the step, so a test of the failure path alone never sees the mistake. See
+[A step that returns the wrong kind of Path](compiler_errors.md#2-a-step-that-returns-the-wrong-kind-of-path).
 
 ### Mistake 3: _Forgetting to Run_
 
@@ -105873,6 +105883,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`StreamPath` docs no longer call it lazy where the source is read at once** ([#1290](https://github.com/higher-kinded-j/higher-kinded-j/issues/1290)). The cheat sheet and home page describe sequences you can run more than once, and `toStreamPath` says the non-null focuses are collected into a list when it is called.
 - **The Effect Paths glossary gains three entries** ([#1301](https://github.com/higher-kinded-j/higher-kinded-j/issues/1301)): `FreeApPath`, `FreePath` and `GenericPath`. Each gives a definition, its factories on `Path`, and its main operations. See [Effect Paths](../glossary/effect-paths.md#freeappath).
 - **The Effect Paths glossary gains four more entries** ([#1258](https://github.com/higher-kinded-j/higher-kinded-j/issues/1258)): `ReaderPath`, `TrampolinePath`, `WithStatePath` and `WriterPath`. Each gives a definition, its factories on `Path`, its main operations and a link to its chapter page. See [Effect Paths](../glossary/effect-paths.md#readerpath).
+- **Five examples keep one kind of Path and one error type through their chains.** Composition Patterns ran an `IOPath` step in an `EitherPath` chain, which throws when it runs; it now builds an `IOPath` chain. The Quickstart, a migration recipe and the `hkj-guide` and `hkj-spring` skills now name the chain's error type with a witness. See [Composition Patterns](../effect/composition.md#mistake-2-side-effects-in-map).
 
 ---
 
