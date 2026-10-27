@@ -80,7 +80,7 @@ public final class CustomerLenses {
   }
 
   /**
-   * Creates a {@link Lens} for the {@code id} field of a {@link Customer}.
+   * Creates a {@link Lens} for the {@code id} field of {@link Customer}.
    *
    * @return A non-null {@code Lens<Customer, String>}.
    */
@@ -89,7 +89,7 @@ public final class CustomerLenses {
   }
 
   /**
-   * Creates a {@link Lens} for the {@code name} field of a {@link Customer}.
+   * Creates a {@link Lens} for the {@code name} field of {@link Customer}.
    *
    * @return A non-null {@code Lens<Customer, String>}.
    */
@@ -98,7 +98,7 @@ public final class CustomerLenses {
   }
 
   /**
-   * Creates a {@link Lens} for the {@code email} field of a {@link Customer}.
+   * Creates a {@link Lens} for the {@code email} field of {@link Customer}.
    *
    * @return A non-null {@code Lens<Customer, String>}.
    */
@@ -107,7 +107,7 @@ public final class CustomerLenses {
   }
 
   /**
-   * Creates a {@link Lens} for the {@code loyaltyPoints} field of a {@link Customer}.
+   * Creates a {@link Lens} for the {@code loyaltyPoints} field of {@link Customer}.
    *
    * @return A non-null {@code Lens<Customer, Integer>}.
    */
