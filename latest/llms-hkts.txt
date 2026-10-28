@@ -109,7 +109,7 @@ The [Foundations journey](../tutorials/coretypes/foundations_journey.md) practis
 
 1. [One Line, Six Layers](one_line_six_layers.md): The whole stack in one expression
 2. [How the Encoding Works](core-concepts.md): Witness types, `Kind`, and widen and narrow
-3. [Usage Guide](usage-guide.md): Writing generic code over `Kind`
+3. [Working with Kind](usage-guide.md): Writing generic code over `Kind`
 4. [Obtaining Instances](../functional/instances_facade.md): Where a type class instance comes from
 5. [Functor](../functional/functor.md): Mapping inside any container
 6. [Applicative](../functional/applicative.md): Combining independent values
@@ -436,243 +436,159 @@ Practise widening and narrowing in [Tutorial 01: Kind Basics](https://github.com
 ---
 
 **Previous:** [One Line, Six Layers](one_line_six_layers.md)
-**Next:** [Usage Guide](usage-guide.md)
+**Next:** [Working with Kind](usage-guide.md)
 
 <!-- Source: hkts/usage-guide.md -->
 
-# Usage Guide: Working with Higher-Kinded-J
+<!-- description: Write one Java method for any container with Higher-Kinded-J: pick a witness, ask Instances for its type class, then widen, call and narrow. -->
 
-![oa-movements.png](../images/oa-movements.png)
+# Working with Kind: Widen, Call, Narrow
 
-~~~admonish info title="What We'll Learn"
-- The five-step workflow for using Higher-Kinded-J effectively
-- How to identify the right context (witness type) for our use case
-- Using widen() and narrow() to convert between Java types and Kind representations
-- When and how to handle KindUnwrapException safely
-- Writing generic functions that work with any Functor or Monad
+_Five steps take a value into `Kind<F, A>`, through a type class, and back out._
+
+![A man in a glass-walled room holds his hands together in a diamond shape in front of him](../images/oa-movements.png)
+
+~~~admonish info title="What You'll Learn"
+- Pick the witness for a container, and ask `Instances` for its type class
+- Widen a value, call the type class on it, and narrow the result
+- Write one method over `MonadError` that runs unchanged on a `Maybe` and an `Either`
+- Recover from a failure inside the encoding, in code written for any container
 ~~~
 
-This guide explains the step-by-step process of using Higher-Kinded-J's simulated Higher-Kinded Types (HKTs) and associated type classes like `Functor`, `Applicative`, `Monad`, and `MonadError`.
-
-- [GenericExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/GenericExample.java)
-
-## Core Workflow
-
-The general process involves these steps:
-
-~~~admonish title="Step 1: Identify the Context (_F_WITNESS_)"
-
-Determine which type constructor (computational context) we want to work with abstractly. This context is represented by its *witness type*. 
-
-Examples:
-
-* `ListKind.Witness` for `java.util.List`
-* `OptionalKind.Witness` for `java.util.Optional`
-* `MaybeKind.Witness` for the custom `Maybe` type
-* `EitherKind.Witness<L>` for the custom `Either<L, R>` type (where `L` is fixed)
-* `TryKind.Witness` for the custom `Try` type
-* `CompletableFutureKind.Witness` for `java.util.concurrent.CompletableFuture`
-* `IOKind.Witness` for the custom `IO` type
-* `LazyKind.Witness` for the custom `Lazy` type
-* `ReaderKind.Witness<R_ENV>` for the custom `Reader<R_ENV, A>` type
-* `StateKind.Witness<S>` for the custom `State<S, A>` type
-* `WriterKind.Witness<W>` for the custom `Writer<W, A>` type
-* For transformers, e.g., `EitherTKind.Witness<F_OUTER_WITNESS, L_ERROR>`
+~~~admonish example title="See Example Code"
+**The code on this page is [WorkingWithKindBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/workflow/WorkingWithKindBook.java)**: the page includes it, so the build compiles and runs it. [WorkingWithKindBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/workflow/WorkingWithKindBookTest.java) holds each claim the page makes.
 ~~~
 
-~~~admonish title="Step 2: Find the Type Class Instance"
+---
 
-Obtain an instance of the required type class (`Functor<F_WITNESS>`, `Applicative<F_WITNESS>`, `Monad<F_WITNESS>`, `MonadError<F_WITNESS, E>`) for our chosen context's witness type `F_WITNESS`. 
+This page is for code written once for any container. Code for one container, such as a service method that returns an `EitherPath`, stays with [Effect Paths](../effect/ch_intro.md), and the [Foundations](foundations_intro.md) introduction's "Which level am I working at?" tip says how to tell which you need.
 
-These are concrete classes provided in the corresponding package.
+## The five steps {#the-five-steps}
 
-Examples:
+1. **Pick the witness.** It names the container in your types: `MaybeKind.Witness` for `Maybe`, `EitherKind.Witness<L>` for an `Either` whose left type is `L`, `ListKind.Witness` for `List`, and `OptionalKind.Witness` for `Optional`. Every other type follows the pattern, such as `TryKind.Witness` for `Try`.
+2. **Ask `Instances` for the type class.** `Instances.monadError(maybe())` gives `Maybe`'s `MonadError`, where `maybe()` names the witness. [Obtaining Instances](../functional/instances_facade.md) covers every lookup.
+3. **Widen the value** with its type's helper, such as `MAYBE.widen(...)`.
+4. **Call a method on the instance, passing the `Kind`**: `map`, `flatMap`, `raiseError` or `handleErrorWith`. A `Kind` has no methods of its own.
+5. **Narrow the result** with the same helper, such as `MAYBE.narrow(...)`.
 
-* **`Optional`**: 
-`OptionalMonad optionalMonad = Instances.monadError(optional());` (This implements `MonadError<OptionalKind.Witness, Unit>`)
-* **`List`**: `ListMonad listMonad = Instances.monadZero(list());` (This implements `Monad<ListKind.Witness>`)
-* **`CompletableFuture`**: `CompletableFutureMonad futureMonad = Instances.monadError(completableFuture());` (This implements `MonadError<CompletableFutureKind.Witness, Throwable>`)
-* **`Either<String, ?>`**: `EitherMonad<String> eitherMonad =  Instances.monadError(either());` (This implements `MonadError<EitherKind.Witness<String>, String>`)
-* **`IO`**: `IOMonad ioMonad = Instances.monad(io());` (This implements `Monad<IOKind.Witness>`)
-* **`Writer<String, ?>`**: `WriterMonad<String> writerMonad = Instances.writer(new StringMonoid());` (This implements `Monad<WriterKind.Witness<String>>`)
-~~~
-
-~~~admonish title="Step 3: Wrap Your Value (_JavaType<A>_ -> _Kind<F_WITNESS, A>_)"
-
-
-Convert our standard Java object (e.g., a `List<Integer>`, an `Optional<String>`, an `IO<String>`) into Higher-Kinded-J's `Kind` representation using the `widen` instance method from the corresponding `XxxKindHelper` enum's singleton instance. We will typically use a static import for the singleton instance for brevity.
-
-<!-- verify -->
-   ```java
-    import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL; 
-    // ...
-    Optional<String> myOptional = Optional.of("test");
-    // Widen it into the Higher-Kinded-J Kind type
-    // F_WITNESS here is OptionalKind.Witness
-    Kind<OptionalKind.Witness, String> optionalKind = OPTIONAL.widen(myOptional);
-   ```
-
-* Helper enums provide convenience factory methods that also return `Kind` instances, e.g., `MAYBE.just("value")`, `TRY.failure(ex)`, `IO_OP.delay(() -> ...)`, `LAZY.defer(() -> ...)`. Remember to import thes statically from the XxxKindHelper classes.
-* **Note on Widening**:
-  * For JDK types (like `List`, `Optional`), `widen` typically creates an internal `Holder` object that wraps the JDK type and implements the necessary `XxxKind` interface.
-  * For library-defined types (`Id`, `IO`, `Maybe`, `Either`, `Validated`, Transformers like `EitherT`) that directly implement their `XxxKind` interface (which in turn extends `Kind`), the `widen` method on the helper enum performs a null check and then a direct (and safe) cast to the `Kind` type. This provides zero runtime overhead: no wrapper object allocation needed.
-~~~
-
-~~~admonish title="Step 4: Apply Type Class Methods"
-
-Use the methods defined by the type class interface (`map`, `flatMap`, `of`, `ap`, `raiseError`, `handleErrorWith`, etc.) by calling them on the **type class instance** obtained in *Step 2*, passing our `Kind` value(s) as arguments. **Do not call `map`/`flatMap` directly on the `Kind` object itself if it's just the `Kind` interface.** (Some concrete `Kind` implementations like `Id` or `Maybe` might offer direct methods, but for generic programming, use the type class instance).
-
-<!-- verify -->
-   ```java
-    import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL;
-    // ...
-    MonadError<OptionalKind.Witness, Unit> optionalMonad = Instances.monadError(optional());
-    Kind<OptionalKind.Witness, String> optionalKind = OPTIONAL.widen(Optional.of("test")); // from previous step
-
-    // --- Using map ---
-    Function<String, Integer> lengthFunc = String::length;
-    // Apply map using the monad instance
-    Kind<OptionalKind.Witness, Integer> lengthKind = optionalMonad.map(lengthFunc, optionalKind);
-    // lengthKind now represents Kind<OptionalKind.Witness, Integer> containing Optional.of(4)
-
-    // --- Using flatMap ---
-    // Function A -> Kind<F_WITNESS, B>
-    Function<Integer, Kind<OptionalKind.Witness, String>> checkLength =
-        len -> OPTIONAL.widen(len > 3 ? Optional.of("Long enough") : Optional.empty());
-    // Apply flatMap using the monad instance
-    Kind<OptionalKind.Witness, String> checkedKind = optionalMonad.flatMap(checkLength, lengthKind);
-    // checkedKind now represents Kind<OptionalKind.Witness, String> containing Optional.of("Long enough")
-
-    // --- Using MonadError (for Optional, error type is Unit) ---
-    Kind<OptionalKind.Witness, String> emptyKind = optionalMonad.raiseError(Unit.INSTANCE); // Represents Optional.empty()
-    // Handle the empty case (error state) using handleErrorWith
-    Kind<OptionalKind.Witness, String> handledKind = optionalMonad.handleErrorWith(
-        emptyKind,
-        ignoredError -> OPTIONAL.widen(Optional.of("Default Value")) // Ensure recovery function also returns a Kind
-    );
-   
-   ```
-
-**Note**: For complex chains of monadic operations, consider using [For Comprehensions](../functional/for_comprehension.md) which provide more readable syntax than nested `flatMap` calls.
-~~~
-~~~admonish title="Step 5: Unwrap/Narrow the Result (_Kind<F_WITNESS, A> -> JavaType<A>_)"
-
-When we need the underlying Java value back (e.g., to return from a method boundary, perform side effects like printing or running `IO`), use the `narrow` instance method from the corresponding `XxxKindHelper` enum's singleton instance.
- 
-<!-- verify -->
-    ```java
-    import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL; 
-    import static org.higherkindedj.hkt.io.IOKindHelper.IO_OP; 
- 
-    // ...
-    // Continuing the Optional example, with checkedKind and handledKind from the step above:
- 
-     Optional<String> finalOptional = OPTIONAL.narrow(checkedKind);
-     System.out.println("Final Optional: " + finalOptional); 
-     // Output: Optional[Long enough]
- 
-     Optional<String> handledOptional = OPTIONAL.narrow(handledKind);
-     System.out.println("Handled Optional: " + handledOptional); 
-     // Output: Optional[Default Value]
- 
-     // Example for IO:
-      Monad<IOKind.Witness> ioMonad = Instances.monad(io());
-      Kind<IOKind.Witness, String> ioKind = IO_OP.delay(() -> "Hello from IO!"); 
-      // Use IO_OP.delay
-      // unsafeRunSync is an instance method on IOKindHelper.IO_OP
-      String ioResult = IO_OP.unsafeRunSync(ioKind);
-      System.out.println(ioResult);
-    ```   
-~~~
-
------
-
-~~~admonish title="Handling _KindUnwrapException_"
-
-
-The `narrow` instance methods in all `KindHelper` enums are designed to be robust against *structural* errors within the HKT simulation layer.
-
-* **When it's thrown**: If we pass `null` to `narrow`. For external types using a `Holder` (like `Optional` with `OptionalHolder`), if the `Kind` instance is not the expected `Holder` type, an exception is also thrown. For types that directly implement their `XxxKind` interface, `narrow` will throw if the `Kind` is not an instance of that specific concrete type.
-* **What it means**: This exception signals a problem with how we are using Higher-Kinded-J itself, usually a programming error in creating or passing `Kind` objects.
-* **How to handle**: We generally **should not** need to catch `KindUnwrapException` in typical application logic. Its occurrence points to a bug that needs fixing in the code using Higher-Kinded-J.
+The code on this page uses these imports, with `Order` and `OrderStatus` from the order records the [Optics](../optics/ch_intro.md) chapter introduces:
 
 <!-- verify -->
 ```java
-  // import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL;
-  public void handlingUnwrapExceptions() {
-    try {
-      // ERROR: Attempting to narrow null
-      Optional<String> result = OPTIONAL.narrow(null);
-    } catch(KindUnwrapException e) {
-      System.err.println("Higher-Kinded-J Usage AppError: " + e.getMessage());
-      // Example Output (message from OptionalKindHelper.INVALID_KIND_NULL_MSG):
-      // Usage AppError: Cannot narrow null Kind for Optional
-    }
+import static org.higherkindedj.hkt.either.EitherKindHelper.EITHER;
+import static org.higherkindedj.hkt.instances.Witnesses.either;
+import static org.higherkindedj.hkt.instances.Witnesses.maybe;
+import static org.higherkindedj.hkt.maybe.MaybeKindHelper.MAYBE;
+
+import java.math.BigDecimal;
+import org.higherkindedj.example.book.optics.cast.Order;
+import org.higherkindedj.example.book.optics.cast.OrderStatus;
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.MonadError;
+import org.higherkindedj.hkt.TypeArity;
+import org.higherkindedj.hkt.Unit;
+import org.higherkindedj.hkt.WitnessArity;
+import org.higherkindedj.hkt.either.Either;
+import org.higherkindedj.hkt.either.EitherKind;
+import org.higherkindedj.hkt.instances.Instances;
+import org.higherkindedj.hkt.maybe.Maybe;
+import org.higherkindedj.hkt.maybe.MaybeKind;
+```
+
+## Write the method once {#write-the-method-once}
+
+`totalUnlessShipped` totals an order, and refuses one that has already shipped. It never names `Maybe`: it is written over a `MonadError` for any `F`.
+
+```java
+  // One method for any container F that can hold a failure of type E
+  static <F extends WitnessArity<TypeArity.Unary>, E> Kind<F, BigDecimal> totalUnlessShipped(
+      MonadError<F, E> monadError, Kind<F, Order> order, E refusal) {
+    return monadError.flatMap(
+        o ->
+            o.status() == OrderStatus.SHIPPED
+                ? monadError.raiseError(refusal)
+                : monadError.of(total(o)),
+        order);
   }
+
 ```
 
-**Important Distinction:**
+- **It asks for a `MonadError`, because refusing an order is a failure.** The introduction's `totals` needed only a `Functor`, since nothing there could fail. A [`MonadError`](../functional/monad_error.md) is a `Monad` that can also raise an error and recover from one.
+- **The bound on `F` says it names a container with one type argument missing.** [The `WitnessArity` bound](core-concepts.md#the-witnessarity-bound) explains it.
+- **`of` and `raiseError` come from the instance**, so the method builds results without knowing the container.
+- **`flatMap` runs its function only when there is an order.** On a `Nothing`, the function never runs, and the `Nothing` comes back.
+- **The caller passes the error.** The method knows nothing about `E`, so it cannot build one: the caller passes `Unit.INSTANCE` for `Maybe`, and a message for an `Either` whose left type is `String`.
 
-* **`KindUnwrapException`**: Signals a problem with the Higher-Kinded-J structure itself (e.g., invalid `Kind` object passed to `narrow`). Fix the code using Higher-Kinded-J.
-* **Domain Errors / Absence**: Represented *within* a valid `Kind` structure (e.g., `Optional.empty()` widened to `Kind<OptionalKind.Witness, A>`, `Either.Left` widened to `Kind<EitherKind.Witness<L>, R>`). These should be handled using the monad's specific methods (`orElse`, `fold`, `handleErrorWith`, etc.) or by using the `MonadError` methods *before* narrowing back to the final Java type.
+## Take it through the steps {#take-it-through-the-steps}
+
+Here the five steps total an order held in a `Maybe`:
+
+```java
+    // steps 1 and 2: Maybe's witness, named by maybe(), and the instance for it
+    MonadError<MaybeKind.Witness, Unit> maybeErrors = Instances.monadError(maybe());
+
+    // step 3, widen: the Maybe, seen as a Kind
+    Kind<MaybeKind.Witness, Order> found = MAYBE.widen(Maybe.just(placed));
+
+    // step 4, call: the method sees only the Kind and the instance
+    Kind<MaybeKind.Witness, BigDecimal> totalKind =
+        totalUnlessShipped(maybeErrors, found, Unit.INSTANCE);
+
+    // step 5, narrow: back to a Maybe
+    Maybe<BigDecimal> maybeTotal = MAYBE.narrow(totalKind);
+    // Just(50.00)
+```
+
+The same method runs unchanged on an `Either`:
+
+```java
+    // the same method, unchanged, with Either's instance and a message as the error
+    MonadError<EitherKind.Witness<String>, String> eitherErrors = Instances.monadError(either());
+
+    Either<String, BigDecimal> refused =
+        EITHER.narrow(
+            totalUnlessShipped(
+                eitherErrors, EITHER.widen(Either.right(shipped)), "order already shipped"));
+    // Left(order already shipped)
+```
+
+~~~admonish warning title="The compiler does not check `E`"
+`Instances.monadError` takes `E` from the variable you assign it to, and nothing checks it against the instance. `MonadError<MaybeKind.Witness, String>` compiles, then throws `ClassCastException` when you raise a `String`. Declare the error type the instance has, `Unit` for `Maybe`, from the table in [Obtaining Instances](../functional/instances_facade.md#zero-argument-lookups).
 ~~~
 
-~~~admonish example title="Example: Generic Function"
+## Recover in code for any container {#recover-in-code-for-any-container}
 
-- [GenericExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/GenericExample.java)
+Code written for any `F` cannot narrow, because it does not know which helper to use. So it recovers through the instance: `handleErrorWith` takes the failed `Kind` and a function from the error to a replacement.
 
-Higher-Kinded-J allows writing functions generic over the simulated type constructor (represented by its witness `F_WITNESS`).
-
-<!-- verify -->
 ```java
-// import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
-// import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL;
-// ...
-
-// Generic function: Applies a function within any Functor context F_WITNESS.
-// Requires the specific Functor<F_WITNESS> instance to be passed in.
-public static <F_WITNESS extends WitnessArity<TypeArity.Unary>, A, B>
-    Kind<F_WITNESS, B> mapWithFunctor(
-    Functor<F_WITNESS> functorInstance, // Pass the type class instance for F_WITNESS
-    Function<A, B> fn,
-    Kind<F_WITNESS, A> kindABox) { 
-
-  // Use the map method from the provided Functor instance
-  return functorInstance.map(fn, kindABox);
-}
-
-public void genericExample() { 
-  // Get instances of the type classes for the specific types (F_WITNESS) we want to use
-  MonadZero<ListKind.Witness> listMonad = Instances.monadZero(list()); // Implements Functor<ListKind.Witness>
-  MonadError<OptionalKind.Witness, Unit> optionalMonad = Instances.monadError(optional()); // Implements Functor<OptionalKind.Witness>
-
-  Function<Integer, Integer> doubleFn = x -> x * 2;
-
-  // --- Use with List ---
-  List<Integer> nums = List.of(1, 2, 3);
-  // Widen the List. F_WITNESS is ListKind.Witness
-  Kind<ListKind.Witness, Integer> listKind = LIST.widen(nums); 
-  // Call the generic function, passing the ListMonad instance and the widened List
-  Kind<ListKind.Witness, Integer> doubledListKind = mapWithFunctor(listMonad, doubleFn, listKind);
-  System.out.println("Doubled List: " + LIST.narrow(doubledListKind)); // Output: [2, 4, 6]
-
-  // --- Use with Optional (Present) ---
-  Optional<Integer> optNum = Optional.of(10);
-  // Widen the Optional. F_WITNESS is OptionalKind.Witness
-  Kind<OptionalKind.Witness, Integer> optKind = OPTIONAL.widen(optNum); 
-  // Call the generic function, passing the OptionalMonad instance and the widened Optional
-  Kind<OptionalKind.Witness, Integer> doubledOptKind = mapWithFunctor(optionalMonad, doubleFn, optKind);
-  System.out.println("Doubled Optional: " + OPTIONAL.narrow(doubledOptKind)); // Output: Optional[20]
-
-  // --- Use with Optional (Empty) ---
-  Optional<Integer> emptyOpt = Optional.empty();
-  Kind<OptionalKind.Witness, Integer> emptyOptKind = OPTIONAL.widen(emptyOpt); 
-  // Call the generic function, map does nothing on empty
-  Kind<OptionalKind.Witness, Integer> doubledEmptyOptKind = mapWithFunctor(optionalMonad, doubleFn, emptyOptKind);
-  System.out.println("Doubled Empty Optional: " + OPTIONAL.narrow(doubledEmptyOptKind)); // Output: Optional.empty
-}
+  // Generic code cannot narrow, so it recovers through the instance
+  static <F extends WitnessArity<TypeArity.Unary>, E> Kind<F, BigDecimal> totalOrZero(
+      MonadError<F, E> monadError, Kind<F, Order> order, E refusal) {
+    return monadError.handleErrorWith(
+        totalUnlessShipped(monadError, order, refusal), _ -> monadError.of(BigDecimal.ZERO));
+  }
 
 ```
+
+```java
+    // a shipped order, recovered to zero before narrowing
+    Maybe<BigDecimal> orZero =
+        MAYBE.narrow(totalOrZero(maybeErrors, MAYBE.widen(Maybe.just(shipped)), Unit.INSTANCE));
+    // Just(0)
+```
+
+For a chain of several dependent steps, a [for comprehension](../functional/for_comprehension.md) reads more easily than nested `flatMap` calls.
+
+~~~admonish tip title="You can ship now"
+You can now write one method over a type class and run it on any container that has an instance: widen, call, narrow. The rest of this page is for when `narrow` throws, and what widening allocates.
+~~~
+
+---
+
+## The fine print {#the-fine-print}
+
+- **`narrow` throws `KindUnwrapException`** for a `null`, or for another container's `Kind`. It is a bug to fix, not a failure to recover. See [When `narrow` throws](core-concepts.md#when-narrow-throws).
+- **Widening a JDK type allocates a holder.** Widening `Optional` or `List` allocates one, and widening `Maybe` or `Either` does not. See [The pieces each type provides](core-concepts.md#the-pieces-each-type-provides).
 
 ---
 
@@ -681,131 +597,161 @@ public void genericExample() {
 
 <!-- Source: functional/instances_facade.md -->
 
+<!-- description: Get any Higher-Kinded-J type class instance in one shape, Instances.monad(maybe()), and know which lookups the compiler checks. -->
+
 # Obtaining Instances: The `Instances` Facade
 
-Every type class in Higher-Kinded-J has a canonical instance for each data type. Historically, reaching that instance required knowing three independent things per type: the **instance class name**, its **package**, and **which access idiom** that class uses. The idiom was not uniform:
+_Ask one class for every type class instance, in one shape: `Instances.monad(maybe())`._
 
-<!-- verify -->
-```java
-// The old idioms: four spellings of one concept
-Semigroup<String>            semi  = Semigroups.string();   // for Validated error accumulation
-Monad<OptionalKind.Witness>  outer = OptionalMonad.INSTANCE; // outer monad for the transformer
-
-Monad<MaybeKind.Witness>             m1 = MaybeMonad.INSTANCE;            // static field
-Monad<EitherKind.Witness<String>>    m2 = EitherMonad.instance();         // generic static method
-MonadError<ValidatedKind.Witness<String>, String> v =
-    ValidatedMonad.instance(semi);                                        // factory + argument
-MonadError<EitherTKind.Witness<OptionalKind.Witness, String>, String> et =
-    new EitherTMonad<>(outer);                                            // constructor + argument
-```
-
-The `org.higherkindedj.hkt.instances.Instances` facade collapses all of these into **one predictable shape**, `Instances.x(...)`, discovered by capability through IDE autocomplete.
+Each type class in Higher-Kinded-J has a standard instance for each type, and `org.higherkindedj.hkt.instances.Instances` is where you ask for it. Every lookup has the same shape, `Instances.x(...)`, so typing `Instances.` in an IDE lists every capability on offer.
 
 ~~~admonish info title="What You'll Learn"
-- How to obtain any built-in `Functor` / `Applicative` / `Monad` / `MonadError` through a single entry point
-- How the typed `Witnesses` tokens preserve type inference for phantom-typed types
-- Why argument-carrying instances put their dependency in the method signature
-- That the facade is compile-time safe (no registry, no `Optional`, no runtime lookup)
+- Ask `Instances` for a `Functor`, `Applicative`, `Monad` or `MonadError` with a token from `Witnesses`
+- Pass the dependency an instance needs, such as a `Semigroup`, a `Monoid` or an outer `Monad`
+- Tell the lookups the compiler checks from the three that can fail at run time
+- Name the error type a `MonadError` really has
+~~~
+
+~~~admonish example title="See Example Code"
+[InstancesFacadeBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/instances/InstancesFacadeBookTest.java) holds each claim this page makes, including that its tables match every token and every method.
 ~~~
 
 ---
 
 ## Zero-argument lookups
 
-For the stateless-singleton and phantom-typed families, pass a typed token from `Witnesses`:
+For a type whose instance needs nothing, pass its token: a method in `Witnesses`, such as `maybe()`, that names the type's witness.
 
 <!-- verify -->
 ```java
-import static org.higherkindedj.hkt.instances.Witnesses.*;
+import static org.higherkindedj.hkt.instances.Witnesses.maybe;
+
+import org.higherkindedj.hkt.Applicative;
+import org.higherkindedj.hkt.Functor;
+import org.higherkindedj.hkt.Monad;
 import org.higherkindedj.hkt.instances.Instances;
+import org.higherkindedj.hkt.maybe.MaybeKind;
 
 Monad<MaybeKind.Witness>       monad       = Instances.monad(maybe());
 Applicative<MaybeKind.Witness> applicative = Instances.applicative(maybe());
 Functor<MaybeKind.Witness>     functor     = Instances.functor(maybe());
 ```
 
-Because the canonical instance implements the whole `Functor → Applicative → Monad` chain in **one object**, a single token yields all three levels by Java subtyping; there is no extra lookup data.
+The instance implements the whole `Functor`, `Applicative`, `Monad` chain in one object, so all three calls return that same object.
 
-For canonical instances that also implement a richer capability, three further lookups are available (`monadError`, `monadZero` and `alternative`):
+Three more lookups give a richer capability, for the types whose instance has it. `MonadError` adds raising and recovering from an error; `MonadZero` adds an empty value and `filter`; `Alternative` adds an empty value and `orElse`. For `Maybe` and `Optional`, `orElse` falls back to a second value when the first is empty; for `List` and `Stream`, it joins the two.
 
 <!-- verify -->
 ```java
-MonadError<MaybeKind.Witness, Unit> me  = Instances.monadError(maybe());   // E inferred
+MonadError<MaybeKind.Witness, Unit> me  = Instances.monadError(maybe());
 MonadZero<ListKind.Witness>         mz  = Instances.monadZero(list());
 Alternative<OptionalKind.Witness>   alt = Instances.alternative(optional());
 ```
 
-Unlike `monad`/`applicative`/`functor`, these three are **not total**: they are only valid for instances that actually implement the requested capability (e.g. `monadError` for `Maybe`, `Optional`, `Try`, `Either`; `monadZero`/`alternative` for `Maybe`, `Optional`, `List`, `Stream`). Asking for a capability the canonical instance does not have is a programming error and fails fast with a `ClassCastException`, exactly as calling a method that does not exist would. The error type `E` of `monadError` is inferred from the assignment target, the same way the phantom type of `Either` is.
+| Lookup | Type | Error type |
+|---|---|---|
+| `monadError` | `Maybe`, `Optional` | `Unit` |
+| `monadError` | `Try`, `CompletableFuture`, `VTask` | `Throwable` |
+| `monadError` | `Either<L, _>` | `L` |
+| `monadZero`, `alternative` | `Maybe`, `Optional`, `List`, `Stream` | |
 
-### Type inference for phantom-typed types
+~~~admonish warning title="These three lookups compile for any token"
+The compiler cannot check that a type has the capability you ask for. A type without it, as in `Instances.monadZero(either())`, throws `ClassCastException` when the call runs. A wrong error type compiles too: `MonadError<MaybeKind.Witness, String>` throws `ClassCastException` once you raise a `String`. Take `E` from the table.
+~~~
 
-The tokens are **generic**, not `Class`-keyed. This matters: Java has no generic class literals, so a `Class`-keyed facade would erase the phantom type of `Either`, `Reader`, `State`, etc. The token form keeps inference working exactly as `EitherMonad.<L>instance()` does today:
+### Type parameters come from your variable {#type-inference-for-phantom-typed-types}
+
+Each token has a generic type, `Of<F>`, rather than a `Class`. Java has no generic class literals, so a `Class` would lose `Either`'s left type or `Reader`'s environment. The four tokens for types with such a parameter, `either()`, `reader()`, `context()` and `state()`, are generic methods, so the parameter comes from the variable you assign to:
 
 <!-- verify -->
 ```java
-// <DomainError> flows from the assignment target
-Monad<EitherKind.Witness<DomainError>> m = Instances.monad(either());
+// OrderError flows from the assignment target
+Monad<EitherKind.Witness<OrderError>> m = Instances.monad(either());
 ```
 
 ### Available tokens
 
 | Family | Tokens |
 |--------|--------|
-| Stateless singletons | `maybe()`, `io()`, `list()`, `optional()`, `try_()`, `vtask()`, `vstream()`, `lazy()`, `stream()`, `completableFuture()`, `trampoline()` |
-| Phantom-typed nullary | `id()`, `either()`, `reader()`, `context()`, `state()` |
+| No type parameter | `maybe()`, `io()`, `list()`, `nonEmptyList()`, `optional()`, `try_()`, `vtask()`, `vstream()`, `lazy()`, `stream()`, `completableFuture()`, `trampoline()`, `id()` |
+| A type parameter | `either()`, `reader()`, `context()`, `state()` |
 
-> `try_()` is named with a trailing underscore because `try` is a Java reserved word.
+`try_()` ends in an underscore because `try` is a reserved word in Java.
 
 ---
 
 ## Argument-carrying instances
 
-`Validated`, `Writer` and the monad transformers have a **structurally required dependency**: a `Semigroup`, a `Monoid`, or an outer `Monad`. There is no canonical default for these, so the facade cannot hide the dependency; instead it puts it **in the method signature**, where the compiler enforces it and the IDE documents it:
+`Validated`, `EitherOrBoth`, `Writer` and the monad transformers each need a dependency: a `Semigroup`, which combines two values, a `Monoid`, which is a `Semigroup` with an empty value, or an outer `Monad`. None has a sensible default, so the facade asks for it in the method's parameters, where the compiler checks it and the IDE shows it:
 
+<!-- verify -->
 ```java
-MonadError<ValidatedKind.Witness<E>, E>  v  = Instances.validated(Semigroups.list());
-Monad<WriterKind.Witness<String>>        w  = Instances.writer(Monoids.string());
-MonadError<EitherTKind.Witness<F, L>, L> et = Instances.eitherT(Instances.monad(optional()));
-MonadError<MaybeTKind.Witness<F>, Unit>  mt = Instances.maybeT(Instances.monad(optional()));
-MonadError<OptionalTKind.Witness<F>, Unit> ot = Instances.optionalT(Instances.monad(maybe()));
-Monad<ReaderTKind.Witness<F, R>>         rt = Instances.readerT(Instances.monad(optional()));
-Monad<StateTKind.Witness<S, F>>          st = Instances.stateT(Instances.monad(optional()));
-MonadWriter<WriterTKind.Witness<F, W>, W> wt =
+MonadError<ValidatedKind.Witness<List<String>>, List<String>> v = Instances.validated(Semigroups.list());
+Monad<EitherOrBothKind.Witness<List<String>>> eob = Instances.eitherOrBoth(Semigroups.list());
+Monad<WriterKind.Witness<String>> w = Instances.writer(Monoids.string());
+
+MonadError<EitherTKind.Witness<OptionalKind.Witness, String>, String> et =
+    Instances.eitherT(Instances.monad(optional()));
+MonadError<MaybeTKind.Witness<OptionalKind.Witness>, Unit> mt =
+    Instances.maybeT(Instances.monad(optional()));
+MonadError<OptionalTKind.Witness<MaybeKind.Witness>, Unit> ot =
+    Instances.optionalT(Instances.monad(maybe()));
+Monad<ReaderTKind.Witness<OptionalKind.Witness, String>> rt =
+    Instances.readerT(Instances.monad(optional()));
+Monad<StateTKind.Witness<Integer, OptionalKind.Witness>> st =
+    Instances.stateT(Instances.monad(optional()));
+MonadWriter<WriterTKind.Witness<OptionalKind.Witness, String>, String> wt =
     Instances.writerT(Instances.monad(optional()), Monoids.string());
 ```
 
-This is the clearest pedagogical win: previously a user did not know `ValidatedMonad` needed a `Semigroup` until they found the class and read its only constructor. Now the requirement is visible at the call site.
+A dependency in the signature cannot be missed: `Instances.validated()` with no `Semigroup` does not compile.
 
----
-
-## Design constraints
-
-~~~admonish note title="Compile-time safety is preserved"
-The facade is a **thin static re-export** of the existing accessors. It is intentionally:
-
-- **not** Spring-wired (consistent with the documented `HkjAutoConfiguration` static-not-beans decision), and
-- **not** backed by `PathRegistry`/`ServiceLoader`.
-
-Every method resolves at compile time and never returns `Optional` or throws for a missing built-in instance. A `ServiceLoader`-backed lookup would trade this guarantee for a runtime lookup that can fail under native-image service stripping.
+~~~admonish tip title="You can ship now"
+You can now get any built-in instance in one shape: a token for a type that needs nothing, an argument for one that needs a dependency. The rest of this page is for what the compiler checks, what the facade covers, and the accessors behind it.
 ~~~
 
-The old accessors (`MaybeMonad.INSTANCE`, `EitherMonad.instance()`, …) remain for binary compatibility. New code and examples should prefer the facade so there is **one idiom**, not two.
-
 ---
 
-## Scope
+## The fine print {#the-fine-print}
 
-| Type class | Coverage |
+### What the compiler checks {#what-the-compiler-checks}
+
+`Instances` is a class of static methods, with no registry, no `ServiceLoader` and nothing to configure. A token lookup returns the instance its token carries, and a lookup that takes an argument builds a new instance on each call.
+
+- **`monad`, `applicative` and `functor` are checked.** Every token carries a `Monad`, so these three always succeed.
+- **`monadError`, `monadZero` and `alternative` cast, and the compiler cannot check the cast.** The warning in [Zero-argument lookups](#zero-argument-lookups) shows what fails, and when.
+
+### The accessors behind the facade {#the-accessors-behind-the-facade}
+
+Each class behind the facade has an accessor of its own, in one of four shapes. `Instances` is the one shape to use in new code:
+
+<!-- verify -->
+```java
+Semigroup<String>            semi  = Semigroups.string();
+Monad<OptionalKind.Witness>  outer = OptionalMonad.INSTANCE;
+
+Monad<MaybeKind.Witness>             m1 = MaybeMonad.INSTANCE;            // a static field
+Monad<EitherKind.Witness<String>>    m2 = EitherMonad.instance();         // a generic static method
+MonadError<ValidatedKind.Witness<String>, String> v =
+    ValidatedMonad.instance(semi);                                        // a factory with an argument
+MonadError<EitherTKind.Witness<OptionalKind.Witness, String>, String> et =
+    new EitherTMonad<>(outer);                                            // a constructor with an argument
+```
+
+### Scope
+
+| Type class | Through `Instances` |
 |------------|----------|
-| `Functor` / `Applicative` / `Monad` | Covered (total, free via subtyping) |
-| `MonadError` / `MonadZero` / `Alternative` | Covered (partial: only for instances that implement the capability) |
-| Argument-carrying re-exports (`validated`, `writer`, `eitherT`, `maybeT`, `optionalT`, `readerT`, `stateT`, `writerT`) | Covered |
-| `Traverse` / `Selective` / `Foldable` | Out of scope (separate instance classes, tracked as a follow-up) |
-| `Free` / `FreeApplicative` | Out of scope (special constructions: built and interpreted, not retrieved as a ready instance) |
-| `Const` | Out of scope (`Applicative`-only; a token here always carries a `Monad`) |
-| `MonadReader` / `MonadState` / `MonadWriter` (MTL) | Out of scope (separate capability surface) |
-| `Semigroup` / `Monoid` | Excluded by design (keyed by a concrete value type, not an HKT witness) |
-| `Bifunctor` / `Profunctor` | Out of scope (binary arity, separate surface) |
+| `Functor`, `Applicative`, `Monad` | Yes, for every token |
+| `MonadError`, `MonadZero`, `Alternative` | Yes, for the types in the table in [Zero-argument lookups](#zero-argument-lookups) |
+| The instances that need an argument: `validated`, `eitherOrBoth`, `writer`, `eitherT`, `maybeT`, `optionalT`, `readerT`, `stateT`, `writerT` | Yes |
+| `MonadWriter` | Only through `writerT` |
+| `MonadReader`, `MonadState` | Not offered: `ReaderTMonadReader` and `StateTMonadState` are separate classes |
+| `Traverse`, `Selective`, `Foldable` | Not offered: each is a separate instance class, such as `MaybeTraverse.INSTANCE` |
+| `Free`, `FreeApplicative` | Not offered: use `new FreeMonad<>()` or `FreeApApplicative.instance()` |
+| `Const` | Not offered: it has an `Applicative` and a `Bifunctor`, and a token carries a `Monad` |
+| `Semigroup`, `Monoid` | Not offered: they are keyed by a value type, not a witness; use `Semigroups` and `Monoids` |
+| `Bifunctor`, `Profunctor` | Not offered: they take a binary witness |
 
 ---
 
@@ -817,7 +763,7 @@ The old accessors (`MaybeMonad.INSTANCE`, `EitherMonad.instance()`, …) remain 
 
 ---
 
-**Previous:** [Usage Guide](../hkts/usage-guide.md)
+**Previous:** [Working with Kind](../hkts/usage-guide.md)
 **Next:** [Functor](functor.md)
 
 <!-- Source: functional/functor.md -->
@@ -2305,7 +2251,7 @@ The `Functor<F>` parameter carries the implementation; `Kind<F, A>` carries the 
 ~~~admonish info title="In This Section"
 - **The Analogy** – Just as higher-order functions take functions as arguments, higher-kinded types take types as arguments. Understanding this parallel unlocks the entire abstraction.
 - **How the Encoding Works** – You'll learn how witness types and the `Kind<F, A>` interface work together to simulate HKTs in Java, and how the widen/narrow pattern bridges between concrete types and their Kind representations.
-- **Usage Guide** – Practical patterns for working with `Kind` in real code, including how to write generic methods that work across multiple container types.
+- **Working with Kind** – Practical patterns for working with `Kind` in real code, including how to write generic methods that work across multiple container types.
 - **Basic Examples** – Step-by-step examples showing HKT simulation in action, from simple mappings to complex compositions.
 - **Quick Reference** – A condensed reference of essential patterns you'll use repeatedly when working with the library.
 - **Extending** – How to add HKT support to your own types, enabling them to participate in the type class hierarchy.
@@ -2317,7 +2263,7 @@ The `Functor<F>` parameter carries the implementation; `Kind<F, A>` carries the 
 
 1. [HKT Introduction](hkt_introduction.md) - The analogy: higher-kinded types are to types what higher-order functions are to functions
 2. [How the Encoding Works](core-concepts.md) - Witness types, Kind interfaces, and the widen/narrow pattern
-3. [Usage Guide](usage-guide.md) - Working with Kind in practice
+3. [Working with Kind](usage-guide.md) - Widen, call and narrow
 4. [Basic HKT Examples](hkt_basic_examples.md) - Seeing HKT simulation in action
 5. [Quick Reference](quick_reference.md) - Essential patterns at a glance
 6. [Extending the Simulation](extending-simulation.md) - Adding HKT support to your own types
