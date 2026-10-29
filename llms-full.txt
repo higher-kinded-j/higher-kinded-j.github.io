@@ -585,7 +585,7 @@ For the cases where the Path API does not fit (a different outer monad, polymorp
 ~~~admonish note title="Foundations (reference)" collapsible=true
 These sections document the underlying machinery. Most users can start with Effect Paths directly.
 
-1. **[Higher-Kinded Types](hkts/hkt_introduction.md):** The simulation and why it matters
+1. **[Higher-Kinded Types](hkts/ch_intro.md):** The simulation and why it matters
 2. **[Type Classes](functional/ch_intro.md):** Functor, Monad, and other type classes
 3. **[Core Types](monads/ch_intro.md):** Either, Maybe, Try, and other effect types
 4. **[Order Example Walkthrough](hkts/order-walkthrough.md):** A complete workflow with monad transformers
@@ -7294,7 +7294,7 @@ like Cats and ZIO flexible in Scala, now available in Java.
 ~~~
 
 ~~~admonish tip title="See Also"
-- [HKT Introduction](../hkts/hkt_introduction.md): Higher-kinded type basics
+- [Why Higher-Kinded Types?](../hkts/hkt_introduction.md): Higher-kinded type basics
 - [Extending the Simulation](../hkts/extending-simulation.md): Creating custom types
 - [Custom Paths with `@PathSource`](path_source.md): A named Path class generated for your own effect
 ~~~
@@ -36605,7 +36605,7 @@ List<Role> roles = allRoles.getAll(roleBox);
 RoleBox promoted = allRoles.modifyAll(Fixture::promote, roleBox);
 ```
 
-`EachInstances.fromTraverse` takes the witness `F` from the `Traverse` and the element type from the path, so the chain spells out neither. (A *witness* is the marker type that stands in for the higher-kinded `F`; see [Higher-Kinded Types](../hkts/hkt_introduction.md) if the term is new.)
+`EachInstances.fromTraverse` takes the witness `F` from the `Traverse` and the element type from the path, so the chain spells out neither. (A *witness* is the marker type that stands in for the higher-kinded `F`; see [How the Encoding Works](../hkts/core-concepts.md#the-witness-and-kind) if the term is new.)
 
 | Field shape | Use |
 |-------------|-----|
@@ -37229,7 +37229,7 @@ The processor knows which `Traverse` belongs to `ListKind.Witness`, so the gener
 The `Traverse` for a witness is resolved once, by the processor, rather than threaded through every call site. Without this a `Kind<F, A>` field means passing an explicit `Traverse` instance to each operation that walks it, which is the ceremony that makes higher-kinded code look expensive in Java. Here the witness in the field's type is enough for the processor to pick the instance and the path type together.
 ~~~
 
-A *witness* is the marker type that stands in for the higher-kinded `F` (see [Higher-Kinded Types](../hkts/hkt_introduction.md)). The library's witnesses are recognised by name:
+A *witness* is the marker type that stands in for the higher-kinded `F` (see [How the Encoding Works](../hkts/core-concepts.md#the-witness-and-kind)). The library's witnesses are recognised by name:
 
 | Witness Type | Traverse Instance | Semantics | Generated Path |
 |--------------|-------------------|-----------|----------------|
@@ -65422,7 +65422,7 @@ Java can abstract over a type, as `List<T>` does over `T`, but not over a type c
 }
 ```
 
-javac answers `unexpected type`, with `found: type parameter F`: a type parameter cannot take type arguments of its own. A language with higher-kinded types can name such a parameter, written `F<_>` in this book: "a container still waiting for its element type". It is not Java's `?` wildcard, which stands for an unknown type rather than a missing one. [Introduction to Higher-Kinded Types](hkt_introduction.md) says what this buys. Higher-Kinded-J gets there with ordinary interfaces. Each container gets a name, and generic code passes the name about in place of the container. The technique is called [defunctionalisation](../glossary/type-system.md#defunctionalisation).
+javac answers `unexpected type`, with `found: type parameter F`: a type parameter cannot take type arguments of its own. A language with higher-kinded types can name such a parameter, written `F<_>` in this book: "a container still waiting for its element type". It is not Java's `?` wildcard, which stands for an unknown type rather than a missing one. [Why Higher-Kinded Types?](hkt_introduction.md) says what this buys. Higher-Kinded-J gets there with ordinary interfaces. Each container gets a name, and generic code passes the name about in place of the container. The technique is called [defunctionalisation](../glossary/type-system.md#defunctionalisation).
 
 ## The witness and `Kind<F, A>` {#the-witness-and-kind}
 
@@ -67969,271 +67969,230 @@ A question counts when every part of your answer was right before you opened it,
 
 <!-- Source: hkts/ch_intro.md -->
 
+<!-- description: Why Java needs an encoding for higher-kinded types, how a witness declares its arity, what one call costs, and how to add your own type. -->
+
 # Higher-Kinded Types
 
-> *"If they can get you asking the wrong questions, they don't have to worry about answers."*
+<!-- source: Thomas Pynchon, Gravity's Rainbow (1973), "Proverbs for Paranoids, 3", p. 251 in the Vintage edition; wording as in the e-book text, where one hand transcription adds "the" before "answers" -->
+> _"If they can get you asking the wrong questions, they don't have to worry about answers."_
 >
-> – Thomas Pynchon, *Gravity's Rainbow*
+> — Thomas Pynchon, *Gravity's Rainbow* (Proverbs for Paranoids, 3)
 
 ---
 
-The right question is not "how do I map over this List?" or "how do I map over this Optional?" The right question is "how do I map over *any* container?"
+The right question is not "how do I map over this `List`?" or "how do I map over this `Optional`?" The right question is "how do I map over *any* container?" Java cannot ask it directly, because a type parameter cannot stand for a container that still waits for its element type. This group is about the encoding that lets Higher-Kinded-J ask it anyway.
 
-Java's type system, for all its virtues, cannot express this directly. You can write a method that takes a `List<A>` and returns a `List<B>`. You can write another that takes an `Optional<A>` and returns an `Optional<B>`. But you cannot write a single method parameterised over the container type itself: a method that works with `F<A>` where `F` might be `List`, `Optional`, `CompletableFuture`, or any other type constructor.
-
-Higher-Kinded-J provides a workaround. Through a technique called defunctionalisation, it simulates higher-kinded types in Java, allowing you to write generic code that operates across different container types. The mechanism involves phantom "witness" types and a `Kind<F, A>` interface that represents "some container F holding a value of type A."
-
-This is admittedly more verbose than languages with native support. But the alternative (duplicating logic across every container type) scales poorly. Once you've written the same map-filter-flatMap chain for the fifth type, the appeal of abstraction becomes clear.
+Read this group when you want the reasons and the mechanics behind the encoding, or when you add a type of your own. The Ship pages in the [Chapter Contents](foundations_intro.md#chapter-contents) are enough to write code that works for any container, so you can skip the group until then.
 
 ---
 
-## The Core Insight
+## Pages in this group {#pages-in-this-group}
 
-Think of it as abstraction over *structure*, not just *values*:
+1. [Why Higher-Kinded Types?](hkt_introduction.md): What a higher-kinded type is, and why Java needs an encoding for one
+2. [Type Arity](type-arity.md): How a witness declares how many type arguments its container still needs
+3. [Lifting the Hood](lifting_the_hood.md): One call traced through the encoding, step by step
+4. [Extending the Simulation](extending-simulation.md): Adding Higher-Kinded-J support to a type of your own
 
-```
-    ┌─────────────────────────────────────────────────────────────┐
-    │  WITHOUT HKTs                                               │
-    │                                                             │
-    │    mapList(List<A>, fn)      → List<B>                      │
-    │    mapOptional(Optional<A>, fn) → Optional<B>               │
-    │    mapFuture(Future<A>, fn)  → Future<B>                    │
-    │                                                             │
-    │    Three methods. Same logic. Different types.              │
-    └─────────────────────────────────────────────────────────────┘
-
-    ┌─────────────────────────────────────────────────────────────┐
-    │  WITH HKTs                                                  │
-    │                                                             │
-    │    map(Functor<F>, Kind<F, A>, fn) → Kind<F, B>             │
-    │                                                             │
-    │    One method. Works for List, Optional, Future, and more.  │
-    └─────────────────────────────────────────────────────────────┘
-```
-
-The `Functor<F>` parameter carries the implementation; `Kind<F, A>` carries the value.
-
----
-
-## What You'll Learn
-
-~~~admonish info title="In This Section"
-- **The Analogy** – Just as higher-order functions take functions as arguments, higher-kinded types take types as arguments. Understanding this parallel unlocks the entire abstraction.
-- **How the Encoding Works** – You'll learn how witness types and the `Kind<F, A>` interface work together to simulate HKTs in Java, and how the widen/narrow pattern bridges between concrete types and their Kind representations.
-- **Working with Kind** – Practical patterns for working with `Kind` in real code, including how to write generic methods that work across multiple container types.
-- **Basic Examples** – Step-by-step examples showing HKT simulation in action, from simple mappings to complex compositions.
-- **Quick Reference** – A condensed reference of essential patterns you'll use repeatedly when working with the library.
-- **Extending** – How to add HKT support to your own types, enabling them to participate in the type class hierarchy.
-~~~
-
----
-
-## Section Contents
-
-1. [HKT Introduction](hkt_introduction.md) - The analogy: higher-kinded types are to types what higher-order functions are to functions
-2. [How the Encoding Works](core-concepts.md) - Witness types, Kind interfaces, and the widen/narrow pattern
-3. [Working with Kind](usage-guide.md) - Widen, call and narrow
-4. [Basic HKT Examples](hkt_basic_examples.md) - Seeing HKT simulation in action
-5. [Quick Reference](quick_reference.md) - Essential patterns at a glance
-6. [Extending the Simulation](extending-simulation.md) - Adding HKT support to your own types
+The [Foundations FAQ](faq.md) answers the design questions this group raises, such as why `Kind` has two type parameters, and what `widen` and `narrow` cost.
 
 ---
 
 **Previous:** [Check Your Understanding](self_check.md)
-**Next:** [HKT Introduction](hkt_introduction.md)
+**Next:** [Why Higher-Kinded Types?](hkt_introduction.md)
 
 <!-- Source: hkts/hkt_introduction.md -->
 
-# Introduction to Higher-Kinded Types
+<!-- description: Why Java needs higher-kinded types to write one method for any container, why a shared interface is not enough, and where Higher-Kinded-J's encoding comes from. -->
 
-![rubiks1932.jpg](../images/rubiks1932.jpg)
+# Why Higher-Kinded Types?
+
+_One method for every container, and why Java needs an encoding to write it._
+
+![Two hands turning a Rubik's cube](../images/rubiks1932.jpg)
+
+> **You:** I want one `map` for every container, so I write `<F, A, B> F<B> map(F<A> box, Function<A, B> f)`.
+>
+> **javac:** `unexpected type`. `F` is a type parameter, and a type parameter takes no type arguments of its own.
+>
+> **You:** Then my containers share an interface, `Mappable<A>`, and I write `map` once over that.
+>
+> **javac:** Hand that method a `Box<Integer>` and it gives back a `Mappable<String>`, not a `Box`. And `List` and `Optional` belong to the JDK, so they will never implement your interface.
+>
+> **You:** So I need a name for the container alone, without what it holds, that you can pass as an ordinary type.
+>
+> **javac:** A witness class can be that name. Write `Kind<ListKind.Witness, Integer>`, and I carry `ListKind.Witness` through your method like any other type.
+>
+> **You:** But a `Kind` has no `map`.
+>
+> **javac:** Then take a `Functor<F>` that maps inside `F`. I will check that its `F` and the box's `F` are the same.
+>
+> **You:** And give back a `Kind<F, B>`: the same container, holding the new value.
+
+javac's three refusals are real, and [What javac refuses](#what-javac-refuses) shows each one. The rest of the page states every step plainly.
 
 ~~~admonish info title="What You'll Learn"
-- The analogy between higher-order functions and higher-kinded types
-- Why Java's type system limitations necessitate HKT simulation
-- How abstractions over "container" types enable more reusable code
-- The difference between first-order types, generic types, and higher-kinded types
-- Real-world benefits: less boilerplate, more abstraction, better composition
+- Tell a type, a type constructor and a higher-kinded type apart
+- Say why plain Java needs a method for each container, and why a shared interface does not fix it
+- Read the one method that serves every container, written with Higher-Kinded-J
+- Name the paper the encoding comes from, and what the encoding costs in Java
 ~~~
 
-~~~admonish tip title="Hands-On Learning"
-Want to learn by doing? Try our **[Core Types Tutorial Track](../tutorials/coretypes/ch_intro.md)**: three journeys of interactive exercises that take you from `Kind<F, A>` basics to production workflows.
+~~~admonish example title="See Example Code"
+**The code on this page is [WhyHktBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/why/WhyHktBook.java)**: the page includes it, so the build compiles and runs it. It reuses `totals` from the chapter introduction's [FoundationsIntroBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/intro/FoundationsIntroBook.java). [WhyHktBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/why/WhyHktBookTest.java) holds each claim the page makes.
 ~~~
 
-We can think about Higher-Kinded Types (HKT) by making an analogy with Higher-Order Functions (HOF).
+---
 
-_higher-kinded types are to types what higher-order functions are to functions._ 
+## Types, type constructors and higher kinds {#types-type-constructors-and-higher-kinds}
 
-They both represent a powerful form of abstraction, just at different levels.
+`String` is a type: you can declare a variable of it. `List` is a *type constructor*, which waits for a type argument and then gives a type, such as `List<String>`. (Java still accepts a raw `List`, for code older than generics.) A type constructor does for types what a function does for values.
 
-### The Meaning of "Regular" and "Higher-Order"
+A *higher-kinded* type goes one level further: its parameter stands for a type constructor rather than a type. The same step separates a higher-order function from an ordinary one:
 
-**Functions** model Behaviour
+| Level | Takes | Example |
+|---|---|---|
+| Function | values | `int square(int n)` |
+| Higher-order function | a function | `<A, B> List<B> map(List<A> list, Function<A, B> f)` |
+| Type constructor | types | `List<_>`, waiting for its element type |
+| Higher-kinded type | a type constructor | `Functor<F<_>>`, where `F` stands for `List`, `Maybe` or any other container |
 
-- **First-Order (Regular) Function:** This kind of function operates on simple values. It takes a value(s) like a `int` and returns a value.
+So `List` is not higher-kinded, because it takes a type. `Functor` is, because its `F` stands for a container rather than for what the container holds. Java has type constructors, and methods generic over types, but cannot declare `F<_>`. Higher-Kinded-J's `Functor<F>` simulates it, with `F` a witness type that stands in for the container.
 
-<!-- verify -->
+Type theory calls the type of a type its *kind*. `String` has kind `*`, `List` has kind `* -> *`, and `Functor` asks for an `F` of kind `* -> *`. Higher-Kinded-J's `Kind<F, A>` borrows the word.
+
+## One method for every container {#one-method-for-every-container}
+
+![Cardboard boxes, plastic crates and metal flight cases, stacked side by side](../images/containers.png)
+
+In plain Java, one line of logic needs a method for each container, because Java has no type for "any container", and each container spells `map` its own way:
+
 ```java
-// Take a value and return a value
-int square(int num) {
-    return num * num;
-}    
+  // One line of logic, written again for each container
+  public static List<BigDecimal> totalsOfList(List<Order> orders) {
+    return orders.stream().map(FoundationsIntroBook::total).toList();
+  }
+
+  public static Optional<BigDecimal> totalOfOptional(Optional<Order> order) {
+    return order.map(FoundationsIntroBook::total);
+  }
+
+  public static CompletableFuture<BigDecimal> totalOfFuture(CompletableFuture<Order> order) {
+    return order.thenApply(FoundationsIntroBook::total);
+  }
+
 ```
 
-- **Higher-Order Function:** This kind of function operates on _other functions_.  It can take functions as arguments and or return a new function as the result.  It abstracts over the **behaviour**.
+| Container | Plain Java | With Higher-Kinded-J |
+|---|---|---|
+| `List` | `totalsOfList`, with `stream().map(…).toList()` | `totals(functor(list()), …)` |
+| `Optional` | `totalOfOptional`, with `map` | `totals(functor(optional()), …)` |
+| `CompletableFuture` | `totalOfFuture`, with `thenApply` | `totals(functor(completableFuture()), …)` |
 
-<!-- verify -->
+Three methods are no great burden for one line. The cost grows with what you build on them, since anything that combines or checks totals is written again for each container. With higher kinds you write the method once, for any `F`, and pass the `Functor` that knows how to map inside it. It is the same `totals` that the [chapter introduction](foundations_intro.md) runs on `Maybe`, `Either` and `List`:
+
 ```java
-// Takes a Set of type A and a function fn that maps types of A to B,
-//  returns a new Set of type B; the body applies fn to each element
-<A, B> Set<B> mapper(Set<A> set, Function<A, B> fn);
+  // One method for any container F: the Functor passed in knows how to map inside F
+  public static <F extends WitnessArity<TypeArity.Unary>> Kind<F, BigDecimal> totals(
+      Functor<F> functor, Kind<F, Order> orders) {
+    return functor.map(FoundationsIntroBook::total, orders);
+  }
+
 ```
-`mapper` is a higher-order function because it takes the function `fn` as an argument.
 
+Here it runs on the three containers the plain methods cover, and gives the same totals. `widen` takes each value into the encoding, `narrow` brings the result back, and `functor(list())` asks for the `Functor` that maps inside a `List`:
 
-**Types** model Structure
-
-- **First-Order (Regular) Type:** A simple, concrete type like `int`, or `Set<Double>` represents a specific kind of data.
-- **Higher-Kinded Type (HKT):** This is a "type that operates on types." More accurately, it's a generic type constructor that can itself be treated as a type parameter. It abstracts over structure or computational context.
-
-Let us consider `Set<T>`. `Set` itself without the `T`, is a type constructor.  Think of it as a "function" for types: Supply it a type (like `Integer`), and it produces a new concrete type `Set<Integer>`.  
-
-A higher-kinded type allows us to write code that is generic over `Set` itself, or `List`, or `CompletableFuture`.
-
-
-### Generic code in Practice
-
-**Functions**
-
-_Without Higher-Order Functions:_
-
-To apply different operations to a list, we would need to write separate loops for each one.
-
-<!-- verify -->
 ```java
-List<String> results = new ArrayList<>();
-for (int i : numbers) {
-    results.add(intToString(i)); // Behaviour is hardcoded
+    List<BigDecimal> listTotals =
+        LIST.narrow(totals(functor(list()), LIST.widen(List.of(order, refill))));
+    // [50.00, 7.50]
+    Optional<BigDecimal> optionalTotal =
+        OPTIONAL.narrow(totals(functor(optional()), OPTIONAL.widen(Optional.of(order))));
+    // Optional[50.00]
+    BigDecimal futureTotal =
+        FUTURE
+            .narrow(
+                totals(
+                    functor(completableFuture()),
+                    FUTURE.widen(CompletableFuture.completedFuture(order))))
+            .join();
+    // 50.00
+```
+
+[How Higher-Kinded-J encodes it](#how-higher-kinded-j-encodes-it) says where each piece comes from, and [Type Arity](type-arity.md) explains the bound on `F`.
+
+## What javac refuses {#what-javac-refuses}
+
+The dialogue's three refusals, as javac reports them.
+
+**A type parameter cannot take type arguments.** The first attempt names the container as `F` and gives it an element type:
+
+<!-- verify:rejects "type parameter F" -->
+```java
+<F, A, B> F<B> map(F<A> box, Function<A, B> f);
+```
+
+javac answers `unexpected type`, with `found: type parameter F`. [How the Encoding Works](core-concepts.md#why-java-needs-an-encoding) meets the same refusal.
+
+**A shared interface loses the container.** You can write `map` once over an interface, and a `Box` can even override it to return a `Box`. But a method written for any `Mappable` gives back a `Mappable`, and nothing in its type says it was a `Box`:
+
+<!-- verify:rejects "no instance(s) of type variable(s)" -->
+```java
+interface Mappable<A> {
+    <B> Mappable<B> map(Function<A, B> f);
 }
-```
 
-_With Higher-Order Functions:_
-
-We abstract the behaviour into a function and pass it in. This is much more flexible.
-
-<!-- verify -->
-```java
-
-// A map for List
-<A, B> List<B> mapList(List<A> list, Function<A, B> f);
-
-// A map for Optional
-<A, B> Optional<B> mapOptional(Optional<A> opt, Function<A, B> f);
-
-// A map for CompletableFuture
-<A, B> CompletableFuture<B> mapFuture(CompletableFuture<A> future, Function<A, B> f);
-
-```
-Notice the repeated pattern: the core logic is the same, but the "container" is different.
-
-
-_With Higher-Kinded Types:_
-
-With Higher-Kinded-J we can abstract over the container `F` itself. This allows us to write one single, generic map function that works for any container structure or computational context that can be mapped over (i.e., any `Functor`). This is precisely what the `GenericExample.java` demonstrates.
-
-<!-- verify -->
-```java
-// F is a "type variable" that stands for List, Optional, etc.
-// This is a function generic over the container F.
-public static <F extends WitnessArity<TypeArity.Unary>, A, B> Kind<F, B> map(
-    Functor<F> functorInstance, // The implementation for F
-    Kind<F, A> kindBox,         // The container with a value
-    Function<A, B> f) {         // The behaviour to apply
-    return functorInstance.map(f, kindBox);
+record Box<A>(A value) implements Mappable<A> {
+    public <B> Box<B> map(Function<A, B> f) {
+        return new Box<>(f.apply(value));
+    }
 }
 
+static <A, B> Mappable<B> mapAny(Mappable<A> box, Function<A, B> f) {
+    return box.map(f);
+}
+
+Box<String> label = mapAny(new Box<>(42), n -> "No. " + n);
 ```
 
-Here, `Kind<F, A>` is the higher-kinded type that represents "some container F holding a value of type A."
+javac answers `incompatible types`: there are `no instance(s) of type variable(s)` that make the `Mappable<B>` from `mapAny` conform to `Box<String>`. The JDK's `List`, `Optional` and `CompletableFuture` could not implement `Mappable` anyway, since you cannot change them. The [FAQ](faq.md#why-cant-this-just-be-an-interface-mappablet) takes the same question further.
 
+**The `Functor` must match the container.** Once the container has a name, `totals` takes that name as an ordinary type parameter. javac then checks that the `Functor` and the `Kind` name the same container, so the `Functor` for `Maybe`, given a `List`, is refused:
 
-Both concepts allow you to write more generic and reusable code by parametrising things that are normally fixed. **Higher-order functions parametrise behaviour, while higher-kinded types parametrise the structure that contains the behaviour.**
-
-We will discuss the `GenericExample.java` in detail later, but you can take a peek at the code here
-
-- [GenericExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/GenericExample.java)
-
-
-## The Core Idea: Abstraction over Containers
-
-In short: a higher-kinded type is a way to be generic over the container type itself.
-Think about the different "container" types you use every day in Java: `List<T>`, `Optional<T>`, `Future<T>`, `Set<T>`. All of these are generic containers that hold a value of type `T`.
-The problem is that you can't write a single method in Java that accepts any of these containers and performs an action, because `List`, `Optional`, and `Future` don't share a useful common interface. A higher-kinded type solves this by letting you write code that works with `F<T>`, where `F` itself is a variable representing the container type (`List`, `Optional`, etc.).
-
-## Building Up from Java Generics
-
-### Level 1: Concrete Types (like values)
-A normal, complete type is like a value. It's a "thing".
-<!-- verify -->
+<!-- verify:rejects "incompatible equality constraints" -->
 ```java
-String myString;          // A concrete type
-List<Integer> myIntList;  // Also a concrete type (a List of Integers)
-```
-### Level 2: Generic Types (like functions)
-A generic type definition like `List<T>` is not a complete type. It's a type constructor. It's like a function at the type level: you give it a type (e.g., `String`), and it produces a concrete type (`List<String>`).
-<!-- verify -->
-```java
-// List<T> is a "type function" that takes one parameter, T.
-// We can call it a type of kind: * -> *
-// (It takes one concrete type to produce one concrete type)
-```
-You can't declare a variable of type `List`. You must provide the type parameter `T`.
-
-### Level 3: Higher-Kinded Types (like functions that take other functions)
-This is the part Java doesn't support directly. A higher-kinded type is a construct that is generic over the type constructor itself.
-Imagine you want to write a single map function that works on any container. You want to write code that says: _"Given any container F holding type A, and a function to turn an A into a B, I will give you back a container F holding type B."_
-In imaginary Java syntax, it would look like this:
-```java
-// THIS IS NOT REAL JAVA SYNTAX
-public <F<?>, A, B> F<B> map(F<A> container, Function<A, B> func);
-```
-Here, `F `is the higher-kinded type parameter. It's a variable that can stand for `List`, `Optional`, `Future`, or any other `* -> *` type constructor.
-
-
-## A Practical Analogy: The Shipping Company
-
-![containers.png](../images/containers.png)
-
-Think of it like working at a shipping company.
-A concrete type `List<String>` is a "Cardboard Box full of Apples".
-A generic type `List<T>` is a blueprint for a "Cardboard Box" that can hold anything (`T`).
-Now, you want to write a single set of instructions (a function) for your robotic arm called addInsuranceLabel. You want these instructions to work on any kind of container.
-Without HKTs (The Java Way): You have to write separate instructions for each container type.
-```java
-addInsuranceToCardboardBox(CardboardBox<T> box, ...)
-addInsuranceToPlasticCrate(PlasticCrate<T> crate, ...)
-addInsuranceToMetalCase(MetalCase<T> case, ...)
+totals(functor(maybe()), LIST.widen(List.of(order)));
 ```
 
-With HKTs (The Abstract Way): You write one generic set of instructions.
-```java
-addInsuranceToContainer(Container<T> container, ...)
-```
+javac answers that `totals` `cannot be applied to given types`, because the inference variable `F` has `incompatible equality constraints`: `ListKind.Witness` and `MaybeKind.Witness`.
 
-A higher-kinded type is the concept of being able to write code that refers to `Container<T>`: an abstraction over the container or "context" that holds the data.
+## How Higher-Kinded-J encodes it {#how-higher-kinded-j-encodes-it}
 
+Higher-Kinded-J follows Jeremy Yallop and Leo White's paper [Lightweight higher-kinded polymorphism](https://www.cl.cam.ac.uk/~jdy22/papers/lightweight-higher-kinded-polymorphism.pdf) (FLOPS 2014). It was written for OCaml, which can abstract over a type constructor only in its module language. The paper *defunctionalises* the type constructor instead. The constructor gets a name that is an ordinary type, and "the constructor applied to `A`" becomes one type that takes the name and `A`:
 
-Higher-Kinded-J **simulates HKTs in Java** using a technique inspired by defunctionalisation. It allows you to define and use common functional abstractions like `Functor`, `Applicative`, and `Monad` (including `MonadError`) in a way that works *generically* across different simulated type constructors.
+| In the paper | In Higher-Kinded-J | What it does |
+|---|---|---|
+| a brand, such as `List.t` | a witness, such as `ListKind.Witness` | Names a type constructor, and is never instantiated |
+| `('a, 'f) app` | `Kind<F, A>` | Stands for the constructor that `F` names, applied to `A` |
+| `inj` | `widen` | Moves a value into the encoding |
+| `prj` | `narrow` | Moves it back out |
 
-**Why bother?** Higher-Kinded-J unlocks several benefits:
+Type classes such as `Functor<F>` are then ordinary generic interfaces over `Kind<F, A>`, and each container supplies an instance of them. [How the Encoding Works](core-concepts.md) covers each piece, and [Lifting the Hood](lifting_the_hood.md) traces one call through them.
 
-* **Write Abstract Code:** Define functions and logic that operate polymorphically over different computational contexts (e.g., handle optionality, asynchronous operations, error handling, side effects, or collections using the *same* core logic).
-* **Leverage Functional Patterns:** Consistently apply powerful patterns like `map`, `flatMap`, `ap`, `sequence`, `traverse`, and monadic error handling (`raiseError`, `handleErrorWith`) across diverse data types.
-* **Build Composable Systems:** Create complex workflows and abstractions by composing smaller, generic pieces, as demonstrated in the included [Order Processing Example](order-walkthrough.md).
-* **Understand HKT Concepts:** Provides a practical, hands-on way to understand HKTs and type classes even within Java's limitations.
-* **Lay the Foundations:** Building on HKTs unlocks the possibilities for advanced abstractions like [Optics](../optics/ch_intro.md), which provide composable ways to access and modify nested data structures.
+## What it costs {#what-it-costs}
 
-While Higher-Kinded-J introduces some boilerplate compared to languages with native HKT support, it offers a valuable way to explore these powerful functional programming concepts in Java.
+The encoding asks more of you than a language with higher kinds built in:
+
+- **Every value crosses twice.** `widen` takes it into the encoding, and `narrow` brings it back.
+- **Every generic method takes its instance**, such as the `Functor` that `totals` asks for.
+- **`narrow` casts, and checks the cast at run time.** Any class can implement `Kind<ListKind.Witness, A>`, so javac cannot prove that such a `Kind` holds a `List`. `narrow` throws `KindUnwrapException` when it does not, where a language with higher kinds has no cast to check. [When `narrow` throws](core-concepts.md#when-narrow-throws) says how that can happen.
+
+Application code rarely needs to pay this. [Effect Paths](../effect/ch_intro.md) such as `EitherPath` give the same operations on concrete types, with no witness to write, and the [chapter introduction](foundations_intro.md) says which level fits your code. Higher kinds earn their place in code written once for any container, such as [`traverse`](../functional/foldable_and_traverse.md), [`For`](../functional/for_comprehension.md), or a method like `totals`.
+
+---
+
+~~~admonish info title="Hands-On Learning"
+Practise `Kind<F, A>` from the first exercise in the [Core Types Tutorial Track](../tutorials/coretypes/ch_intro.md), which runs from widening a value to production workflows.
+~~~
 
 ---
 
@@ -68549,7 +68508,7 @@ The arity system catches these errors at compile time rather than runtime.
 
 ---
 
-**Previous:** [HKT Introduction](hkt_introduction.md)
+**Previous:** [Why Higher-Kinded Types?](hkt_introduction.md)
 **Next:** [Lifting the Hood](lifting_the_hood.md)
 
 <!-- Source: hkts/lifting_the_hood.md -->
@@ -78713,7 +78672,7 @@ Practise VStream HKT encoding in [TutorialVStreamHKT](https://github.com/higher-
 ~~~admonish tip title="See Also"
 - [VStream](vstream.md) - Core VStream type: factories, combinators, terminal operations
 - [VStreamPath](../effect/path_vstream.md) - Fluent Effect Path wrapper for VStream
-- [Higher-Kinded Types](../hkts/hkt_introduction.md) - How the HKT simulation works
+- [Why Higher-Kinded Types?](../hkts/hkt_introduction.md) - Why Java needs an encoding for higher kinds
 - [Functor](../functional/functor.md) - The Functor type class
 - [Monad](../functional/monad.md) - The Monad type class
 - [Alternative](../functional/alternative.md) - The Alternative type class
@@ -85587,7 +85546,7 @@ This page answers the questions that experienced Java developers ask once they h
 
 ## Why can't this just be an interface `Mappable<T>`?
 
-It can, for one container at a time. We can write `interface Mappable<T> { <U> Mappable<U> map(Function<T, U>); }` and have `Optional`, `List`, and `Try` all implement it.
+It can, for one container at a time. We can write `interface Mappable<T> { <U> Mappable<U> map(Function<T, U>); }` and have our own containers implement it, though never the JDK's `Optional` or `List`, which we cannot change.
 
 What we cannot write is a method that says *"give me any `Mappable<T>` and I will return another `Mappable<T>` of the same shape"*. Java has no way to spell "of the same shape" because it has no way to talk about the type constructor itself. The signature `<F<?>, A, B> F<B> map(F<A>, Function<A, B>)` is not legal Java; the `F<?>` parameter cannot be quantified at the method level.
 
@@ -91664,7 +91623,7 @@ Demystify the `Kind<F, A>` wrapper that makes Higher-Kinded Types possible in Ja
 
 **Java idiom anchor**: same shape as `Stream<Order>`, `CompletableFuture<Response>`, `Optional<User>` (except `F` is now a type parameter we can pass around).
 
-**Links to documentation**: [HKT Introduction](../../hkts/hkt_introduction.md) | [How the Encoding Works](../../hkts/core-concepts.md) | [Lifting the Hood](../../hkts/lifting_the_hood.md)
+**Links to documentation**: [Why Higher-Kinded Types?](../../hkts/hkt_introduction.md) | [How the Encoding Works](../../hkts/core-concepts.md) | [Lifting the Hood](../../hkts/lifting_the_hood.md)
 
 [Hands On Practice](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial01_KindBasics.java)
 
@@ -96430,7 +96389,7 @@ Update `build.gradle`:
 
 ### "I Don't Understand Kind<F, A>"
 
-**Start here**: [HKT Introduction](../hkts/hkt_introduction.md)
+**Start here**: [Why Higher-Kinded Types?](../hkts/hkt_introduction.md)
 
 **Key insight**: `Kind<F, A>` is just a wrapper. The actual data is unchanged:
 ```java
@@ -102877,7 +102836,7 @@ increment(Instances.functor(list()), LIST.widen(List.of(1, 2, 3)));        // [2
 
 **Why It Matters:** Enables writing truly generic, reusable functional code that works across different container types.
 
-**Related:** [HKT Introduction](../hkts/hkt_introduction.md)
+**Related:** [Why Higher-Kinded Types?](../hkts/hkt_introduction.md)
 
 ---
 
