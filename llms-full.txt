@@ -8988,7 +8988,7 @@ MaybePath<String> result =
 Even when execution is sequential, `par()` documents the *intent* that the computations are independent, making the dependency structure of your workflow explicit.
 
 ~~~admonish tip title="See Also"
-For `par()` with raw `Kind` values (no Path wrappers), see [For Parallel Composition](../functional/for_par.md).
+For `par()` with raw `Kind` values (no Path wrappers), see [Independent steps with par](../functional/for_comprehension.md#independent-steps-with-par).
 ~~~
 
 ---
@@ -9077,7 +9077,7 @@ MaybePath<Kind<ListKind.Witness, Integer>> flat =
 ~~~
 
 ~~~admonish tip title="See Also"
-- For the underlying type-class-based traverse within `For` comprehensions, see [Traverse Within Comprehensions](../functional/for_traverse.md).
+- For the underlying type-class-based traverse within `For` comprehensions, see [Traversing inside a chain](../functional/for_comprehension.md#traversing-inside-a-chain).
 - For a detailed introduction to `Traverse`, `Foldable`, and `sequenceA`, see [Foldable & Traverse](../functional/foldable_and_traverse.md).
 ~~~
 
@@ -67233,425 +67233,350 @@ Practise error handling in [Tutorial 05: Monad Error Handling](https://github.co
 
 <!-- Source: functional/for_comprehension.md -->
 
+<!-- description: Write a chain of flatMap calls as steps with For: bind, filter with when, mark independent steps with par, and traverse a collection inside the chain. -->
+
 # For-Comprehensions
 
+_Write a chain of `flatMap` calls as a list of steps, with filters, independent steps and traversals._
+
 ~~~admonish info title="What You'll Learn"
-- How to transform nested `flatMap` chains into readable, sequential code
-- The four types of operations: generators (`.from()`), bindings (`.let()`), guards (`.when()`), and projections (`.yield()`)
-- Building complex workflows with StateT and other monad transformers
-- Converting "pyramid of doom" code into clean, imperative-style scripts
+- Turn nested `flatMap` calls into steps with `For.from`, `from`, `let` and `yield`
+- Filter a chain with `when`, given a `MonadZero`
+- Mark independent steps with `par`, and say when they run at the same time
+- Traverse a collection inside a chain with `traverse`, `sequence` and `flatTraverse`
+- Choose between `For`, `ForPath` and `ForState`
 ~~~
 
-~~~ admonish example title="See Example Code:"
-[ForComprehensionExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/expression/ForComprehensionExample.java)
+~~~admonish example title="See Example Code"
+**The code on this page is [ForBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/forcomprehension/ForBook.java)**: the page includes it, so the build compiles and runs it. [ForBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/forcomprehension/ForBookTest.java) holds what the page says each step does.
 ~~~
-
-~~~admonish title="Hands On Practice"
-[Tutorial03_ForTraverseComprehension.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/expression/Tutorial03_ForTraverseComprehension.java)
-~~~
-
-Endless nested callbacks and unreadable chains of flatMap calls can be tiresome. The `higher-kinded-j` library brings the elegance and power of Scala-style for-comprehensions to Java, allowing you to write complex asynchronous and sequential logic in a way that is clean, declarative, and easy to follow.
-
-Let's see how to transform "callback hell" into a readable, sequential script.
-
-## The "Pyramid of Doom" Problem
-
-In functional programming, monads are a powerful tool for sequencing operations, especially those with a context like `Optional`, `List`, or `CompletableFuture`. However, chaining these operations with `flatMap` can quickly become hard to read.
-
-Consider combining three `Maybe` values:
-
-<!-- verify -->
-```java
-// The "nested" way
-Kind<MaybeKind.Witness, Integer> result = maybeMonad.flatMap(a ->
-    maybeMonad.flatMap(b ->
-        maybeMonad.map(c -> a + b + c, maybeC),
-    maybeB),
-maybeA);
-```
-
-This code works, but the logic is buried inside nested lambdas. The intent (to simply get values from `maybeA`, `maybeB`, and `maybeC` and add them) is obscured. This is often called the "pyramid of doom."
-
-## _For_ A Fluent, Sequential Builder
-
-The `For` comprehension builder provides a much more intuitive way to write the same logic. It lets you express the sequence of operations as if they were simple, imperative steps.
-
-Here's the same example rewritten with the `For` builder:
-
-<!-- verify -->
-```java
-import static org.higherkindedj.hkt.maybe.MaybeKindHelper.MAYBE;
-import org.higherkindedj.hkt.expression.For;
-// ... other imports
-
-var maybeMonad = Instances.monadError(maybe());
-var maybeA = MAYBE.just(5);
-var maybeB = MAYBE.just(10);
-var maybeC = MAYBE.just(20);
-
-// The clean, sequential way
-var result = For.from(maybeMonad, maybeA)    // Get a from maybeA
-    .from(a -> maybeB)                       // Then, get b from maybeB
-    .from(t -> maybeC)                       // Then, get c from maybeC
-    .yield((a, b, c) -> a + b + c);          // Finally, combine them
-
-System.out.println(MAYBE.narrow(result)); // Prints: Just(35)
-```
-
-This version is flat, readable, and directly expresses the intended sequence of operations. The `For` builder automatically handles the `flatMap` and `map` calls behind the scenes.
-
-~~~admonish note title="Supported Arities"
-The `For` builder supports up to **12 chained bindings** (generators, value bindings, or focus/match operations). Step 1 is hand-written; steps 2-12 are generated by the `hkj-processor` annotation processor. Both the spread-style yield (`(a, b, c, ...) -> result`) and tuple-style yield (`tuple -> result`) are supported at all arities.
-~~~
-
-### Extended Arity Example (6+ Bindings)
-
-The generated `Steps2`-`Steps12` classes provide the same fluent API seamlessly:
-
-<!-- verify -->
-```java
-var idMonad = Instances.monad(id());
-
-Kind<IdKind.Witness, String> result =
-    For.from(idMonad, Id.of("Alice"))       // a = "Alice"
-        .let(name -> name.length())          // b = 5
-        .from(t -> Id.of(t._1().toUpperCase())) // c = "ALICE"
-        .let(t -> t._2() * 10)              // d = 50
-        .let(t -> t._3() + "!")             // e = "ALICE!"
-        .let(t -> t._1() + " has " + t._2() + " letters")  // f = summary
-        .yield((name, len, upper, score, exclaimed, summary) ->
-            summary + " (score: " + score + ")");
-
-// Result: "Alice has 5 letters (score: 50)"
-```
-
-At higher arities, the tuple-style `yield` is especially convenient for accessing accumulated values by position:
-
-```java
-.yield(t -> t._6() + " (score: " + t._4() + ")")
-```
-
-~~~admonish tip title="Consider toState() for complex workflows"
-As the number of bindings grows, tuple positions like `t._3()` and `t._4()` become hard to track. The `toState()` bridge lets you gather values with `For`, then transition to named fields for the rest. See [Bridging to ForState](for_mtl.md#bridging-to-forstate-with-tostate) for details.
-~~~
-
-## Core Operations of the `For` Builder
-
-A for-comprehension is built by chaining four types of operations:
-
-### 1. Generators: `.from()`
-
-A generator is the workhorse of the comprehension. It takes a value from a previous step, uses it to produce a new monadic value (like another `Maybe` or `List`), and extracts the result for the next step. This is a direct equivalent of **`flatMap`**.
-
-Each `.from()` adds a new variable to the scope of the comprehension.
-
-<!-- verify -->
-```java
-// Generates all combinations of userLogin IDs and roles
-var userRoles = For.from(listMonad, LIST.widen(List.of("userLogin-1", "userLogin-2"))) // a: "userLogin-1", "userLogin-2"
-    .from(a -> LIST.widen(List.of("viewer", "editor")))       // b: "viewer", "editor"
-    .yield((a, b) -> a + " is a " + b);
-
-// Result: ["userLogin-1 is a viewer", "userLogin-1 is a editor", "userLogin-2 is a viewer", "userLogin-2 is a editor"]
-```
-
-
-### 2. Value Bindings: `.let()`
-
-A `.let()` binding allows you to compute a pure, simple value from the results you've gathered so far and add it to the scope. It does *not* involve a monad. This is equivalent to a **`map`** operation that carries the new value forward.
-
-<!-- verify -->
-```java
-var idMonad = Instances.monad(id());
-
-var result = For.from(idMonad, Id.of(10))        // a = 10
-    .let(a -> a * 2)                          // b = 20 (a pure calculation)
-    .yield((a, b) -> "Value: " + a + ", Doubled: " + b);
-
-// Result: "Value: 10, Doubled: 20"
-System.out.println(ID.narrow(result).value());
-```
-
-
-### 3. Guards: `.when()`
-
-For monads that can represent failure or emptiness (like `List`, `Maybe`, or `Optional`), you can use `.when()` to **filter** results. If the condition is false, the current computational path is stopped by returning the monad's "zero" value (e.g., an empty list or `Maybe.nothing()`).
-
-> This feature requires a `MonadZero` instance. See the `MonadZero` documentation for more details.
->
-
-<!-- verify -->
-```java
-var evens = For.from(listMonad, LIST.widen(List.of(1, 2, 3, 4, 5, 6)))
-    .when(i -> i % 2 == 0) // Guard: only keep even numbers
-    .yield(i -> i);
-
-// Result: [2, 4, 6]
-```
-
-
-
-### 4. Projection: `.yield()`
-
-Every comprehension ends with `.yield()`. This is the final **`map`** operation where you take all the values you've gathered from the generators and bindings and produce your final result. You can access the bound values as individual lambda parameters or as a single `Tuple`.
-
-## Turn the power up: `StateT` Example
-
-- [ForComprehensionExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/expression/ForComprehensionExample.java)
-
-The true power of for-comprehensions becomes apparent when working with complex structures like monad transformers. A `StateT` over `Optional` represents a **stateful computation that can fail**. Writing this with nested `flatMap` calls would be extremely complex. With the `For` builder, it becomes a simple, readable script.
-
-<!-- verify -->
-```java
-import static org.higherkindedj.hkt.optional.OptionalKindHelper.OPTIONAL;
-import static org.higherkindedj.hkt.state_t.StateTKindHelper.STATE_T;
-// ... other imports
-
-private static void stateTExample() {
-    final var optionalMonad = Instances.monadError(optional());
-    final var stateTMonad =
-        Instances.<Integer, OptionalKind.Witness>stateT(optionalMonad);
-
-    // Helper: adds a value to the state (an integer)
-    final Function<Integer, Kind<StateTKind.Witness<Integer, OptionalKind.Witness>, Unit>> add =
-        n -> StateT.create(s -> optionalMonad.of(StateTuple.of(s + n, Unit.INSTANCE)));
-
-    // Helper: gets the current state as the value
-    final var get = StateT.<Integer, OptionalKind.Witness, Integer>create(s -> optionalMonad.of(StateTuple.of(s, s)));
-
-    // This workflow looks like a simple script, but it's a fully-typed, purely functional composition!
-    final var statefulComputation =
-        For.from(stateTMonad, add.apply(10))      // Add 10 to state
-            .from(a -> add.apply(5))              // Then, add 5 more
-            .from(b -> get)                       // Then, get the current state (15)
-            .let(t -> "The state is " + t._3())   // Compute a string from it
-            .yield((a, b, c, d) -> d + ", original value was " + c); // Produce the final string
-
-    // Run the computation with an initial state of 0
-    final var resultOptional = STATE_T.runStateT(statefulComputation, 0);
-    final Optional<StateTuple<Integer, String>> result = OPTIONAL.narrow(resultOptional);
-
-    result.ifPresent(res -> {
-        System.out.println("Final value: " + res.value());
-        System.out.println("Final state: " + res.state());
-    });
-    // Expected Output:
-    // Final value: The state is 15, original value was 15
-    // Final state: 15
-}
-```
-
-In this example, Using the `For` comprehension really helps hide the complexity of threading the state (`Integer`) and handling potential failures (`Optional`), making the logic clear and maintainable.
-
-
-For a more extensive example of using the full power of the For comprehension head over to the [Order Workflow](../hkts/order-walkthrough.md)
-
-## Similarities to Scala
-
-If you're familiar with Scala, you'll recognise the pattern. In Scala, a for-comprehension looks like this:
-
-```scala
-for {
- a <- maybeA
- b <- maybeB
- if (a + b > 10)
- c = a + b
-} yield c * 2
-```
-
-This is built in syntactic sugar that the compiler translates into a series of `flatMap`, `map`, and `withFilter` calls.
-The `For` builder in `higher-kinded-j` provides the same expressive power through a method-chaining API.
 
 ---
 
-~~~admonish info title="Hands-On Learning"
-- [Tutorial 02: ForPath Parallel Composition](../tutorials/expression/forpath_parallel_journey.md) (9 exercises).
+## When nested `flatMap` calls get deep {#when-nested-flatmap-calls-get-deep}
+
+A receipt needs three things in turn: the order, its customer's verified email, and a confirmation from charging the order's total. Each step needs what an earlier step found, so [Monad](monad.md)'s `flatMap` chains them. With one `Optional` you would nest `flatMap` calls inside one another, and the same happens over `Kind`.
+
+For one container, an [Effect Path](../effect/ch_intro.md) chains the same steps with [`ForPath`](../effect/forpath_comprehension.md), such as `ForPath.from(eitherPath)`. Application code stays on the Paths. This page is for `For`, a chain written once for any container that has a `Monad`. Written as nested calls, the receipt is:
+
+```java
+  // One receipt for any container F, as nested flatMap calls
+  public static <F extends WitnessArity<TypeArity.Unary>> Kind<F, String> receiptNested(
+      Monad<F> monad,
+      Kind<F, Order> found,
+      Function<Customer, Kind<F, EmailAddress>> verify,
+      Function<BigDecimal, Kind<F, String>> charge) {
+    return monad.flatMap(
+        order -> {
+          BigDecimal total = total(order);
+          return monad.flatMap(
+              email ->
+                  monad.map(
+                      confirmation ->
+                          "receipt " + confirmation + " for " + total + " to " + email.value(),
+                      charge.apply(total)),
+              verify.apply(order.customer()));
+        },
+        found);
+  }
+
+```
+
+The receipt is in the innermost lambda, and `total` has to be a local variable so that a later step can still see it. A `For` comprehension writes the same chain as a list of steps.
+
+The code on this page uses these imports, with `Order` from the order records the [Optics](../optics/ch_intro.md) chapter introduces:
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.either.EitherKindHelper.EITHER;
+import static org.higherkindedj.hkt.instances.Witnesses.either;
+import static org.higherkindedj.hkt.instances.Witnesses.list;
+import static org.higherkindedj.hkt.instances.Witnesses.maybe;
+import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
+import static org.higherkindedj.hkt.maybe.MaybeKindHelper.MAYBE;
+import static org.higherkindedj.hkt.validated.ValidatedKindHelper.VALIDATED;
+
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.UUID;
+import java.util.function.Function;
+import org.higherkindedj.example.book.optics.cast.Customer;
+import org.higherkindedj.example.book.optics.cast.EmailAddress;
+import org.higherkindedj.example.book.optics.cast.LineItem;
+import org.higherkindedj.example.book.optics.cast.Order;
+import org.higherkindedj.example.book.optics.cast.OrderStatus;
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.Monad;
+import org.higherkindedj.hkt.MonadZero;
+import org.higherkindedj.hkt.Semigroups;
+import org.higherkindedj.hkt.TypeArity;
+import org.higherkindedj.hkt.WitnessArity;
+import org.higherkindedj.hkt.either.Either;
+import org.higherkindedj.hkt.either.EitherKind;
+import org.higherkindedj.hkt.expression.For;
+import org.higherkindedj.hkt.instances.Instances;
+import org.higherkindedj.hkt.list.ListKind;
+import org.higherkindedj.hkt.list.ListTraverse;
+import org.higherkindedj.hkt.maybe.Maybe;
+import org.higherkindedj.hkt.maybe.MaybeKind;
+import org.higherkindedj.hkt.validated.Validated;
+import org.higherkindedj.hkt.validated.ValidatedKind;
+```
+
+## Steps: `from`, `let` and `yield` {#from-let-and-yield}
+
+`For.from(monad, source)` starts the chain, and each later step adds values, filters the chain, or ends it:
+
+| Step | What it does | Built on |
+|---|---|---|
+| `from(f)` | Adds the value inside the container `f` gives back | `flatMap` |
+| `let(f)` | Adds a plain value worked out from the values so far | `map` |
+| `when(test)` | Gives the instance's empty value when `test` fails | `MonadZero`'s `filter` |
+| `par(f1, f2)` | Adds two to four values that do not need one another | `flatMap`, then `map2` to `map4` |
+| `yield(f)` | Ends the chain with a result made from every value | `map` |
+
+The first step's function receives the value bound so far. From the second value on, a step receives a tuple holding the values in the order they were bound, read as `t._1()` for the first, `t._2()` for the second, and so on. `yield` takes either the tuple or one parameter for each value. Written with `For`, the receipt reads top to bottom, and in it `t._1()` is the order and `t._2()` the total that `let` added:
+
+```java
+  // The same receipt, as a For comprehension: each step reads what the steps before it bound
+  public static <F extends WitnessArity<TypeArity.Unary>> Kind<F, String> receipt(
+      Monad<F> monad,
+      Kind<F, Order> found,
+      Function<Customer, Kind<F, EmailAddress>> verify,
+      Function<BigDecimal, Kind<F, String>> charge) {
+    return For.from(monad, found)
+        .let(order -> total(order))
+        .from(t -> verify.apply(t._1().customer()))
+        .from(t -> charge.apply(t._2()))
+        .yield(
+            (order, total, email, confirmation) ->
+                "receipt " + confirmation + " for " + total + " to " + email.value());
+  }
+
+```
+
+Run it with `Either`'s `Monad`, once with an email that is verified and once with one that is not. `ORDER` is any order of two lines, totalling 50.00:
+
+```java
+    Monad<EitherKind.Witness<String>> eitherMonad = Instances.monad(either());
+    Function<BigDecimal, Kind<EitherKind.Witness<String>, String>> charge =
+        amount -> EITHER.widen(Either.right("PAY-1"));
+
+    Either<String, String> sent =
+        EITHER.narrow(
+            receipt(
+                eitherMonad,
+                EITHER.widen(Either.right(ORDER)),
+                customer -> EITHER.widen(Either.right(customer.email())),
+                charge));
+    // Right(receipt PAY-1 for 50.00 to ada@example.com)
+
+    Either<String, String> unverified =
+        EITHER.narrow(
+            receipt(
+                eitherMonad,
+                EITHER.widen(Either.right(ORDER)),
+                customer -> EITHER.widen(Either.left("email not verified")),
+                charge));
+    // Left(email not verified)
+```
+
+What happens when a step has no value is the instance's, as on the [Monad](monad.md#what-each-instance-does) page: `Either`'s stops at the `Left`, and the charge never runs.
+
+## Filtering with `when` {#filtering-with-when}
+
+`when` needs a [`MonadZero`](monad_zero.md): a `Monad` with an empty value, such as an empty list or `Nothing`, to give back when a test fails. The type you start the chain from decides. `Instances.monadZero(list())` gives a chain with `when`, and `Instances.monad(list())` gives one without:
+
+<!-- verify:rejects "cannot find symbol" -->
+```java
+For.from(Instances.monad(list()), orders).when(order -> order.status() == OrderStatus.SHIPPED);
+```
+
+javac refuses it with "cannot find symbol", because a chain started from a plain `Monad` has no `when`. The instance decides what the empty value is: `List`'s drops the element, and `Maybe`'s gives `Nothing`:
+
+```java
+    MonadZero<ListKind.Witness> listMonad = Instances.monadZero(list());
+    List<UUID> shippedIds =
+        LIST.narrow(
+            For.from(listMonad, LIST.widen(List.of(ORDER, SHIPPED)))
+                .when(order -> order.status() == OrderStatus.SHIPPED)
+                .yield(Order::id));
+    // [00000000-0000-0000-0000-000000000002]
+
+    MonadZero<MaybeKind.Witness> maybeMonad = Instances.monadZero(maybe());
+    Maybe<UUID> notShipped =
+        MAYBE.narrow(
+            For.from(maybeMonad, MAYBE.just(ORDER))
+                .when(order -> order.status() == OrderStatus.SHIPPED)
+                .yield(Order::id));
+    // Nothing
+```
+
+## Independent steps with `par` {#independent-steps-with-par}
+
+`par` binds values that do not need one another. `For.par(monad, …)` starts a chain with two to five of them, and a step's `par(f1, …)` fans out two to four from the values bound before it. Its result is an ordinary step, so `from`, `let`, `when` or another `par` can follow.
+
+`par` combines its values with the instance's `map2` to `map5`, where `from` uses `flatMap`. So it does what the instance's [Applicative](applicative.md#what-each-instance-does) does: with `Validated`'s instance, `par` reports both errors, and `from` stops at the first. The step's `par` fans out from the order:
+
+```java
+    Monad<ValidatedKind.Witness<List<String>>> validatedMonad =
+        Instances.validated(Semigroups.list());
+    Kind<ValidatedKind.Witness<List<String>>, String> blankSku =
+        VALIDATED.widen(Validated.invalid(List.of("SKU is blank")));
+    Kind<ValidatedKind.Witness<List<String>>, Integer> noQuantity =
+        VALIDATED.widen(Validated.invalid(List.of("quantity must be positive")));
+
+    Validated<List<String>, String> independent =
+        VALIDATED.narrow(
+            For.par(validatedMonad, blankSku, noQuantity)
+                .yield((sku, quantity) -> quantity + " x " + sku));
+    // Invalid([SKU is blank, quantity must be positive])
+
+    Validated<List<String>, String> inSequence =
+        VALIDATED.narrow(
+            For.from(validatedMonad, blankSku)
+                .from(sku -> noQuantity)
+                .yield((sku, quantity) -> quantity + " x " + sku));
+    // Invalid([SKU is blank])
+
+    Either<String, String> fannedOut =
+        EITHER.narrow(
+            For.from(eitherMonad, EITHER.widen(Either.right(ORDER)))
+                .par(
+                    order -> EITHER.widen(Either.right(order.customer().email())),
+                    order -> EITHER.widen(Either.right(total(order))))
+                .yield((order, email, total) -> total + " to " + email.value()));
+    // Right(50.00 to ada@example.com)
+```
+
+`par` says the values are independent, and it runs them at the same time only where the instance's `map2` does. No instance's `map2` starts its values together: `IO`'s and `VTask`'s run them one after the other, and `CompletableFuture`'s waits for futures that may already be running. To run two `VTask`s at the same time, use [`ForPath.par`](../effect/forpath_par.md) on two `VTaskPath`s, which calls `Par.map2`, or call [`Par.map2`](../monads/vtask_monad.md#parallel-composition-with-par) yourself.
+
+## Traversing inside a chain {#traversing-inside-a-chain}
+
+A step can run an effect on every element of a collection the chain holds, and bind the collected results:
+
+| Step | What it binds | Built on |
+|---|---|---|
+| `traverse(traversable, extractor, f)` | `f` run on every element, the results collected | [`Traverse`](foldable_and_traverse.md)'s `traverse` |
+| `sequence(traversable, extractor)` | A collection of containers, turned into one container of a collection | `Traverse`'s `sequenceA`, which is `traverse` with the identity function |
+| `flatTraverse(traversable, innerMonad, extractor, f)` | `f` run on every element, the nested collections flattened | `traverse`, then the collection's own `flatMap` |
+
+`traversable` is the collection's `Traverse`, such as `ListTraverse.INSTANCE`, and `innerMonad` the collection's own `Monad`. `extractor` picks the collection out of the values bound so far; here the chain starts from it, so it is `lines -> lines`. `LIST.widen` puts the list in, and `.map(LIST::narrow)` takes the result out. `priceInStock` prices a line, or gives `Nothing` for a line with no stock, so one missing line makes the whole result `Nothing`. With `maybeMonad` from the `when` example:
+
+```java
+    Function<LineItem, Kind<MaybeKind.Witness, BigDecimal>> priceInStock =
+        line -> line.quantity() > 0 ? MAYBE.just(lineTotal(line)) : MAYBE.nothing();
+
+    Maybe<List<BigDecimal>> priced =
+        MAYBE
+            .narrow(
+                For.from(maybeMonad, MAYBE.just(LIST.widen(ORDER.lines())))
+                    .traverse(ListTraverse.INSTANCE, lines -> lines, priceInStock)
+                    .yield((lines, prices) -> prices))
+            .map(LIST::narrow);
+    // Just([40.00, 10.00])
+
+    Maybe<List<BigDecimal>> backordered =
+        MAYBE
+            .narrow(
+                For.from(maybeMonad, MAYBE.just(LIST.widen(BACKORDERED.lines())))
+                    .traverse(ListTraverse.INSTANCE, lines -> lines, priceInStock)
+                    .yield((lines, prices) -> prices))
+            .map(LIST::narrow);
+    // Nothing
+
+    Maybe<List<Integer>> quantities =
+        MAYBE
+            .narrow(
+                For.from(maybeMonad, MAYBE.just(LIST.widen(List.of(MAYBE.just(1), MAYBE.just(4)))))
+                    .sequence(ListTraverse.INSTANCE, items -> items)
+                    .yield((items, values) -> values))
+            .map(LIST::narrow);
+    // Just([1, 4])
+
+    Maybe<List<Integer>> flattened =
+        MAYBE
+            .narrow(
+                For.from(maybeMonad, MAYBE.just(LIST.widen(List.of(1, 2))))
+                    .flatTraverse(
+                        ListTraverse.INSTANCE,
+                        Instances.monad(list()),
+                        numbers -> numbers,
+                        n -> MAYBE.just(LIST.widen(List.of(n, n * 10))))
+                    .yield((numbers, flat) -> flat))
+            .map(LIST::narrow);
+    // Just([1, 10, 2, 20])
+```
+
+## Which comprehension should you use? {#which-comprehension}
+
+| You are writing | Use |
+|---|---|
+| Application code over one Effect Path | [`ForPath`](../effect/forpath_comprehension.md), which takes and gives back Paths |
+| A method for any container, over `Kind` | `For`, on this page |
+| A chain whose values are easier to name than to number | [`ForState`](forstate_comprehension.md), with named fields in a record, or `toState` from `For` ([MTL and ForState](for_mtl.md#bridging-to-forstate-with-tostate)) |
+| Steps that read a field, convert a value or match a case | `focus`, `through` and `match`, as [For with Optics](for_optics.md) shows: `through` works on the first step only, and `match` needs a `MonadZero` |
+
+A monad transformer, such as `StateT`, is a `Monad` over `Kind`, so `For` chains it as it does any other: the [StateT](../transformers/statet_transformer.md) page shows one.
+
+## Things people get wrong {#things-people-get-wrong}
+
+~~~admonish warning title="Common Misunderstandings"
+- **"`par` runs the steps at the same time."** It marks them as independent, and the instance's `map2` decides how they run. `ForPath.par` on `VTaskPath` is the one that runs them at once.
+- **"`List` has `when`, so my chain does."** Only a chain started from a `MonadZero`, such as `Instances.monadZero(list())`, has `when`. Started from `Instances.monad(list())`, it has none.
+- **"`For` is Java's version of Scala's `for`."** It is a library builder, with no compiler support. Each step is a method call you can read in the source.
+~~~
+
+~~~admonish tip title="You can ship now"
+You can now write a chain of dependent steps once for any container, as `receipt` is, with plain values between the steps. You can filter it with `when`, mark independent steps with `par` knowing what each instance does with them, and traverse a collection inside it. The rest of this page is for how many values a chain holds, and for readers who know Scala's `for`.
+~~~
+
+---
+
+## The fine print {#the-fine-print}
+
+### Twelve values, and their tuples {#twelve-values-and-their-tuples}
+
+A chain holds up to twelve values, from any mix of `from`, `let`, `par` and the optic steps. The first step is written by hand, and the steps that hold two to twelve values are generated when Higher-Kinded-J is built, so your build needs no processor for them. The twelfth has no room for another value, so it can only `yield`, call `toState`, or filter with `when` in a chain started from a `MonadZero`. Past four or five values, positions such as `t._4()` get hard to follow, and `toState` moves the values into a record with named fields.
+
+### Coming from Scala {#coming-from-scala}
+
+Scala builds the same chain into its syntax:
+
+```scala
+for {
+  order        <- found
+  total         = order.total
+  email        <- verify(order.customer)
+  confirmation <- charge(total)
+} yield s"receipt $confirmation for $total to $email"
+```
+
+The compiler turns every `<-` but the last into `flatMap` and the last into `map`, an `if` line into `withFilter`, and `=` into a `map` that carries the value. `For` gives the same steps as methods: `from`, `when`, `let` and `yield`.
+
+---
+
+~~~admonish tip title="See Also"
+- [Monad](monad.md): the `flatMap` that `from` is built on
+- [Applicative](applicative.md): the `map2` that `par` is built on
+- [ForPath Comprehension](../effect/forpath_comprehension.md): the same steps over Effect Paths, with [ForPath Traverse](../effect/forpath_traverse.md) for collections
+- [ForState](forstate_comprehension.md): a chain whose values are named fields
+- [For with Optics](for_optics.md): `focus`, `match`, `ForTraversal` and `ForIndexed`
+- [MTL and ForState](for_mtl.md): reader, state and writer capabilities, and `toState`
+- [Order Workflow](../hkts/order-walkthrough.md): a longer chain, end to end
 ~~~
 
 ~~~admonish tip title="Further Reading"
-- **Project Reactor**: [Mono and Flux Composition](https://projectreactor.io/docs/core/release/reference/) - Java's reactive library uses similar chaining patterns for composing asynchronous operations
-- **Baeldung**: [Java CompletableFuture](https://www.baeldung.com/java-completablefuture) - Java's built-in approach to chaining dependent asynchronous steps
+- **Scala documentation**, [For Comprehensions](https://docs.scala-lang.org/tour/for-comprehensions.html): the syntax `For` follows
 ~~~
 
-~~~admonish tip title="See Also"
-- [Parallel Composition](for_par.md) - Express independent computations with `par()`
-- [Traverse Within Comprehensions](for_traverse.md) - Bulk operations over traversable structures
-- [Optics Integration](for_optics.md) - `focus()`, `match()`, ForTraversal, and ForIndexed
-- [MTL & ForState Bridge](for_mtl.md) - MTL integration and `toState()` bridge
-- [ForState: Named State Comprehensions](forstate_comprehension.md) - The recommended pattern for complex workflows
-- [ForPath Comprehension](../effect/forpath_comprehension.md) - For-comprehensions that work directly with Effect Path types
+~~~admonish info title="Hands-On Learning"
+Practise `par` on Paths in the [ForPath Parallel journey](../tutorials/expression/forpath_parallel_journey.md) (9 exercises), and `traverse` in [Tutorial 03: For Traverse Comprehension](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/expression/Tutorial03_ForTraverseComprehension.java) (14 exercises).
 ~~~
 
 ---
 
 **Previous:** [MonadError](monad_error.md)
-**Next:** [Parallel Composition](for_par.md)
-
-<!-- Source: functional/for_par.md -->
-
-# Parallel Composition with `par()`
-
-Sometimes two or more computations within a comprehension are **independent** of each other. Using `.from()` forces them into a sequential `flatMap` chain, even though neither needs the other's result. The `par()` combinator lets you express this independence explicitly.
-
-## Static Entry Points
-
-`For.par()` combines two to five independent computations using applicative semantics (`map2`/`map3`/`map4`/`map5`) rather than monadic `flatMap`:
-
-<!-- verify -->
-```java
-// Two independent values combined in parallel
-Kind<IdKind.Witness, String> result =
-    For.par(idMonad, Id.of("hello"), Id.of("world"))
-        .yield((a, b) -> a + " " + b);
-// "hello world"
-
-// Three independent values
-Kind<IdKind.Witness, Integer> sum =
-    For.par(idMonad, Id.of(10), Id.of(20), Id.of(30))
-        .yield((a, b, c) -> a + b + c);
-// 60
-```
-
-For `MonadZero` types like `Maybe`, short-circuiting works as expected:
-
-<!-- verify -->
-```java
-Kind<MaybeKind.Witness, String> result =
-    For.par(maybeMonad, MAYBE.just("Alice"), MAYBE.<Integer>nothing())
-        .yield((name, age) -> name + " is " + age);
-// Nothing: the second computation failed
-```
-
-## Instance `par()` for Dependent Branches
-
-When a prior value is needed before branching, use the instance `par()` method on `Steps1`. This performs a sequential `flatMap` to obtain the first value, then fans out the branches with `map2`/`map3`:
-
-<!-- verify -->
-```java
-Kind<IdKind.Witness, String> result =
-    For.from(idMonad, Id.of("Alice"))
-        .par(
-            name -> Id.of(name.length()),          // branch 1
-            name -> Id.of(name.toUpperCase()))      // branch 2
-        .yield((name, len, upper) -> upper + " has " + len + " letters");
-// "ALICE has 5 letters"
-```
-
-## Chaining After `par()`
-
-The result of `par()` is a regular step, so you can chain `.from()`, `.let()`, `.when()`, or another `.par()` after it:
-
-<!-- verify -->
-```java
-Kind<IdKind.Witness, String> result =
-    For.par(idMonad, Id.of("Alice"), Id.of(5))
-        .from(t -> Id.of(t._1() + " has " + t._2() + " letters"))
-        .yield((name, len, sentence) -> sentence.toUpperCase());
-// "ALICE HAS 5 LETTERS"
-```
-
-## When Is `par()` Actually Parallel?
-
-The `par()` combinator expresses *independence*, not necessarily *concurrency*. True parallel execution depends on the underlying type:
-
-| Type | Behaviour |
-|------|-----------|
-| VTask | True concurrency via `Par.map2`/`Par.map3` on virtual threads |
-| IO | Sequential (future: parallel IO executor) |
-| Maybe, Either, Optional | Sequential; short-circuits on failure |
-| List | Cartesian product (applicative, not monadic) |
-| Id | Immediate; no effect to parallelise |
-
-Even when execution is sequential, `par()` documents the *intent* that the computations are independent, making the dependency structure of your workflow explicit.
-
-~~~admonish tip title="See Also"
-For `par()` with Effect Path types (no manual Kind extraction), see [ForPath Parallel Composition](../effect/forpath_par.md).
-~~~
-
----
-
-**Previous:** [For Comprehension](for_comprehension.md)
-**Next:** [Traverse Within Comprehensions](for_traverse.md)
-
-<!-- Source: functional/for_traverse.md -->
-
-# Traverse Within Comprehensions
-
-The `traverse()`, `sequence()`, and `flatTraverse()` methods allow bulk operations over traversable structures directly within for-comprehension chains. Rather than breaking out of the comprehension to process a collection, you can apply an effectful function to every element and collect the results in a single step.
-
-## `traverse()`
-
-Apply an effectful function to each element of a traversable structure. The `traverse()` method extracts a `Kind<T, C>` from the current tuple, applies `f: C -> Kind<M, B>` to each element, and collects the results as `Kind<T, B>`, all within the enclosing monad.
-
-<!-- verify -->
-```java
-var maybeMonad = Instances.monadError(maybe());
-var listTraverse = ListTraverse.INSTANCE;
-
-Kind<MaybeKind.Witness, Kind<ListKind.Witness, Integer>> result =
-    For.from(maybeMonad, MAYBE.just(LIST.widen(List.of(1, 2, 3))))
-        .traverse(listTraverse,
-            list -> list,                             // the value IS the list at the first step
-            n -> n > 0 ? MAYBE.just(n * 10) : MAYBE.nothing())  // effectful function
-        .yield((original, transformed) -> transformed);
-
-// Result: Just([10, 20, 30])
-// If any element fails the check, the entire result is Nothing.
-```
-
-## `sequence()`
-
-Flip a `Structure<Effect<A>>` into an `Effect<Structure<A>>`. This is equivalent to `traverse` with the identity function and is useful when you already have a collection of monadic values that need to be "turned inside-out".
-
-<!-- verify -->
-```java
-List<Kind<MaybeKind.Witness, Integer>> items = List.of(
-    MAYBE.just(1), MAYBE.just(2), MAYBE.just(3));
-
-Kind<MaybeKind.Witness, Kind<ListKind.Witness, Integer>> result =
-    For.from(maybeMonad, MAYBE.just(LIST.widen(items)))
-        .sequence(listTraverse, list -> list)
-        .yield((original, collected) -> collected);
-
-// Result: Just([1, 2, 3])
-```
-
-## `flatTraverse()`
-
-Like `traverse`, but flattens nested structures using an inner monad. This is useful when the effectful function itself returns a nested structure (e.g., `A -> Kind<M, Kind<T, B>>` where `T` is also monadic), and you want the inner layer flattened.
-
-<!-- verify -->
-```java
-Kind<MaybeKind.Witness, Kind<ListKind.Witness, Integer>> result =
-    For.from(maybeMonad, MAYBE.just(LIST.widen(List.of(1, 2, 3))))
-        .flatTraverse(listTraverse, Instances.monadZero(list()),
-            list -> list,
-            n -> MAYBE.just(LIST.widen(List.of(n, n * 10))))
-        .yield((original, flattened) -> flattened);
-
-// Result: Just([1, 10, 2, 20, 3, 30])
-```
-
-## Operations Summary
-
-| Operation | Purpose | Signature (simplified) |
-|-----------|---------|----------------------|
-| `traverse()` | Apply effectful function to each element, collect results | `(Traverse<T>, extractor, C -> Kind<M, B>) -> Kind<T, B>` |
-| `sequence()` | Flip `Structure<Effect<A>>` to `Effect<Structure<A>>` | `(Traverse<T>, extractor) -> Kind<T, A>` |
-| `flatTraverse()` | Traverse then flatten nested inner structures | `(Traverse<T>, Monad<T>, extractor, C -> Kind<M, Kind<T, B>>) -> Kind<T, B>` |
-
-~~~admonish example title="See Example Code"
-[ForTraverseComprehensionExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/expression/ForTraverseComprehensionExample.java)
-~~~
-
-~~~admonish tip title="See Also"
-- For a detailed introduction to `Traverse`, `Foldable`, and `sequenceA`, see [Foldable & Traverse](foldable_and_traverse.md).
-- For traverse within ForPath comprehensions, see [ForPath Traverse](../effect/forpath_traverse.md).
-~~~
-
----
-
-**Previous:** [Parallel Composition](for_par.md)
 **Next:** [Higher-Kinded Types](../hkts/ch_intro.md)
 
 <!-- Source: hkts/ch_intro.md -->
@@ -67726,7 +67651,7 @@ The `Functor<F>` parameter carries the implementation; `Kind<F, A>` carries the 
 
 ---
 
-**Previous:** [Traverse Within Comprehensions](../functional/for_traverse.md)
+**Previous:** [For Comprehension](../functional/for_comprehension.md)
 **Next:** [HKT Introduction](hkt_introduction.md)
 
 <!-- Source: hkts/hkt_introduction.md -->
@@ -69630,7 +69555,7 @@ String joined = ListPath.of(1, 2, 3).foldMap(Monoids.string(), i -> i + ",");
 ```
 
 ~~~admonish tip title="See Also"
-- [Traverse Within Comprehensions](for_traverse.md) - the full API with `traverse`, `sequence`, and `flatTraverse`
+- [Traversing inside a chain](for_comprehension.md#traversing-inside-a-chain) - the full API with `traverse`, `sequence`, and `flatTraverse`
 - [ForPath Traverse](../effect/forpath_traverse.md) - the same operations through the Effect Path API
 - [Effect Path Cheatsheet](../cheatsheet.md) - the full fold family on `ListPath`, `StreamPath`, and `VStreamPath`
 ~~~
@@ -72879,9 +72804,9 @@ ForState.withState(idMonad, Id.of(employeeList))
 ~~~admonish note title="Two Kinds of Traverse"
 `ForState.traverse(Lens, Traversal, Function)` is an **optics-based** bulk update: it uses a lens to locate a collection field within the state record and a traversal optic to iterate over its elements. The result is written back into the state via the same lens.
 
-The `For` comprehension offers a different form: `For.traverse(Traverse, extractor, f)`, which is **type-class-based**. It uses a `Traverse` type-class instance to map an effectful function over a traversable structure extracted from the current tuple, adding the collected result as a new binding.
+The `For` comprehension offers a different form: a `traverse(Traverse, extractor, f)` step, which is **type-class-based**. It uses a `Traverse` type-class instance to map an effectful function over a traversable structure extracted from the current tuple, adding the collected result as a new binding.
 
-Both are useful; choose the one that matches your comprehension style. See [Traverse Within Comprehensions](for_traverse.md) for the `For`-based variant.
+Both are useful; choose the one that matches your comprehension style. See [Traversing inside a chain](for_comprehension.md#traversing-inside-a-chain) for the `For`-based variant.
 ~~~
 
 ### Converting Through Isos
@@ -86483,7 +86408,7 @@ var gathered =
 // ... enrich phase continues from `gathered`
 ```
 
-For `EitherPath`, `par()` is sequential, so the benefit is purely documentation of intent. For a `VTaskPath` version of this workflow, `par()` would provide true concurrent execution. See [Parallel Composition](../functional/for_par.md) for details.
+For `EitherPath`, `par()` is sequential, so the benefit is purely documentation of intent. A `VTaskPath` version of this workflow, written with `ForPath.par`, would run the two at the same time. See [Independent steps with par](../functional/for_comprehension.md#independent-steps-with-par) for details.
 ~~~
 
 None of these concepts is particularly complex. `Either` is just a container with two cases. `For` is a comprehension that accumulates results in a tuple. `toState()` constructs a record from those results. `ForState` threads that record through each step. Lenses are just pairs of getter and setter functions. Sealed interfaces are just sum types.
@@ -86708,7 +86633,7 @@ var gathered = For.par(monad,
         ProcessingState.initial(address, customer, order));
 ```
 
-With `EitherPath`, the benefit is documentation of intent; execution remains sequential. With `VTaskPath`, the two operations would run concurrently on virtual threads. See [Parallel Composition](../functional/for_par.md) for the full API.
+With `EitherPath`, the benefit is documentation of intent; execution remains sequential. A `VTaskPath` version, written with `ForPath.par`, would run the two operations at the same time on virtual threads. See [Independent steps with par](../functional/for_comprehension.md#independent-steps-with-par) for the full API.
 ~~~
 
 ### Named State Replaces Tuple Positions
