@@ -65518,6 +65518,31 @@ The source is [`Unit.java`](https://github.com/higher-kinded-j/higher-kinded-j/b
 You can now run any type class over a value you hold: widen it, call the instance, and narrow the result, returning `Unit` or a `Maybe` where you might have returned `null`. The rest of this page is for when a `null` turns up or `narrow` throws.
 ~~~
 
+~~~admonish question title="Checkpoint: a unary witness where a binary one goes" id="check-encoding-arity"
+`EitherKind.Witness<String>` names `Either` with its left type fixed. Can it stand in for `F` in `Bifunctor<F>`, which maps both sides of a two-sided type?
+
+<!-- verify:rejects "is not within bounds of type-variable" -->
+```java
+Bifunctor<EitherKind.Witness<String>> bifunctor;
+```
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-encoding-arity-answer"
+**No: javac refuses it, saying the witness "is not within bounds of type-variable" `F`.** `Bifunctor` takes a binary witness, over `Kind2`, and `EitherKind.Witness<L>` is unary, because fixing the left type leaves one argument missing. `EitherKind2.Witness`, with both missing, is the one `Bifunctor` takes.
+
+Where this lives: [The `WitnessArity` bound](#the-witnessarity-bound).
+~~~
+
+~~~admonish question title="Checkpoint: `of(null)` in two containers" id="check-encoding-null"
+What does `Instances.monad(maybe()).of(null)` give back, and what does `Instances.monad(try_()).of(null)` do?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-encoding-null-answer"
+**`Nothing`, and it throws `NullPointerException`.** `Maybe`'s instance reads a `null` value as `Nothing`, and `Try` refuses one, as every library type in the table does except `Maybe` and `Id`. So code written for any `F` never hands `null` to `of`: what comes back depends on `F`.
+
+Where this lives: [Values, never null](#values-never-null).
+~~~
+
 ---
 
 ## The fine print {#the-fine-print}
@@ -65591,6 +65616,7 @@ The code on this page uses these imports, with `Order` and `OrderStatus` from th
 import static org.higherkindedj.hkt.either.EitherKindHelper.EITHER;
 import static org.higherkindedj.hkt.instances.Witnesses.either;
 import static org.higherkindedj.hkt.instances.Witnesses.maybe;
+import static org.higherkindedj.hkt.instances.Witnesses.optional;
 import static org.higherkindedj.hkt.maybe.MaybeKindHelper.MAYBE;
 
 import java.math.BigDecimal;
@@ -65606,6 +65632,7 @@ import org.higherkindedj.hkt.either.EitherKind;
 import org.higherkindedj.hkt.instances.Instances;
 import org.higherkindedj.hkt.maybe.Maybe;
 import org.higherkindedj.hkt.maybe.MaybeKind;
+import org.higherkindedj.hkt.optional.OptionalKind;
 ```
 
 ## Write the method once {#write-the-method-once}
@@ -65694,6 +65721,39 @@ For a chain of several dependent steps, a [for comprehension](../functional/for_
 
 ~~~admonish tip title="You can ship now"
 You can now write one method over a type class and run it on any container that has an instance: widen, call, narrow. The rest of this page is for when `narrow` throws, and what widening allocates.
+~~~
+
+~~~admonish question title="Checkpoint: an error type the instance does not have" id="check-kind-error-type"
+This compiles. What happens when it runs?
+
+<!-- verify -->
+```java
+MonadError<OptionalKind.Witness, String> me = Instances.monadError(optional());
+me.raiseError("out of stock");
+```
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-kind-error-type-answer"
+**`raiseError` throws `ClassCastException`.** `Instances.monadError` takes `E` from the variable, and nothing checks it against the instance: `Optional`'s error type is `Unit`, not `String`. Declare `MonadError<OptionalKind.Witness, Unit>`, and raise `Unit.INSTANCE`.
+
+Where this lives: [Take it through the steps](#take-it-through-the-steps), with each type's error type in [Obtaining Instances](../functional/instances_facade.md#zero-argument-lookups).
+~~~
+
+~~~admonish question title="Checkpoint: narrowing inside a generic method" id="check-kind-narrow"
+A method written for any `F` gets back a `Kind<F, BigDecimal>`. Can it narrow that with `MAYBE.narrow` to give zero when the total failed? If not, how does it give zero?
+
+<!-- verify:rejects "cannot be converted to" -->
+```java
+<F extends WitnessArity<TypeArity.Unary>> BigDecimal peekAtTotal(Kind<F, BigDecimal> total) {
+    return MAYBE.narrow(total).orElse(BigDecimal.ZERO);
+}
+```
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-kind-narrow-answer"
+**No: javac refuses it, because `Kind<F, BigDecimal>` "cannot be converted to" `Maybe`'s `Kind`.** The method does not know that `F` is `Maybe`, so it cannot pick a helper, and it cannot return a plain `BigDecimal` either. It takes the `MonadError` for `F`, returns a `Kind<F, BigDecimal>` and recovers through the instance, as `totalOrZero` does with `handleErrorWith`. The caller, who knows `F`, narrows.
+
+Where this lives: [Recover in code for any container](#recover-in-code-for-any-container).
 ~~~
 
 ---
@@ -65821,6 +65881,31 @@ A dependency in the signature cannot be missed: `Instances.validated()` with no 
 
 ~~~admonish tip title="You can ship now"
 You can now get any built-in instance in one shape: a token for a type that needs nothing, an argument for one that needs a dependency. The rest of this page is for what the compiler checks, what the facade covers, and the accessors behind it.
+~~~
+
+~~~admonish question title="Checkpoint: two lookups on `IO`" id="check-facade-cast"
+Which of these throws, and when: `Instances.monad(io())` or `Instances.alternative(io())`?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-facade-cast-answer"
+**`Instances.alternative(io())` throws `ClassCastException` when the call runs, and `Instances.monad(io())` succeeds.** The compiler cannot check that a type has the capability you ask for, and `IO`'s instance has no `Alternative`.
+
+Where this lives: [Zero-argument lookups](#zero-argument-lookups).
+~~~
+
+~~~admonish question title="Checkpoint: a token for `Validated`" id="check-facade-argument"
+`maybe()` is a token for `Instances.monad(maybe())`. Is there a `validated()` token, for `Instances.monad(validated())`?
+
+<!-- verify:rejects "cannot find symbol" -->
+```java
+var monad = Instances.monad(validated());
+```
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-facade-argument-answer"
+**No: javac reports "cannot find symbol".** `Validated` needs a `Semigroup` to join its errors, so it has no token. The facade asks for the `Semigroup` in the method's parameters instead: `Instances.validated(Semigroups.list())`.
+
+Where this lives: [Argument-carrying instances](#argument-carrying-instances).
 ~~~
 
 ---
@@ -65999,7 +66084,7 @@ A `Functor` keeps two laws, and you have assumed both whenever you called `map`.
 - **Identity: mapping `a -> a` changes nothing.** `map(a -> a, fa)` equals `fa`.
 - **Composition: two maps equal one map of both functions.** `map(g, map(f, fa))` equals `map(f.andThen(g), fa)`.
 
-Two containers are equal when they hold equal values in the same shape. For a deferred container such as `IO`, they are equal when running both gives equal results. Both laws assume functions that never return `null`, and [Values, never null](../hkts/core-concepts.md#values-never-null) says what each type does with one.
+Two containers are equal when they hold equal values in the same shape. For a deferred container such as `IO`, they are equal when running both gives equal results. Comparing them runs both, and repeats any effect they have, so check the laws with an `IO` that gives the same result on every run, as the test's `IO.delay(() -> ORDER)` does. Both laws assume functions that never return `null`, and [Values, never null](../hkts/core-concepts.md#values-never-null) says what each type does with one.
 
 `FunctorLaws`, in [`hkj-test`](../tooling/test_assertions.md#adding-the-dependency)'s `org.higherkindedj.hkt.laws` package, checks both laws on any instance, your own included. You pass it the equality to use. `KindEquivalence.byEqualsAfter`, in `org.higherkindedj.hkt.assertions`, builds one from a function it applies to both sides, and compares the two results with `equals`: `MAYBE::narrow` unwraps a `Maybe`, and for an `IO` the function also runs it. A test of `Maybe` and `IO` uses these imports, with JUnit's:
 
@@ -66084,6 +66169,26 @@ The test checks both laws on a `Just`, a `Nothing` and an `IO`, where `ORDER` is
 
 ~~~admonish tip title="You can ship now"
 You can now write a method that maps inside any container, as `totals` does, and check an instance of your own against the two laws. The rest of this page is for which types have a `Functor`, and what builds on it.
+~~~
+
+~~~admonish question title="Checkpoint: `map` over an `Invalid`" id="check-functor-invalid"
+With `Validated`'s instance, you map `LineItem::quantity` over a `Validated` that is `Invalid([SKU is blank])`. What comes back, and does `LineItem::quantity` run?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-functor-invalid-answer"
+**The same `Invalid([SKU is blank])`, and the function never runs.** `map` changes the values a container holds and keeps its shape. An `Invalid` holds no line item, so there is nothing to change.
+
+Where this lives: [What `map` promises](#what-map-promises).
+~~~
+
+~~~admonish question title="Checkpoint: the identity law on `IO`" id="check-functor-io-equality"
+You check `IO`'s `Functor` against the identity law, with an equality built by `KindEquivalence.byEqualsAfter(IO_OP::narrow)`. Does `FunctorLaws.assertIdentity` pass?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-functor-io-equality-answer"
+**No.** `map(a -> a, io)` builds a new `IO`, so comparing the two `IO` objects with `equals` fails, though both give the same result. For a deferred container, two values are equal when running both gives equal results, so the equality must run them, on an `IO` that gives the same result every run: `byEqualsAfter(kind -> IO_OP.narrow(kind).unsafeRunSync())`.
+
+Where this lives: [Two laws](#two-laws).
 ~~~
 
 ---
@@ -66402,6 +66507,26 @@ import org.higherkindedj.hkt.validated.ValidatedKind;
 
 ~~~admonish tip title="You can ship now"
 You can now build one value from several independent ones, in a method written once for any container, as `lineItem` is. You can say what each instance does with a failure, and check an instance against the four laws. The rest of this page is for which types have an `Applicative`, where `Validated` bends a rule, and what builds on `Applicative`.
+~~~
+
+~~~admonish question title="Checkpoint: `map2` with an empty list" id="check-applicative-empty-list"
+With `List`'s instance, what does `map2` give for the SKUs `["LAMP", "DESK"]` and an empty list of quantities?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-applicative-empty-list-answer"
+**An empty list.** `List`'s `map2` gives every combination of the two inputs, and two SKUs with no quantities make no combinations.
+
+Where this lives: [What each instance does](#what-each-instance-does).
+~~~
+
+~~~admonish question title="Checkpoint: two slow tasks" id="check-applicative-vtask"
+Two `VTask`s each take a second to run. About how long does running `Instances.applicative(vtask()).map2(first, second, f)` take, and what would take one second?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-applicative-vtask-answer"
+**About two seconds.** `VTask`'s `map2` runs the first task, then the second. `Par.map2` runs the two at the same time, so it takes about one.
+
+Where this lives: [What each instance does](#what-each-instance-does).
 ~~~
 
 ---
@@ -66760,13 +66885,33 @@ import org.higherkindedj.hkt.laws.MonadLaws;
 ~~~admonish warning title="Common Misunderstandings"
 - **"`flatMap` runs the step at once."** `Either`'s does. `IO`'s and `VTask`'s build a deferred value, and nothing runs until you run it. `Stream`'s runs the step only as the stream is consumed. The order of the steps is fixed, and the timing is the container's.
 - **"Monads always short-circuit."** Instances whose input holds at most one value stop when it is missing or failed: `Either`, `Validated`, `Maybe`, `IO` and `CompletableFuture` among them. `List`'s `flatMap` runs the step on every element. The behaviour comes from the instance, not from the word "Monad".
-- **"`flatMap` is `Stream.flatMap`."** `Stream.flatMap` is one instance of the shape: it flattens a stream of streams. `Monad`'s `flatMap` names the shape for any container, and each instance defines its own flattening.
+- **"`flatMap` is `Stream.flatMap`."** `Stream.flatMap` is one instance of the shape: it flattens a stream of streams. `Monad`'s `flatMap` names the shape for any container.
 - **"Nested `flatMap` calls are the cleanest you can do."** They are the most explicit, as `flatMap2`'s body shows. For more than two steps, a [For comprehension](for_comprehension.md) reads better and avoids the indentation.
 - **"You can call `.flatMap` on a `Kind`."** `Kind` has no methods. Go through the `Monad<F>` instance, which knows how to flatten inside `F`.
 ~~~
 
 ~~~admonish tip title="You can ship now"
 You can now write a chain once for any container, as `markPaid` is, and say what each instance does when a step has no value to work on. You can use the helpers in place of hand-written lambdas, and check an instance against left identity, right identity and associativity. The rest of this page is for which types have a `Monad`, and what builds on it.
+~~~
+
+~~~admonish question title="Checkpoint: `markPaid` over a list" id="check-monad-list"
+`markPaid` runs with `List`'s instance on two found orders. `save` gives back an empty list for the first, and one order for the second. How many orders come back?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-monad-list-answer"
+**One.** `List`'s `flatMap` runs the step on every element and joins the results, so the empty list adds nothing.
+
+Where this lives: [What each instance does](#what-each-instance-does).
+~~~
+
+~~~admonish question title="Checkpoint: `flatMapIfOrElse` on a `Left`" id="check-monad-helpers"
+On a `Left`, which branch of `flatMapIfOrElse` runs: `ifTrue` or `ifFalse`?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-monad-helpers-answer"
+**Neither.** `flatMapIfOrElse` is built from `flatMap`, which passes a `Left` on without running its step, so the test and both branches never run. `ifFalse` handles a value that fails the test, not a failure.
+
+Where this lives: [Helpers built on `flatMap` and `map`](#helpers).
 ~~~
 
 ---
@@ -67167,6 +67312,26 @@ import org.higherkindedj.hkt.trymonad.TryKind;
 You can now raise an error as a value in a method written once for any container, as `refuseShipped` is, and name each instance's error type. You can recover with the right one of four methods, keeping a costly fallback in a handler, and state the three laws that tie raising to handling. The rest of this page is for which types have a `MonadError`, the different meaning of the same names on a Path, and what builds on `MonadError`.
 ~~~
 
+~~~admonish question title="Checkpoint: raising an error in a `VTask`" id="check-monaderror-vtask"
+Does `Instances.monadError(vtask()).raiseError(error)` throw `error`?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-monaderror-vtask-answer"
+**No.** It builds a task that fails with `error` when it runs, and nothing is thrown until then. `raiseError` builds a value in every instance; `VTask`'s value is a task.
+
+Where this lives: [What each instance does](#what-each-instance-does).
+~~~
+
+~~~admonish question title="Checkpoint: a slow default" id="check-monaderror-recover"
+`found` is a success. In `monadError.recover(found, slowDefault())`, does `slowDefault()` run?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-monaderror-recover-answer"
+**Yes.** `recover` takes a value, so Java calls `slowDefault()` before `recover`, whatever `found` holds. To run it only on a failure, give it to a handler: `handleError(found, _ -> slowDefault())`.
+
+Where this lives: [Should you use `recoverWith` or `handleErrorWith`?](#constant-fallbacks-recover-and-recoverwith)
+~~~
+
 ---
 
 ## The fine print {#the-fine-print}
@@ -67534,6 +67699,32 @@ A monad transformer, such as `StateT`, is a `Monad` over `Kind`, so `For` chains
 
 ~~~admonish tip title="You can ship now"
 You can now write a chain of dependent steps once for any container, as `receipt` is, with plain values between the steps. You can filter it with `when`, mark independent steps with `par` knowing what each instance does with them, and traverse a collection inside it. The rest of this page is for how many values a chain holds, and for readers who know Scala's `for`.
+~~~
+
+~~~admonish question title="Checkpoint: `when` on a `MonadZero` held as a `Monad`" id="check-for-when"
+`Maybe`'s instance is a `MonadZero`. Why does this chain not compile, and what one change gives it `when`?
+
+<!-- verify:rejects "cannot find symbol" -->
+```java
+Monad<MaybeKind.Witness> monad = Instances.monadZero(maybe());
+For.from(monad, found).when(order -> order.status() == OrderStatus.SHIPPED);
+```
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-for-when-answer"
+**The declared type decides, and `monad` is declared a `Monad`, so the chain has no `when` and javac reports "cannot find symbol".** Declare it `MonadZero<MaybeKind.Witness>`, and `For.from` starts the chain that has `when`.
+
+Where this lives: [Filtering with `when`](#filtering-with-when).
+~~~
+
+~~~admonish question title="Checkpoint: `par` over two failures" id="check-for-par"
+With `Either`'s instance, `For.par` starts a chain from `Left("SKU is blank")` and `Left("quantity must be positive")`. What does `yield` give?
+~~~
+
+~~~admonish success title="Answer and why" collapsible=true id="check-for-par-answer"
+**`Left(SKU is blank)`.** `par` combines its values with the instance's `map2`, and `Either`'s keeps the first failure. Only an instance whose `map2` joins errors, such as `Validated`'s, reports both.
+
+Where this lives: [Independent steps with `par`](#independent-steps-with-par).
 ~~~
 
 ---
