@@ -219,4 +219,4 @@ import org.higherkindedj.hkt.func.FunctionProfunctor;
 ---
 
 **Previous:** [Bifunctor](bifunctor.md)
-**Next:** [Optics Integration](for_optics.md)
+**Next:** [For with Optics](for_optics.md)
