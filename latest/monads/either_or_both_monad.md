@@ -1,210 +1,295 @@
-# EitherOrBoth:
-## _Success That Can Also Carry Warnings_
+<!-- description: Return a Java result that succeeds with warnings using EitherOrBoth, keep each non-fatal problem beside the value, and decide at the boundary what to do. -->
 
-~~~admonish example title="See Example Code"
-**The code on this page is [EitherOrBothBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/monads/eitherorboth/EitherOrBothBook.java)** - the page includes it directly, so it is compiled and run by the build.
+# EitherOrBoth: Success with Warnings
+
+_Keep a value's warnings beside it, and decide at the boundary what they mean._
+
+~~~admonish abstract title="EitherOrBoth at a glance"
+| | |
+|---|---|
+| **Models** | A value, an error, or a value with warnings beside it |
+| **Replaces** | A result record holding a value and a list of warnings |
+| **Effect Path** | [`EitherOrBothPath`](../effect/path_either_or_both.md) |
+| **Instances** | `Functor`, `Applicative`, `Monad`, `Foldable`, `Traverse`, `Bifunctor` |
+| **Choose it when** | A success can carry problems that are not fatal; otherwise [Validated](validated_monad.md), or compare every type in [Choosing a Type](supported-types.md#choosing-a-type) |
 ~~~
-
 
 ~~~admonish info title="What You'll Learn"
-- Why neither `Either` nor `Validated` can model "success with warnings", and how `EitherOrBoth` fills the gap
-- The three cases (`Left`, `Right`, `Both`) and the total accessors (`getLeft` / `getRight`) that never throw
-- The accumulating `flatMap` contract: `Left` short-circuits, `Both` carries its warnings forward
-- Why the monadic `ap` short-circuits (and is *not* the same as `Validated`'s accumulating `ap`)
-- Converting to `Either` / `Validated` / `Maybe` at the boundary, deciding what happens to warnings
-- That `EitherOrBoth` is known elsewhere as `Ior` (Cats) or `These` (Haskell)
+- Return a value with warnings as a `Both`, keeping a fatal problem as a `Left`
+- Join independent checks and keep every warning, even when one check is fatal
+- Predict what `flatMap` does with the warnings of each case
+- Decide at the boundary what happens to a `Both`'s warnings
+- Keep the same steps on an `EitherOrBothPath`
 ~~~
 
-~~~admonish example title="See Example Code:"
-[EitherOrBothExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/eitherorboth/EitherOrBothExample.java)
-~~~
-
-## The Problem: A Success With Warnings Has No Home
-
-Higher-Kinded-J models two failure shapes, and both are *exclusive*:
-
-- **`Either<L, R>`** is `Left(e)` **or** `Right(a)`: a result is a failure or a success, never both.
-- **`Validated<E, A>`** accumulates errors, but is still exclusive: `Invalid` carries errors and **no value**; `Valid` carries a value and **no errors**.
-
-Neither models a genuinely common outcome: a **successful value that also carries accumulated, non-fatal problems**. Config that parses but reports deprecations; a document that renders but logs recoverable issues; an import that produces records *and* a list of rows it had to skip. The usual workarounds (`Either<E, Pair<List<Warning>, A>>`, a bespoke result record, or simply dropping the warnings) do not compose with the railway combinators, so the warning channel becomes manual plumbing.
-
-`EitherOrBoth<L, R>` is the principled type. It is an *inclusive*-or: a `Left`, a `Right`, **or `Both` at once**.
-
-```java
-    EitherOrBoth<NonEmptyList<Warning>, Config> result =
-        parseConfig(raw) // Right(cfg), Both(warnings, cfg), or Left(fatal)
-            .flatMap(NonEmptyList.semigroup(), cfg -> validateConfig(cfg)); // warnings accumulate
-```
-
-By convention it is **right-biased**: success on the right, problems on the left, so `map` / `flatMap` feel identical to the rest of the railway. A `Both` is therefore "a successful value *and* the warnings gathered while producing it".
-
-~~~admonish note title="Known aliases"
-`EitherOrBoth` is called `Ior` (inclusive-or) in Cats and `These` in Haskell. This library uses the
-descriptive name; the aliases are noted only so the concept is recognisable.
+~~~admonish example title="See Example Code"
+**The code on this page is [EitherOrBothBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/eitherorboth/EitherOrBothBook.java)**: the page includes it, so the build compiles and runs it. [EitherOrBothBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/eitherorboth/EitherOrBothBookTest.java) holds what the page says each method does.
 ~~~
 
 ---
 
-## The Three Cases
+## A success with warnings {#a-success-with-warnings}
 
-`EitherOrBoth` is a sealed interface over three immutable records, so values are fully
-`switch`-matchable:
+[Either](either_monad.md) and [Validated](validated_monad.md) are exclusive: a result is a success or a failure, never both. Some outcomes are both. An order line imported from a wholesaler's feed may need correcting before it can be used: a lower-case SKU upper-cased, or a price with a fraction of a penny rounded. The line is usable, and the importer should still report what it changed. Java code usually returns a record of the value and a `List` of warnings, which no `map` or `flatMap` knows how to carry.
+
+`EitherOrBoth<L, R>` is an inclusive-or: a `Left`, a `Right`, or `Both` at once. Success goes on the right and problems on the left, so a `Both` is a value with the warnings found while producing it. Cats calls the type `Ior`, and Haskell `These`.
+
+The code on this page uses these imports, with `LineItem` from the order records the [Optics](../optics/ch_intro.md) chapter introduces:
+
+<!-- verify -->
+```java
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.Locale;
+import org.higherkindedj.example.book.optics.cast.LineItem;
+import org.higherkindedj.hkt.either.Either;
+import org.higherkindedj.hkt.eitherorboth.EitherOrBoth;
+import org.higherkindedj.hkt.maybe.Maybe;
+import org.higherkindedj.hkt.nonemptylist.NonEmptyList;
+import org.higherkindedj.hkt.validated.Validated;
+```
+
+Each of these checks passes, fails, or passes with something to say. A warning goes in a [`NonEmptyList`](nonemptylist_monad.md), since a `Both` always has at least one:
 
 ```java
-  static String describe(EitherOrBoth<NonEmptyList<Warning>, Config> r) {
-    return switch (r) {
-      case EitherOrBoth.Left<NonEmptyList<Warning>, Config>(var w) -> "failed: " + w;
-      case EitherOrBoth.Right<NonEmptyList<Warning>, Config>(var cfg) -> "ok: " + cfg;
-      case EitherOrBoth.Both<NonEmptyList<Warning>, Config>(var w, var c) ->
-          "ok with warnings: " + c;
+  // A check can pass, fail, or pass with something to say
+  static EitherOrBoth<NonEmptyList<String>, String> sku(String sku) {
+    if (sku.isBlank()) {
+      return EitherOrBoth.left(NonEmptyList.single("sku is missing"));
+    }
+    String upper = sku.toUpperCase(Locale.ROOT);
+    return upper.equals(sku)
+        ? EitherOrBoth.right(sku)
+        : EitherOrBoth.both(NonEmptyList.single("sku " + sku + " upper-cased"), upper);
+  }
+
+  static EitherOrBoth<NonEmptyList<String>, Integer> quantity(int quantity) {
+    return quantity > 0
+        ? EitherOrBoth.right(quantity)
+        : EitherOrBoth.left(NonEmptyList.single("quantity " + quantity + " is not positive"));
+  }
+
+  static EitherOrBoth<NonEmptyList<String>, BigDecimal> price(BigDecimal price) {
+    if (price.scale() <= 2) {
+      return EitherOrBoth.right(price);
+    }
+    BigDecimal rounded = price.setScale(2, RoundingMode.HALF_UP);
+    return EitherOrBoth.both(
+        NonEmptyList.single("price " + price + " rounded to " + rounded), rounded);
+  }
+
+```
+
+## Every warning in one result {#every-warning-in-one-result}
+
+`EitherOrBoth.accumulate()` joins independent checks, as `Validated.accumulate()` does, and keeps the value flowing past each warning. A single fatal check makes the whole result a `Left`, which holds the fatal problem beside every warning, in the order of the checks:
+
+```java
+  static EitherOrBoth<NonEmptyList<String>, LineItem> line(
+      String sku, int quantity, BigDecimal price) {
+    return EitherOrBoth.accumulate()
+        .and(sku(sku))
+        .and(quantity(quantity))
+        .and(price(price))
+        .apply(LineItem::new);
+  }
+
+```
+
+```java
+    EitherOrBoth<NonEmptyList<String>, LineItem> clean = line("LAMP", 2, new BigDecimal("40.00"));
+    // Right(LineItem[sku=LAMP, quantity=2, price=40.00])
+    EitherOrBoth<NonEmptyList<String>, LineItem> corrected =
+        line("lamp", 2, new BigDecimal("40.005"));
+    // Both(NonEmptyList[sku lamp upper-cased, price 40.005 rounded to 40.01],
+    //   LineItem[sku=LAMP, quantity=2, price=40.01])
+    EitherOrBoth<NonEmptyList<String>, LineItem> refused =
+        line("lamp", 0, new BigDecimal("40.005"));
+    // Left(NonEmptyList[sku lamp upper-cased, quantity 0 is not positive,
+    //   price 40.005 rounded to 40.01])
+```
+
+A `switch` over the three cases reads the result, and the compiler checks that each is handled:
+
+```java
+  static String describe(EitherOrBoth<NonEmptyList<String>, LineItem> result) {
+    return switch (result) {
+      case EitherOrBoth.Right(LineItem line) -> "imported " + line.sku();
+      case EitherOrBoth.Both(NonEmptyList<String> warnings, LineItem line) ->
+          "imported " + line.sku() + " with " + warnings.size() + " warning(s)";
+      case EitherOrBoth.Left(NonEmptyList<String> problems) ->
+          "refused: " + String.join("; ", problems.toJavaList());
     };
   }
 
 ```
 
-Create values with `left` / `right` / `both`:
+[Accumulating Assembly](validated_assembly.md) covers the builder in full, including `EitherOrBoth.fields()`, which names the field each warning belongs to.
+
+## The `flatMap` contract {#the-flatmap-contract}
+
+A step that needs the whole line can only follow the checks. `flatMap(semigroup, step)` takes a [`Semigroup`](../functional/semigroup_and_monoid.md), which joins two values, as well as the step, because a `Both`'s warnings must be joined with any the step adds. `accumulate()` needs none, because it takes `NonEmptyList` warnings and joins them itself. `REVIEW_LIMIT` is 100.00, and a line whose total exceeds it should be checked by a person:
 
 ```java
-    EitherOrBoth<String, Integer> left = EitherOrBoth.left("fatal");
-    EitherOrBoth<String, Integer> right = EitherOrBoth.right(42);
-    EitherOrBoth<String, Integer> both = EitherOrBoth.both("deprecated key", 42);
+  // This step needs the whole line, so it can only follow the checks
+  static EitherOrBoth<NonEmptyList<String>, LineItem> review(LineItem line) {
+    BigDecimal total = line.price().multiply(BigDecimal.valueOf(line.quantity()));
+    return total.compareTo(REVIEW_LIMIT) > 0
+        ? EitherOrBoth.both(NonEmptyList.single("line total " + total + " flagged"), line)
+        : EitherOrBoth.right(line);
+  }
+
+  static EitherOrBoth<NonEmptyList<String>, LineItem> reviewedLine(
+      String sku, int quantity, BigDecimal price) {
+    return line(sku, quantity, price).flatMap(NonEmptyList.semigroup(), EitherOrBothBook::review);
+  }
+
 ```
-
-Values are **never `null`**: the components are validated at construction, which is what keeps the
-total accessors honest.
-
----
-
-## Total Accessors (No Throwing Getters)
-
-Unlike `Either`'s throwing `getLeft` / `getRight`, `EitherOrBoth` exposes **total** accessors that
-return a `Maybe`:
-
-| Accessor | `Left(l)` | `Right(r)` | `Both(l, r)` |
-|---|---|---|---|
-| `getLeft()` | `Just(l)` | `Nothing` | `Just(l)` |
-| `getRight()` | `Nothing` | `Just(r)` | `Just(r)` |
-| `isLeft()` / `isRight()` / `isBoth()` | `true` / – / – | – / `true` / – | – / – / `true` |
-
-`fold` collapses all three cases at once:
 
 ```java
-    String s =
-        both.fold(
-            warnings -> "failed: " + warnings,
-            value -> "ok: " + value,
-            (w, v) -> "ok (" + v + ") with " + w);
+    EitherOrBoth<NonEmptyList<String>, LineItem> flagged =
+        reviewedLine("lamp", 3, new BigDecimal("40.005"));
+    // Both(NonEmptyList[sku lamp upper-cased, price 40.005 rounded to 40.01,
+    //   line total 120.03 flagged], LineItem[sku=LAMP, quantity=3, price=40.01])
 ```
 
----
-
-## The `flatMap` Contract (the subtle part)
-
-`flatMap` is right-biased and accumulates the left channel using a `Semigroup<L>` (the same mechanism
-`Validated` uses). The contract is: **`Left` is fatal and short-circuits; `Both` carries its warnings
-forward and accumulates them.**
-
-<pre class="hkj-railway-diagram">
-    <span style="color:#4CAF50"><b>Right</b>  ═══●═══════════════●═══▶  value</span>
-    <span style="color:#FFB300"><b>Both</b>   ═══●═══════════════●═══▶  value + warnings</span>
-    <span style="color:#FFB300">           map             flatMap f      (w ⊕ w' accumulate, left to right)</span>
-                ╲               ╲   a flatMap step may return Left
-                 ╲               ╲
-    <span style="color:#F44336"><b>Left</b>   ────●───────────────●───▶  short-circuit, f never runs</span>
+<pre class="hkj-railway-diagram" role="img" aria-label="EitherOrBoth's three tracks through an import, a review and a later step. A Right stays a Right, or crosses to the Both track when the review adds a warning. A Both carries its warnings forward and adds any later ones. A fatal check, or a later step that gives a Left, moves to the Left track, which keeps every warning; after a fatal check the review never runs.">
+        import             review     later step
+Right  ════●══════════════════●══════════════▶  Right(line)
+                               ╲ review adds a warning
+Both   ════●════════════════════●═══════●═════▶  Both(every warning, line)
+                                         ╲ it gives a Left
+Left   ────●──────────────────────────────●───▶  Left(every warning)
+        a fatal check:
+        the review never runs
 </pre>
 
-```java
-  default <R2> EitherOrBoth<L, R2> flatMap(
-      Semigroup<L> semigroup, Function<? super R, ? extends EitherOrBoth<L, ? extends R2>> mapper) {
-```
+The diagram shows a `Left` as the only track that stops the chain, and a review that moves a `Right` onto the `Both` track. A `Left` is fatal, so `flatMap` never runs the step, and a `Right` gives whatever the step gives. For `Both(w, r).flatMap(semigroup, f)`, the warnings `w` join whatever `f(r)` gives:
 
-For `Both(l, r).flatMap(⊕, f)`:
-
-| `f(r)` returns | result |
+| `f(r)` gives | `flatMap` gives |
 |---|---|
-| `Left(l2)` | `Left(l ⊕ l2)` |
-| `Right(r2)` | `Both(l, r2)` |
-| `Both(l2, r2)` | `Both(l ⊕ l2, r2)` |
+| `Left(w2)` | `Left(w ⊕ w2)` |
+| `Right(r2)` | `Both(w, r2)` |
+| `Both(w2, r2)` | `Both(w ⊕ w2, r2)` |
 
-`Left(l)` returns `Left(l)` without running `f`; `Right(r)` returns `f(r)` unchanged. Accumulation is
-left-to-right and needs only an associative `Semigroup`.
+`w ⊕ w2` is `semigroup.combine(w, w2)`: with `NonEmptyList.semigroup()`, the warnings carried in come first, then the step's.
 
-~~~admonish warning title="Monadic `ap` short-circuits; it is NOT `Validated`-style accumulation"
-`EitherOrBoth` **is** a lawful `Monad`, so its `ap` is consistent with `flatMap`: when the
-function side is a `Left`, `ap` short-circuits and the argument's left is dropped. This is **different**
-from `Validated.ap`, which collects errors from *both* sides even across a failure.
+## Converting at the boundary {#converting-at-the-boundary}
 
-If you want the fully-parallel "collect every warning, even across a fatal `Left`" behaviour, use
-[`EitherOrBothPath`](../effect/path_either_or_both.md)'s accumulating combinators (`zipWithAccum`,
-`andAlso`). The monadic operations here are for sequential, short-circuiting composition.
-~~~
+Code outside the importer may take an `Either`, a `Validated` or a `Maybe`. The two `Either` conversions are named for what they do with a `Both`'s warnings, so the choice is visible at the call. `toValidated()` and `toMaybe()` drop the warnings, so read them first with `getLeft()` if you need them:
 
-The default warning channel is [`NonEmptyList`](nonemptylist_monad.md): a `Both` always has at least
-one warning, so a non-empty list is the exact fit, and `NonEmptyList.semigroup()` supplies the
-accumulation.
-
----
-
-## Conversions
-
-The interesting edge is what happens to a `Both`'s warnings at the boundary. The conversions are
-named so the decision is explicit:
+```java
+    Either<NonEmptyList<String>, LineItem> dropping = corrected.toEitherDroppingWarnings();
+    // Right(LineItem[sku=LAMP, quantity=2, price=40.01])
+    Either<NonEmptyList<String>, LineItem> failing = corrected.toEitherFailingOnWarnings();
+    // Left(NonEmptyList[sku lamp upper-cased, price 40.005 rounded to 40.01])
+    Validated<NonEmptyList<String>, LineItem> validated = corrected.toValidated();
+    // Valid(LineItem[sku=LAMP, quantity=2, price=40.01])
+    Maybe<LineItem> maybe = corrected.toMaybe();
+    // Just(LineItem[sku=LAMP, quantity=2, price=40.01])
+    Maybe<NonEmptyList<String>> warnings = corrected.getLeft();
+    // Just(NonEmptyList[sku lamp upper-cased, price 40.005 rounded to 40.01])
+```
 
 | Conversion | `Left(l)` | `Right(r)` | `Both(l, r)` |
 |---|---|---|---|
-| `toEitherDroppingWarnings()` | `Left(l)` | `Right(r)` | `Right(r)` (warnings dropped) |
-| `toEitherFailingOnWarnings()` | `Left(l)` | `Right(r)` | `Left(l)` (warnings fatal) |
-| `toValidated()` | `Invalid(l)` | `Valid(r)` | `Valid(r)` (warnings dropped) |
-| `toMaybe()` | `Nothing` | `Just(r)` | `Just(r)` |
+| `toEitherDroppingWarnings()` | `Left(l)` | `Right(r)` | `Right(r)`, warnings dropped |
+| `toEitherFailingOnWarnings()` | `Left(l)` | `Right(r)` | `Left(l)`, warnings fatal |
+| `toValidated()` | `Invalid(l)` | `Valid(r)` | `Valid(r)`, warnings dropped |
+| `toMaybe()` | `Nothing` | `Just(r)` | `Just(r)`, warnings dropped |
 
-`fromEither` and `fromValidated` lift the exclusive types in (the `Both` case is unreachable from
-them).
+`EitherOrBoth.fromEither` and `fromValidated` turn an `Either` or a `Validated` into an `EitherOrBoth`, and never give a `Both`.
 
----
+## On an `EitherOrBothPath` {#on-an-eitherorbothpath}
 
-## When To Use It
+Application code can hold the same steps on an [`EitherOrBothPath`](../effect/path_either_or_both.md). `Path.eitherOrBoth` takes a result and the semigroup that joins its warnings, `via` chains a step with the `flatMap` contract, and `warnings()` reads them. These are the extra imports:
 
-| Type | Use when |
-|------|----------|
-| `Either<L, R>` | A clean, exclusive choice: success *or* failure, no partial results |
-| `Validated<E, A>` | Pure accumulation: collect *all* errors, with **no** partial value on failure |
-| `EitherOrBoth<L, R>` | Success that may also carry non-fatal **warnings** (or a genuinely partial result) |
-
-`EitherOrBoth` is complementary to the other two, not a replacement: reach for it precisely when a
-result can be *both* a value and a set of problems.
-
----
-
-## Tolerant Assembly: `accumulate()` and `fields()`
-
-The staged assembly builder gives `EitherOrBoth` the same open-arity construction story as [Validated](validated_assembly.md), in tolerant form: warnings accumulate (`Both`) while the value keeps flowing, and any `Left` makes the whole assembly `Left` while still keeping every warning, in field-declaration order.
-
+<!-- verify -->
 ```java
-    EitherOrBoth<NonEmptyList<String>, Config> cfg =
-        EitherOrBoth.accumulate()
-            .and(parsePortLenient(raw.port())) // Both(NonEmptyList[port defaulted], 8080)
-            .and(parseTimeoutLenient(raw.timeout())) // Right(30)
-            .apply(Config::new);
-    // Both(NonEmptyList[port defaulted], Config[port=8080, timeout=30])
+import org.higherkindedj.hkt.effect.EitherOrBothPath;
+import org.higherkindedj.hkt.effect.Path;
 ```
 
-The combination primitive behind it is `zipWithAccum(other, semigroup, combiner)`: the `Validated`-style merge in which the right is present only if both are, and nothing short-circuits the warning collection. `EitherOrBoth.fields()` is the labelled twin over `NonEmptyList<FieldError>`, with paths that compose through nesting.
+```java
+  static EitherOrBothPath<NonEmptyList<String>, LineItem> reviewedLinePath(
+      String sku, int quantity, BigDecimal price) {
+    return Path.eitherOrBoth(line(sku, quantity, price), NonEmptyList.<String>semigroup())
+        .via(line -> Path.eitherOrBoth(review(line), NonEmptyList.<String>semigroup()));
+  }
 
-~~~admonish info title="Key Takeaways"
-- **`EitherOrBoth` is an inclusive-or:** `Left`, `Right`, or `Both` at once: the type for "success with warnings".
-- **Right-biased with total accessors:** `map` / `flatMap` operate on the right; `getLeft` / `getRight` return `Maybe` and never throw.
-- **`flatMap` accumulates:** `Left` short-circuits; `Both` carries warnings forward, combining them via a `Semigroup` (default `NonEmptyList.semigroup()`).
-- **Monadic `ap` short-circuits**, unlike `Validated`'s accumulating `ap`; use `EitherOrBothPath` for full parallel accumulation.
-- **Explicit conversions** force a decision about warnings at the boundary.
+```
+
+```java
+    EitherOrBothPath<NonEmptyList<String>, LineItem> onThePath =
+        reviewedLinePath("LAMP", 3, new BigDecimal("40.00"));
+    // EitherOrBothPath(Both(NonEmptyList[line total 120.00 flagged],
+    //   LineItem[sku=LAMP, quantity=3, price=40.00]))
+    Maybe<NonEmptyList<String>> flaggedOnPath = onThePath.warnings();
+    // Just(NonEmptyList[line total 120.00 flagged])
+```
+
+## Methods {#methods}
+
+| Method | What it does |
+|---|---|
+| `EitherOrBoth.left(l)`, `right(r)`, `both(l, r)` | Build each case; none accepts `null` |
+| `isLeft()`, `isRight()`, `isBoth()` | Say which case it holds |
+| `getLeft()`, `getRight()` | Return a `Maybe` of that side, never throwing; a `Both` has both |
+| `map(f)` | Changes the value of a `Right` or a `Both` |
+| `mapLeft(f)` | Changes the warnings or error of a `Left` or a `Both` |
+| `bimap(onLeft, onRight)` | Changes whichever sides it holds |
+| `flatMap(semigroup, f)` | Runs a step on the value, joining warnings as the contract table shows |
+| `zipWithAccum(other, semigroup, f)` | Joins two results, keeping every warning from both, even across a `Left` |
+| `fold(onLeft, onRight, onBoth)` | Turns any case into one result |
+| `EitherOrBoth.accumulate()`, `fields()` | Join independent checks, keeping every warning |
+
+A `Left`, a `Right` and a `Both` never hold `null`, as [Values, never null](../hkts/core-concepts.md#values-never-null) says for every type.
+
+## Working with Kind {#working-with-kind}
+
+Generic code, written once for any container, takes `EitherOrBoth` through its `Monad` instance, from `Instances.eitherOrBoth(semigroup)`. The semigroup is how the instance's `flatMap` joins warnings. The instance works over `Kind<EitherOrBothKind.Witness<L>, R>`, so you widen a result to pass it in, and narrow the result to read it. These are the extra imports:
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.eitherorboth.EitherOrBothKindHelper.EITHER_OR_BOTH;
+
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.Monad;
+import org.higherkindedj.hkt.eitherorboth.EitherOrBothKind;
+import org.higherkindedj.hkt.instances.Instances;
+```
+
+```java
+    Monad<EitherOrBothKind.Witness<NonEmptyList<String>>> importing =
+        Instances.eitherOrBoth(NonEmptyList.semigroup());
+
+    Kind<EitherOrBothKind.Witness<NonEmptyList<String>>, LineItem> imported =
+        EITHER_OR_BOTH.widen(line("lamp", 3, new BigDecimal("40.00")));
+    Kind<EitherOrBothKind.Witness<NonEmptyList<String>>, LineItem> checked =
+        importing.flatMap(item -> EITHER_OR_BOTH.widen(review(item)), imported);
+
+    EitherOrBoth<NonEmptyList<String>, LineItem> bothWarnings = EITHER_OR_BOTH.narrow(checked);
+    // Both(NonEmptyList[sku lamp upper-cased, line total 120.00 flagged],
+    //   LineItem[sku=LAMP, quantity=3, price=40.00])
+```
+
+The instance is a `Monad`, not a `MonadError`, so it has no `raiseError` or `handleErrorWith`. `EitherOrBoth` has instances of other type classes too, such as `Traverse` and `Bifunctor`, each an object of its own, and *EitherOrBoth at a glance*, at the head of the page, lists them.
+
+~~~admonish warning title="The instance's ap stops at a Left function"
+`EitherOrBoth`'s `Monad` instance obeys the monad laws, so its `ap` agrees with its `flatMap`. When the function side is a `Left`, `ap` gives that `Left` and drops the argument's warnings, where `Validated`'s `ap` keeps both sides' errors. To keep every warning even across a `Left`, join with `zipWithAccum`, on the value or on an [`EitherOrBothPath`](../effect/path_either_or_both.md).
 ~~~
 
-~~~admonish tip title="See Also"
-- [EitherOrBothPath](../effect/path_either_or_both.md): the fluent railway wrapper, with both short-circuit and accumulating composition
-- [Either](either_monad.md): the exclusive success-or-failure sibling
-- [Validated](validated_monad.md): pure error accumulation with no partial value
-- [NonEmptyList](nonemptylist_monad.md): the non-empty warning channel a `Both` pairs with
-- [Semigroups and Monoids](../functional/semigroup_and_monoid.md): how the left channel accumulates
-- [Accumulating Assembly](validated_assembly.md): the open-arity `accumulate()` / `fields()` builder, whose [`construct`](validated_assembly.md#construct) terminal turns a constructor's refusal into a `Left` that keeps the warnings collected so far
+## When to use `EitherOrBoth` {#when-to-use-eitherorboth}
+
+| You need | Use |
+|---|---|
+| A success that can carry warnings beside it | `EitherOrBoth` |
+| The same steps as a fluent chain in application code | [EitherOrBothPath](../effect/path_either_or_both.md) |
+| Every error, and no value at all when any check fails | [Validated](validated_monad.md) |
+| The first error only, with no partial result | [Either](either_monad.md) |
+
+~~~admonish info title="Hands-On Learning"
+Practise keeping a value flowing past its warnings, in Exercise 5 of [Tutorial 12: Accumulating Assembly](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial12_AccumulatingAssembly.java) (6 exercises).
 ~~~
 
 ---
