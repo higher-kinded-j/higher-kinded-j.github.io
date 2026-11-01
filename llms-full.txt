@@ -3927,10 +3927,11 @@ VTaskPath<Config> config = Path.vtaskPath(existingVTask);
 
 A `VTaskPath` always gives a value. `Path.vtaskPure(null)` throws at the call, and a callable or `map` function that returns null fails the path when it runs, naming that function. A step with nothing to return is `Path.vtaskExec`, which gives `Unit`. [A Task Always Gives a Value](../monads/vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
-Unlike `IOPath`, which defers execution until you call `unsafeRun()`, a
-`VTaskPath` also defers execution. Nothing happens until you explicitly
-run the task. The difference is in *how* it runs: on a virtual thread,
-not the caller's thread.
+Like an `IOPath`, a `VTaskPath` defers execution: nothing happens until
+you run the task, and `unsafeRun()` and `runSafe()` run it on the calling
+thread. What differs is that its work may throw a checked exception, and
+that `runAsync()`, `zipWith`, `Par` and `Scope` run tasks on virtual
+threads, at the same time.
 
 ---
 
@@ -3942,11 +3943,12 @@ not the caller's thread.
 │                                                                 │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌─────────────┐   │
 │  │ describe │ → │  compose │ → │ transform│ → │   execute   │   │
-│  │  effect  │   │  effects │   │  results │   │ on virtual  │   │
-│  │          │   │          │   │          │   │   thread    │   │
+│  │  effect  │   │  effects │   │  results │   │  when you   │   │
+│  │          │   │          │   │          │   │   run it    │   │
 │  └──────────┘   └──────────┘   └──────────┘   └─────────────┘   │
 │                                                                 │
-│  Nothing runs until you call run(), runSafe(), or runAsync()    │
+│ Nothing runs until unsafeRun(), runSafe() or runAsync(), or     │
+│ until toTryPath(), which runs the task at once                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -4018,8 +4020,12 @@ future.thenAccept(value -> System.out.println("Async result: " + value));
 
 ~~~admonish note title="Execution Guidance"
 Prefer `runSafe()` for most use cases. It captures failures in a `Try`,
-maintaining functional error handling throughout your codebase. Use `run()`
+maintaining functional error handling throughout your codebase. Use `unsafeRun()`
 at system boundaries where you need to interact with exception-based APIs.
+
+`runSafe()`, `catching` and `handleError` see the exception the task threw,
+a checked one included. Only `unsafeRun()`, which cannot throw a checked
+exception, wraps one in `VTaskExecutionException`.
 ~~~
 
 ---
@@ -4082,7 +4088,7 @@ VTaskPath<Data> guarded = Path.vtask(() -> fetchData())
     .withBulkhead(serviceBulkhead);
 ```
 
-Two caveats inherited from `VTask.timeout`: the losing computation is *not* interrupted (it keeps running unobserved after the timeout is reported), and a `TimeoutException` thrown inside the computation is indistinguishable from the budget expiring. To interrupt it instead, fork it into a `Scope` with a `timeout`, as in `Scope.<Data>anySucceed().timeout(d).fork(task).join()`. A cancellation does reach it: when the thread waiting for the result is interrupted, so is the computation, and the timeout throws `InterruptedException` once it stops, or the time runs out. The path's `unsafeRun()` and `runSafe()` report it wrapped in `VTaskExecutionException`, and `run().runSafe()` holds the `InterruptedException` itself; each sets the interrupt status. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
+Two caveats inherited from `VTask.timeout`: the losing computation is *not* interrupted (it keeps running unobserved after the timeout is reported), and a `TimeoutException` thrown inside the computation is indistinguishable from the budget expiring. To interrupt it instead, fork it into a `Scope` with a `timeout`, as in `Scope.<Data>anySucceed().timeout(d).fork(task).join()`. A cancellation does reach it: when the thread waiting for the result is interrupted, so is the computation, and the timeout throws `InterruptedException` once it stops, or the time runs out. The path's `unsafeRun()` reports it wrapped in `VTaskExecutionException`, and `runSafe()` holds the `InterruptedException` itself; each sets the interrupt status. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
 
 ---
 
@@ -4206,7 +4212,7 @@ VTaskPath<String> backToPath = Path.vtaskPath(VTask.succeed("restored"));
 
 | Aspect | VTaskPath | IOPath |
 |--------|-----------|--------|
-| **Thread Model** | Virtual threads | Caller's thread |
+| **Thread Model** | Caller's thread for `unsafeRun()`; virtual threads for `runAsync()`, `zipWith`, `Par` and `Scope` | Caller's thread |
 | **Parallelism** | Built-in via `Par`, `Scope` | Manual composition |
 | **`zipWith` Behaviour** | Parallel (uses `Par.map2`) | Sequential |
 | **Structured Concurrency** | Yes, with `Scope` and `Resource` | No |
@@ -4254,8 +4260,8 @@ Try<Dashboard> dashboard = loadDashboard(userId).runSafe();
 ---
 
 ~~~admonish info title="Key Takeaways"
-* **Virtual Threads:** VTaskPath executes on lightweight JVM-managed threads, enabling millions of concurrent tasks
-* **Laziness:** Nothing runs until you call `run()`, `runSafe()`, or `runAsync()`
+* **Virtual Threads:** `runAsync()`, `zipWith`, `Par` and `Scope` run tasks on lightweight JVM-managed threads, enabling millions of concurrent tasks; `unsafeRun()` and `runSafe()` use the calling thread
+* **Laziness:** Nothing runs until you call `unsafeRun()`, `runSafe()` or `runAsync()`, or convert the path with `toTryPath()`, which runs it at once
 * **Composition:** Use `map` for transformations, `via` for dependent chains, and `Par` combinators for parallel execution
 * **Scope:** Use `Scope` for flexible structured concurrency with `allSucceed`, `anySucceed`, `firstComplete`, or `accumulating` joiners
 * **Resource:** Use `Resource` for bracket-pattern resource management with guaranteed cleanup
@@ -103247,7 +103253,7 @@ EitherPath<AppError, String> mapped = userPath.map(user -> user.name());
 
 ## VResultPath
 
-**Definition:** A first-class railway for `VTask<Either<E, A>>`: asynchronous work, run on a virtual thread, that can fail with a typed domain error `E`. It composes `VTaskPath` (async) and `EitherPath` (typed error) into one path, so neither `Kind` ceremony nor a hand-rolled `EitherT` bridge ever surfaces. It speaks the full family vocabulary (`map`/`via`/`then`, `mapError`/`recover`/`recoverWith`/`bimap`).
+**Definition:** A first-class railway for `VTask<Either<E, A>>`: deferred work that may block, and can fail with a typed domain error `E`. It composes `VTaskPath` (async) and `EitherPath` (typed error) into one path, so neither `Kind` ceremony nor a hand-rolled `EitherT` bridge ever surfaces. It speaks the full family vocabulary (`map`/`via`/`then`, `mapError`/`recover`/`recoverWith`/`bimap`).
 
 **Example:**
 <!-- verify -->
@@ -103258,7 +103264,7 @@ VResultPath<OrderError, OrderResult> process(OrderRequest request) {
         .recover(err -> OrderResult.rejected(err));  // handle the typed Left
 }
 
-VTask<Either<OrderError, OrderResult>> carrier = process(req).run();    // execute on a virtual thread
+VTask<Either<OrderError, OrderResult>> carrier = process(req).run();    // run it when you choose
 ```
 
 **Factories:** `Path.vresultRight`/`vresultLeft` (decided), `Path.vresultEither` (lift a decided `Either`), `Path.vresult` (lift a `VTask<Either<E, A>>`), and `Path.vresultDefer` (defer the decision itself).
@@ -103271,7 +103277,7 @@ VTask<Either<OrderError, OrderResult>> carrier = process(req).run();    // execu
 
 ## VTaskPath
 
-**Definition:** A path over `VTask<A>`: a deferred computation that runs on a virtual thread. It suits I/O-bound work that needs to scale. `unsafeRun()` runs it, `runAsync()` returns a future, and `run()` returns the underlying `VTask`.
+**Definition:** A path over `VTask<A>`: a deferred computation that may block or throw a checked exception. It suits I/O-bound work that needs to scale. `unsafeRun()` runs it on the calling thread, `runAsync()` on a virtual thread, returning a future, and `run()` returns the underlying `VTask`. `zipWith`, `parZipWith` and `race` run paths at the same time on virtual threads.
 
 **Factories:** `Path.vtask(callable)`, `Path.vtaskExec(runnable)`, `Path.vtaskPure(value)`, `Path.vtaskFail(throwable)` and `Path.vtaskPath(vtask)`.
 
@@ -104394,9 +104400,9 @@ Scope.<Result>allSucceed()
 **Example:**
 <!-- verify -->
 ```java
-// VTask executes on virtual threads
+// VTask runs on the calling thread, or on a virtual thread with runAsync, Par or Scope
 VTask<String> task = VTask.of(() -> {
-    // This blocking call doesn't waste a platform thread
+    // Run on a virtual thread, this blocking call doesn't hold a platform thread
     return httpClient.get("https://api.example.com/data");
 });
 
@@ -104728,6 +104734,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `Selective` of your own runs only the branch its condition picks** ([#1358](https://github.com/higher-kinded-j/higher-kinded-j/pull/1358)). The default `whenS` ran its effect for a false condition, and the default `ifS` ran both branches. Both now leave the choice to `select`: one that keeps its contract skips what the condition does not pick, and one built from `ap` still runs every effect. See [Selective](../functional/selective.md).
 - **`mapError` on `MaybePath`, `TryPath` and `CompletableFuturePath` carries the mapped error** ([#1332](https://github.com/higher-kinded-j/higher-kinded-j/issues/1332)): `recover` after it sees that error, where it used to see the old one. A success is a `Right` and the mapper is not called. `MaybePath` and `TryPath` return an `EitherPath`. `CompletableFuturePath` returns a `VResultPath`. See [Recoverable (MonadError)](../effect/capabilities.md#recoverable-monaderror).
 - **`toEitherPath`, `toMaybePath` and `toTryPath` follow `recover` on a failed `CompletableFuturePath`** ([#1354](https://github.com/higher-kinded-j/higher-kinded-j/issues/1354)). A cancelled future gives `Left` of its `CancellationException`, or `Nothing`, instead of throwing. `toTryPath` holds the exception the future failed with, not a `CompletionException` around it.
+- **A `VTaskPath` hands every handler the exception its task threw** ([#1396](https://github.com/higher-kinded-j/higher-kinded-j/pull/1396)). A checked one, such as an `IOException`, reached `runSafe`, `catching` and `toTryPath`, and any step after `via`, `then` or `guarantee`, wrapped in a `VTaskExecutionException`, so a retry on `IOException` gave up at once. Only `unsafeRun()`, which cannot throw one, still wraps it. See [VTaskPath](../effect/path_vtask.md#running-tasks).
 
 ---
 
@@ -104759,6 +104766,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **Generated Javadoc uses an article only before a type the processor chose** ([#1307](https://github.com/higher-kinded-j/higher-kinded-j/issues/1307)). A record, class, property or operation is named with none, as in `field of {@link Address}` and `Lifts the {@code Charge} operation`. A path or optic type keeps the article its name takes, as in `Creates an {@link AffinePath}`.
 - **The `hkj-guide` skill turns guard clauses into `ensure`** ([#1338](https://github.com/higher-kinded-j/higher-kinded-j/issues/1338)). A new migration recipe replaces a run of `if (!ok) return Either.left(...)` checks with one `ensure` step for each, and the skill's Error Handling table lists `ensure`.
 - **The `Profunctor` javadoc states its composition law correctly** ([#1362](https://github.com/higher-kinded-j/higher-kinded-j/pull/1362)). Two of its functions were swapped, so the law as written fails. It no longer says profunctors model the optics, which are van Laarhoven optics, and `Bifunctor`'s javadoc names `Function` as the only `Profunctor` instance. See [Profunctor](../functional/profunctor.md).
+- **The `VTask` javadoc says which thread runs a task** ([#1396](https://github.com/higher-kinded-j/higher-kinded-j/pull/1396)). `run()` runs it on the calling thread, and `runAsync()`, `Par` and `Scope` run tasks on virtual threads. It said every task ran on a virtual thread, as did the VTaskPath page and two glossary entries.
 
 ---
 
@@ -104785,6 +104793,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **An `EitherOrBothPath` keeps its own semigroup through a recovery** ([#1314](https://github.com/higher-kinded-j/higher-kinded-j/issues/1314)): the result of `recoverWith` and `orElse` accumulated with the recovery's semigroup, and now accumulates with the receiver's, as `via` and `then` already did.
 - **`mapError` on `MaybePath`, `TryPath` and `CompletableFuturePath` applies the mapper** ([#1332](https://github.com/higher-kinded-j/higher-kinded-j/issues/1332)): it used to hand back the same path, and it never called the mapper. A failure now runs the mapper, and `recover` sees that error. `MaybePath` and `TryPath` return an `EitherPath`. `CompletableFuturePath` returns a `VResultPath`. `mapException` still stays a `TryPath`.
 - **`toEitherPath` and `toMaybePath` on a cancelled `CompletableFuturePath` no longer throw** ([#1354](https://github.com/higher-kinded-j/higher-kinded-j/issues/1354)). They give `Left` of the `CancellationException`, and `Nothing`. `toTryPath` on a failed future holds that future's exception. Code which caught a `CancellationException` around `toEitherPath` or `toMaybePath`, or matched a `CompletionException` in a `toTryPath` failure, no longer sees one.
+- **A `VTaskPath` handler sees a checked exception as its task threw it** ([#1396](https://github.com/higher-kinded-j/higher-kinded-j/pull/1396)). Code that called `getCause()` on a `VTaskExecutionException` now receives the exception itself. That holds in `runSafe` and `catching`, in a handler or retry after `via`, in the future from `runAsync()`, and in `VTaskContext.runOrElseGet` and `StreamTraversal.modifyVTask`. `unsafeRun()` still wraps one.
 - **`recover`, `recoverWith`, `mapError` and `toEitherPath` on a `CompletableFuturePath` keep a `CompletionException` that has no cause** ([#1398](https://github.com/higher-kinded-j/higher-kinded-j/issues/1398)). A handler that was given an empty `RuntimeException` now gets the `CompletionException`.
 
 ### What stops a build that compiled {#build-changes}
