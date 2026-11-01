@@ -74270,249 +74270,203 @@ Practise deferring a side effect with `IOPath`, in Exercise 3 of [Tutorial 01: E
 
 <!-- Source: monads/lazy_monad.md -->
 
-# The Lazy Monad:
-## _Lazy Evaluation with `Lazy`_
+<!-- description: Lazy evaluation in Java: defer an expensive computation with Lazy, memoise the result on first use, even across threads, and choose between Lazy and IO. -->
+
+# Lazy: Computing a Value Once, When Needed
+
+_Work a value out the first time it is asked for, then keep it._
+
+~~~admonish abstract title="Lazy at a glance"
+| | |
+|---|---|
+| **Models** | A value worked out when first asked for, then kept |
+| **Replaces** | A field filled in on first use, behind a `null` check |
+| **Effect Path** | `LazyPath`, shown in [On a `LazyPath`](#on-a-lazypath) |
+| **Instances** | `Functor`, `Applicative`, `Monad` |
+| **Choose it when** | The work has no side effect and its result can be kept; otherwise [IO](io_monad.md), or compare every type in [Choosing a Type](supported-types.md#choosing-a-type) |
+~~~
 
 ~~~admonish info title="What You'll Learn"
-- How to defer expensive computations until their results are actually needed
-- Understanding memoisation: compute once, read many times
-- Composing lazy operations with `map` and `flatMap` while preserving laziness
-- Handling exceptions in lazy computations with `ThrowableSupplier`
-- Choosing between `Lazy` and `IO` for deferred work
+- Defer expensive work until a reader asks for it, and do it only once
+- Say what happens when that work fails, and when it is read from many threads
+- Compose deferred values without working any of them out
+- Choose between `Lazy` and `IO` for deferred work
 ~~~
 
-~~~ admonish example title="See Example Code:"
-[LazyExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/lazy/LazyExample.java)
-~~~
-
-## The Problem: Doing Work You'll Throw Away
-
-Imagine a dashboard that assembles a user summary from three data sources:
-
-<!-- verify -->
-```java
-String buildDashboard(String userId) {
-    var profile         = fetchUserProfile(userId);      // 200ms
-    var recommendations = fetchRecommendations(userId);  // 800ms
-    var analytics       = fetchAnalytics(userId);        // 500ms
-    return summarize(profile, recommendations, analytics);
-}
-```
-
-Every call pays the full 1500ms cost. But 90% of callers only need the profile. The other two results are assembled, inspected, and thrown away. That is 1300ms of wasted work on nearly every request.
-
-```
-EAGER (always runs everything):         LAZY (runs on demand):
-  fetchUserProfile()    -> 200ms done     defer(fetchUserProfile)     -> 0ms
-  fetchRecommendations()-> 800ms waste    defer(fetchRecommendations) -> 0ms
-  fetchAnalytics()      -> 500ms waste    defer(fetchAnalytics)       -> 0ms
-  Total: 1500ms                          force(userProfile)          -> 200ms
-                                         Total: 200ms (saved 87%)
-```
-
-With `Lazy`, each computation is wrapped in a deferred shell. Nothing runs until you explicitly call `force()`. If you never force a value, you never pay its cost.
-
-This is not a niche optimisation. Any time your code builds a data structure with fields that are expensive to populate but cheap to skip, laziness eliminates wasted work at zero architectural cost. The calling code decides what to evaluate, not the producer.
-
-## The Fix: Defer and Force
-
-`Lazy<A>` stores a computation without executing it. Call `defer()` to wrap the work; call `force()` when you actually need the result. After the first `force()`, the result is cached; subsequent calls return instantly with zero recomputation.
-
-<!-- verify -->
-```java
-Kind<LazyKind.Witness, String> profile = LAZY.defer(() -> fetchUserProfile(userId));
-// Nothing has executed yet.
-
-String result = LAZY.force(profile);  // Now it runs -- once.
-String cached = LAZY.force(profile);  // Returns the cached value instantly.
-```
-
-This is the "compute once, read many" guarantee. Whether you force the value twice or two thousand times, the underlying supplier runs exactly once. The first caller pays the cost; every subsequent caller gets the answer for free.
-
-Contrast this with a raw `Supplier<T>`, which re-executes on every `.get()` call. `Lazy` gives you the same deferred interface with built-in caching and exception handling baked in.
-
-## Core Components
-
-| Component | Role |
-|-----------|------|
-| `ThrowableSupplier<T>` | Like `Supplier`, but its `get()` may throw any `Throwable` (the computation source for `Lazy`) |
-| `Lazy<A>` | Core class: wraps a supplier, evaluates on `force()`, and memoises the result (or exception) |
-| `LazyKind<A>` | HKT marker (`Kind<LazyKind.Witness, A>`) so `Lazy` can participate in generic typeclass code |
-| `LazyKindHelper` | Bridge utilities: `widen`, `narrow`, `defer`, `now`, `force` for converting between `Lazy` and `LazyKind` |
-| `LazyMonad` | Typeclass instance implementing `Monad`, `Applicative`, and `Functor` for `LazyKind.Witness` |
-
-`LazyKindHelper` deserves special attention. It is your primary API surface when working with `Lazy` in generic HKT code. Its static methods handle the wrapping and unwrapping so you can stay in the `Kind<LazyKind.Witness, A>` world without manual casting:
-
-- **`defer(supplier)`**: create a deferred `LazyKind` from a `ThrowableSupplier`
-- **`now(value)`**: create an already-evaluated `LazyKind`
-- **`force(kind)`**: unwrap and evaluate, returning the cached result or throwing the cached exception
-- **`widen(lazy)`** / **`narrow(kind)`**: convert between `Lazy<A>` and `Kind<LazyKind.Witness, A>`
-
-A `Lazy` always gives a value. `now(null)` throws at the call, and a computation or `map` function that returns null makes `force()` throw, naming that function. The failure is memoised like any other exception. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
-
-~~~admonish note title="How Lazy Evaluation Works"
-```
-defer(() -> compute())          force()            force()
-       |                           |                  |
-       v                           v                  v
-  [unevaluated]  -------->  [compute & cache]  --->  [return cached]
-   Supplier stored       Supplier called once     No recomputation
-```
-
-The `Supplier` is stored on creation, invoked exactly once on the first `force()`, and the result (or exception) is cached for all subsequent calls.
-~~~
-
-~~~admonish tip title="Memoization in Action"
-The first `force()` pays the full computation cost. Every call after that is effectively free:
-
-```
-force() #1  -->  supplier runs  -->  result stored  -->  200ms
-force() #2  -->  cache hit      -->  result returned -->    0ms
-force() #3  -->  cache hit      -->  result returned -->    0ms
-  ...
-force() #N  -->  cache hit      -->  result returned -->    0ms
-```
-
-This makes `Lazy` ideal for values that are expensive to produce but read frequently: configuration lookups, parsed templates, compiled patterns, and similar compute-once artifacts.
-~~~
-
-~~~admonish example title="Example 1: Deferred Computation"
-Creating lazy values does no work. Forcing them does, exactly once.
-
-<!-- verify -->
-```java
-AtomicInteger counter = new AtomicInteger(0);
-
-// Deferred: the supplier is stored, not called
-Kind<LazyKind.Witness, String> deferred = LAZY.defer(() -> {
-    counter.incrementAndGet();
-    Thread.sleep(50); // simulate work
-    return "Computed Value";
-});
-
-// Already-evaluated: no supplier to call later
-Kind<LazyKind.Witness, String> ready = LAZY.now("Precomputed Value");
-
-System.out.println("Counter after creation: " + counter.get()); // 0
-
-String result1 = LAZY.force(deferred);  // runs the supplier
-System.out.println(result1);            // "Computed Value"
-System.out.println("Counter: " + counter.get()); // 1
-
-String result2 = LAZY.force(deferred);  // returns cached value
-System.out.println("Counter: " + counter.get()); // still 1 -- no recomputation
-
-String resultNow = LAZY.force(ready);   // "Precomputed Value" -- counter unchanged
-```
-
-Exceptions follow the same rule: if the computation throws on the first `force()`, that exception is cached. Every subsequent `force()` rethrows the same exception without re-executing the supplier. This means error behaviour is deterministic. You will never see a computation fail once, then succeed on retry through the same `Lazy` instance.
-~~~
-
-~~~admonish example title="Example 2: Composing with map and flatMap"
-`LazyMonad` lets you chain transformations without triggering evaluation. Only the final `force()` runs the entire pipeline.
-
-<!-- verify -->
-```java
-Monad<LazyKind.Witness> lazyMonad = Instances.monad(lazy());
-AtomicInteger counter = new AtomicInteger(0);
-
-Kind<LazyKind.Witness, Integer> base = LAZY.defer(() -> {
-    counter.incrementAndGet();
-    return 10;
-});
-
-// map: transform the eventual value without forcing it
-Kind<LazyKind.Witness, String> mapped = lazyMonad.map(i -> "Value: " + i, base);
-System.out.println("Counter after map: " + counter.get()); // 0
-
-System.out.println(LAZY.force(mapped)); // "Value: 10"
-System.out.println("Counter: " + counter.get()); // 1
-
-// flatMap: sequence two lazy computations using For comprehension
-Kind<LazyKind.Witness, String> chained =
-    For.from(lazyMonad, LAZY.defer(() -> 5))
-        .from(value1 -> LAZY.defer(() -> value1 * 2))
-        .yield((value1, value2) -> "Combined: " + value1 + " & " + value2);
-
-System.out.println(LAZY.force(chained)); // "Combined: 5 & 10"
-```
-
-Neither `map` nor `flatMap` triggers evaluation; they build a new `Lazy` that will run the full chain when forced. This means you can construct an entire pipeline of transformations upfront, and the cost of the whole pipeline is paid only at the single point where `force()` is called.
-~~~
-
-~~~admonish warning title="Lazy vs IO: Know the Difference"
-**`Lazy`** defers **pure computation**: work that depends only on its inputs and always produces the same result. The memoised value is safe to reuse because it never changes.
-
-**`IO`** defers **side effects**: work that reads files, calls APIs, writes to databases, or depends on external state. Each execution may produce a different result, so memoisation would give stale answers.
-
-| Question | Answer |
-|----------|--------|
-| Does it read a file, call an API, or write to a database? | Use `IO` |
-| Does it compute a value from pure inputs? | Use `Lazy` |
-| Should repeated calls return the same cached result? | Use `Lazy` |
-| Should repeated calls re-execute the effect? | Use `IO` |
-
-**Rule of thumb:** if your computation talks to the outside world, use [`IO`](./io_monad.md). If it only crunches data, use `Lazy`.
+~~~admonish example title="See Example Code"
+**The code on this page is [LazyBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/lazy/LazyBook.java)**: the page includes it, so the build compiles and runs it. [LazyBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/lazy/LazyBookTest.java) holds what the page says each method does.
 ~~~
 
 ---
 
-## Back to the One-Liner
+## Working it out once {#working-it-out-once}
 
-`Lazy` is what we wrap around any *expensive* step in a Foundations-style chain that we are not sure we will need:
+A field that is costly to fill and rarely read is often filled on first use, the lazy initialisation idiom: the getter checks for `null`, works the value out, and stores it. Written by hand, that check must also be made safe for several threads, and a `Supplier` would work the value out again on every `get()`. A `Lazy<A>` holds the work and does it the first time it is forced, once, then memoises the result.
+
+The code on this page uses these imports, with `Order` and `LineItem` from the order records the [Optics](../optics/ch_intro.md) chapter introduces:
+
+<!-- verify -->
+```java
+import java.math.BigDecimal;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.higherkindedj.example.book.optics.cast.LineItem;
+import org.higherkindedj.example.book.optics.cast.Order;
+import org.higherkindedj.hkt.lazy.Lazy;
+```
+
+An order view shows a shipping quote only when the order is opened, and working one out is slow. `quotesWorkedOut` counts how often it happens:
 
 ```java
-Lazy<EitherPath<AppError, Node>> defer =
-    Lazy.defer(() ->
-        repo.find(id)
-            .toEitherPath()
-            .focus().attributes().at(key)
-            .modify(spec::validateAndCoerce));
+  // Working out a shipping quote is slow, and most views never show it
+  static BigDecimal quoteShipping(Order order, AtomicInteger quotesWorkedOut) {
+    quotesWorkedOut.incrementAndGet();
+    int items = order.lines().stream().mapToInt(LineItem::quantity).sum();
+    return new BigDecimal("4.99")
+        .add(new BigDecimal("1.50").multiply(BigDecimal.valueOf(items - 1)));
+  }
 
-// Only runs the chain (and only once) if and when the value is actually requested
-EitherPath<AppError, Node> result = defer.force().flatMap(repo::save);
+  record OrderView(Order order, Lazy<BigDecimal> shipping) {}
+
+  static OrderView view(Order order, AtomicInteger quotesWorkedOut) {
+    return new OrderView(order, Lazy.defer(() -> quoteShipping(order, quotesWorkedOut)));
+  }
+
 ```
 
-`LazyMonad` lets us compose these deferred values without forcing them, then trigger one evaluation at the edge. The memoisation guarantee means repeated `force()` calls return the same answer without re-running the chain. Useful when the work is heavy and conditional on a downstream branch.
+`ORDER` has three items across two lines:
 
-See [One Line, Six Layers](../hkts/one_line_six_layers.md) for the wider picture and [IO](./io_monad.md) when the deferred work involves side effects rather than pure computation.
+```java
+    AtomicInteger quotes = new AtomicInteger();
+    OrderView opened = view(ORDER, quotes);
 
-## When to Use Lazy
-
-| Scenario | Recommendation |
-|----------|----------------|
-| Deferring expensive computation until needed | `Lazy` / `LazyMonad` |
-| Composing deferred computations while preserving laziness | `LazyMonad`: `map`/`flatMap` don't trigger evaluation |
-| Caching computation results (memoisation) | `Lazy`: result is cached after first `force()` |
-| Computations that may throw checked exceptions | `Lazy`: wraps `ThrowableSupplier` |
-| Building data structures with optional expensive fields | `Lazy`: callers force only what they need |
-| Configuration values loaded once and reused | `Lazy`: natural fit for compute-once semantics |
-| Deferred side effects with execution control | Prefer [IO](./io_monad.md) instead |
-
-~~~admonish important title="Key Points"
-- `Lazy<A>` wraps a `ThrowableSupplier<A>`; nothing executes until `force()` is called.
-- Results are **memoised**: the first `force()` computes and caches; subsequent calls return the cached value instantly.
-- Exceptions are also memoised: if the computation throws on first `force()`, the same exception is rethrown on subsequent calls.
-- `map` and `flatMap` via `LazyMonad` produce new `Lazy` values without triggering evaluation of the input.
-- `Lazy.now(value)` creates an already-evaluated instance, useful for lifting pure values into the Lazy context.
-- `ThrowableSupplier` allows checked exceptions; no need for awkward `try`/`catch` inside lambdas.
-- Thread safety: `Lazy` ensures the supplier runs at most once, even under concurrent `force()` calls.
-~~~
-
----
-
-~~~admonish example title="Benchmarks"
-Lazy has dedicated JMH benchmarks measuring deferred construction, memoisation overhead, and chain depth. Key expectations:
-
-- **Construction** (`defer`, `now`) is very fast; Lazy is a thin wrapper with no immediate execution
-- **First `force()`** incurs the full computation cost; subsequent calls return the cached result
-- **Deep chains (50+)** of `map`/`flatMap` complete without error; composition overhead dominates at depth
-
-```bash
-./gradlew :hkj-benchmarks:jmh --includes=".*LazyBenchmark.*"
+    int beforeReading = quotes.get();
+    // 0
+    BigDecimal shipping = opened.shipping().force();
+    // 7.99
+    BigDecimal readAgain = opened.shipping().force();
+    // 7.99
+    int afterTwoReads = quotes.get();
+    // 1
 ```
-See [Benchmarks & Performance](../benchmarks.md) for full details and how to interpret results.
-~~~
+
+Building the view does no work. The first `force()` works the quote out, and the second returns the same value without working it out again. `force()` is declared `throws Throwable`, because the work may throw anything, so the method that calls it must catch `Throwable` or declare it.
+
+`map` and `flatMap` build a new `Lazy` from ones that have not been forced, and work nothing out themselves. The order's total needs both its subtotal and the quote:
+
+```java
+  // The total needs the quote; flatMap joins them without working either out
+  static Lazy<BigDecimal> totalWithShipping(Order order, Lazy<BigDecimal> shipping) {
+    Lazy<BigDecimal> subtotal =
+        Lazy.defer(
+            () ->
+                order.lines().stream()
+                    .map(line -> line.price().multiply(BigDecimal.valueOf(line.quantity())))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add));
+    return subtotal.flatMap(sum -> shipping.map(sum::add));
+  }
+
+```
+
+```java
+    AtomicInteger counted = new AtomicInteger();
+    Lazy<BigDecimal> total = totalWithShipping(ORDER, view(ORDER, counted).shipping());
+    int beforeForcing = counted.get();
+    // 0
+    BigDecimal forced = total.force();
+    // 100.49
+```
+
+## When the work fails {#when-the-work-fails}
+
+`Lazy` keeps a failure as it keeps a value: if the work throws on the first `force()`, every later `force()` throws the same exception, without trying the work again. Forced from many threads at once, a `Lazy` still does its work once, and every thread gets the same result.
+
+## On a `LazyPath` {#on-a-lazypath}
+
+Application code can hold the same deferred work on a `LazyPath`. `Path.lazyDefer` takes a `Supplier`, `map` changes the value without working it out, and `get()` works it out once and returns it, rethrowing an exception the work threw. These are the extra imports:
+
+<!-- verify -->
+```java
+import org.higherkindedj.hkt.effect.LazyPath;
+import org.higherkindedj.hkt.effect.Path;
+```
+
+```java
+  static LazyPath<String> shippingLabel(Order order, AtomicInteger quotesWorkedOut) {
+    return Path.lazyDefer(() -> quoteShipping(order, quotesWorkedOut))
+        .map(cost -> "shipping " + cost);
+  }
+
+```
+
+```java
+    LazyPath<String> label = shippingLabel(ORDER, quotes);
+    boolean workedOutYet = label.isEvaluated();
+    // false
+    String shown = label.get();
+```
+
+`shown` is `"shipping 7.99"`. `toIOPath()` turns a `LazyPath` into an `IOPath` and keeps the work deferred, while `toMaybePath()` and `toTryPath()` work the value out at once.
+
+## Creating instances {#creating-instances}
+
+`Lazy.defer(work)` holds work to do later. Its `ThrowableSupplier` may throw any exception, a checked one included. `Lazy.now(value)` holds a value already worked out. A `Lazy` always gives a value: `Lazy.now(null)` throws at the call, and work or a `map` function that gives `null` fails when forced, a failure the `Lazy` keeps like any other. [Values, never null](../hkts/core-concepts.md#values-never-null) sets out the rule.
+
+## Methods {#methods}
+
+| Method | What it does |
+|---|---|
+| `Lazy.defer(work)` | Holds work to do on the first `force()`; the work may throw any exception |
+| `Lazy.now(value)` | Holds a value already worked out |
+| `force()` | Works the value out the first time, then returns it or rethrows its failure; declared `throws Throwable` |
+| `map(f)`, `flatMap(f)` | Build a new `Lazy`, working nothing out |
+| `isEvaluated()`, `hasFailed()` | Say whether a value is held, as it is from `Lazy.now`, and whether the work failed |
+| `Path.lazyDefer(supplier)`, `Path.lazyNow(value)` | Build a `LazyPath` |
+| `get()` on a `LazyPath` | Works the value out once and returns it; rethrows an unchecked failure as it is, and wraps a checked one in a `RuntimeException` |
+| `force()` on a `LazyPath` | The same, rethrowing any failure unchanged |
+| `LAZY.widen(lazy)`, `LAZY.narrow(kind)`, `LAZY.force(kind)` | Move a `Lazy` in and out of `Kind`, or force one |
+
+## Working with Kind {#working-with-kind}
+
+Generic code, written once for any container, takes `Lazy` through its `Monad` instance, from `Instances.monad(lazy())`. The instance works over `Kind<LazyKind.Witness, A>`, so you widen a `Lazy` to pass it in, and force the result with `LAZY.force`, which is also declared `throws Throwable`. These are the extra imports:
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.instances.Witnesses.lazy;
+import static org.higherkindedj.hkt.lazy.LazyKindHelper.LAZY;
+
+import java.math.RoundingMode;
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.Monad;
+import org.higherkindedj.hkt.instances.Instances;
+import org.higherkindedj.hkt.lazy.LazyKind;
+```
+
+```java
+    Monad<LazyKind.Witness> deferred = Instances.monad(lazy());
+
+    Kind<LazyKind.Witness, BigDecimal> quoted = LAZY.widen(view(ORDER, quotes).shipping());
+    Kind<LazyKind.Witness, BigDecimal> withVat =
+        deferred.map(
+            cost -> cost.multiply(new BigDecimal("1.20")).setScale(2, RoundingMode.HALF_UP),
+            quoted);
+
+    BigDecimal grossShipping = LAZY.force(withVat);
+    // 9.59
+```
+
+`Lazy` does not implement `LazyKind`, so `LAZY.widen` wraps it in a small holder object each time, and `narrow` unwraps it. The instance has no `MonadError`, so catch a failure around `LAZY.force`.
+
+## When to use `Lazy` {#when-to-use-lazy}
+
+`Lazy` and [IO](io_monad.md) both defer work, and differ in what they do with the result. A kept result is safe only when the work has no side effect: a `Lazy` that read the clock would show the same time for ever.
+
+| You need | Use |
+|---|---|
+| A costly value, worked out only if read, and then kept | `Lazy` |
+| The same as a fluent chain in application code | `LazyPath` |
+| Work that reads a file, calls a service or writes to a database, done again on every run | [IO](io_monad.md) |
+| Work on another thread | [CompletableFuture](cf_monad.md), already running, or [VTask](vtask_monad.md), which runs when you run it |
+| A recursion too deep for the stack | [Trampoline](trampoline_monad.md) |
 
 ---
 
@@ -74521,278 +74475,190 @@ See [Benchmarks & Performance](../benchmarks.md) for full details and how to int
 
 <!-- Source: monads/cf_monad.md -->
 
-# The CompletableFutureMonad:
-## _Asynchronous Computations with `CompletableFuture`_
+<!-- description: Use Java's CompletableFuture as a monad: chain and recover futures on a CompletableFuturePath, pass them to generic code through MonadError, or choose VTask. -->
+
+# CompletableFuture: Asynchronous Results
+
+_Keep Java's own `CompletableFuture`, with an Effect Path and a `MonadError` instance._
+
+~~~admonish abstract title="CompletableFuture at a glance"
+| | |
+|---|---|
+| **Models** | Java's asynchronous result, already running |
+| **Replaces** | Nothing: it is Java's own type |
+| **Effect Path** | `CompletableFuturePath`, shown in [On a `CompletableFuturePath`](#on-a-completablefuturepath) |
+| **Instances** | `Functor`, `Applicative`, `Monad`, `MonadError<Throwable>` |
+| **Choose it when** | An API gives you a future, or the work is already running on another thread; otherwise [VTask](vtask_monad.md), or compare every type in [Choosing a Type](supported-types.md#choosing-a-type) |
+~~~
 
 ~~~admonish info title="What You'll Learn"
-- How to compose asynchronous operations functionally
-- Using MonadError capabilities for async error handling and recovery
-- Building non-blocking workflows with `map`, `flatMap`, and `handleErrorWith`
-- Integration with EitherT for combining async operations with typed errors
-- Real-world patterns for resilient microservice communication
+- Say when a `CompletableFuture`'s work starts, and how that differs from `IO` and `VTask`
+- Recover from a failed lookup on a `CompletableFuturePath`, and say why retrying needs the work, not the future
+- Combine futures that are already running through `CompletableFuture`'s `MonadError` instance
+- Say what the instance's error handler receives, and what widening a future costs
 ~~~
 
-~~~ admonish example title="See Example Code:"
- [CompletableFutureExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/future/CompletableFutureExample.java)
+~~~admonish example title="See Example Code"
+**The code on this page is [CompletableFutureBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/future/CompletableFutureBook.java)**: the page includes it, so the build compiles and runs it. [CompletableFutureBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/future/CompletableFutureBookTest.java) holds what the page says each method does.
 ~~~
 
-## The Problem: Async Composition Without Structure
+---
 
-Java's `CompletableFuture` is powerful, but composing multiple async operations quickly becomes unwieldy. Consider a typical microservice scenario (fetching a user, looking up their subscription, then calculating a discount):
+## Java's own type {#javas-own-type}
+
+`java.util.concurrent.CompletableFuture` is how much of Java hands back a result that is not ready yet. The work behind a future has usually started by the time you hold it, often on another thread, where an [IO](io_monad.md) or a [VTask](vtask_monad.md) waits until you run it. Its own methods, such as `thenApply`, `thenCompose` and `exceptionallyCompose`, already chain and recover. Higher-Kinded-J adds an Effect Path, `CompletableFuturePath`, with recovery, timeouts and conversions for application code. It also adds a `MonadError` instance, so that a method written once for any container accepts a future.
+
+The code on this page uses these imports, with `Order` from the order records the [Optics](../optics/ch_intro.md) chapter introduces:
 
 <!-- verify -->
 ```java
-// Traditional CompletableFuture chaining
-CompletableFuture<Discount> result =
-    userService.findUser(userId)
-        .thenCompose(user ->
-            subscriptionService.getSubscription(user.subscriptionId())
-                .thenCompose(sub ->
-                    pricingService.calculateDiscount(user, sub)
-                        .exceptionally(ex -> Discount.none())));
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.concurrent.CompletableFuture;
+import org.higherkindedj.example.book.optics.cast.Order;
 ```
 
-Each level of `thenCompose` indents further. Error handling with `exceptionally` or `handle` dangles awkwardly at the end, applies only to the innermost stage, and loses type information: every error becomes a generic `Throwable`. If you need different recovery strategies for different failures, you end up with nested `try`/`catch` inside your lambdas, and the functional style collapses.
+Pricing an order in euros needs two lookups, each from a slow service, and `supplyAsync` starts each on another thread at once. `rateServiceDown` stands in for the rate service failing:
 
-The `CompletableFutureMonad` gives you a structured alternative: standard `map`, `flatMap`, and `handleErrorWith` operations that compose cleanly, and the ability to write generic code that works across *any* monadic type, not just `CompletableFuture`.
+```java
+  // Each lookup starts on another thread as soon as it is called
+  static CompletableFuture<BigDecimal> rateToEuros() {
+    return CompletableFuture.supplyAsync(() -> new BigDecimal("1.17"));
+  }
 
-## Core Components
+  static CompletableFuture<BigDecimal> shippingQuote(Order order) {
+    return CompletableFuture.supplyAsync(() -> new BigDecimal("7.99"));
+  }
 
-The simulation for `CompletableFuture` involves these key pieces:
+  // A lookup whose service fails
+  static CompletableFuture<BigDecimal> rateServiceDown() {
+    return CompletableFuture.supplyAsync(
+        () -> {
+          throw new IllegalStateException("the rate service is down");
+        });
+  }
 
-| Component | Role |
-|-----------|------|
-| `CompletableFuture<A>` | Standard Java async computation |
-| `CompletableFutureKind<A>` | HKT marker (`Kind<CompletableFutureKind.Witness, A>`): enables generic type class programming |
-| `CompletableFutureKindHelper` | Bridge utilities: `widen()`, `narrow()`, and `join()` for blocking extraction |
-| `CompletableFutureMonad` | Implements `MonadError<CompletableFutureKind.Witness, Throwable>`: provides `map`, `flatMap`, `of`, `ap`, `raiseError`, and `handleErrorWith` |
+  static BigDecimal subtotal(Order order) {
+    return order.lines().stream()
+        .map(line -> line.price().multiply(BigDecimal.valueOf(line.quantity())))
+        .reduce(BigDecimal.ZERO, BigDecimal::add);
+  }
 
-~~~admonish note title="How the Operations Map"
-The type class operations correspond directly to `CompletableFuture` methods you already know:
+  static BigDecimal inEuros(Order order, BigDecimal rate, BigDecimal shipping) {
+    return subtotal(order).add(shipping).multiply(rate).setScale(2, RoundingMode.HALF_UP);
+  }
 
-| Type Class Operation | CompletableFuture Equivalent |
-|---------------------|------------------------------|
+```
+
+## On a `CompletableFuturePath` {#on-a-completablefuturepath}
+
+`Path.future` puts a future on a `CompletableFuturePath`. `recover` gives a value in place of a failure, here `CACHED_RATE`, 1.15, the rate to use when the rate service cannot answer. `parZipWith` joins the result with another Path's, and `join()` waits for the answer. `via` chains a step that needs the previous result, as `thenCompose` does, and [Migration Cookbook: Recipe 4](../effect/migration_cookbook.md#recipe-4-completablefuture-nesting-to-completablefuturepath) turns a nested chain into one. These are the extra imports:
+
+<!-- verify -->
+```java
+import org.higherkindedj.hkt.effect.CompletableFuturePath;
+import org.higherkindedj.hkt.effect.Path;
+```
+
+```java
+  static CompletableFuturePath<BigDecimal> priceInEuros(
+      Order order, CompletableFuture<BigDecimal> rate) {
+    return Path.future(rate)
+        .recover(error -> CACHED_RATE)
+        .parZipWith(
+            Path.future(shippingQuote(order)), (r, shipping) -> inEuros(order, r, shipping));
+  }
+
+```
+
+`ORDER` is worth 92.50 in pounds and shipping costs 7.99, so the live rate gives (92.50 + 7.99) × 1.17 = 117.57:
+
+```java
+    BigDecimal priced = priceInEuros(ORDER, rateToEuros()).join();
+    // 117.57
+    BigDecimal withCachedRate = priceInEuros(ORDER, rateServiceDown()).join();
+    // 115.56
+```
+
+A `CompletableFuturePath` also times out with `withTimeout`. `toEitherPath()` waits for the future, then holds a failure as a `Left`. A future that has failed stays failed, so to try failed work again, start it with `CompletableFuturePath.supplyAsyncWithRetry(supplier, attempts, delay)`, which runs the supplier again. A future that completes with `null` fails the Path, which catches every `CompletableFuture<Void>` from `runAsync` or `allOf`: map one to `Unit` first, with `thenApply(_ -> Unit.INSTANCE)`.
+
+## Methods {#methods}
+
+`CompletableFuture`'s own methods are the JDK's. The library adds these:
+
+| Method | What it does |
+|---|---|
+| `Path.future(future)`, `Path.futureAsync(supplier)` | Put a future on a `CompletableFuturePath`, or start one |
+| `Path.futureCompleted(value)`, `Path.futureFailed(exception)` | Build a Path that has already succeeded, or failed with an `Exception` |
+| `CompletableFuturePath.supplyAsyncWithRetry(supplier, attempts, delay)` | Start work, and run the supplier again after a failure |
+| `map(f)`, `via(f)`, `recover(f)` | Change the value, chain a step, or give a value in place of a failure |
+| `parZipWith(other, f)`, `race(other)` | Join two Paths' results, or keep whichever succeeds first, failing only if both fail |
+| `withTimeout(duration)` | Fails the Path if the future has not completed in time |
+| `join()`, `toEitherPath()` | Wait for the result, or wait and then hold a failure as a `Left` |
+| `FUTURE.widen(future)`, `FUTURE.narrow(kind)`, `FUTURE.join(kind)` | Move a future in and out of `Kind`, or wait for one |
+
+## Working with Kind {#working-with-kind}
+
+Generic code, written once for any container, takes a `CompletableFuture` through its `MonadError` instance, whose error type is `Throwable`, as [MonadError](../functional/monad_error.md) shows. Each operation is one of the future's own methods:
+
+| Instance operation | `CompletableFuture` method |
+|---|---|
 | `map(f, fa)` | `thenApply(f)` |
 | `flatMap(f, fa)` | `thenCompose(f)` |
-| `ap(ff, fa)` | `thenCombine(ff, (a, f) -> f.apply(a))` |
+| `ap(ff, fa)`, and `map2` to `map5` | `thenCombine`, completing once both have |
 | `of(value)` | `completedFuture(value)` |
-| `raiseError(ex)` | `failedFuture(ex)` |
+| `raiseError(error)` | `failedFuture(error)` |
 | `handleErrorWith(fa, handler)` | `exceptionallyCompose(handler)` |
 
-The difference is that these operations work through the `Kind` abstraction, so your code becomes reusable across *any* monadic type: swap `CompletableFuture` for `IO`, `Either`, or `VTask` without changing the logic.
-~~~
-
-## Working with CompletableFutureMonad
-
-The following examples build on a running scenario: an async service that fetches user data, validates subscriptions, and handles failures gracefully.
-
-~~~admonish example title="Creating Instances"
-
-- [CompletableFutureExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/future/CompletableFutureExample.java)
+These are the extra imports:
 
 <!-- verify -->
 ```java
-public void createExample() {
-   // Get the MonadError instance
-   MonadError<CompletableFutureKind.Witness, Throwable> futureMonad = Instances.monadError(completableFuture());
+import static org.higherkindedj.hkt.future.CompletableFutureKindHelper.FUTURE;
+import static org.higherkindedj.hkt.instances.Witnesses.completableFuture;
 
-   // --- Lift a pure value into an already-completed future ---
-   Kind<CompletableFutureKind.Witness, String> successKind = futureMonad.of("Success!");
-
-   // --- Create a failed future from an exception ---
-   RuntimeException error = new RuntimeException("Something went wrong");
-   Kind<CompletableFutureKind.Witness, String> failureKind = futureMonad.raiseError(error);
-
-   // --- Wrap an existing CompletableFuture ---
-   CompletableFuture<Integer> existingFuture = CompletableFuture.supplyAsync(() -> {
-      try {
-         TimeUnit.MILLISECONDS.sleep(20);
-      } catch (InterruptedException e) { /* ignore */ }
-      return 123;
-   });
-   Kind<CompletableFutureKind.Witness, Integer> wrappedExisting = FUTURE.widen(existingFuture);
-
-   CompletableFuture<Integer> failedExisting = new CompletableFuture<>();
-   failedExisting.completeExceptionally(new IllegalArgumentException("Bad input"));
-   Kind<CompletableFutureKind.Witness, Integer> wrappedFailed = FUTURE.widen(failedExisting);
-
-   // Unwrap back to CompletableFuture at system boundaries
-   CompletableFuture<String> unwrappedSuccess = FUTURE.narrow(successKind);
-   CompletableFuture<String> unwrappedFailure = FUTURE.narrow(failureKind);
-}
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.MonadError;
+import org.higherkindedj.hkt.future.CompletableFutureKind;
+import org.higherkindedj.hkt.instances.Instances;
 ```
-~~~
-
-~~~admonish example title="Composing with map, flatMap, and ap"
-
-- [CompletableFutureExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/future/CompletableFutureExample.java)
-
-These examples show how the type class instance composes async operations: the same `map`/`flatMap` vocabulary you use with `Either`, `IO`, or any other monad.
-
-<!-- verify -->
-```java
-public void monadExample() {
-   MonadError<CompletableFutureKind.Witness, Throwable> futureMonad = Instances.monadError(completableFuture());
-
-   // --- map: transform the result when it completes ---
-   Kind<CompletableFutureKind.Witness, Integer> initialValueKind = futureMonad.of(10);
-   Kind<CompletableFutureKind.Witness, String> mappedKind = futureMonad.map(
-           value -> "Result: " + value,
-           initialValueKind
-   );
-   System.out.println("Map Result: " + FUTURE.join(mappedKind)); // Output: Result: 10
-
-   // --- flatMap: sequence async operations that depend on previous results ---
-   Function<String, Kind<CompletableFutureKind.Witness, String>> asyncStep2 =
-           input -> FUTURE.widen(
-                   CompletableFuture.supplyAsync(() -> input + " -> Step2 Done")
-           );
-
-   Kind<CompletableFutureKind.Witness, String> flatMappedKind = futureMonad.flatMap(
-           asyncStep2,
-           mappedKind // "Result: 10" feeds into asyncStep2
-   );
-   System.out.println("FlatMap Result: " + FUTURE.join(flatMappedKind));
-   // Output: Result: 10 -> Step2 Done
-
-   // --- ap: apply a function from one future to a value from another ---
-   Kind<CompletableFutureKind.Witness, Function<Integer, String>> funcKind =
-           futureMonad.of(i -> "FuncResult:" + i);
-   Kind<CompletableFutureKind.Witness, Integer> valKind = futureMonad.of(25);
-
-   Kind<CompletableFutureKind.Witness, String> apResult = futureMonad.ap(funcKind, valKind);
-   System.out.println("Ap Result: " + FUTURE.join(apResult)); // Output: FuncResult:25
-
-   // --- map2: combine two independent futures ---
-   Kind<CompletableFutureKind.Witness, Integer> f1 = futureMonad.of(5);
-   Kind<CompletableFutureKind.Witness, String> f2 = futureMonad.of("abc");
-
-   BiFunction<Integer, String, String> combine = (i, s) -> s + i;
-   Kind<CompletableFutureKind.Witness, String> map2Result = futureMonad.map2(f1, f2, combine);
-   System.out.println("Map2 Result: " + FUTURE.join(map2Result)); // Output: abc5
-}
-```
-~~~
-
-~~~admonish example title="Recovering from Failures with handleErrorWith"
-
-- [CompletableFutureExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/future/CompletableFutureExample.java)
-
-This is where `CompletableFutureMonad` shines. Unlike `exceptionally` which returns a plain value, `handleErrorWith` returns a *new* `Kind`, so recovery itself can be asynchronous.
-
-<!-- verify -->
-```java
- public void errorHandlingExample(){
-   MonadError<CompletableFutureKind.Witness, Throwable> futureMonad = Instances.monadError(completableFuture());
-
-   Kind<CompletableFutureKind.Witness, String> failedKind =
-           futureMonad.raiseError(new IllegalStateException("Processing Failed"));
-
-   // Recovery handler: inspect the error and return a new async computation
-   Function<Throwable, Kind<CompletableFutureKind.Witness, String>> recoveryHandler =
-           error -> {
-              if (error instanceof IllegalStateException) {
-                 // Recovery can itself be async
-                 return FUTURE.widen(CompletableFuture.supplyAsync(() ->
-                         "Recovered from: " + error.getMessage()));
-              }
-              // Re-raise anything we can't handle
-              return futureMonad.raiseError(
-                      new RuntimeException("Recovery failed", error));
-           };
-
-   // Apply the handler: transforms the failed future into a recovered one
-   Kind<CompletableFutureKind.Witness, String> recovered =
-           futureMonad.handleErrorWith(failedKind, recoveryHandler);
-   System.out.println(FUTURE.join(recovered));
-   // Output: Recovered from: Processing Failed
-
-   // Success values pass through untouched - the handler is never called
-   Kind<CompletableFutureKind.Witness, String> successKind = futureMonad.of("All Good");
-   Kind<CompletableFutureKind.Witness, String> handledSuccess =
-           futureMonad.handleErrorWith(successKind, recoveryHandler);
-   System.out.println(FUTURE.join(handledSuccess));
-   // Output: All Good
-}
-```
-
-The handler receives the *cause* of the failure, unwrapped from `CompletionException` when necessary. This lets you pattern-match on specific exception types and choose recovery strategies (retry, fallback, or re-raise) all within the same compositional pipeline.
-
-When you don't need the cause and just want a constant fallback, the [`recover`/`recoverWith` shortcuts](../functional/monad_error.md#constant-fallbacks-recover-and-recoverwith) are more concise: `futureMonad.recover(failedKind, "Default")`. Note `recoverWith` evaluates its fallback eagerly, so keep `handleErrorWith` when the recovery future is expensive and should only start on failure.
-~~~
-
----
-
-## Back to the One-Liner
-
-The Foundations one-liner is synchronous, but the same skeleton works unchanged when the repository operations are asynchronous:
 
 ```java
-FUTURE.widen(repo.findAsync(id))
-    .toEitherPath()
-    .focus().attributes().at(key)
-    .modify(spec::validateAndCoerce)
-    .flatMap(node -> FUTURE.widen(repo.saveAsync(node)));
+    MonadError<CompletableFutureKind.Witness, Throwable> futures =
+        Instances.monadError(completableFuture());
+
+    // Both lookups are already running when map2 is called
+    Kind<CompletableFutureKind.Witness, BigDecimal> price =
+        futures.map2(
+            FUTURE.widen(rateToEuros()),
+            FUTURE.widen(shippingQuote(ORDER)),
+            (rate, shipping) -> inEuros(ORDER, rate, shipping));
+    BigDecimal euros = FUTURE.join(price);
+    // 117.57
+
+    Kind<CompletableFutureKind.Witness, BigDecimal> rate =
+        futures.handleErrorWith(
+            FUTURE.widen(rateServiceDown()),
+            error -> FUTURE.widen(CompletableFuture.completedFuture(CACHED_RATE)));
+    BigDecimal fallback = FUTURE.join(rate);
+    // 1.15
 ```
 
-`CompletableFutureMonad.flatMap` is the layer dispatched here, and it sequences the asynchronous steps without us writing a single `thenCompose` by hand. Failures (a `CompletionException` carrying our domain error, or a network blip) flow through `MonadError` recovery the same way `Either` errors do in the synchronous version. One mental model, two execution profiles.
+`map2` neither starts nor waits for its futures: both lookups were already running, and the future it gives completes once both have. `FUTURE.join` is what waits.
 
-See [One Line, Six Layers](../hkts/one_line_six_layers.md) for the wider picture and [VTask](./vtask_monad.md) when structured concurrency on virtual threads is the better fit.
+The handler given to `handleErrorWith` receives the exception that failed the future, not the `CompletionException` the JDK wraps it in. `FUTURE.join` rethrows that exception too when it is unchecked; a checked one stays wrapped. A constant fallback is shorter with [`recover` or `recoverWith`](../functional/monad_error.md#constant-fallbacks-recover-and-recoverwith), which build their fallback before the call, so a fallback future runs even when the first one succeeds.
 
-## When to Use CompletableFutureMonad
+`CompletableFuture` is a JDK class, so it cannot implement `CompletableFutureKind`: `FUTURE.widen` wraps it in a small holder object each time, and `narrow` unwraps it. The instance's `of(null)` keeps the JDK's `null`, where a `CompletableFuturePath` fails.
 
-| Scenario | Use |
-|----------|-----|
-| Writing generic code that works across monads | `CompletableFutureMonad`: your logic programs against `Kind<F, A>` |
-| Composing async workflows with typed error propagation | Combine with [EitherT](../transformers/eithert_transformer.md) (see the [Order Workflow](../hkts/order-walkthrough.md)) |
-| Straightforward async pipelines in application code | Prefer [CompletableFuturePath](../effect/migration_cookbook.md#recipe-4-completablefuture-nesting-to-completablefuturepath) for fluent API |
-| Virtual-thread concurrency | Consider [VTaskPath](../monads/vtask_monad.md) instead |
+## When to use `CompletableFuture` {#when-to-use-completablefuture}
 
-~~~admonish important title="Key Points"
-- `CompletableFutureMonad` implements `MonadError<CompletableFutureKind.Witness, Throwable>`, giving you `map`, `flatMap`, `of`, `ap`, `raiseError`, and `handleErrorWith` over async computations.
-- `handleErrorWith` is the key differentiator: recovery can itself be asynchronous, unlike `exceptionally` which forces synchronous fallback.
-- Use `CompletableFutureKindHelper.join()` to block and extract results at system boundaries (tests, `main` methods). Avoid calling it mid-pipeline.
-- For the HKT bridge: `widen()` wraps a `CompletableFuture` into `Kind`, `narrow()` unwraps it back. Both are low-cost cast operations.
-~~~
-
----
-
-~~~admonish tip title="Effect Path Alternative"
-For most application-level use cases, prefer **CompletableFuturePath** which wraps `CompletableFuture` and provides:
-
-- Fluent composition with `map`, `via`, `recover`
-- Seamless integration with the [Focus DSL](../optics/focus_dsl.md) for structural navigation
-- A consistent API shared across all effect types
-
-<!-- verify -->
-```java
-// Instead of manual Kind chaining:
-Kind<CompletableFutureKind.Witness, User> user = FUTURE.widen(findUser(id));
-Kind<CompletableFutureKind.Witness, Order> order = futureMonad.flatMap(
-    u -> FUTURE.widen(createOrder(u)), user);
-
-// Use CompletableFuturePath for cleaner composition:
-CompletableFuturePath<Order> orderPath = CompletableFuturePath.fromFuture(findUser(id))
-    .via(u -> CompletableFuturePath.fromFuture(createOrder(u)));
-```
-
-A `CompletableFuturePath` always gives a value, so a future that completes with null fails the path. Map a `runAsync` future to `Unit` first, with `thenApply(_ -> Unit.INSTANCE)`. The path holds a future that depends on the one given, and cancelling the path's future cancels the given one too. `CompletableFutureMonad` keeps the JDK's null.
-
-See [Migration Cookbook: Recipe 4](../effect/migration_cookbook.md#recipe-4-completablefuture-nesting-to-completablefuturepath) for a complete before/after walkthrough, and [Effect Path Overview](../effect/effect_path_overview.md) for the complete guide.
-~~~
-
-~~~admonish example title="Benchmarks"
-CompletableFuture has dedicated JMH benchmarks measuring async composition overhead, error recovery, and chain depth. Key expectations:
-
-- **`of` / `raiseError`** are very fast: they wrap already-completed futures with no thread scheduling
-- **`flatMap` chains** add minimal overhead beyond the underlying `thenCompose` cost
-- **`handleErrorWith`** matches `exceptionallyCompose` performance while providing stronger composition guarantees
-
-```bash
-./gradlew :hkj-benchmarks:jmh --includes=".*CompletableFutureBenchmark.*"
-```
-See [Benchmarks & Performance](../benchmarks.md) for full details, expected ratios, and how to interpret results.
-~~~
+| You need | Use |
+|---|---|
+| To work with APIs that already give you a `CompletableFuture` | `CompletableFuture`, with `CompletableFuturePath` or its instance |
+| Work that waits until you run it, on virtual threads, alone or concurrently | [VTask](vtask_monad.md) |
+| A side effect that waits until you run it, on the calling thread | [IO](io_monad.md) |
+| A value worked out once and kept, with no side effect | [Lazy](lazy_monad.md) |
+| Typed errors inside an asynchronous result | The [EitherT](../transformers/eithert_transformer.md) transformer |
 
 ---
 
@@ -83020,7 +82886,7 @@ Every type follows the same HKT simulation structure:
 | `XxxKindHelper` | Bridge utilities: `widen()` (concrete to Kind), `narrow()` (Kind to concrete) |
 | Type class instances | `Functor`, `Applicative`, `Monad`, etc. parameterised by the Witness type |
 
-**Library-defined types** (Maybe, Either, IO, etc.) directly implement their Kind interface, so `widen`/`narrow` are zero-cost casts. **External Java types** (Optional, List, Stream, CompletableFuture) use an internal holder record.
+**Most library-defined types** (Maybe, Either, IO, etc.) directly implement their Kind interface, so `widen`/`narrow` are zero-cost casts. **`Lazy` and the external Java types** (Optional, List, Stream, CompletableFuture) use an internal holder record.
 
 ---
 
