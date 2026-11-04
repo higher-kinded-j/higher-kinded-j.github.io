@@ -3065,7 +3065,7 @@ EitherPath<OrderError, Reservation> reserved = EitherPath.withRetry(
     policy);
 
 // Typed time budget: the timeout arrives as Left(onTimeout.get()), not a
-// thrown TimeoutException. The losing computation is not interrupted.
+// thrown TimeoutException, once the interrupted step has stopped.
 EitherPath<OrderError, Receipt> charged = EitherPath.withTimeout(
     () -> chargePayment(order),
     Duration.ofSeconds(10),
@@ -3800,12 +3800,12 @@ The full `with*` vocabulary chains directly on the path (retry, time budget, cir
 IOPath<String> resilient = Path.io(() -> callFlakyService())
     .retry(5, Duration.ofMillis(100))                        // exponential backoff convenience
     .withRetry(RetryPolicy.fixed(3, Duration.ofMillis(50)))  // policy-driven retry
-    .withTimeout(Duration.ofSeconds(2))                      // bound the elapsed time
+    .withTimeout(Duration.ofSeconds(2))                      // cancel it when time runs out
     .withCircuitBreaker(serviceBreaker)                      // shared breaker per dependency
     .withBulkhead(serviceBulkhead);                          // cap concurrent callers
 ```
 
-`IOPath` has no typed error channel, so failures surface on the failure channel: `withTimeout` fails with a `CompletionException` wrapping the `TimeoutException` (the same surfacing as `CompletableFuturePath.withTimeout`), an open circuit throws `CircuitOpenException`, and a full bulkhead throws `BulkheadFullException`. The timed-out computation is not interrupted; it keeps running unobserved. An interrupt of the caller does reach it, and surfaces as a `VTaskExecutionException` wrapping the `InterruptedException`, with the interrupt status set. To land a timeout or rejection as a typed `Left` instead, use the static `EitherPath` combinators (`EitherPath.withTimeout(step, duration, onTimeout)` and friends).
+`IOPath` has no typed error channel, so failures surface on the failure channel: `withTimeout` fails with a `CompletionException` wrapping the `TimeoutException` (the same surfacing as `CompletableFuturePath.withTimeout`), an open circuit throws `CircuitOpenException`, and a full bulkhead throws `BulkheadFullException`. When the time runs out, the computation is interrupted, and the path fails once it has stopped; to fail on time whether or not it can stop, put `detachOnCancel()` before `withTimeout`, as [VTaskPath](path_vtask.md#timeouts) explains. An interrupt of the caller reaches it too, and surfaces as a `VTaskExecutionException` wrapping the `InterruptedException`, with the interrupt status set. To land a timeout or rejection as a typed `Left` instead, use the static `EitherPath` combinators (`EitherPath.withTimeout(step, duration, onTimeout)` and friends).
 
 See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table, and [Patterns and Recipes](patterns.md) for more recipes.
 
@@ -4088,7 +4088,22 @@ VTaskPath<Data> guarded = Path.vtask(() -> fetchData())
     .withBulkhead(serviceBulkhead);
 ```
 
-Two caveats inherited from `VTask.timeout`: the losing computation is *not* interrupted (it keeps running unobserved after the timeout is reported), and a `TimeoutException` thrown inside the computation is indistinguishable from the budget expiring. To interrupt it instead, fork it into a `Scope` with a `timeout`, as in `Scope.<Data>anySucceed().timeout(d).fork(task).join()`. A cancellation does reach it: when the thread waiting for the result is interrupted, so is the computation, and the timeout throws `InterruptedException` once it stops, or the time runs out. The path's `unsafeRun()` reports it wrapped in `VTaskExecutionException`, and `runSafe()` holds the `InterruptedException` itself; each sets the interrupt status. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
+When the time runs out, the computation is interrupted, and the `TimeoutException` arrives once it has stopped, so the computation is not left running. A computation that ignores interruption holds the failure back until it finishes, as in a [`Scope` with a `timeout`](../monads/vtask_scope.md#timing-a-scope-out). So does one blocked where an interrupt cannot reach it, such as in `CompletableFuture.join()`, `Lock.lock()` or a `synchronized` block. Never wait on a timeout while holding a lock the computation needs: it cannot finish, and the timeout waits for it.
+
+To fail when the time runs out instead, put `detachOnCancel()` before the timeout. The computation is still interrupted, but nothing waits for it to stop:
+
+<!-- verify -->
+```java
+VTaskPath<Data> onTime = Path.vtask(() -> fetchData())
+    .detachOnCancel()
+    .withTimeout(Duration.ofSeconds(2));
+```
+
+Put it inside the timeout: `withTimeout(d).detachOnCancel()` changes nothing for that timeout. A [circuit breaker](../resilience/circuit_breaker.md) guarding a call that can hang works the same way: protect the detached call, and the breaker counts it when its `callTimeout` runs out.
+
+Detach only work whose leftovers are harmless, since it may still be running after the caller has moved on. A cancelled detached call no longer counts against a bulkhead's limit, and each retry after a timeout can leave one more behind.
+
+A `TimeoutException` thrown inside the computation is reported as the budget running out too, with that exception as its cause, where the budget's own has none. A cancellation reaches it too: when the thread waiting for the result is interrupted, so is the computation, and the timeout throws `InterruptedException` once it stops. The path's `unsafeRun()` reports it wrapped in `VTaskExecutionException`, and `runSafe()` holds the `InterruptedException` itself; each sets the interrupt status. To land the timeout as a typed `Left` instead of a failure, use [`VResultPath.withTimeout(duration, onTimeout)`](path_vresult.md#resilience). See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table.
 
 ---
 
@@ -4411,7 +4426,7 @@ VResultPath<OrderError, Reservation> guarded =
 - **`withRetry(retryOn, policy)`**: railway-aware; additionally retries a `Left` that `retryOn` selects (e.g. a transient `SystemError`); on exhaustion the **last `Left`** is returned, keeping the error on the typed channel.
 - **`withCircuitBreaker(breaker[, onOpen])`**: a `Left` never trips the breaker (it is a successfully computed value); only defects count. With `onOpen`, an open-circuit rejection lands as a typed `Left` instead of a defect.
 - **`withBulkhead(bulkhead[, onFull])`**: bounds how many callers run the computation concurrently; with `onFull`, a rejection lands as a typed `Left`.
-- **`withTimeout(duration, onTimeout)`**: as above, the timeout becomes the designated typed error, on the railway. The losing computation is not interrupted.
+- **`withTimeout(duration, onTimeout)`**: as above, the timeout becomes the designated typed error, on the railway. The computation is interrupted, and the `Left` arrives once it has stopped. Put `detachOnCancel()` before it for the `Left` on time, as [VTaskPath](path_vtask.md#timeouts) explains.
 
 Because the path is lazy, protection wraps the *computation*: apply the combinators before the boundary `run()`. Do not wrap non-idempotent steps (a payment) in retry. See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table and per-step guidance.
 
@@ -6841,9 +6856,11 @@ IOPath<Config> fastest = primary.race(backup);
 ```
 
 ~~~admonish warning title="Race Caveats"
-The losing computation is *not* cancelled (Java limitation). It continues
-running in the background. Use `race` for idempotent operations where
-completing the loser is acceptable.
+The losing computation is *not* cancelled: each side runs in a
+`CompletableFuture`, which cannot interrupt the work behind it, so the loser
+continues running in the background. Use `race` for idempotent operations
+where completing the loser is acceptable, or race `VTaskPath`s, whose `race`
+takes the first success and interrupts the other.
 ~~~
 
 ### raceIO for Multiple Competitors
@@ -15989,10 +16006,20 @@ CircuitBreakerConfig config = CircuitBreakerConfig.builder()
 | `failureThreshold` | 5 | Consecutive failures before the circuit opens |
 | `successThreshold` | 1 | Successful probes in HALF_OPEN before closing |
 | `openDuration` | 60s | How long the circuit stays open |
-| `callTimeout` | 10s | Timeout applied to each protected call |
+| `callTimeout` | 10s | Timeout applied to each protected call: a slower call is interrupted, and fails once it has stopped |
 | `recordFailure` | all exceptions | Predicate determining which exceptions count |
 
 The `recordFailure` predicate is important: not every exception means the service is unhealthy. A `400 Bad Request` or a business validation error reflects a problem with the *request*, not the *service*. Only count failures that indicate the service itself is struggling. A cancelled call counts as neither a success nor a failure, whatever `recordFailure` says, and its `InterruptedException` passes through.
+
+A call slower than `callTimeout` counts once it has stopped, so a call that hangs where an interrupt cannot reach it would keep the circuit closed. Detach the call before protecting it, and the breaker counts it when the time runs out:
+
+<!-- verify -->
+```java
+VTask<String> counted = paymentBreaker.protect(
+    VTask.of(() -> paymentService.getStatus(orderId)).detachOnCancel());
+```
+
+[VTaskPath](../effect/path_vtask.md#timeouts) says when detaching is safe.
 
 ## Creating a Circuit Breaker
 
@@ -16681,7 +16708,7 @@ The order in which patterns wrap the underlying call determines their behaviour.
 ```
     ┌───────────────────────────────────────────────────────────────┐
     │ 1. Timeout (outermost)                                        │
-    │    Bounds total elapsed time across all retry attempts        │
+    │    Cancels all of it, retries included, when time runs out    │
     │                                                               │
     │   ┌───────────────────────────────────────────────────────┐   │
     │   │ 2. Bulkhead                                           │   │
@@ -16705,7 +16732,7 @@ The order in which patterns wrap the underlying call determines their behaviour.
 ```
 
 This ordering ensures:
-- The **timeout** bounds the entire operation, including all retries and wait times
+- The **timeout** cancels the entire operation, including all retries and wait times, when its time runs out
 - The **bulkhead** prevents too many concurrent operations from even starting
 - **Retry** re-attempts the inner operation, each attempt independently
 - The **circuit breaker** evaluates each attempt, and `CircuitOpenException` naturally stops retry (since it is not a retryable exception by default)
@@ -16778,19 +16805,20 @@ The `with*` vocabulary is available across the Path family, so resilience compos
 | `retry(maxAttempts, initialDelay)` convenience | ✓ | ✓ | · | · |
 | `withTimeout(duration)` | ✓ | ✓ | · | · |
 | `withTimeout(duration, onTimeout)`: timeout as a typed `Left` | · | · | ✓ | ✓ |
+| `detachOnCancel()`: a timeout fails on time, without waiting for the computation to stop | ✓ | ✓ | ✓ | · |
 | `withCircuitBreaker(breaker)` | ✓ | ✓ | ✓ | ✓ |
 | `withCircuitBreaker(breaker, onOpen)`: rejection as a typed `Left` | · | · | ✓ | ✓ |
 | `withBulkhead(bulkhead)` | ✓ | ✓ | ✓ | ✓ |
 | `withBulkhead(bulkhead, onFull)`: rejection as a typed `Left` | · | · | ✓ | ✓ |
 
-(✓ = available; · = not applicable on that carrier.)
+(✓ = available; · = not applicable on that carrier.) An `EitherPath` step that cannot stop at once fails on time as a `VResultPath` with `detachOnCancel().withTimeout(duration, onTimeout)`.
 
 The typed carriers (`EitherPath`, `VResultPath`) are **railway-aware** throughout, backed by one shared retry implementation:
 
 - A business `Left` is a value, not a fault: it is **never retried** by default, and it **never trips a circuit breaker** (only thrown exceptions count as failures).
 - The typed `withRetry(retryOn, policy)` overload opts selected transient errors in; on exhaustion the **last `Left`** is returned, staying on the typed channel.
 - The `onTimeout` / `onOpen` / `onFull` overloads land timeouts, open-circuit rejections, and bulkhead rejections as typed `Left`s instead of thrown exceptions.
-- Timeouts do **not** interrupt the losing computation; it keeps running unobserved after the typed timeout is returned, so bound its side effects accordingly. A [`Scope` with a `timeout`](../monads/vtask_scope.md#timing-a-scope-out) interrupts its subtasks instead.
+- A timeout interrupts the computation, and returns the typed timeout once it has stopped, so the computation is not left running behind it. A computation that ignores interruption, or blocks where an interrupt cannot reach it, holds the `Left` back until it finishes; on `VResultPath`, [`detachOnCancel()`](../effect/path_vtask.md#timeouts) gives it on time instead.
 
 On `IOPath` and `VTaskPath` there is no typed channel, so `withTimeout(duration)` surfaces the timeout on the failure channel (`IOPath` fails with a `CompletionException` wrapping the `TimeoutException`; `VTaskPath` fails with the `TimeoutException` itself), and breaker/bulkhead rejections propagate as exceptions.
 
@@ -16841,7 +16869,7 @@ EitherPath<OrderError, Shipment> workflow =
 The layering inside the inventory step follows [the correct order](#the-ordering-problem): the breaker is inside the retry, so each attempt is individually recorded, and the `transientError` predicate refuses to retry an open-circuit rejection (the typed analogue of excluding `CircuitOpenException` from a retry predicate).
 
 ~~~admonish warning title="A Timeout Is Not a Rollback"
-Since a timed-out computation is not interrupted, `Left(timeout)` on the payment step means the charge's outcome is *unknown*, not that it did not happen. Never respond to a payment timeout by simply retrying; reconcile with the payment provider, or use a [Saga](saga.md) to compensate.
+An interrupt stops the payment step, but the charge may already have reached the payment provider. So `Left(timeout)` on that step means the charge's outcome is *unknown*, not that it did not happen. Never respond to a payment timeout by simply retrying; reconcile with the payment provider, or use a [Saga](saga.md) to compensate.
 ~~~
 
 The same shape works on the async railway: `VResultPath` carries these combinators as instance methods, and **fluent order is nesting order**: each combinator wraps everything chained before it, so the earlier combinator sits inside. `.withCircuitBreaker(breaker, onOpen).withRetry(retryOn, policy)` therefore keeps the breaker innermost, each attempt individually recorded, with the retry predicate refusing the open-circuit `Left` exactly as above. Chaining the breaker *after* the retry instead is a deliberate simplification the combinators' own documentation offers: an open circuit is then never retried against without any predicate, at the cost of the breaker seeing the whole retry loop as a single call. The order example's [`ConfigurableOrderWorkflow`](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/order/workflow/ConfigurableOrderWorkflow.java) applies this per-step discipline in full: retry confined to an idempotent pre-flight, the committing phase given a single attempt under a typed timeout; see [Order Workflow: Production Patterns](../hkts/order-production.md).
@@ -16939,7 +16967,7 @@ PaymentResult result = chargePayment.run();
 * **Order is meaning**: the timeout, outermost of the protection layers, bounds everything including waits (a `withFallback` recovery runs after it, outside the budget); the breaker innermost sees every attempt individually; retry inside a breaker misreports health
 * **The builder makes the right order the only order**: call `with*` in any sequence and `ResilienceBuilder` layers them correctly
 * **Grant resilience per step, not per workflow**: idempotent steps earn retry and a breaker; non-idempotent steps get only a typed time budget and no automatic retry
-* **A typed timeout is not a rollback**: the losing computation keeps running unobserved, so a payment timeout means *unknown*, and the answer is reconciliation or a [Saga](saga.md), never a blind retry
+* **A typed timeout is not a rollback**: the interrupted charge may already have reached the provider, so a payment timeout means *unknown*, and the answer is reconciliation or a [Saga](saga.md), never a blind retry
 ~~~
 
 ~~~admonish tip title="See Also"
@@ -74587,7 +74615,7 @@ import org.higherkindedj.hkt.effect.Path;
     // 115.56
 ```
 
-A `CompletableFuturePath` also times out with `withTimeout`. `toEitherPath()` waits for the future, then holds a failure as a `Left`. A future that has failed stays failed, so to try failed work again, start it with `CompletableFuturePath.supplyAsyncWithRetry(supplier, attempts, delay)`, which runs the supplier again. A future that completes with `null` fails the Path, which catches every `CompletableFuture<Void>` from `runAsync` or `allOf`: map one to `Unit` first, with `thenApply(_ -> Unit.INSTANCE)`.
+A `CompletableFuturePath` also times out with `withTimeout`, which fails the Path but leaves the work behind the future running, since a future cannot interrupt it. `toEitherPath()` waits for the future, then holds a failure as a `Left`. A future that has failed stays failed, so to try failed work again, start it with `CompletableFuturePath.supplyAsyncWithRetry(supplier, attempts, delay)`, which runs the supplier again. A future that completes with `null` fails the Path, which catches every `CompletableFuture<Void>` from `runAsync` or `allOf`: map one to `Unit` first, with `thenApply(_ -> Unit.INSTANCE)`.
 
 ## Methods {#methods}
 
@@ -74600,7 +74628,7 @@ A `CompletableFuturePath` also times out with `withTimeout`. `toEitherPath()` wa
 | `CompletableFuturePath.supplyAsyncWithRetry(supplier, attempts, delay)` | Start work, and run the supplier again after a failure |
 | `map(f)`, `via(f)`, `recover(f)` | Change the value, chain a step, or give a value in place of a failure |
 | `parZipWith(other, f)`, `race(other)` | Join two Paths' results, or keep whichever succeeds first, failing only if both fail |
-| `withTimeout(duration)` | Fails the Path if the future has not completed in time |
+| `withTimeout(duration)` | Fails the Path if the future has not completed in time; the work behind it runs on |
 | `join()`, `toEitherPath()` | Wait for the result, or wait and then hold a failure as a `Left` |
 | `FUTURE.widen(future)`, `FUTURE.narrow(kind)`, `FUTURE.join(kind)` | Move a future in and out of `Kind`, or wait for one |
 
@@ -74773,7 +74801,7 @@ Application code holds tasks on a `VTaskPath`. `Path.vtask` puts a `Callable` on
 
 Building the path asks neither service. `unsafeRun()` waits on the calling thread while both lookups run. It is where the work happens, so call it once, at the edge of the application. Each run asks the services again. On a `VTaskPath`, `zipWith` runs both paths at once too, as `parZipWith` does.
 
-A `VTaskPath` also gives up waiting with `timeout(duration)`, and retries with `withRetry`, as [VTaskPath](../effect/path_vtask.md) shows. A task that times out is not interrupted: it keeps running, unobserved. To cancel it as well, fork it into a [`Scope`](vtask_scope.md) with a timeout.
+A `VTaskPath` also cancels a slow task with `timeout(duration)`, and retries with `withRetry`, as [VTaskPath](../effect/path_vtask.md) shows. When the time runs out, the task is interrupted, and the `TimeoutException` arrives once it has stopped, so the task is not left running. A task that ignores interruption, or blocks in `CompletableFuture.join()`, which an interrupt cannot reach, holds the failure back until it finishes. To fail on time instead, see [Timeouts](../effect/path_vtask.md#timeouts).
 
 ## A refusal as a value, on a `VResultPath` {#on-a-vresultpath}
 
@@ -74813,7 +74841,7 @@ import org.higherkindedj.hkt.either.Either;
     // Left(AlreadyShipped[orderId=00000000-0000-0000-0000-000000000001])
 ```
 
-`withTimeout(duration, onTimeout)` gives a typed `Left` when the time runs out, and, like a `VTaskPath`'s `timeout`, leaves the task running, so a booking can still complete after the caller has its `Left`. A `VResultPath`'s `zipWith` runs its paths one after another and stops at the first `Left`. To run typed work at the same time, see [VResultPath](../effect/path_vresult.md#outcome-aware-structured-concurrency).
+`withTimeout(duration, onTimeout)` gives a typed `Left` when the time runs out. Like a `VTaskPath`'s `timeout`, it interrupts the task and waits for it to stop first. An interrupted booking may already have reached the courier, so the `Left` says the outcome is unknown, not that nothing was booked. A `VResultPath`'s `zipWith` runs its paths one after another and stops at the first `Left`. To run typed work at the same time, see [VResultPath](../effect/path_vresult.md#outcome-aware-structured-concurrency).
 
 ## Running a task {#running-a-task}
 
@@ -74904,7 +74932,7 @@ The factories and functions of every lazy type follow the same rule: `IO`, `VStr
 | `VTask.succeed(value)`, `VTask.fail(exception)` | Give a task that has already succeeded or failed |
 | `map(f)`, `flatMap(f)`, `via(f)`, `then(next)` | Build a new task, running nothing |
 | `recover(f)`, `recoverWith(f)`, `mapError(f)` | Give a value or another task in place of a failure, or change the exception |
-| `timeout(duration)` | Runs the task on a virtual thread of its own, and fails with a `TimeoutException` if it has not finished in time, leaving it running |
+| `timeout(duration)` | Runs the task on a virtual thread of its own; if it has not finished in time, interrupts it and fails with a `TimeoutException` once it has stopped |
 | `run()`, `runSafe()` | Run the task on the calling thread, throwing its failure or holding it in a `Try` |
 | `runAsync()` | Starts the task on a new virtual thread, and returns a `CompletableFuture` |
 | `Par.map2`, `zip`, `all`, `traverse`, `race` | Run tasks at the same time, each on a virtual thread |
@@ -75158,7 +75186,7 @@ import java.time.Duration;
     // Failure(java.util.concurrent.TimeoutException: Scope timed out after PT0.05S)
 ```
 
-Unlike [`VTask.timeout`](vtask_monad.md#on-a-vtaskpath), which leaves its task running, a scope's timeout cancels the tasks still running. A task that ignores interruption, such as one spinning in a loop, holds the failure back until it finishes. Each run's timeout starts when that run opens its scope. A timeout of zero or less expires at once, so the run fails unless its tasks have already finished.
+A scope's timeout cancels the tasks still running, as [`VTask.timeout`](vtask_monad.md#on-a-vtaskpath) cancels its one task. A task that ignores interruption, such as one spinning in a loop, holds the failure back until it finishes. Each run's timeout starts when that run opens its scope. A timeout of zero or less expires at once, so the run fails unless its tasks have already finished.
 
 ## Running a scope again {#running-a-scope-again}
 
@@ -85076,7 +85104,7 @@ EitherPath<OrderError, Receipt> charged =
         () -> OrderError.SystemError.timeout("paymentService.charge"));
 ```
 
-One caveat: the timed-out computation is not interrupted, so on a non-idempotent step like payment, `Left(timeout)` means the outcome is *unknown*: reconcile, do not blindly retry. See [Resilience Patterns](../resilience/ch_intro.md) for the full path-native combinator surface (`withRetry`, `withTimeout`, `withCircuitBreaker`, `withBulkhead`) and the per-carrier availability table.
+One caveat: the timeout interrupts the charge, but the charge may already have reached the payment provider. So on a non-idempotent step like payment, `Left(timeout)` means the outcome is *unknown*: reconcile, do not blindly retry. See [Resilience Patterns](../resilience/ch_intro.md) for the full path-native combinator surface (`withRetry`, `withTimeout`, `withCircuitBreaker`, `withBulkhead`) and the per-carrier availability table.
 
 ---
 
@@ -85497,7 +85525,7 @@ VResultPath<OrderError, OrderResult> processWithReservation(
 }
 ```
 
-Release *always* runs and receives the `Either` outcome: a `Right` confirms the reservation, a `Left` releases it. There is no mutable "confirmed" flag. A defect (a thrown exception) inside the use phase is first typed through the final `onDefect` argument (here as a `SystemError`), so the release observes a typed outcome and the reservation is released. Should `onDefect` itself fail, the release still runs and sees `Left(Nothing)`, since it reads the error as a `Maybe`. This release treats that as a failure too. A cancellation, such as `Scope.timeout` or `firstSuccess` cancelling a losing candidate, interrupts the use. `withTimeout` does not interrupt it: the use runs on, and the release runs when it ends. The release runs with the interrupt status cleared, so a release that calls a remote inventory service after a cancelled use is not cut short. The status is restored afterwards.
+Release *always* runs and receives the `Either` outcome: a `Right` confirms the reservation, a `Left` releases it. There is no mutable "confirmed" flag. A defect (a thrown exception) inside the use phase is first typed through the final `onDefect` argument (here as a `SystemError`), so the release observes a typed outcome and the reservation is released. Should `onDefect` itself fail, the release still runs and sees `Left(Nothing)`, since it reads the error as a `Maybe`. This release treats that as a failure too. A cancellation, such as `withTimeout`, `Scope.timeout` or `firstSuccess` cancelling a losing candidate, interrupts the use. The release runs with the interrupt status cleared, so a release that calls a remote inventory service after a cancelled use is not cut short. The status is restored afterwards.
 
 ### General-Purpose Resource
 
@@ -97876,7 +97904,7 @@ For VTaskPath and VStreamPath operations (no pool sizing needed):
 ```yaml
 hkj:
   virtual-threads:
-    default-timeout-ms: 30000          # VTask timeout (default: 30s)
+    default-timeout-ms: 30000          # VTaskPath response timeout (default: 30s)
     stream-timeout-ms: 60000           # VStream timeout (default: 60s, 0 = no timeout)
 ```
 
@@ -104416,6 +104444,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`@ImportOptics` pairs a JavaBeans-spelt wither with its getter**: a `witheMail` beside `geteMail()` gives an `eMail()` lens.
 - **A `@GenerateFocus` message that offers a navigator asks first for the renames it needs.** Following its fix line no longer leads into another note or error.
 - **A `@GenerateMapping` bean refusal's fix line compiles once followed**, and names the near miss it passed over, such as `setx(int)` beside `Integer getX()`.
+- **A timeout cancels the task it timed out, as a `Scope`'s timeout does**, so a retried timeout leaves no attempt running.
 ~~~
 
 ---
@@ -104454,6 +104483,8 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `VStream`'s `recoverWith`, `mapError` and `onError` act on a failure at any element** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). They acted on the first pull only, and so did `VStreamPath`'s. A later `recover` still resumes from the element after the failure, and one exception thrown at several elements no longer sends it back to the first. See [VStream](../monads/vstream.md).
 - **A `VStream` fails with the exception its task threw** ([#1410](https://github.com/higher-kinded-j/higher-kinded-j/pull/1410)). A checked one, such as an `IOException` from `mapTask`, a finaliser or a publisher, reached every terminal operation inside a `VTaskExecutionException`, or a `RuntimeException` from `parEvalMap`, `parEvalMapUnordered` and `merge`. `run()`, and the conversions that call it such as `toListPath()`, still wrap it.
 - **A `VTaskPath` hands every handler the exception its task threw** ([#1396](https://github.com/higher-kinded-j/higher-kinded-j/pull/1396)). A checked one, such as an `IOException`, reached `runSafe`, `catching` and `toTryPath`, and any step after `via`, `then` or `guarantee`, wrapped in a `VTaskExecutionException`, so a retry on `IOException` gave up at once. Only `unsafeRun()`, which cannot throw one, still wraps it. See [VTaskPath](../effect/path_vtask.md#running-tasks).
+- **A timeout cancels the task it timed out, as a `Scope`'s timeout does** ([#1372](https://github.com/higher-kinded-j/higher-kinded-j/issues/1372)). When the time runs out, `VTask.timeout` interrupts the task and fails once it has stopped, so a retry over a timeout leaves no attempt running. Every `withTimeout` but `CompletableFuturePath`'s builds on it, as do `ResilienceBuilder` and the circuit breaker's `callTimeout`. See [VTaskPath](../effect/path_vtask.md#timeouts).
+- **`detachOnCancel()` lets a timeout fail on time over work that cannot stop at once** ([#1372](https://github.com/higher-kinded-j/higher-kinded-j/issues/1372)). The work is still interrupted, but nothing waits for it, so a call blocked where an interrupt cannot reach it still fails at the deadline, and a circuit breaker can open. It is on `VTask`, `IOPath`, `VTaskPath`, `VResultPath` and `VTaskContext`. See [Timeouts](../effect/path_vtask.md#timeouts).
 
 ---
 
@@ -104516,6 +104547,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `VStream` hands over a checked exception as its task threw it** ([#1410](https://github.com/higher-kinded-j/higher-kinded-j/pull/1410)). Code that called `getCause()` on a `VTaskExecutionException` from `runSafe`, or on a `RuntimeException` from `parEvalMap`, `parEvalMapUnordered`, `merge` or `fromPublisher`, now receives the exception itself, as it does from a finaliser. `run()` still wraps one.
 - **A `VTaskPath` handler sees a checked exception as its task threw it** ([#1396](https://github.com/higher-kinded-j/higher-kinded-j/pull/1396)). Code that called `getCause()` on a `VTaskExecutionException` now receives the exception itself. That holds in `runSafe` and `catching`, in a handler or retry after `via`, in the future from `runAsync()`, and in `VTaskContext.runOrElseGet` and `StreamTraversal.modifyVTask`. `unsafeRun()` still wraps one.
 - **`recover`, `recoverWith`, `mapError` and `toEitherPath` on a `CompletableFuturePath` keep a `CompletionException` that has no cause** ([#1398](https://github.com/higher-kinded-j/higher-kinded-j/issues/1398)). A handler that was given an empty `RuntimeException` now gets the `CompletionException`.
+- **A timed-out task is interrupted, and the timeout waits for it to stop** ([#1372](https://github.com/higher-kinded-j/higher-kinded-j/issues/1372)). A task blocked in `CompletableFuture.join()`, or otherwise out of an interrupt's reach, holds the failure back until it finishes, and an interrupt of the caller now waits for it too. To fail at the time limit, as before, time out `task.detachOnCancel()`.
 
 ### What stops a build that compiled {#build-changes}
 

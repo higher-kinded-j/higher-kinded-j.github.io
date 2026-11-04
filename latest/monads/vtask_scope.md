@@ -190,7 +190,7 @@ import java.time.Duration;
     // Failure(java.util.concurrent.TimeoutException: Scope timed out after PT0.05S)
 ```
 
-Unlike [`VTask.timeout`](vtask_monad.md#on-a-vtaskpath), which leaves its task running, a scope's timeout cancels the tasks still running. A task that ignores interruption, such as one spinning in a loop, holds the failure back until it finishes. Each run's timeout starts when that run opens its scope. A timeout of zero or less expires at once, so the run fails unless its tasks have already finished.
+A scope's timeout cancels the tasks still running, as [`VTask.timeout`](vtask_monad.md#on-a-vtaskpath) cancels its one task. A task that ignores interruption, such as one spinning in a loop, holds the failure back until it finishes. Each run's timeout starts when that run opens its scope. A timeout of zero or less expires at once, so the run fails unless its tasks have already finished.
 
 ## Running a scope again {#running-a-scope-again}
 

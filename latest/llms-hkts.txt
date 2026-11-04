@@ -9452,7 +9452,7 @@ import org.higherkindedj.hkt.effect.Path;
     // 115.56
 ```
 
-A `CompletableFuturePath` also times out with `withTimeout`. `toEitherPath()` waits for the future, then holds a failure as a `Left`. A future that has failed stays failed, so to try failed work again, start it with `CompletableFuturePath.supplyAsyncWithRetry(supplier, attempts, delay)`, which runs the supplier again. A future that completes with `null` fails the Path, which catches every `CompletableFuture<Void>` from `runAsync` or `allOf`: map one to `Unit` first, with `thenApply(_ -> Unit.INSTANCE)`.
+A `CompletableFuturePath` also times out with `withTimeout`, which fails the Path but leaves the work behind the future running, since a future cannot interrupt it. `toEitherPath()` waits for the future, then holds a failure as a `Left`. A future that has failed stays failed, so to try failed work again, start it with `CompletableFuturePath.supplyAsyncWithRetry(supplier, attempts, delay)`, which runs the supplier again. A future that completes with `null` fails the Path, which catches every `CompletableFuture<Void>` from `runAsync` or `allOf`: map one to `Unit` first, with `thenApply(_ -> Unit.INSTANCE)`.
 
 ## Methods {#methods}
 
@@ -9465,7 +9465,7 @@ A `CompletableFuturePath` also times out with `withTimeout`. `toEitherPath()` wa
 | `CompletableFuturePath.supplyAsyncWithRetry(supplier, attempts, delay)` | Start work, and run the supplier again after a failure |
 | `map(f)`, `via(f)`, `recover(f)` | Change the value, chain a step, or give a value in place of a failure |
 | `parZipWith(other, f)`, `race(other)` | Join two Paths' results, or keep whichever succeeds first, failing only if both fail |
-| `withTimeout(duration)` | Fails the Path if the future has not completed in time |
+| `withTimeout(duration)` | Fails the Path if the future has not completed in time; the work behind it runs on |
 | `join()`, `toEitherPath()` | Wait for the result, or wait and then hold a failure as a `Left` |
 | `FUTURE.widen(future)`, `FUTURE.narrow(kind)`, `FUTURE.join(kind)` | Move a future in and out of `Kind`, or wait for one |
 
@@ -9638,7 +9638,7 @@ Application code holds tasks on a `VTaskPath`. `Path.vtask` puts a `Callable` on
 
 Building the path asks neither service. `unsafeRun()` waits on the calling thread while both lookups run. It is where the work happens, so call it once, at the edge of the application. Each run asks the services again. On a `VTaskPath`, `zipWith` runs both paths at once too, as `parZipWith` does.
 
-A `VTaskPath` also gives up waiting with `timeout(duration)`, and retries with `withRetry`, as [VTaskPath](../effect/path_vtask.md) shows. A task that times out is not interrupted: it keeps running, unobserved. To cancel it as well, fork it into a [`Scope`](vtask_scope.md) with a timeout.
+A `VTaskPath` also cancels a slow task with `timeout(duration)`, and retries with `withRetry`, as [VTaskPath](../effect/path_vtask.md) shows. When the time runs out, the task is interrupted, and the `TimeoutException` arrives once it has stopped, so the task is not left running. A task that ignores interruption, or blocks in `CompletableFuture.join()`, which an interrupt cannot reach, holds the failure back until it finishes. To fail on time instead, see [Timeouts](../effect/path_vtask.md#timeouts).
 
 ## A refusal as a value, on a `VResultPath` {#on-a-vresultpath}
 
@@ -9678,7 +9678,7 @@ import org.higherkindedj.hkt.either.Either;
     // Left(AlreadyShipped[orderId=00000000-0000-0000-0000-000000000001])
 ```
 
-`withTimeout(duration, onTimeout)` gives a typed `Left` when the time runs out, and, like a `VTaskPath`'s `timeout`, leaves the task running, so a booking can still complete after the caller has its `Left`. A `VResultPath`'s `zipWith` runs its paths one after another and stops at the first `Left`. To run typed work at the same time, see [VResultPath](../effect/path_vresult.md#outcome-aware-structured-concurrency).
+`withTimeout(duration, onTimeout)` gives a typed `Left` when the time runs out. Like a `VTaskPath`'s `timeout`, it interrupts the task and waits for it to stop first. An interrupted booking may already have reached the courier, so the `Left` says the outcome is unknown, not that nothing was booked. A `VResultPath`'s `zipWith` runs its paths one after another and stops at the first `Left`. To run typed work at the same time, see [VResultPath](../effect/path_vresult.md#outcome-aware-structured-concurrency).
 
 ## Running a task {#running-a-task}
 
@@ -9769,7 +9769,7 @@ The factories and functions of every lazy type follow the same rule: `IO`, `VStr
 | `VTask.succeed(value)`, `VTask.fail(exception)` | Give a task that has already succeeded or failed |
 | `map(f)`, `flatMap(f)`, `via(f)`, `then(next)` | Build a new task, running nothing |
 | `recover(f)`, `recoverWith(f)`, `mapError(f)` | Give a value or another task in place of a failure, or change the exception |
-| `timeout(duration)` | Runs the task on a virtual thread of its own, and fails with a `TimeoutException` if it has not finished in time, leaving it running |
+| `timeout(duration)` | Runs the task on a virtual thread of its own; if it has not finished in time, interrupts it and fails with a `TimeoutException` once it has stopped |
 | `run()`, `runSafe()` | Run the task on the calling thread, throwing its failure or holding it in a `Try` |
 | `runAsync()` | Starts the task on a new virtual thread, and returns a `CompletableFuture` |
 | `Par.map2`, `zip`, `all`, `traverse`, `race` | Run tasks at the same time, each on a virtual thread |
@@ -10023,7 +10023,7 @@ import java.time.Duration;
     // Failure(java.util.concurrent.TimeoutException: Scope timed out after PT0.05S)
 ```
 
-Unlike [`VTask.timeout`](vtask_monad.md#on-a-vtaskpath), which leaves its task running, a scope's timeout cancels the tasks still running. A task that ignores interruption, such as one spinning in a loop, holds the failure back until it finishes. Each run's timeout starts when that run opens its scope. A timeout of zero or less expires at once, so the run fails unless its tasks have already finished.
+A scope's timeout cancels the tasks still running, as [`VTask.timeout`](vtask_monad.md#on-a-vtaskpath) cancels its one task. A task that ignores interruption, such as one spinning in a loop, holds the failure back until it finishes. Each run's timeout starts when that run opens its scope. A timeout of zero or less expires at once, so the run fails unless its tasks have already finished.
 
 ## Running a scope again {#running-a-scope-again}
 
