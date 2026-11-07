@@ -76556,8 +76556,9 @@ VStream<Integer> processed = VStreamPar.parEvalMapUnordered(
 // Results may be in any order
 ```
 
-A concurrency at least as large as the stream still emits every element. Its batch list
-grows as elements arrive, as `parEvalMap`'s does.
+Up to `concurrency` tasks run at once, and when the consumer takes a result, the next element
+is read and its task starts. The tasks running and the results not yet pulled are never more
+than `concurrency` together, so a slow consumer slows the reading.
 
 ### parEvalFlatMap: Parallel Stream Expansion
 
@@ -86867,10 +86868,12 @@ the full pipeline from smaller pieces that each work in isolation.
 ### Bounded Concurrency Without Backpressure
 
 VStream is pull-based: the consumer drives evaluation by requesting elements. The parallel
-operations add bounded concurrency on top of this pull model. At most `concurrency` elements
-are in flight at any time. Because virtual threads block cheaply, no explicit backpressure
-protocol is needed; if the consumer is slow, the producer simply blocks until the consumer
-pulls the next element.
+operations add bounded concurrency on top of this pull model. `parEvalMap` and
+`parEvalMapUnordered` hold at most `concurrency` elements in flight at any time. Because virtual
+threads block cheaply, no explicit backpressure protocol is needed; if the consumer is slow, the
+producer simply blocks until the consumer pulls the next element. `merge` is the exception: it
+reads each source as fast as the source gives elements, and holds those not yet pulled without a
+limit.
 
 ### Structured Concurrency Throughout
 
@@ -87337,7 +87340,7 @@ The risk calculator checks for:
 | `parEvalMapUnordered` | Completion order | Emits as each completes | Order irrelevant, throughput matters |
 
 Both variants:
-- Pull elements in batches of `concurrency`
+- Run up to `concurrency` tasks at once: `parEvalMap` a batch at a time, and `parEvalMapUnordered` starting the next as each result is taken
 - Fork each element's VTask via `StructuredTaskScope`
 - Fail fast if any element throws (remaining tasks are cancelled)
 
@@ -104428,6 +104431,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`VStream.closeAfterFailure` is deprecated for removal in 0.7.0** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). A failed element now holds the rest of the stream, so a pull that throws leaves nothing that `stream.close()` misses. See [Deprecated for removal in 0.7.0](#deprecated).
 - **A `VStream` fails with the exception its task threw** ([#1410](https://github.com/higher-kinded-j/higher-kinded-j/pull/1410)). A checked one, such as an `IOException` from `mapTask`, a finaliser or a publisher, reached every terminal operation inside a `VTaskExecutionException`, or a `RuntimeException` from `parEvalMap`, `parEvalMapUnordered` and `merge`. `run()`, and the conversions that call it such as `toListPath()`, still wrap it.
 - **`Instances.alternative(vstream())` gives `VStream`'s `Alternative`** ([#1425](https://github.com/higher-kinded-j/higher-kinded-j/pull/1425)). It failed with a `ClassCastException`, because the `vstream()` token held a plain monad, so code had to name `VStreamAlternative.INSTANCE`. `Instances.monad(vstream())` now returns that same object, which behaves as the monad did.
+- **`VStreamPar.parEvalMapUnordered` emits each result as its task completes** ([#1419](https://github.com/higher-kinded-j/higher-kinded-j/issues/1419)). It waited for each batch's slowest task, then emitted the batch in input order. Now a slow task holds back only its own result. Its running tasks and waiting results are never more than `concurrency` together, so a slow consumer slows the reading. `VStreamPath`'s does the same.
 - **A `VTaskPath` hands every handler the exception its task threw** ([#1396](https://github.com/higher-kinded-j/higher-kinded-j/pull/1396)). A checked one, such as an `IOException`, reached `runSafe`, `catching` and `toTryPath`, and any step after `via`, `then` or `guarantee`, wrapped in a `VTaskExecutionException`, so a retry on `IOException` gave up at once. Only `unsafeRun()`, which cannot throw one, still wraps it. See [VTaskPath](../effect/path_vtask.md#running-tasks).
 - **A timeout cancels the task it timed out, as a `Scope`'s timeout does** ([#1372](https://github.com/higher-kinded-j/higher-kinded-j/issues/1372)). When the time runs out, `VTask.timeout` interrupts the task and fails once it has stopped, so a retry over a timeout leaves no attempt running. Every `withTimeout` but `CompletableFuturePath`'s builds on it, as do `ResilienceBuilder` and the circuit breaker's `callTimeout`. See [VTaskPath](../effect/path_vtask.md#timeouts).
 - **`detachOnCancel()` lets a timeout fail on time over work that cannot stop at once** ([#1372](https://github.com/higher-kinded-j/higher-kinded-j/issues/1372)). The work is still interrupted, but nothing waits for it, so a call blocked where an interrupt cannot reach it still fails at the deadline, and a circuit breaker can open. It is on `VTask`, `IOPath`, `VTaskPath`, `VResultPath` and `VTaskContext`. See [Timeouts](../effect/path_vtask.md#timeouts).
