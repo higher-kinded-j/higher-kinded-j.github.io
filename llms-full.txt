@@ -75959,7 +75959,7 @@ When the source itself fails, there is nothing to carry on with. A feed that goe
 
 | Operator | When the stream fails |
 |---|---|
-| `recover(f)` | Gives `f`'s value. After a failed `mapTask` task, the stream carries on with the next element. After any other failure, such as a `map` function that throws, a failed source or a failed `parEvalMap` task, it ends |
+| `recover(f)` | Gives `f`'s value. After a failed task, in `mapTask` or a [parallel operation](vstream_parallel.md#when-a-task-fails), the stream carries on with the next element. After any other failure, such as a `map` function that throws or a failed source, it ends |
 | `recoverWith(f)` | Reads the stream `f` gives in place of the rest |
 | `mapError(f)` | Fails with the exception `f` gives instead |
 | `onError(action)` | Runs `action`, then fails as before |
@@ -76392,7 +76392,7 @@ It works a batch at a time. A pull reads up to `concurrency` elements from the s
 %%{init: {"sequence": {"actorMargin": 20, "diagramMarginX": 10}}}%%
 sequenceDiagram
     accTitle: How parEvalMap answers the pulls for four quotes
-    accDescr: The first pull reads four paid orders from the source, forks a quote task for each, and waits for all four before it answers with the first quote. The next three pulls are answered from the batch. The fifth pull is answered with a Skip to the next batch, and the sixth reads the source again, finds its end, and answers Done.
+    accDescr: The first pull reads four paid orders from the source, forks a quote task for each, and waits for all four before it answers with the first quote. The next three pulls are answered from the batch. The fifth pull starts the next batch: it reads the source again, finds its end, and answers Done.
     participant L as toList
     participant P as parEvalMap(4)
     participant S as paid orders
@@ -76405,14 +76405,12 @@ sequenceDiagram
     L->>P: pulls 2 to 4
     P-->>L: Emit 6.49, 3.99, 5.49
     L->>P: pull 5
-    P-->>L: Skip, to the next batch
-    L->>P: pull 6
     P->>S: read
     S-->>P: Done
     P-->>L: Done
 ```
 
-The arrows to the right are pulls and forks, and the dashed arrows back are what each gives. A batch's results wait for its slowest task. The source is read again only after every result of the batch has been taken. Pull 5 gives a `Skip` to the next batch, as [What a pull gives](vstream.md#what-a-pull-gives) describes, and pull 6 reads the source and finds its end.
+The arrows to the right are pulls and forks, and the dashed arrows back are what each gives. A batch's results wait for its slowest task. The source is read again only after every result of the batch has been taken. The [tail](vstream.md#what-a-pull-gives) of the batch's last result is the next batch, so pull 5 reads the source and finds its end.
 
 The source is read on the thread that pulls, and each task runs on a virtual thread of its own, which sees the caller's `ScopedValue` bindings. A `concurrency` of 1 runs the tasks one at a time, as `mapTask` does, but each on a virtual thread.
 
@@ -76445,7 +76443,7 @@ The quotes arrive in whatever order the courier answers, so the example sorts th
 
 `parEvalMapUnordered` starts the next element's task each time you take a result. If you stop reading part-way without closing the stream, its thread is left waiting, so close it; `take` and the other operations that stop early close it for you.
 
-`parEvalFlatMap(stream, concurrency, f)` builds the stream `f` gives for each element, up to `concurrency` at once through `parEvalMap`, then reads those streams one after another, in order.
+`parEvalFlatMap(stream, concurrency, f)` builds the stream `f` gives for each element, up to `concurrency` at once through `parEvalMap`, then reads those streams one after another, in order. Closing it closes each stream it built but never reached, so their finalisers run when a `take` stops early or a failure ends the stream first.
 
 ## Choosing a concurrency {#choosing-a-concurrency}
 
@@ -76453,7 +76451,7 @@ For tasks that wait on I/O, such as calls to another service, set `concurrency` 
 
 ## When a task fails {#when-a-task-fails}
 
-A task that fails cancels the tasks still running, and the stream fails with the task's own exception. `PATCHY_COURIER`, from [When an element fails](vstream.md#when-an-element-fails), quotes 4.99 for every order but cannot quote for Edsger, and `FLAT_RATE` is 9.99:
+A task that fails makes its element a failure in its place, as a failed `mapTask` task does, and the other tasks run on. `PATCHY_COURIER`, from [When an element fails](vstream.md#when-an-element-fails), quotes 4.99 for every order but cannot quote for Edsger, and `FLAT_RATE` is 9.99:
 
 ```java
     VStream<BigDecimal> patchy =
@@ -76462,23 +76460,15 @@ A task that fails cancels the tasks still running, and the stream fails with the
 
     Try<List<BigDecimal>> held = patchy.toList().runSafe();
     // Failure(java.io.IOException: no courier serves Edsger's address)
-    List<BigDecimal> recoveredAfter = patchy.recover(error -> FLAT_RATE).toList().run();
-    // [9.99]
-    List<BigDecimal> recoveredInside =
-        VStreamPar.parEvalMap(
-                paidOrders(),
-                4,
-                order -> VTask.of(() -> PATCHY_COURIER.quote(order)).recover(error -> FLAT_RATE))
-            .toList()
-            .run();
+    List<BigDecimal> recovered = patchy.recover(error -> FLAT_RATE).toList().run();
     // [4.99, 4.99, 9.99, 4.99]
 ```
 
-~~~admonish warning title="recover after a parallel operation ends the stream"
-When one of its own tasks fails, a `recover` after `parEvalMap` or `parEvalMapUnordered` gives one value in place of the failure, then ends the stream. `parEvalMap` loses the rest of the batch, and `parEvalMapUnordered` the tasks still running. To keep every other quote, recover inside each element's task, with `VTask.recover` or `recoverWith`, as `recoveredInside` does.
-~~~
+Without a `recover`, the stream fails with the courier's own exception when it reaches Edsger's quote. A `recover` after the parallel operation gives a value in its place, and the stream goes on with the next quote. `parEvalMapUnordered` hands on a task's failure as the task completes, as it does a result. In `parEvalFlatMap`, a call of `f` that fails is a failed task, so `recover` gives one value in place of the stream that call would have built.
 
-A failed element from further up is handed on instead. When a `mapTask` task fails before the parallel operation, its element passes through as a failure, so a `recover` after the parallel operation gives a value in its place and the stream goes on. `parEvalMap`, `parEvalMapUnordered` and `parEvalFlatMap` all do this, while a merge of several streams ends there. Any other failure further up, such as a `map` that throws, also ends the stream, after the elements read before it.
+Two failures still end the stream. A function that throws, rather than returning a task that fails, ends it as it would `mapTask`, so do the work inside the task, as `VTask.of` does. A task that fails with an `InterruptedException` ends it at once: the tasks still running are cancelled, and `parEvalMap` hands on none of that batch's results. A `recover` after it gives one value, then ends the stream.
+
+A failed element from further up is handed on in the same way. When a `mapTask` task fails before the parallel operation, its element passes through as a failure, so a `recover` after the parallel operation gives a value in its place and the stream goes on. `parEvalMap`, `parEvalMapUnordered` and `parEvalFlatMap` all do this, while a merge of several streams ends there. Any other failure further up, such as a `map` that throws, ends the stream, after the elements read before it.
 
 ## Chunking operations {#chunking-operations}
 
@@ -85984,13 +85974,15 @@ All parallelism in the pipeline uses `StructuredTaskScope`:
 - `Scope.allSucceed` forks alert channels within a scope
 - `VStreamPar.merge` forks one consumer per source within a scope
 
-If any task fails, the scope cancels all remaining tasks. No orphaned threads, no leaked
-resources.
+A scope that stops early cancels the tasks still running, so there are no orphaned threads and
+no leaked resources. `Par.map2`, `Scope.allSucceed` and `merge` stop at the first failure, while
+`parEvalMap` makes a failed task a failure in its element's place and lets the rest of the batch
+finish.
 
 ### Fail-Fast Error Handling
 
 Errors propagate immediately at every level:
-- If any enrichment lookup fails, the entire batch fails
+- If an enrichment lookup fails, that tick becomes a typed `MarketError`, which is reported
 - If any risk calculation throws, the pipeline surfaces the error
 - If any alert channel fails, the dispatch for that alert fails
 - If any source stream errors during merge, the merged stream fails
@@ -86397,7 +86389,7 @@ pool.awaitTermination(30, TimeUnit.SECONDS);
 ```
 
 The HKJ version, `VStreamPar.parEvalMap(ticks, 8, this::enrichOne)`, handles all of
-this: bounded concurrency, input-order preservation, fail-fast error propagation, and
+this: bounded concurrency, input-order preservation, error propagation, and
 automatic resource cleanup.
 ~~~
 
@@ -86443,7 +86435,7 @@ The risk calculator checks for:
 Both variants:
 - Run up to `concurrency` tasks at once: `parEvalMap` a batch at a time, and `parEvalMapUnordered` starting the next as each result is taken
 - Fork each element's VTask via `StructuredTaskScope`
-- Fail fast if any element throws (remaining tasks are cancelled)
+- Make an element whose task fails a failure in its place, as `mapTask` does, so a `recover` after either carries on with the next element
 
 ~~~admonish note title="Design Decision: Why ordered for risk?"
 Risk assessment feeds into `chunk()`, which groups **consecutive** elements into fixed-size
@@ -103593,6 +103585,8 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `VStream`'s `recover` after a failed `mapTask` carries on through the operators between them** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). The elements after the failure skipped those operators, so a `filter` let them through, and a `map` or `zipWith` handed on elements of the wrong type. A failed element is now a `Step.Fail`, which each operator passes on. See [When an element fails](../monads/vstream.md#when-an-element-fails).
 - **One exception instance thrown at several elements, or by several `VStream`s, no longer mixes them up** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). A `recover` could go back to an earlier element or into another stream, and each failure added to the instance's suppressed exceptions. A failed element now holds the rest of its own stream, so nothing is added for it.
 - **`chunk`, `chunkWhile`, `mapChunked` and the `parEvalMap` operators hand on what they read before a failure** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). They dropped it, so a `forEach` after them missed elements that a `forEach` without them saw. An interrupt still ends the stream at once.
+- **A `recover` after `parEvalMap`, `parEvalMapUnordered` or `parEvalFlatMap` carries on past a failed task** ([#1437](https://github.com/higher-kinded-j/higher-kinded-j/issues/1437)). The task's failure ended the stream, so swapping `mapTask` for `parEvalMap` lost recovery. Its element is now a failure in its place, as after `mapTask`, and the other tasks run on. See [When a task fails](../monads/vstream_parallel.md#when-a-task-fails).
+- **`parEvalFlatMap` closes the streams it built but never reached** ([#1454](https://github.com/higher-kinded-j/higher-kinded-j/pull/1454)). When a `take` or `headOption` stopped inside one of a batch's streams, or a failure or an interrupt ended the stream, the rest of the batch's streams were dropped unclosed, and their finalisers never ran. Closing the stream now closes them.
 - **`VStream.closeAfterFailure` is deprecated for removal in 0.7.0** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). A failed element now holds the rest of the stream, so a pull that throws leaves nothing that `stream.close()` misses. See [Deprecated for removal in 0.7.0](#deprecated).
 - **A `VStream` fails with the exception its task threw** ([#1410](https://github.com/higher-kinded-j/higher-kinded-j/pull/1410)). A checked one, such as an `IOException` from `mapTask`, a finaliser or a publisher, reached every terminal operation inside a `VTaskExecutionException`, or a `RuntimeException` from `parEvalMap`, `parEvalMapUnordered` and `merge`. `run()`, and the conversions that call it such as `toListPath()`, still wrap it.
 - **`Par`, `Scope` and `VStreamPar` fail with the task's own `Throwable`** ([#1418](https://github.com/higher-kinded-j/higher-kinded-j/issues/1418)). A `Throwable` that is neither an `Exception` nor an `Error` reached the caller inside a `RuntimeException` once the task was forked, though the task run on its own failed with it. `VTask.asCallable()` now throws it unchanged.
@@ -103675,6 +103669,8 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `VStream`'s `recover` after a failed `mapTask` passes the elements after the failure through the operators between them** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). A `map`, `filter` or `take` there now applies to them. A `recover` after `VStreamPar.merge` of several streams ends the stream there, and one after a task whose exception has suppression disabled carries on.
 - **A failed `mapTask` element holds its place in a `VStream`** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). `drop` and `dropWhile` drop it within the prefix they drop, so a failure there no longer fails the stream. `zipWith` pairs it with the other stream's element and ends with the shorter stream, and `throttle` and `metered` pace it.
 - **`chunk`, `chunkWhile`, `mapChunked` and the `parEvalMap` operators hand on what they read before a failure, then fail** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). A batch function or task now runs for those elements, with or without a `recover`, so a `forEach` or `headOption` after them sees them where it saw only the failure.
+- **A failed task in `parEvalMap`, `parEvalMapUnordered` or `parEvalFlatMap` no longer cancels the others** ([#1437](https://github.com/higher-kinded-j/higher-kinded-j/issues/1437)). A `recover` after the operation carries on where it ended the stream, and a `take`, `headOption` or `forEach` gets the results ahead of the failure. Without a `recover`, a failing `parEvalMap` run waits for its batch's slowest task.
+- **Code that pulls a parallel operation by hand gets a `Step.Fail` for a failed task, where the pull threw** ([#1437](https://github.com/higher-kinded-j/higher-kinded-j/issues/1437)). So does a task that returns null, and a `parEvalFlatMap` function that throws or returns null. An interrupted task, or a `parEvalMap` or `parEvalMapUnordered` function that throws, still ends the stream.
 - **A finaliser or `bracket` release on a stream whose `mapTask` task fails runs when the stream is closed, not at the failure** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). A `recover` after them reads on first. Without one, a terminal operation closes the stream after any `onError` or `mapError` has seen the failure. Code that pulls by hand closes the tail of the `Step.Fail`.
 - **Code that pulls a `VStream` by hand gets a `Step.Fail` for a failed `mapTask` task, where the pull threw** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). Its `tail` is the stream after the element, to close or read on from. An `instanceof` chain or `default` branch over `Step` misses it silently. Code compiled against 0.5.0 throws `MatchException` at an exhaustive switch until rebuilt.
 - **A `VStream` hands over a checked exception as its task threw it** ([#1410](https://github.com/higher-kinded-j/higher-kinded-j/pull/1410)). Code that called `getCause()` on a `VTaskExecutionException` from `runSafe`, or on a `RuntimeException` from `parEvalMap`, `parEvalMapUnordered`, `merge` or `fromPublisher`, now receives the exception itself, as it does from a finaliser. `run()` still wraps one.
