@@ -416,7 +416,7 @@ rule.
     Try<String> outcome = report.runSafe();
     // Failure(java.lang.IllegalStateException: query failed)
     List<Throwable> suppressed =
-        outcome.foldFailureFirst(failure -> List.of(failure.getSuppressed()), _ -> List.of());
+        outcome.fold(failure -> List.of(failure.getSuppressed()), _ -> List.of());
     // [java.lang.IllegalArgumentException: close failed]
 ```
 

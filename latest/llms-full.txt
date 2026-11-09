@@ -946,8 +946,7 @@ String msg = eitherPath.run().fold(
 | `.run()` | Extract the underlying value | All paths |
 | `.unsafeRun()` | Execute a deferred effect (may throw) | IOPath, VTaskPath |
 | `.runSafe()` | Execute safely, returning `Try` | IOPath, VTaskPath |
-| `.fold(onErr, onOk)` | Handle both tracks (error-first) | EitherPath, ValidationPath |
-| `.foldFailureFirst(onErr, onOk)` | Handle both tracks (error-first) | TryPath |
+| `.fold(onErr, onOk)` | Handle both tracks (error-first) | EitherPath, TryPath, ValidationPath |
 | `.fold(identity, op)` | Reduce a sequence to one value | ListPath, NonDetPath, StreamPath, VStreamPath |
 | `.foldLeft(seed, fn)` / `.foldRight(seed, fn)` | Directional reduce (type-changing) | ListPath, NonDetPath, StreamPath |
 | `.foldMap(monoid, fn)` | Map then combine via a `Monoid` | ListPath, NonDetPath, StreamPath, VStreamPath |
@@ -987,7 +986,7 @@ Getting back to standard Java from any Path:
 | `EitherPath<E, A>` | `B` | `.run().fold(onErr, onOk)` |
 | `TryPath<A>` | `Try<A>` | `.run()` |
 | `TryPath<A>` | `A` (or default) | `.getOrElse(defaultValue)` |
-| `TryPath<A>` | `B` | `.foldFailureFirst(onErr, onOk)` |
+| `TryPath<A>` | `B` | `.fold(onErr, onOk)` |
 | `ValidationPath<E, A>` | `Validated<E, A>` | `.run()` |
 | `ValidationPath<E, A>` | `B` | `.fold(onInvalid, onValid)` |
 | `IOPath<A>` | `A` | `.unsafeRun()` |
@@ -2104,7 +2103,7 @@ EitherPath<AppError, String> shouted = name.map(value -> value.toUpperCase());
 
 ## Getting Back to Standard Java
 
-You are never locked in. Every Path type unwraps to a standard Java value with `.run()`, and `.fold()` gives you full control over both tracks, as `foldFailureFirst` does on a `TryPath`:
+You are never locked in. Every Path type unwraps to a standard Java value with `.run()`, and `.fold()` gives you full control over both tracks, with the failure function first:
 
 <!-- verify -->
 ```java
@@ -3209,7 +3208,7 @@ Try<Integer> tryValue = path.run();
 
 Integer value = path.getOrElse(-1);
 
-String message = tryValue.foldFailureFirst(
+String message = tryValue.fold(
     cause -> "AppError: " + cause.getMessage(),
     ok    -> "Value: " + ok);
 ```
@@ -6614,7 +6613,7 @@ rule.
     Try<String> outcome = report.runSafe();
     // Failure(java.lang.IllegalStateException: query failed)
     List<Throwable> suppressed =
-        outcome.foldFailureFirst(failure -> List.of(failure.getSuppressed()), _ -> List.of());
+        outcome.fold(failure -> List.of(failure.getSuppressed()), _ -> List.of());
     // [java.lang.IllegalArgumentException: close failed]
 ```
 
@@ -12842,7 +12841,7 @@ public VTask<Response> handleRequest(Request request) {
     boolean authenticated = SecurityContext.isAuthenticated()
         .toVTask()
         .runSafe()
-        .foldFailureFirst(e -> false, value -> value);
+        .fold(e -> false, value -> value);
 
     if (authenticated) {
         return handleAuthenticatedRequest(request);
@@ -15285,7 +15284,7 @@ void shouldCaptureExceptionInRunSafe() {
     Try<String> result = failing.runSafe();
 
     assertThat(result.isFailure()).isTrue();
-    assertThat(result.foldFailureFirst(Throwable::getMessage, value -> value))
+    assertThat(result.fold(Throwable::getMessage, value -> value))
         .isEqualTo("test error");
 }
 ```
@@ -18159,7 +18158,7 @@ Integer computed = path.getOrElseGet(() -> computeIntDefault());
 boolean succeeded = tryValue.isSuccess();
 
 // Handle both sides, failure first
-String message = tryValue.foldFailureFirst(
+String message = tryValue.fold(
     cause -> "AppError: " + cause.getMessage(),
     ok -> "Value: " + ok);
 ```
@@ -73002,7 +73001,7 @@ _Run code that throws, and keep the exception as a value you can map, chain and 
 - Turn a call that throws into a `Try`, and choose between `Try.of` and `Try.attempt`
 - Chain steps that can each throw, and say which exception reaches the end
 - Recover from a failure with a value, or with another attempt
-- Read a `Try` with a `switch` or `foldFailureFirst`
+- Read a `Try` with a `switch` or `fold`
 - Hand a `Try`'s failure to an `Either` chain through `TryPath`
 ~~~
 
@@ -73136,7 +73135,7 @@ A `switch` over the two cases reads the result, and the compiler checks that bot
 
 ```
 
-`foldFailureFirst(onFailure, onSuccess)` does the same with two functions, and takes the failure function first, as `Either.fold` takes the `Left` function first. `get()` returns the value or throws the exception, so it is declared `throws Throwable` and a caller must catch `Throwable`; keep it for tests.
+`fold(onFailure, onSuccess)` does the same with two functions, and takes the failure function first, as `Either.fold` takes the `Left` function first. `get()` returns the value or throws the exception, so it is declared `throws Throwable` and a caller must catch `Throwable`; keep it for tests.
 
 ## Creating instances {#creating-instances}
 
@@ -73154,13 +73153,13 @@ A `switch` over the two cases reads the result, and the compiler checks that bot
 | `flatMap(f)` | Runs a step that gives a `Try`; a `Failure` passes through |
 | `recover(f)` | Turns a `Failure` into a `Success` of the value `f` gives |
 | `recoverWith(f)` | Turns a `Failure` into the `Try` that `f` gives |
-| `foldFailureFirst(onFailure, onSuccess)` | Turns either case into one result |
+| `fold(onFailure, onSuccess)` | Turns either case into one result |
 | `match(onSuccess, onFailure)` | Runs an action for the case it holds, and takes the success action first |
 | `orElse(other)`, `orElseGet(supplier)` | Return the value, or a fallback |
 | `get()` | Returns the value, or throws the exception it holds |
 | `toEither(f)` | Gives an `Either` whose `Left` is `f` applied to the exception |
 
-A call to the success-first `fold` of releases before 0.5.0 does not compile: rename it `foldFailureFirst` and swap its two functions, or run `SwapTryFoldToFoldFailureFirstRecipe`, as [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration) shows.
+Releases before 0.5.0 had a `fold` that took the success function first. A call written for it compiles against this one wherever both functions accept either argument, and runs them the wrong way round. Before you move such code here, run `MigrateDeprecationsTo0_5_0` on it while it still compiles against 0.4.x, as [To 0.6.0](../release-history/upgrading.md#to-060) explains. `foldFailureFirst`, the same method under its 0.5.0 name, is deprecated for removal in 0.7.0.
 
 ## On a `TryPath` {#on-a-trypath}
 
@@ -89976,7 +89975,7 @@ Integer thrown = VTask.of(() -> dangerousOperation()).run();
 
 // BETTER: Captures failure in Try
 Try<Integer> captured = VTask.of(() -> dangerousOperation()).runSafe();
-captured.foldFailureFirst(
+captured.fold(
     error -> handleError(error),
     value -> handleSuccess(value)
 );
@@ -94193,7 +94192,7 @@ Six recipe groups are shipped; each one has a composite that runs every recipe i
 | 0.5.0 deprecations | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | rewrites source, and marks null successes, null errors and containers whose elements have a field named like a path method |
 | 0.6.0 deprecations | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_6_0` | rewrites source, and marks calls a typed form does not fit |
 | 0.6.0 Path family | `org.higherkindedj.openrewrite.AddPathFamily` | rewrites source |
-| 0.7.0 deprecations | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_7_0` | rewrites source, and marks calls whose batch size is computed |
+| 0.7.0 deprecations | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_7_0` | rewrites source, and marks `parCollect` calls whose batch size is computed |
 
 ### Arity migration (0.2.x to 0.3.0)
 
@@ -94247,14 +94246,14 @@ Review the matches with `./gradlew rewriteDryRun` (Gradle) or `mvn rewrite:dryRu
 
 Rewrites call sites of APIs deprecated for removal in 0.5.0 to their replacements, removes a deprecated annotation that has no effect, and replaces two deprecated `@PathSource` capabilities with the levels they generate. It also drops the `Monad` argument that `StateT` no longer takes, and names in `widenFields` each container a 0.4.x navigator stepped into. These recipes rewrite source, apart from `DetectNullSuccessValuesRecipe` and `DetectNullErrorValuesRecipe`, which only mark each null success or null error that 0.5.0 refuses, for you to change by hand. `rewriteRun` writes each mark into the source as a `/*~~(…)~~>*/` comment; remove it once the site is fixed.
 
-Run them before your build moves to 0.5.0, with `hkj-openrewrite` 0.5.0 on the rewrite classpath. The recipes match the 0.4.x signatures, and the `StateT` calls and `widenFields` entries they write compile only against 0.5.0, so bump the library straight after. A `StateT` held in `var` over a witness with a type argument may then need its types named, as [Removals in 0.5.0](../release-history/upgrading.md#removals-in-050) shows.
+Run them before your build moves to 0.5.0, with `hkj-openrewrite` 0.5.0 or later on the rewrite classpath. The recipes match the 0.4.x signatures, and the `StateT` calls and `widenFields` entries they write compile only against 0.5.0, so bump the library straight after. A `StateT` held in `var` over a witness with a type argument may then need its types named, as [Removals in 0.5.0](../release-history/upgrading.md#removals-in-050) shows.
 
 | Recipe | Change |
 |--------|--------|
 | `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0` | Composite; runs all nine recipes below |
 | `org.higherkindedj.openrewrite.RenameStateTKindNarrowK` | `StateTKind.narrowK(..)` becomes `StateTKind.narrow(..)`; the wildcard `Kind` parameter bypassed witness type safety, so an argument typed `Kind<?, A>` needs its witness declared by hand |
 | `org.higherkindedj.openrewrite.RenameKindValidatorNarrowWithPattern` | `KindValidator.narrowWithPattern(..)` becomes `KindValidator.narrowHolder(..)` |
-| `org.higherkindedj.openrewrite.SwapTryFoldToFoldFailureFirstRecipe` | `Try.fold(successMapper, failureMapper)` and `TryPath.fold(...)` become `foldFailureFirst(failureMapper, successMapper)`, swapping the two arguments as well as renaming the method |
+| `org.higherkindedj.openrewrite.SwapTryFoldToFoldFailureFirstRecipe` | `Try.fold(successMapper, failureMapper)` and `TryPath.fold(...)` become `foldFailureFirst(failureMapper, successMapper)`, swapping the two arguments as well as renaming the method. It reads the declared signature and leaves the failure-first `fold` of 0.6.0 and later alone, so it finds a success-first call only while the project is on 0.4.x |
 | `org.higherkindedj.openrewrite.RemovePathConfig` | Removes `@PathConfig` from a `package-info.java`; no processor reads it, so nothing generated changes |
 | `org.higherkindedj.openrewrite.ReplaceDeprecatedPathSourceCapabilitiesRecipe` | `@PathSource`'s `EFFECTFUL` becomes `CHAINABLE` and `ACCUMULATING` becomes `RECOVERABLE`; each generates the same class as its replacement |
 | `org.higherkindedj.openrewrite.RemoveStateTMonadArgument` | `new StateT<>(fn, monad)`, `StateT.create(fn, monad)` and `StateTKindHelper.stateT(fn, monad)` take the function alone, and `stateT.mapT(monad, f)` becomes `stateT.mapT(f)` |
@@ -94345,14 +94344,15 @@ Two shapes are left to you:
 
 ### 0.7.0 deprecation migration {#070-deprecation-migration}
 
-Rewrites call sites of APIs deprecated in 0.6.0 for removal in 0.7.0 to their replacements. `parCollect` gives the list `toList()` gives: a stream is read one pull at a time, so it runs nothing in parallel, and [Parallel Operations](../monads/vstream_parallel.md) shows where parallel work goes instead.
+Rewrites call sites of APIs deprecated in 0.6.0 for removal in 0.7.0 to their replacements. `parCollect` gives the list `toList()` gives: a stream is read one pull at a time, so it runs nothing in parallel, and [Parallel Operations](../monads/vstream_parallel.md) shows where parallel work goes instead. `foldFailureFirst` on `Try` and `TryPath` becomes `fold`, which from 0.6.0 takes the same two functions in the same order.
 
-Run it before your build moves to 0.7.0, with `hkj-openrewrite` 0.6.x on the rewrite classpath, since 0.7.0 removes the methods it matches. `toList()` compiles against 0.4.x and later, so the rewritten code builds on the release you are on.
+Run it while your build is on 0.6.x, with `hkj-openrewrite` 0.6.x on the rewrite classpath, since 0.7.0 removes the methods it matches. `toList()` compiles against 0.4.x and later, so the rewritten code builds on the release you are on. `RenameTryFoldFailureFirst` renames each call and method reference, only in a file whose `foldFailureFirst` is deprecated, as it is from 0.6.0. Before that, `fold` is missing (0.5.x) or takes the success function first (0.4.x), so it changes nothing there.
 
 | Recipe | Change |
 |--------|--------|
-| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_7_0` | Composite; runs the recipe below |
+| `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_7_0` | Composite; runs the recipes below |
 | `org.higherkindedj.openrewrite.ReplaceParCollectWithToListRecipe` | `VStreamPar.parCollect(stream, n)` becomes `stream.toList()`, and `path.parCollect(n)` and `PathOps.parCollectVStream(path, n)` become `path.toList()`. A stream that binds less tightly than a method call, such as `first ? a : b`, is put in parentheses |
+| `org.higherkindedj.openrewrite.RenameTryFoldFailureFirst` | `foldFailureFirst(failureMapper, successMapper)` on a `Try` or a `TryPath` becomes `fold(failureMapper, successMapper)`; the arguments stay where they are. A method reference such as `t::foldFailureFirst` becomes `t::fold` |
 
 ```kotlin
 rewrite {
@@ -94360,7 +94360,7 @@ rewrite {
 }
 ```
 
-The recipe marks each call the rewrite could change or break with a `/*~~(…)~~>*/` comment, to remove once you replace the call:
+`ReplaceParCollectWithToListRecipe` marks each call the rewrite could change or break with a `/*~~(…)~~>*/` comment, to remove once you replace the call:
 
 - **A batch size whose evaluation may do something or throw**, such as `size()`, an unboxed `Integer` or a field read through a variable, since `toList()` takes none. A literal, a primitive variable or a static field is rewritten.
 - **A batch size written as zero, as a negative number or with a sign**, for which `parCollect` throws `IllegalArgumentException` and `toList()` does not.
@@ -103385,7 +103385,7 @@ Sections run newest first: start at the top and read down to the section for the
 
 ## Removals in 0.7.0 {#removals-in-070}
 
-Each of these compiles with javac's `[removal]` warning, which fails a `-Werror` build. The `parCollect` forms each gave the list `toList()` gives: a stream is read one pull at a time, so they ran nothing in parallel. The `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_7_0` recipe runs the recipe the table names, and marks each call it cannot rewrite safely, as [0.7.0 deprecation migration](../tooling/openrewrite.md#070-deprecation-migration) explains.
+Each of these compiles with javac's `[removal]` warning, which fails a `-Werror` build. The `parCollect` forms each gave the list `toList()` gives: a stream is read one pull at a time, so they ran nothing in parallel. The `org.higherkindedj.openrewrite.MigrateDeprecationsTo0_7_0` recipe runs every recipe the table names, and marks each call it cannot rewrite safely, as [0.7.0 deprecation migration](../tooling/openrewrite.md#070-deprecation-migration) explains.
 
 | Deprecated | Since | Use instead | Recipe |
 |---|---|---|---|
@@ -103393,6 +103393,8 @@ Each of these compiles with javac's `[removal]` warning, which fails a `-Werror`
 | `VStreamPar.parCollect(stream, batchSize)` | 0.6.0 | `stream.toList()` | `ReplaceParCollectWithToListRecipe` |
 | `VStreamPath.parCollect(batchSize)` | 0.6.0 | `toList()` on the path | `ReplaceParCollectWithToListRecipe` |
 | `PathOps.parCollectVStream(path, batchSize)` | 0.6.0 | `path.toList()` | `ReplaceParCollectWithToListRecipe` |
+| `Try.foldFailureFirst` and `TryPath.foldFailureFirst` | 0.6.0 | `fold(failureMapper, successMapper)`, the same two functions in the same order | `RenameTryFoldFailureFirst` |
+| `Operation.FOLD_FAILURE_FIRST` | 0.6.0 | `Operation.FOLD`, which `Try.fold` reports | By hand |
 
 ---
 
@@ -103424,7 +103426,7 @@ Each of these compiles with javac's `[removal]` warning, which fails a `-Werror`
 | `StateTKind.narrowK` | 0.4.5 | `StateTKind.narrow` | `RenameStateTKindNarrowK` |
 | `StateT.evalStateT(state)` and `execStateT(state)`, and the `StateTKindHelper` forms without a monad | 0.4.6 | The overloads that take the `Monad<F>` | By hand |
 | `StateT.monadF()` | 0.4.6 | The outer `Monad<F>` you built the stack with, kept in your own reference | By hand |
-| `Try.fold` and `TryPath.fold`, success first | 0.4.6 | `foldFailureFirst(failureMapper, successMapper)` | `SwapTryFoldToFoldFailureFirstRecipe` |
+| `Try.fold` and `TryPath.fold`, success first | 0.4.6 | `foldFailureFirst(failureMapper, successMapper)`, or from 0.6.0 `fold(failureMapper, successMapper)` | `SwapTryFoldToFoldFailureFirstRecipe` |
 | `Each.eachWithIndex()` | 0.4.7 | Narrow to `EachIndexed` and call `indexedTraversal()` | By hand |
 | `@PathConfig` | 0.4.11 | Nothing, since it has no effect; to rename a Path, set `suffix` on `@PathSource` | `RemovePathConfig` |
 | `@PathSource` capability `EFFECTFUL` | 0.4.11 | `CHAINABLE`, which generates the same | `ReplaceDeprecatedPathSourceCapabilitiesRecipe` |
@@ -103432,13 +103434,21 @@ Each of these compiles with javac's `[removal]` warning, which fails a `-Werror`
 
 `StateT` also changes shape in 0.5.0: its `monadF` record component goes, so two `StateT` values with the same state function compare equal whichever `Monad` built them. Its `equals`, `hashCode` and `toString` change with it. Its constructor, `StateT.create` and `StateTKindHelper.stateT` take the state function alone, and `StateT.mapT` takes only the transformation. The `RemoveStateTMonadArgument` recipe drops the `Monad` argument from each call. It ships in `hkj-openrewrite` 0.5.0 and joins the same group, so run the group before your project moves off 0.4.11. A `StateT` held in `var` over a witness with a type argument, such as `EitherKind.Witness<E>`, then needs its types named: `StateT.<S, EitherKind.Witness<E>, A>create(fn)`.
 
-`fold` is planned to return on `Try` and `TryPath` in 0.6.0, with the failure-first order, so migrate to `foldFailureFirst` rather than to a local helper named `fold`.
+`fold` returns on `Try` and `TryPath` in 0.6.0, failure first. Going straight to 0.6.0 by hand, find each call while still on 0.4.x, where javac's deprecation warning names it. Swap its two functions in the change that moves to 0.6.0; on 0.5.x the name is `foldFailureFirst`. [To 0.6.0](#to-060) says why.
 
 ---
 
 ## To 0.6.0 {#to-060}
 
 This release is not out yet. [Upgrading from 0.5.0](unreleased.md#upgrading) collects what it changes so far, and [Removals in 0.6.0](#removals-in-060) lists the APIs it is due to remove, with the recipe that migrates each.
+
+0.6.0 brings back `fold` on `Try` and `TryPath`, failure first, so a success-first `fold` left over from 0.4.x compiles again wherever both its functions accept either argument, and runs the two the wrong way round. On a `Try<String>`, `t.fold(v -> true, e -> false)` gave `true` for a success on 0.4.x, and gives `true` for a failure on 0.6.0. A constant, `Object::toString` or `String::valueOf` in either place does the same. Nothing warns you, so a project on 0.4.x takes these steps in order, with `hkj-openrewrite` 0.6.x for each run:
+
+1. While the project still compiles against 0.4.x, run `MigrateDeprecationsTo0_5_0`, which swaps each success-first `fold` into `foldFailureFirst`, as [To 0.5.0](#to-050) says. Under `-Werror`, run `MigrateDeprecationsTo0_6_0` in the same pass.
+2. Replace each jar compiled against 0.4.x: rebuild it from migrated source, or take a release of it built against 0.5.0 or later. Such a jar calls the same method signature, so on 0.6.0 it runs its `fold` calls swapped, or fails with a `ClassCastException` inside one, where on 0.5.0 it threw `NoSuchMethodError`.
+3. Move to 0.6.0, then run `MigrateDeprecationsTo0_7_0`, which renames each `foldFailureFirst` the swap wrote to `fold`. 0.6.0 deprecates `foldFailureFirst`, so until then a `-Werror` build fails, and a rewrite plugin that compiles the project first needs `-Werror` lifted for the run.
+
+Already moved without step 1? Run it on your last commit on 0.4.x, or check each `fold` on a `Try` or `TryPath` by hand. On 0.4.x the recipe swaps every `fold`, one written for 0.6.0 included.
 
 ---
 
@@ -103574,6 +103584,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`Either` gains `fromOptional`** ([#1406](https://github.com/higher-kinded-j/higher-kinded-j/issues/1406)): converts a present Java `Optional` to `Right` and an empty one to `Left`, accepting either a direct error value or a supplier for the error.
 - **`Either` gains `orElse` and `orElseGet`** ([#1407](https://github.com/higher-kinded-j/higher-kinded-j/issues/1407)). `orElse(other)` returns a `Right`'s value or `other`, and `orElseGet(recovery)` builds it from the error. A null argument is refused on a `Right` and on a `Left`, and a recovery that returns null is refused on a `Left`. A path uses `getOrElse`, because `orElse` there tries another path. See [Reading an Either](../monads/either_monad.md#reading-an-either).
 - **`Either` gains `toOptional` and `swap`** ([#1404](https://github.com/higher-kinded-j/higher-kinded-j/issues/1404)). `toOptional()` keeps a `Right`'s value, and gives an empty `Optional` for a `Left`. `swap()` turns a `Left` into a `Right` and back, as `EitherPath.swap()` does.
+- **`Try` and `TryPath` gain `fold`, failure first** ([#546](https://github.com/higher-kinded-j/higher-kinded-j/issues/546)), as `Either.fold`, `Validated.fold` and their Paths' `fold` already are. `foldFailureFirst`, which takes the same two functions in the same order, is deprecated for removal in 0.7.0, and the `MigrateDeprecationsTo0_7_0` recipe renames each call. A `Try` traversal's generated code calls `fold`. See [Reading a Try](../monads/try_monad.md#handling-failures-foldfailurefirst-recover-recoverwith) and [Deprecated for removal in 0.7.0](#deprecated).
 - **`ListPath` and `NonDetPath` name the null they refuse** ([#1438](https://github.com/higher-kinded-j/higher-kinded-j/issues/1438)). A null element, or a `map`, `zipWith` or `zipWith3` function that returns null, threw a `NullPointerException` with no message. The message now says which, as `StreamPath`'s does.
 - **A `Selective` of your own runs only the branch its condition picks** ([#1358](https://github.com/higher-kinded-j/higher-kinded-j/pull/1358)). The default `whenS` ran its effect for a false condition, and the default `ifS` ran both branches. Both now leave the choice to `select`: one that keeps its contract skips what the condition does not pick, and one built from `ap` still runs every effect. See [Selective](../functional/selective.md).
 - **`mapError` on `MaybePath`, `TryPath` and `CompletableFuturePath` carries the mapped error** ([#1332](https://github.com/higher-kinded-j/higher-kinded-j/issues/1332)): `recover` after it sees that error, where it used to see the old one. A success is a `Right` and the mapper is not called. `MaybePath` and `TryPath` return an `EitherPath`. `CompletableFuturePath` returns a `VResultPath`. See [Recoverable (MonadError)](../effect/capabilities.md#recoverable-monaderror).
@@ -103610,6 +103621,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **The HKJ checker names the fix beside javac's error for a mismatched step** ([#1314](https://github.com/higher-kinded-j/higher-kinded-j/issues/1314)). `error-type-mismatch` says where to type the chain, as in `write .<OrderError>mapError(...)`, or that the step's error needs mapping. `path-type-mismatch` now reads method-reference steps, `VResultPath` and the accumulating methods. See [Compile-Time Checks](../tooling/compile_checks.md).
 - **A build with an HKJ plugin applied can set the checker's options** ([#1336](https://github.com/higher-kinded-j/higher-kinded-j/issues/1336)). A hand-written `-Xplugin:HKJChecker severity=warn` failed the build with `plug-in not found: HKJChecker`. The Gradle and Maven plugins now add no checker argument when the build already names the checker. See [Configuring the checker](../tooling/compile_checks.md#configuration).
 - **A build with the HKJ Gradle plugin can turn on Gradle's configuration cache** ([#1374](https://github.com/higher-kinded-j/higher-kinded-j/issues/1374)). With the cache on, `hkjInstallSkills` and `hkjDiagnostics` failed, and so did every build with `skills = true`, which runs `hkjInstallSkills`. Both tasks now run with it, and the next build reuses the cache. See [With the Plugin](../tooling/gradle_plugin.md#with-the-plugin).
+- **One `hkj-openrewrite` release takes a 0.4.x project's `Try.fold` calls to 0.6.0** ([#546](https://github.com/higher-kinded-j/higher-kinded-j/issues/546)). The swap in `MigrateDeprecationsTo0_5_0` now leaves 0.6.0's `fold` alone, since it swaps only a `fold` declared with the success function first. So run the 0.5.0 group before the move and the 0.7.0 group after, both from 0.6.x. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
 - **An OpenRewrite recipe adds the Path family to capability types** ([#1314](https://github.com/higher-kinded-j/higher-kinded-j/issues/1314)). `org.higherkindedj.openrewrite.AddPathFamily` rewrites `Chainable<A>` to `Chainable<?, A>`, and likewise the other capability types, a `PathProvider`'s `createPath` included. See [0.6.0 Path family](../tooling/openrewrite.md#060-path-family).
 - **`javadoc` runs in a build with the HKJ Gradle plugin applied** ([#1385](https://github.com/higher-kinded-j/higher-kinded-j/issues/1385)). With preview features on, the default, javadoc received `--enable-preview` without the release it needs, so `javadoc` failed, and so did `build` in a project that publishes a javadoc jar. The plugin now passes `--release` as well, unless the task passes its own `-source` or `--release`. See [Defaults](../tooling/gradle_plugin.md#defaults).
 - **The benchmark options the docs describe now work** ([#1439](https://github.com/higher-kinded-j/higher-kinded-j/pull/1439)). The benchmarks read only `-Pincludes`, so `-Pjmh.iterations`, `-Pjmh.fork`, `-Pjmh.profilers=gc` and the rest did nothing, and the `--includes` most pages gave failed. The build now reads each one, and [Benchmarks](../benchmarks.md#options) lists them.
@@ -103634,6 +103646,8 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 ## Upgrading from 0.5.0 {#upgrading}
 
 ### Before you upgrade {#before-you-upgrade}
+
+- **From 0.4.x, run `MigrateDeprecationsTo0_5_0` while still on 0.4.x** ([#546](https://github.com/higher-kinded-j/higher-kinded-j/issues/546)). `fold` returns on `Try` and `TryPath`, failure first. A success-first `fold` left from 0.4.x compiles again where both functions accept either argument, and runs them swapped: `t.fold(v -> true, e -> false)` now gives `true` for a failure. Rebuild what was compiled against 0.4.x too. See [To 0.6.0](upgrading.md#to-060).
 
 ### What a running program can notice {#runtime-changes}
 
@@ -103692,6 +103706,8 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | `VStreamPar.parCollect(stream, batchSize)` | `stream.toList()` | `ReplaceParCollectWithToListRecipe`, in [`MigrateDeprecationsTo0_7_0`](../tooling/openrewrite.md#070-deprecation-migration) |
 | `VStreamPath.parCollect(batchSize)` | `toList()` on the path | `ReplaceParCollectWithToListRecipe` |
 | `PathOps.parCollectVStream(path, batchSize)` | `path.toList()` | `ReplaceParCollectWithToListRecipe` |
+| `Try.foldFailureFirst` and `TryPath.foldFailureFirst` | `fold(failureMapper, successMapper)`, the same two functions in the same order | `RenameTryFoldFailureFirst` |
+| `Operation.FOLD_FAILURE_FIRST` | `Operation.FOLD`, which `Try.fold` reports | By hand |
 
 ---
 
