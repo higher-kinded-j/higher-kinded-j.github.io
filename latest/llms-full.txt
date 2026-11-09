@@ -27155,6 +27155,8 @@ The generated source cannot hold a wildcard: `Traversal<Roster, ? extends Player
 
 Modifying through the traversal builds a **fresh** container and hands it to the record's constructor, so a narrower list the field was constructed from is never written into.
 
+A sorted container with a wildcard where it is ordered, such as `PSortedSet<? extends Player>`, is the exception. It is rebuilt with the source's comparator, which that wildcard leaves typed for an unknown type, so it draws a note and no traversal. [Sorted Variants and Comparators](../tooling/pcollections_optics.md#sorted-variants-and-comparators) explains.
+
 #### Generic Records
 
 A record that declares type parameters of its own gets them on the generated method, so a traversal over `Squad<T>` focuses `T` rather than losing it:
@@ -31339,6 +31341,7 @@ Higher-Kinded-J provides factory methods in `Traversals` and dedicated utility c
 | **Optional** | `Traversals.forOptional()` | 0 or 1 | Nullable fields, configuration values |
 | **Map Values** | `Traversals.forMapValues()` | 0 to N | Bulk value transforms, preserving keys |
 | **Persistent/3rd-party Map Values** | `Traversals.forMapValuesCollecting(...)` | 0 to N | Same, for `PMap`, Guava/Eclipse/Vavr maps |
+| **Sorted Map Values** | `Traversals.forMapValuesRebuilding(...)` | 0 to N | Same, keeping a `PSortedMap`'s comparator |
 | **Tuple2 Pairs** | `TupleTraversals.both()` | Exactly 2 | Coordinate systems, min/max pairs |
 
 ---
@@ -31604,9 +31607,27 @@ Traversal<io.vavr.collection.HashMap<String, Integer>, Integer> vavrValues =
         io.vavr.collection.HashMap::toJavaMap, io.vavr.collection.HashMap::ofAll);
 ```
 
-The same two overloads exist on `EachInstances` for use in the Focus DSL (`EachInstances.mapValuesEachCollecting(HashTreePMap::from)`), which is how `@GenerateFocus` widens `PMap` / `PSortedMap` fields into `TraversalPath`s. See [PCollections Optics](../tooling/pcollections_optics.md).
+The same two overloads exist on `EachInstances` for use in the Focus DSL (`EachInstances.mapValuesEachCollecting(HashTreePMap::from)`), which is how `@GenerateFocus` widens `PMap` fields into `TraversalPath`s. See [PCollections Optics](../tooling/pcollections_optics.md).
 
-> Like `forMapValues()`, the value transformation never touches keys. Sorted-map collectors (`TreePMap::from`, Vavr `TreeMap::ofAll`) re-apply natural ordering; custom comparators are not preserved.
+Like `forMapValues()`, the value transformation never touches keys. A collector sees only the new map, though, so a sorted map rebuilt by `TreePMap::from` falls back to natural key order, and a custom comparator is lost. `forMapValuesRebuilding()` hands its rebuild the source as well, so the comparator carries over, and `forIterableRebuilding()` does the same for a collection such as a sorted set. `EachInstances.mapValuesEachRebuilding` is how `@GenerateFocus` widens a `PSortedMap` field:
+
+<!-- verify -->
+```java
+import java.util.Comparator;
+import java.util.Map;
+import org.pcollections.PSortedMap;
+import org.pcollections.TreePMap;
+
+Traversal<PSortedMap<String, Integer>, Integer> sortedValues =
+    Traversals.forMapValuesRebuilding((source, map) -> TreePMap.from(source.comparator(), map));
+
+PSortedMap<String, Integer> medals =
+    TreePMap.from(Comparator.<String>reverseOrder(), Map.of("gold", 3, "silver", 2));
+PSortedMap<String, Integer> doubled =
+    Traversals.modify(sortedValues, count -> count * 2, medals);   // still in reverse key order
+```
+
+A rebuilding form for a map that is not a `java.util.Map`, such as Vavr's `TreeMap`, is not supported yet.
 
 ---
 
@@ -31833,7 +31854,7 @@ Tuple2<Integer, String> updatedPair = new Tuple2<>(
 ~~~admonish info title="Key Takeaways"
 * **`forOptional()` treats absence as zero targets**: modifications on an empty `Optional` are safe no-ops, so nested optional fields compose without `.map()` chains
 * **`forMapValues()` rewrites values, never keys**: the key set survives a bulk transformation intact, and the result keeps the source's iteration order, so a `TreeMap` keeps its order but not its type
-* **`forMapValuesCollecting()` reaches beyond JDK maps**: persistent and third-party maps traverse through a collector you supply, and that collector, not the traversal, decides the rebuilt map's type and ordering
+* **`forMapValuesCollecting()` reaches beyond JDK maps**: persistent and third-party maps traverse through a collector you supply, and that collector, not the traversal, decides the rebuilt map's type and ordering. `forMapValuesRebuilding()` hands it the source too, so a sorted map keeps its comparator
 * **`TupleTraversals.both()` updates a pair in one pass**: homogeneous pairs stop needing two separate reconstructions
 * **They are ordinary traversals**: everything from `modifyF` effects to `asFold()` queries applies unchanged
 ~~~
@@ -37011,12 +37032,15 @@ Whichever way you reach a field, by the static method or by a navigator on a rec
 | `Collection<A>` | JDK | `EachInstances.collectionEach()` (recognised directly) |
 | `Map<K, V>` | JDK | `EachInstances.mapValuesEach()` |
 | `A[]`, `A` a reference type | JDK | `EachInstances.arrayEach()` |
-| `ImmutableList`, `MutableList`, `ImmutableSet`, `MutableSet`, `ImmutableBag`, `MutableBag`, `ImmutableSortedSet`, `MutableSortedSet` | Eclipse Collections | `EachInstances.fromIterableCollecting(...)` |
+| `ImmutableList`, `MutableList`, `ImmutableSet`, `MutableSet`, `ImmutableBag`, `MutableBag` | Eclipse Collections | `EachInstances.fromIterableCollecting(...)` |
+| `ImmutableSortedSet`, `MutableSortedSet` | Eclipse Collections | `EachInstances.fromIterableRebuilding(...)` |
 | `ImmutableList`, `ImmutableSet` | Guava | `EachInstances.fromIterableCollecting(...)` |
 | `List`, `Set` | Vavr | `EachInstances.fromIterableCollecting(...)` |
 | `HashBag`, `HashMultiSet`, `UnmodifiableList` | Apache Commons | `EachInstances.fromIterableCollecting(...)` |
-| `PVector`, `PStack`, `PSet`, `PSortedSet`, `PBag` | PCollections | `EachInstances.fromIterableCollecting(...)` |
-| `PMap`, `PSortedMap` | PCollections | `EachInstances.mapValuesEachCollecting(...)` |
+| `PVector`, `PStack`, `PSet`, `PBag` | PCollections | `EachInstances.fromIterableCollecting(...)` |
+| `PSortedSet` | PCollections | `EachInstances.fromIterableRebuilding(...)` |
+| `PMap` | PCollections | `EachInstances.mapValuesEachCollecting(...)` |
+| `PSortedMap` | PCollections | `EachInstances.mapValuesEachRebuilding(...)` |
 
 The three JDK collections are recognised by name rather than by the SPI, but they do not share one traversal: a `List` field is widened with `EachInstances.listEach()`, a `Set` field with `EachInstances.setEach()` and a `Collection` field with `EachInstances.collectionEach()`. Each rebuilds a value the component can take back, which is what lets the modified result go home:
 
@@ -37049,7 +37073,7 @@ FocusPath<WidenedCandidate, String[]> allTags = FocusPath.of(WidenedCandidateLen
 
 Because the new array keeps its source's component type, a write must store values that type can hold, as any Java array store must. A component declared `Number[]` that holds an `Integer[]` cannot take a `Double`: the path's type allows it, but the write throws `ArrayStoreException`. `@GenerateTraversals` builds a `Number[]` for the same field, so its traversal takes the `Double`.
 
-Every third-party *collection* generator goes through `EachInstances.fromIterableCollecting(collector)`, a generic factory that iterates the container, traverses the elements with the applicative, and rebuilds the container through the collector it is given; the map-shaped ones go through `mapValuesEachCollecting` instead. No extra HKJ module is needed: the library itself you supply, and a project that names one of these types in a record already has it on the classpath.
+Each third-party *collection* generator goes through `EachInstances.fromIterableCollecting(collector)`, a generic factory that iterates the container, traverses the elements with the applicative, and rebuilds the container through the collector it is given; the map-shaped ones go through `mapValuesEachCollecting` instead. A sorted one goes through `fromIterableRebuilding` or `mapValuesEachRebuilding`, whose rebuild is handed the source too, so the new container keeps the source's comparator. No extra HKJ module is needed: the library itself you supply, and a project that names one of these types in a record already has it on the classpath.
 
 <!-- verify -->
 ```java
@@ -37099,7 +37123,7 @@ Three things narrow the rule further.
 
 **A generator that names no optic expression is exempt, because it widens nothing.** The path stops at its container, as if no generator supported it, so a raw or wildcard argument is never asked for an optic. Every generator HKJ ships for a type the SPI widens names an optic, so this only applies to one of your own.
 
-The rule follows the optic instance, so it is `@GenerateFocus`'s alone. `@GenerateTraversals` reads the same component and writes a `Traversal` over the type the wildcard stands for. Nothing is inferred there, so nothing can fail. See [Wildcard Element Types](traversals.md#wildcard-element-types).
+The rule follows the optic instance, so it is `@GenerateFocus`'s alone. `@GenerateTraversals` reads the same component and writes a `Traversal` over the type the wildcard stands for, with nothing inferred. The one exception is a sorted container with a wildcard where it is ordered, such as `MutableSortedSet<? extends Widget>`, which draws a note and no traversal. See [Wildcard Element Types](traversals.md#wildcard-element-types).
 ~~~
 
 ### A wildcard inside the element {#a-wildcard-inside-the-element}
@@ -37203,8 +37227,8 @@ public final class ResultGenerator extends BaseTraversableGenerator {
 * **The field type picks the path type, through cardinality.** Zero or one gives an `AffinePath`, `List`/`Set`/`Collection` a `TraversalPath`, anything else a `FocusPath`. Every other zero-or-more container stops at the container until `widenCollections` says otherwise.
 * **`Optional`, `Maybe`, `List`, `Set` and `Collection` are built in.** Everything else, including `Map` and arrays, arrives through the `TraversableGenerator` SPI.
 * **`widenCollections = true` removes the asymmetry, and `widenFields` removes it for chosen fields.** Without either, an SPI `ZERO_OR_MORE` container stops at the container, in static Focus methods and navigator methods alike, whatever its element.
-* **Third-party collections need no extra HKJ module.** One generic `fromIterableCollecting` factory covers Eclipse Collections, Guava, Vavr, Apache Commons and PCollections, on top of the ecosystem dependency you already declare to name the type.
-* **The SPI is open.** Implement `supports`, `getCardinality`, `getFocusTypeArgumentIndex`, `generateOpticExpression` and the one method with no default, `generateModifyF`; register with `@ServiceProvider`, and your container becomes a first-class Focus field.
+* **Third-party collections need no extra HKJ module.** One generic `fromIterableCollecting` factory covers Eclipse Collections, Guava, Vavr, Apache Commons and PCollections, on top of the ecosystem dependency you already declare to name the type. A sorted container goes through `fromIterableRebuilding` or `mapValuesEachRebuilding`, which keep its comparator.
+* **The SPI is open.** Implement `supports`, `getCardinality`, `getFocusTypeArgumentIndex`, `generateOpticExpression` and the one method with no default, `generateModifyF`, plus `getOrderedTypeArgumentIndex` for a sorted container; register with `@ServiceProvider`, and your container becomes a first-class Focus field.
 ~~~
 
 ~~~admonish info title="Hands-On Learning"
@@ -46413,7 +46437,7 @@ class Shop {
 
 A container that the processor widens through the optic its SPI generator supplies is declared raw, or with a wildcard type argument. The same error covers `Either`, `Try`, `Validated`, `Map` and every other such container, and is also reported as *"has a raw Either"*. A `Map` or another collection draws it only once something widens it. The five built-in containers, `Optional`, `Maybe`, `List`, `Set` and `Collection`, never draw it.
 
-**Fix.** Name the type arguments, `Either<String, Widget>` rather than `Either<String, ? extends Widget>`. For a wildcard, you can instead drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance. The lens keeps the component's type as written. The traversal focuses [the type the wildcard stands for](traversals.md#wildcard-element-types): `Widget` for `? extends Widget`, and `Object` for `?` or `? super Widget`. A raw container has no element type for `@GenerateTraversals` to focus, so it draws a note and no traversal there; keep `@GenerateLenses` alone for one. See [Custom Containers](focus_containers.md#supported-container-types).
+**Fix.** Name the type arguments, `Either<String, Widget>` rather than `Either<String, ? extends Widget>`. For a wildcard, you can instead drop `@GenerateFocus` from the record and keep `@GenerateLenses` and `@GenerateTraversals`, which compose no optic instance. The lens keeps the component's type as written. The traversal focuses [the type the wildcard stands for](traversals.md#wildcard-element-types): `Widget` for `? extends Widget`, and `Object` for `?` or `? super Widget`. A raw container has no element type for `@GenerateTraversals` to focus. Nor can it rebuild a sorted container with a wildcard where it is ordered, such as `MutableSortedSet<? extends Widget>`, since the wildcard leaves the source's comparator typed for an unknown type. Either draws a note and no traversal there, so the fix line offers `@GenerateLenses` alone. See [Custom Containers](focus_containers.md#supported-container-types).
 
 ~~~admonish note title="Why" collapsible=true
 That optic, such as `Affines.eitherRight()`, has its own type arguments worked out from the component's type. A raw container gives javac nothing to work from, and a wildcard stands for no one type. A built-in container is exempt because the processor names its instance for the element the arguments stand for, and casts it to the type the field declares.
@@ -46827,10 +46851,14 @@ warning: @GenerateFocus: widenFields on Stall names "tags", whose List<String> i
 
 `@GenerateTraversals` asks the `TraversableGenerator` SPI for each record component, and no generator on the annotation processor path claimed this one.
 
-**Fix.** Declare the component as a container a generator supports: `List`, `Set`, `Collection`, `Map`, `Optional`, an array, or a type one of the [generator plugins](../tooling/generator_plugins.md) covers. For a raw container, give it its element type. For a third-party type, put a `TraversableGenerator` for it on the annotation processor path. A mixed record, one supported container beside one unsupported, keeps the traversals it can have and carries the note for the one it cannot; the note is the reminder, not a gate. A record that wants no traversal for any of its components should not carry `@GenerateTraversals` at all; `@GenerateLenses` on its own still gives every component a lens.
+**Fix.** Declare the component as a container a generator supports: `List`, `Set`, `Collection`, `Map`, `Optional`, an array, or a type one of the [generator plugins](../tooling/generator_plugins.md) covers. For a raw container, give it its element type. For a sorted container with a wildcard where it is ordered, write that argument concretely, `PSortedSet<Tag>` for `PSortedSet<? extends Tag>`. For a third-party type, put a `TraversableGenerator` for it on the annotation processor path. A mixed record, one supported container beside one unsupported, keeps the traversals it can have and carries the note for the one it cannot; the note is the reminder, not a gate. A record that wants no traversal for any of its components should not carry `@GenerateTraversals` at all; `@GenerateLenses` on its own still gives every component a lens.
 
 ~~~admonish note title="Why" collapsible=true
-The component unmistakably holds elements, being a `java.util.Collection` or a `java.util.Map` by erasure. Not generating for it is a gap rather than the expected outcome, and the generated class would otherwise compile with the method silently missing. The second sentence names the unsupported type (`No TraversableGenerator on the annotation processor path supports Deque`). The same note is raised, with a different second sentence, for a container a generator *did* claim but cannot read: a raw `List` or `Set` "is written without a type argument, so there is no element type to focus", and a generator whose focused type argument the type does not have says which argument it wanted.
+The component unmistakably holds elements, being a `java.util.Collection` or a `java.util.Map` by erasure. Not generating for it is a gap rather than the expected outcome, and the generated class would otherwise compile with the method silently missing. The second sentence names the unsupported type (`No TraversableGenerator on the annotation processor path supports Deque`). The same note is raised, with a different second sentence, for a container a generator *did* claim but cannot read:
+
+- a raw `List` or `Set` "is written without a type argument, so there is no element type to focus";
+- a generator whose focused type argument the type does not have says which argument it wanted;
+- a sorted container with a wildcard where it is ordered, `MutableSortedSet<? extends Tag>` or `PSortedMap<? extends String, Integer>`, "is rebuilt with the source's comparator", which that wildcard leaves typed for an unknown type.
 
 A component that is not a container at all is passed over without comment: a `String`, an `int`, or a `java.nio.file.Path`, which implements `Iterable` and is why a bare `Iterable` is not the bar.
 
@@ -94550,11 +94578,11 @@ dependencies {
 | `ImmutableList<A>` | |
 | `ImmutableSet<A>` | |
 | `ImmutableBag<A>` | |
-| `ImmutableSortedSet<A>` | Preserves natural ordering |
+| `ImmutableSortedSet<A>` | Rebuilt with the source's comparator |
 | `MutableList<A>` | |
 | `MutableSet<A>` | |
 | `MutableBag<A>` | |
-| `MutableSortedSet<A>` | Preserves natural ordering |
+| `MutableSortedSet<A>` | Rebuilt with the source's comparator |
 
 #### Google Guava
 
@@ -94609,10 +94637,10 @@ dependencies {
 | `org.pcollections.PVector<A>` | Reconstructed via `TreePVector.from(Collection)` |
 | `org.pcollections.PStack<A>` | Reconstructed via `ConsPStack.from(Collection)` |
 | `org.pcollections.PSet<A>` | Reconstructed via `HashTreePSet.from(Collection)` |
-| `org.pcollections.PSortedSet<A>` | Natural ordering only; custom comparators are not preserved |
+| `org.pcollections.PSortedSet<A>` | Reconstructed via `TreePSet.from(Comparator, Collection)`, with the source's comparator |
 | `org.pcollections.PBag<A>` | Reconstructed via `HashTreePBag.from(Collection)` |
 | `org.pcollections.PMap<K, V>` | Value-focused; reconstructed via `HashTreePMap.from(Map)` |
-| `org.pcollections.PSortedMap<K, V>` | Value-focused; natural key ordering only |
+| `org.pcollections.PSortedMap<K, V>` | Value-focused; reconstructed via `TreePMap.from(Comparator, Map)`, with the source's comparator |
 
 ---
 
@@ -94721,6 +94749,15 @@ public interface TraversableGenerator {
      */
     default int getFocusTypeArgumentIndex() {
         return 0;
+    }
+
+    /**
+     * The type argument the container orders its contents by (0-indexed): a sorted
+     * set's element, a sorted map's key. Default is empty, for a container that keeps
+     * no order of its own. A component with a wildcard there is refused a traversal.
+     */
+    default OptionalInt getOrderedTypeArgumentIndex() {
+        return OptionalInt.empty();
     }
 
     /**
@@ -94871,6 +94908,8 @@ The `TraversalProcessor` will now discover your `NonEmptyListGenerator` via `Ser
 - **Use fully qualified names** in `supports()` to avoid false matches with similarly named types.
 - **Reuse `Traversals.traverseList()`** when your type can be converted to a `java.util.List`. Most third-party generators follow this pattern: convert to list, traverse, convert back. A map-shaped type hands itself to `Traversals.traverseMapValues()` instead, which keeps the keys and gives back a JDK `Map` to rebuild from.
 - **Override `getFocusTypeArgumentIndex()`** if your type's traversal target is not the first type parameter (e.g. `Either<L, R>` focuses on index 1).
+- **Override `getOrderedTypeArgumentIndex()`** if your container keeps its contents in an order of its own, such as a sorted set's element or a sorted map's key, and its rebuild reuses the source's comparator. A wildcard at that argument is then refused: `@GenerateTraversals` notes the component and generates no traversal, and `@GenerateFocus` rejects it where it widens the component.
+- **Widen a sorted container through `EachInstances.fromIterableRebuilding` or `mapValuesEachRebuilding`** in `generateOpticExpression()`. Their rebuild is handed the source as well, so a Focus path keeps the comparator too.
 - **Override `getCardinality()`** to return `Cardinality.ZERO_OR_ONE` for optional-like types (e.g. `Either`, `Try`, `Validated`). The default `ZERO_OR_MORE` is correct for collection-like types and does not need overriding.
 - **Override `generateOpticExpression()` and `getRequiredImports()`** for the field to widen under `@GenerateFocus`: name the `Affine` or `Each` that reads and rebuilds your container. Without them the Focus path stops at the container.
 - **Write integration tests** using Google's compile-testing library to verify generated code compiles and contains the expected statements. Compiling it with `-Xlint:cast,unchecked,rawtypes -Werror` and asserting `succeededWithoutWarnings()` catches a warning your users' builds would otherwise report in a file they cannot edit.
@@ -95094,7 +95133,7 @@ laws hold for `PVector` widened through `ListKind`:
 - Which PCollections types `@GenerateTraversals` recognises automatically
 - How generated traversals reconstruct persistent collections after a focus change
 - The Focus DSL navigation patterns for PCollections fields
-- Where natural-ordering caveats apply for sorted variants
+- How the sorted variants keep their comparator
 ~~~
 
 [PCollections](https://github.com/hrldcpr/pcollections) persistent collections are first-class citizens of the optics generator system. Annotating a record whose components are `PVector`, `PStack`, `PSet`, `PSortedSet`, `PBag`, `PMap`, or `PSortedMap` produces traversal code that round-trips through the persistent type, with no production-code changes required.
@@ -95110,16 +95149,16 @@ This page documents the seven PCollections generator plugins. For the underlying
 | `PVector<A>` | `PVectorGenerator` | `TreePVector.from(Collection)` | ZERO_OR_MORE |
 | `PStack<A>` | `PStackGenerator` | `ConsPStack.from(Collection)` | ZERO_OR_MORE |
 | `PSet<A>` | `PSetGenerator` | `HashTreePSet.from(Collection)` | ZERO_OR_MORE |
-| `PSortedSet<A>` | `PSortedSetGenerator` | `TreePSet.from(Collection)` | ZERO_OR_MORE |
+| `PSortedSet<A>` | `PSortedSetGenerator` | `TreePSet.from(Comparator, Collection)` | ZERO_OR_MORE |
 | `PBag<A>` | `PBagGenerator` | `HashTreePBag.from(Collection)` | ZERO_OR_MORE |
 | `PMap<K, V>` | `PMapValueGenerator` | `HashTreePMap.from(Map)` (value focus) | ZERO_OR_MORE |
-| `PSortedMap<K, V>` | `PSortedMapValueGenerator` | `TreePMap.from(Map)` (value focus) | ZERO_OR_MORE |
+| `PSortedMap<K, V>` | `PSortedMapValueGenerator` | `TreePMap.from(Comparator, Map)` (value focus) | ZERO_OR_MORE |
 
 Map generators focus on the value type (index 1). Keys are passed through unchanged.
 
 All seven generators run at the default priority and activate automatically once `org.pcollections:pcollections` is on your annotation processor's classpath.
 
-> All seven generators participate in `@GenerateFocus` navigator generation. The five collection-like generators (`PVector` / `PStack` / `PSet` / `PSortedSet` / `PBag`) widen through [`EachInstances.fromIterableCollecting`](../optics/common_data_structure_traversals.md); the two map-value generators widen through [`EachInstances.mapValuesEachCollecting`](../optics/common_data_structure_traversals.md), the map-shaped companion to `fromIterableCollecting`. So `@GenerateFocus` on a record with a `PMap` or `PSortedMap` field produces a navigator returning a `TraversalPath` over the values.
+> All seven generators participate in `@GenerateFocus` navigator generation. The collection-like generators (`PVector` / `PStack` / `PSet` / `PBag`) widen through [`EachInstances.fromIterableCollecting`](../optics/common_data_structure_traversals.md), and `PMap` through [`EachInstances.mapValuesEachCollecting`](../optics/common_data_structure_traversals.md), the map-shaped companion to `fromIterableCollecting`. The sorted pair widen through `fromIterableRebuilding` and `mapValuesEachRebuilding`, which hand the rebuild the source as well, so it keeps the source's comparator. So `@GenerateFocus` on a record with a `PMap` or `PSortedMap` field produces a navigator returning a `TraversalPath` over the values.
 
 ---
 
@@ -95170,14 +95209,13 @@ If you are operating on a hot path and the persistent type matters more than the
 
 ## Sorted Variants and Comparators
 
-`PSortedSet` and `PSortedMap` are reconstructed using `TreePSet.from(Collection)` and `TreePMap.from(Map)`, which apply natural ordering. **Custom comparators are not preserved** through a generated traversal.
+`PSortedSet` and `PSortedMap` are reconstructed with the source's comparator, through `TreePSet.from(Comparator, Collection)` and `TreePMap.from(Comparator, Map)`. A generated traversal and a Focus path both keep the order the source keeps:
 
-Two practical implications:
+- A set or map in a custom order stays in it after `modify` or `modifyAll`.
+- An element, or a key, needs no natural order of its own. A `PSortedSet<Leaf>` sorted by `Comparator.comparing(Leaf::name)` is traversed as a `PSortedSet<String>` is.
+- A sorted collection in natural order stays in natural order. PCollections' own report `Comparator.naturalOrder()` as their comparator. Another implementation of `PSortedSet` or `PSortedMap` may report `null`, as `SortedSet` allows, and the comparator is read through `TreePSet.fromSortedSet` or `TreePMap.fromSortedMap`, which take `null` as natural order.
 
-- If your `PSortedSet<MyType>` relies on a custom `Comparator<MyType>`, write the optic by hand rather than relying on the generator
-- The natural-ordering reconstruction will throw at runtime if your element type is not `Comparable`. Generators do not detect this statically; a missing `Comparable` bound will surface as a `ClassCastException` the first time the traversal runs
-
-For the common case where elements implement `Comparable` and the natural ordering is the desired one, the generator is the right tool.
+One shape is refused: a wildcard where the container is ordered, such as `PSortedSet<? extends Leaf>` or `PSortedMap<? extends String, Integer>`. The source's comparator then compares an unknown type, so a rebuild that reuses it would not compile. `@GenerateTraversals` notes the component and generates no traversal for it, and `@GenerateFocus` rejects it where `widenCollections` or `widenFields` widens it. Declare the component with concrete type arguments, such as `PSortedSet<Leaf>`. `@GenerateTraversals` traverses a wildcard in a sorted map's value, `PSortedMap<String, ? extends Leaf>`, as in any other map.
 
 ---
 
@@ -95193,6 +95231,8 @@ import org.pcollections.PVector;
 import org.pcollections.TreePVector;
 import org.pcollections.PMap;
 import org.pcollections.HashTreePMap;
+import org.pcollections.PSortedSet;
+import org.pcollections.TreePSet;
 
 Each<PVector<String>, String> pvectorEach =
     EachInstances.fromIterableCollecting(TreePVector::from);
@@ -95200,9 +95240,14 @@ Each<PVector<String>, String> pvectorEach =
 // Persistent maps use the map-shaped companion helper.
 Each<PMap<String, Integer>, Integer> pmapValues =
     EachInstances.mapValuesEachCollecting(HashTreePMap::from);
+
+// A sorted set hands its comparator on, through the form that also receives the source.
+Each<PSortedSet<String>, String> psortedSetEach =
+    EachInstances.fromIterableRebuilding(
+        (source, list) -> TreePSet.from(source.comparator(), list));
 ```
 
-`fromIterableCollecting` accepts any function that builds a persistent collection from a `List`; `mapValuesEachCollecting` does the same for any `java.util.Map` subtype, rebuilding the persistent map from a JDK `Map`. The same forms cover all the PCollections types. There is no library-specific factory class; the generic helpers are the public API.
+`fromIterableCollecting` accepts any function that builds a persistent collection from a `List`; `mapValuesEachCollecting` does the same for any `java.util.Map` subtype, rebuilding the persistent map from a JDK `Map`. `fromIterableRebuilding` and `mapValuesEachRebuilding` hand the function the source as well, which is how a sorted collection keeps its comparator. The same forms cover all the PCollections types. There is no library-specific factory class; the generic helpers are the public API.
 
 ---
 
@@ -95217,9 +95262,9 @@ For projects already on Eclipse Collections or Vavr, those existing generators r
 ~~~admonish info title="Key Takeaways"
 * **Seven generator plugins** cover every PCollections collection and map type
 * **Activation is automatic** once PCollections is on the annotation processor classpath
-* **Reconstruction goes through `from(Collection)` / `from(Map)`**, so traversals round-trip cleanly through the persistent type
-* **Sorted variants assume natural ordering**; custom comparators are not preserved by generated code
-* **Use `EachInstances.fromIterableCollecting(TreePVector::from)`** (collections) or **`EachInstances.mapValuesEachCollecting(HashTreePMap::from)`** (maps) for hand-written optics outside `@GenerateTraversals`
+* **Reconstruction goes through each type's `from` factory**, so traversals round-trip cleanly through the persistent type
+* **Sorted variants keep the source's comparator**, under `@GenerateTraversals` and `@GenerateFocus` alike
+* **Use `EachInstances.fromIterableCollecting(TreePVector::from)`** (collections) or **`EachInstances.mapValuesEachCollecting(HashTreePMap::from)`** (maps) for hand-written optics outside `@GenerateTraversals`, or the `Rebuilding` forms for the sorted pair
 ~~~
 
 ~~~admonish tip title="See Also"
@@ -103512,6 +103557,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **Messages that offer a navigator ask first for the renames it needs** ([#1272](https://github.com/higher-kinded-j/higher-kinded-j/issues/1272)). The note to widen `items` beside an `Items` with a navigator, and five other messages, now ask for one of the two to be renamed first. They also name a field such as `last` that the navigator could not reach. See [Two fields with one navigator name](../optics/focus_navigation.md#two-fields-with-one-navigator-name).
 - **An unknown `@GenerateFocus` field-list name is offered only a field the list can use** ([#1283](https://github.com/higher-kinded-j/higher-kinded-j/issues/1283)). It no longer offers a name the list already holds. `includeFields` is offered a field that can have a navigator, `widenFields` one it can widen, and any rename the field's navigator needs comes first. A name written twice in one list warns. See [Compiler Messages](../optics/compiler_errors.md#generatefocus-field-list-unknown-name).
 - **`OpticOpFunctor.map` applies its function** ([#1154](https://github.com/higher-kinded-j/higher-kinded-j/issues/1154)). It returned the instruction unchanged, so code that mapped a lifted `OpticOp` failed later with `ClassCastException`. Each `OpticOp` record now carries a continuation `k`, as an `@EffectAlgebra` operation does, and an interpreter hands each result to `op.k()` in place of wrapping it in `Free.pure`. See [What an interpreter actually is](../optics/interpreters.md#what-an-interpreter-actually-is).
+- **Generated optics over a sorted collection keep its comparator** ([#1430](https://github.com/higher-kinded-j/higher-kinded-j/issues/1430)). Traversals and Focus paths over `PSortedSet`, `PSortedMap` and the Eclipse sorted sets rebuild with the source's comparator, so a custom order is kept. The `…Rebuilding` factories on `Traversals` and `EachInstances` do the same for your own optics, and `getOrderedTypeArgumentIndex()` for your own generators. See [Sorted Variants and Comparators](../tooling/pcollections_optics.md#sorted-variants-and-comparators).
 - **`StreamTraversal.toTraversal()` works over a `VStream`** ([#1442](https://github.com/higher-kinded-j/higher-kinded-j/pull/1442)). On `forVStream()`, or a composition built on it, the result read its source twice, so a `fromIterator` source came out empty, and threw `NoSuchElementException` when read again. It now reads the source once, and gives a stream that replays the results. See [Conversion to Standard Traversal](../monads/vstream_advanced.md#conversion-to-standard-traversal).
 
 ---
@@ -103602,6 +103648,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 - **Of two withers for one getter, `@ImportOptics` sets through the capitalised spelling** ([#1148](https://github.com/higher-kinded-j/higher-kinded-j/issues/1148)): the lens for a class with both `withEMail` and `witheMail` beside `eMail()` set through whichever the class declared first. It now sets through `withEMail`, and a note names `witheMail`, which a spec interface's `@Wither` can choose.
 - **An optic interpreter that wraps each result in `Free.pure` skips the operation's continuation** ([#1154](https://github.com/higher-kinded-j/higher-kinded-j/issues/1154)): a program from `OpticPrograms` runs as before, but a function mapped onto an `OpticOp`, through `OpticOpFunctor` or `Free.translate`, is not applied. Hand the result to `op.k()` and return what it gives.
+- **A sorted collection keeps its order through a generated optic** ([#1430](https://github.com/higher-kinded-j/higher-kinded-j/issues/1430)). A traversal over a `PSortedSet` or `PSortedMap`, and a Focus path over those or an Eclipse Collections sorted set, gave back a custom-ordered source in natural order. It now keeps the source's order. Where code relied on the re-sort, sort the result itself.
 - **A null optic, modifier or predicate fails when the program is built** ([#1315](https://github.com/higher-kinded-j/higher-kinded-j/issues/1315)). Each `OpticOp` record throws `NullPointerException`, and so does an `OpticPrograms` factory that builds one. It used to fail only when an interpreter ran the program. The validating interpreter no longer reports one as a failed operation. `set` and `setAll` still accept a null new value.
 
 #### Effect Paths {#runtime-effect-paths}
@@ -103634,6 +103681,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 | Effect Paths | A step after `mapError` on a `MaybePath`, `TryPath` or `CompletableFuturePath` that returns the Path it started from | Return an `EitherPath` from the step (a `VResultPath` after a `CompletableFuturePath`), or use `recover` or `mapException` before changing the error type | [#1332](https://github.com/higher-kinded-j/higher-kinded-j/issues/1332) |
 | Optics | An optic interpreter or other code of your own that names an `OpticOp` record: a pattern or type such as `OpticOp.Get<?, ?>` or `OpticOp.Set<S, A>`, or a constructor call such as `new OpticOp.Get<>(source, getter)` | Add the third type argument, as in `OpticOp.Get<?, ?, ?>`, and pass a continuation, `Function.identity()`, to a constructor. Hand each result to `op.k()` and return what it gives, in place of `Free.pure(result)` | [#1154](https://github.com/higher-kinded-j/higher-kinded-j/issues/1154) |
 | Effect Paths | An exhaustive `switch` over `VStream.Step`, in code that pulls a stream by hand or in a stream of your own | Add a `Step.Fail` case. A stream of your own passes it on with itself over the tail, as its `Emit` case does; code that stops there closes the tail and throws the error | [#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029) |
+| Optics | A call to the traversal `@GenerateTraversals` generated for a sorted container with a wildcard where it is ordered, such as `PSortedSet<? extends String>` or `PSortedMap<? extends String, V>`. The method is no longer generated, and a note says why | Declare the component with concrete type arguments, such as `PSortedSet<String>` | [#1430](https://github.com/higher-kinded-j/higher-kinded-j/issues/1430) |
 | Build and tooling | Build logic that reads the `hkjInstallSkills` task's `outputDir` as a `Path` | Read `outputDir.get().asFile.toPath()`, which names the same directory | [#1374](https://github.com/higher-kinded-j/higher-kinded-j/issues/1374) |
 
 ### Deprecated for removal in 0.7.0 {#deprecated}
