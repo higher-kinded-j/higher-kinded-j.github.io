@@ -75899,7 +75899,7 @@ The other operators are lazy in the same way:
 | `chunk(size)` | Batches of up to `size` elements, as [Parallel Operations](vstream_parallel.md#chunking-operations) shows |
 
 ~~~admonish warning title="An endless stream needs a limit"
-`iterate`, `generate` and `repeat` never end, so `toList`, `fold` and `count` on one never return. Limit it first with `take` or `takeWhile`. `exists` and `find` stop at the first match, so they end on an endless stream too, provided a match comes.
+`iterate`, `generate` and `repeat` never end, so `toList`, `fold` and `count` on one run until an interrupt stops them, as [Running a stream](#running-a-stream) says. Limit it first with `take` or `takeWhile`. `exists` and `find` stop at the first match, so they end on an endless stream too, provided a match comes.
 ~~~
 
 ## Running a stream {#running-a-stream}
@@ -75926,6 +75926,8 @@ The pulls run on the thread that runs the terminal operation's task. `runAsync()
     List<Boolean> fromRunAsync = onAVirtualThread.runAsync().join();
     // [true]
 ```
+
+A terminal operation stops at an interrupt. Before it starts and between pulls, it checks the thread's interrupt status. Once that is set, it fails with an `InterruptedException` and closes what it has read, so the finalisers there run. That lets a [timeout](../effect/path_vtask.md#timeouts) stop `drain()` on an endless stream, even one whose pulls never block. The `TimeoutException` arrives once the stream is closed. A run on a thread that is already interrupted fails before its first pull, and closes nothing, since it has read nothing. An interrupt is a stop, not a failure, so `recover`, `recoverWith`, `mapError` and `onError` let it through. To give a value when a run is stopped, recover outside what stops it, as in `toList().timeout(d).recover(e -> List.of())`. A `recover` inside the timeout gives a value the timeout discards.
 
 `VStreamPar` runs the tasks for several elements at the same time, each on a virtual thread, as [Parallel Operations](vstream_parallel.md) shows.
 
@@ -75966,7 +75968,7 @@ When the source itself fails, there is nothing to carry on with. A feed that goe
 | `mapError(f)` | Fails with the exception `f` gives instead |
 | `onError(action)` | Runs `action`, then fails as before |
 
-Each acts on a failure at whichever element it happens, not only the first. `recoverWith`, and `recover` when it ends the stream, close the stream they stop reading, so a finaliser upstream runs.
+Each acts on a failure at whichever element it happens, not only the first. An interrupt is not a failure, as [Running a stream](#running-a-stream) says. `recoverWith`, and `recover` when it ends the stream, close the stream they stop reading, so a finaliser upstream runs.
 
 ~~~admonish note title="Operators between mapTask and recover"
 When `recover` carries on after a failed `mapTask` task, the operators between the two apply to the elements after it as well. The failed element keeps its place in the stream. In `mapTask(quote).filter(cheap).take(3).recover(f)`, the `filter` tests the quotes after it, and `take` counts it as one of its three.
@@ -76468,7 +76470,7 @@ A task that fails makes its element a failure in its place, as a failed `mapTask
 
 Without a `recover`, the stream fails with the courier's own exception when it reaches Edsger's quote. A `recover` after the parallel operation gives a value in its place, and the stream goes on with the next quote. `parEvalMapUnordered` hands on a task's failure as the task completes, as it does a result. In `parEvalFlatMap`, a call of `f` that fails is a failed task, so `recover` gives one value in place of the stream that call would have built.
 
-Two failures still end the stream. A function that throws, rather than returning a task that fails, ends it as it would `mapTask`, so do the work inside the task, as `VTask.of` does. A task that fails with an `InterruptedException` ends it at once: the tasks still running are cancelled, and `parEvalMap` hands on none of that batch's results. A `recover` after it gives one value, then ends the stream.
+Two failures still end the stream. A function that throws, rather than returning a task that fails, ends it as it would `mapTask`, so do the work inside the task, as `VTask.of` does. A task that fails with an `InterruptedException` ends it at once: the tasks still running are cancelled, and `parEvalMap` hands on none of that batch's results. A `recover` after it lets the interrupt through, as [Running a stream](vstream.md#running-a-stream) says, so the run fails with it.
 
 A failed element from further up is handed on in the same way. When a `mapTask` task fails before the parallel operation, its element passes through as a failure, so a `recover` after the parallel operation gives a value in its place and the stream goes on. `parEvalMap`, `parEvalMapUnordered` and `parEvalFlatMap` all do this, while a merge of several streams ends there. Any other failure further up, such as a `map` that throws, ends the stream, after the elements read before it.
 
@@ -76971,6 +76973,7 @@ A `use` such as `connection -> orders(connection).concat(next)` instead keeps th
 ```
 
 - **A finaliser runs once for each run**, when the run completes, fails, or is closed early by an operation that stops.
+- **A stream the run never reaches is left as it is.** When a run stops before it reads `concat`'s second stream, `flatMap`'s stream for an element or the stream after `prepend`'s element, that stream's finaliser does not run. To run one regardless, attach it after the `concat` or `prepend`.
 - **Several finalisers run in the order they were attached.**
 - **After a recovered failure, the finaliser runs when the stream ends.** When a `recover` reads on after a failed `mapTask` task, the run goes on, and the finaliser waits for its end.
 - **A failing finaliser is reported as a failing release is**, as [When something fails](#when-something-fails) shows. When several fail, the others still run, the first one's exception is thrown, and each later one is suppressed onto it.
@@ -93988,7 +93991,7 @@ rewrite {
 - **A static `parCollect` called through an expression**, such as `holder().parCollect(stream, 4)`, whose expression the rewrite would drop.
 - **A method reference to `parCollect`**: call `toList()` in a lambda instead.
 
-`parCollect` stops at an interrupt between batches, and `toList()` does not check for one between pulls. So bound an endless stream whose pulls never block with `take` before you time out its `toList()`.
+`toList()` stops at an interrupt too, so a timeout stops the rewritten call on an endless stream as it stops `parCollect`. See [Running a stream](../monads/vstream.md#running-a-stream).
 
 ---
 
@@ -103230,6 +103233,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `fromPublisher` stream can be read again, and asks only for what it can hold** ([#1442](https://github.com/higher-kinded-j/higher-kinded-j/pull/1442)). It subscribed once, when built, so a second read waited for ever, and asked for more as each element arrived, however full its buffer. Each run now subscribes at its first pull, and asks for one more per element taken. See [Publisher to VStream](../monads/vstream_advanced.md#publisher-to-vstream).
 - **A long `State` chain built with `map` or `ap` no longer overflows the stack** ([#1448](https://github.com/higher-kinded-j/higher-kinded-j/pull/1448)). Each `map` and `ap` step called the step before it, as `WithStatePath`'s `peek`, `zipWith`, `zipWith3` and `then` did, so tens of thousands of them threw `StackOverflowError`. They now run in the loop `flatMap` already used. See [State](../monads/state_monad.md).
 - **`Natural` is the library's one natural-transformation type** ([#1455](https://github.com/higher-kinded-j/higher-kinded-j/pull/1455)). `GenericPath.mapK` takes a `Natural`, and `VStreamTransformations` gives `Natural`s. The effect package's `NaturalTransformation` now extends `Natural`, and is deprecated for removal in 0.7.0 with `FreePath.foldMapWith` and `FreeApPath.foldMapWith`. The `MigrateDeprecationsTo0_7_0` recipe rewrites each use. See [Deprecated for removal in 0.7.0](#deprecated).
+- **A `VStream` terminal operation stops at an interrupt** ([#1428](https://github.com/higher-kinded-j/higher-kinded-j/issues/1428)). `toList`, `fold`, `drain` and the others did not check between pulls, so neither a timeout nor a cancelled `Scope` could stop a stream whose pulls never block. Each now fails with an `InterruptedException` and closes what it has read, so the finalisers there run. See [Running a stream](../monads/vstream.md#running-a-stream).
 
 ---
 
@@ -103311,6 +103315,10 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A timed-out task is interrupted, and the timeout waits for it to stop** ([#1372](https://github.com/higher-kinded-j/higher-kinded-j/issues/1372)). A task blocked in `CompletableFuture.join()`, or otherwise out of an interrupt's reach, holds the failure back until it finishes, and an interrupt of the caller now waits for it too. To fail at the time limit, as before, time out `task.detachOnCancel()`.
 - **A `fromPublisher` stream subscribes when a run's first pull runs, not when it is built** ([#1442](https://github.com/higher-kinded-j/higher-kinded-j/pull/1442)). A hot publisher, such as a `SubmissionPublisher`, sends a run only what it publishes after the run subscribes, so what it publishes between building the stream and reading it is lost. Publish once the run has subscribed, which `getNumberOfSubscribers()` shows.
 - **Code compiled against 0.5.0 that calls `GenericPath.mapK` or a `VStreamTransformations` method must be recompiled** ([#1455](https://github.com/higher-kinded-j/higher-kinded-j/pull/1455)). Each now names `Natural` in its signature, so the old call fails with `NoSuchMethodError`. A `mapK` call that passes a `NaturalTransformation` still compiles, with a removal warning.
+- **A `VStream`'s `recover`, `recoverWith`, `mapError` and `onError` let an interrupt through** ([#1428](https://github.com/higher-kinded-j/higher-kinded-j/issues/1428)). Their functions saw it, so `recover` ended the stream with its value, `mapError` replaced it and an `onError` hook logged it. Now the run fails with the `InterruptedException`. To give a value when a run is stopped, recover outside what stops it, as in `toList().timeout(d).recover(e -> List.of())`.
+- **A `VStream` terminal operation on an interrupted thread fails before it reads** ([#1428](https://github.com/higher-kinded-j/higher-kinded-j/issues/1428)). It read to the end unless a pull blocked. `run()` and `runSafe()` leave the status set after an interrupt, so a thread that goes on to read another stream fails at once. On a thread meant to carry on, clear the status first with `Thread.interrupted()`.
+- **`VStreamPar.merge` fails with the `InterruptedException` when its reader is interrupted** ([#1428](https://github.com/higher-kinded-j/higher-kinded-j/issues/1428)). It threw a `RuntimeException` with the message "Merge interrupted". Now `runSafe()` gives the `InterruptedException`, `run()` throws it wrapped in a `VTaskExecutionException`, and a `recover` after the merge lets it through. Where code matched the message, match the `InterruptedException` instead.
+- **`prepend` leaves the stream after its element alone until it is read** ([#1428](https://github.com/higher-kinded-j/higher-kinded-j/issues/1428)). `headOption()` or `take(1)` after `prepend` closed that stream, running its `onFinalize` finaliser though nothing had read it, where `VStream.of(x).concat(stream)` did not. To run a finaliser however far a run reads, attach it after `prepend`. See [`onFinalize`](../monads/vstream_resources.md#onfinalize-lightweight-cleanup).
 
 ### What stops a build that compiled {#build-changes}
 
