@@ -14321,7 +14321,7 @@ The data structure (`Free<F, A>`) that represents a program as a tree of instruc
 
 ### `foldMap`
 
-The method that interprets a Free monad program. It traverses the instruction tree, applies a natural transformation (interpreter) to each `Suspend` node, and combines results using the target monad's `flatMap`. Stack-safe via internal trampolining. This is how you "run" the program: `program.foldMap(interpreter, monad)`.
+The method that interprets a Free monad program. It traverses the instruction tree, applies a natural transformation (interpreter) to each `Suspend` node, and combines results using the target monad's `flatMap`. A deep program runs into a monad such as `Id`, `Writer` or `IO` without overflowing the stack. This is how you "run" the program: `program.foldMap(interpreter, monad)`.
 
 ~~~admonish tip title="Glossary"
 For quick-reference definitions, see the [Effect Handlers glossary entries](../glossary/effect-paths.md).
@@ -14570,12 +14570,14 @@ IO<String> result = IOKindHelper.IO_OP.narrow(
     program.foldMap(consoleInterp, Instances.monad(io())));
 ```
 
-~~~admonish warning title="Monad Transformer Limitation"
-`foldMap` uses an eager optimisation that discards the monadic context for strict target
-monads. Interpreters targeting `Id`-based transformers (e.g. `WriterT<Id, W, A>`) will
-silently lose accumulated state like log entries. Use a lazy outer monad (`WriterT<IO, ...>`)
-or mutable recording interpreters instead. See the [Free Monad](../monads/free_monad.md)
-chapter for details and workarounds.
+~~~admonish note title="What foldMap Keeps"
+`foldMap` hands each instruction's whole value to the target monad: a `Writer`'s log, a `List`'s
+other elements, an `EitherOrBoth`'s warnings. A deep program runs into `Id`, `Either`, `Writer`,
+`EitherOrBoth`, `State` or `IO` without overflowing the stack.
+
+Two things still deepen the stack. An instruction that gives several results, such as a `List` of
+two, runs the rest of the program once for each. A `Reader` nests one call for each instruction when
+you run it.
 ~~~
 
 ## Error Recovery
@@ -79399,7 +79401,7 @@ public sealed interface Trampoline<T> permits Done, More {
 }
 ```
 
-Higher-Kinded-J extends this foundation in two ways: adding `FlatMap<A,B>` as a third variant for monadic sequencing, and integrating with the HKT simulation so `Trampoline` participates in generic typeclass code. The `Free` monad's `foldMap` also uses `Trampoline` internally for stack-safe interpretation, a direct payoff of having a first-class trampoline abstraction in the library.
+Higher-Kinded-J extends this foundation in two ways: adding `FlatMap<A,B>` as a third variant for monadic sequencing, and integrating with the HKT simulation so `Trampoline` participates in generic typeclass code.
 ~~~
 
 ~~~admonish example title="Benchmarks"
@@ -79513,7 +79515,7 @@ That is the Free monad's value: **write once, interpret many ways**.
 | `FreeFunctor<F>` / `FreeMonad<F>` | Type class instances: `map`, `flatMap`, `of` |
 | `FreeFactory<F>` | Captures the functor type once, fixing Java's type inference for chained operations |
 | `Free.liftF(fa, functor)` | Lifts a single instruction into a Free program |
-| `free.foldMap(transform, monad)` | Interprets the program using a natural transformation, stack-safe via Trampoline |
+| `free.foldMap(transform, monad)` | Interprets the program using a natural transformation |
 
 A program always gives a value: `Free.pure(null)` throws at the call, and a `map` function that returns null fails the program when it is interpreted. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
 
@@ -79526,7 +79528,7 @@ Free program (tree):                  foldMap walks it:
         Suspend(PrintLine("Hello,     4. Combine via target monad's flatMap
                 " + name))           5. Return final result in target monad
 ```
-`foldMap` converts each instruction from your DSL (`F`) into a target monad (`M`) using a natural transformation, then sequences the results. It uses Higher-Kinded-J's own `Trampoline` internally for stack safety.
+`foldMap` converts each instruction from your DSL (`F`) into a target monad (`M`) using a natural transformation, then sequences the results. A deep program runs into a monad such as `Id`, `Writer` or `IO` without overflowing the stack.
 ~~~
 
 ~~~admonish tip title="Prefer a type-safe `Natural` transformation"
@@ -79797,22 +79799,19 @@ Tagless Final achieves similar goals (multiple interpreters, testability) withou
 Choose **Free** when you need program inspection/optimisation. Choose **Tagless Final** when you want less boilerplate and better performance.
 ~~~
 
-~~~admonish warning title="Monad Transformer Limitation"
-`foldMap` uses an eager optimisation for `Suspend` nodes: when the target monad evaluates
-strictly (e.g. `Id`-based transformers like `WriterT<Id, W, A>`), the interpreter extracts
-the inner Free value and recurses directly, **discarding the monadic context** returned by
-the natural transformation. This means accumulated state in the transformer layer (such as
-`WriterT` log entries or `StateT` modifications) is silently lost.
+~~~admonish note title="What foldMap Keeps"
+`foldMap` hands each instruction's whole value to the target monad: a `Writer`'s log, a `List`'s
+other elements, an `EitherOrBoth`'s warnings. A deep program runs into `Id`, `Either`, `Writer`,
+`EitherOrBoth`, `State` or `IO` without overflowing the stack.
 
-**Workarounds:**
-- Use a lazy outer monad (e.g. `WriterT<IO, W, A>`) so the non-eager path is taken
-- Use mutable recording interpreters targeting `Id` for audit trails
-- Target `IO` and compose effects outside the Free interpreter
+Two things still deepen the stack. An instruction that gives several results, such as a `List` of
+two, runs the rest of the program once for each. A `Reader` nests one call for each instruction when
+you run it.
 ~~~
 
 ~~~admonish important title="Key Points"
 - `Free<F, A>` turns any instruction set `F` into a monad; programs become composable data structures.
-- **`foldMap`** is the engine: it walks the program tree, transforms each instruction via a natural transformation, and sequences results in a target monad. Stack-safe via Trampoline.
+- **`foldMap`** is the engine: it walks the program tree, transforms each instruction via a natural transformation, and sequences results in a target monad. A deep program runs into `Id`, `Writer` or `IO` without overflowing the stack.
 - **Testability** is the killer feature: write one program, test it with a pure interpreter, run it with a real one.
 - **FreeFactory** solves Java's type inference limitations when chaining `map`/`flatMap` on `Free.pure()`.
 - Programs compose with `flatMap`: build small DSL operations, snap them together into complex workflows.
@@ -79838,7 +79837,7 @@ For deeper exploration of Free monads and their applications:
 ~~~admonish example title="Benchmarks"
 Free has dedicated JMH benchmarks measuring interpretation cost and stack safety. Key expectations:
 
-- **Deep recursion (10,000+)** completes without `StackOverflowError`; Free monad interpretation is stack-safe via trampolining
+- **Deep recursion (10,000+)** completes without `StackOverflowError` when interpreted into `Id`
 - **Performance scaling is linear with depth**: interpretation cost grows proportionally, not exponentially
 - Abstraction overhead of 50-200x vs raw Java is expected and acceptable; real workloads involve I/O that dominates compute time
 
@@ -101197,7 +101196,7 @@ public record PaymentEffects(
 
 ## foldMap
 
-**Definition:** The method that interprets a Free monad program by traversing its instruction tree, applying a natural transformation (interpreter) to each `Suspend` node, and combining results using the target monad's `flatMap`. Stack-safe via internal trampolining.
+**Definition:** The method that interprets a Free monad program by traversing its instruction tree, applying a natural transformation (interpreter) to each `Suspend` node, and combining results using the target monad's `flatMap`. It keeps each instruction's whole value, such as a `Writer`'s log, and a deep program runs into a monad such as `Id`, `Writer` or `IO` without overflowing the stack.
 
 **Example:**
 <!-- verify -->
@@ -103234,6 +103233,8 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A long `State` chain built with `map` or `ap` no longer overflows the stack** ([#1448](https://github.com/higher-kinded-j/higher-kinded-j/pull/1448)). Each `map` and `ap` step called the step before it, as `WithStatePath`'s `peek`, `zipWith`, `zipWith3` and `then` did, so tens of thousands of them threw `StackOverflowError`. They now run in the loop `flatMap` already used. See [State](../monads/state_monad.md).
 - **`Natural` is the library's one natural-transformation type** ([#1455](https://github.com/higher-kinded-j/higher-kinded-j/pull/1455)). `GenericPath.mapK` takes a `Natural`, and `VStreamTransformations` gives `Natural`s. The effect package's `NaturalTransformation` now extends `Natural`, and is deprecated for removal in 0.7.0 with `FreePath.foldMapWith` and `FreeApPath.foldMapWith`. The `MigrateDeprecationsTo0_7_0` recipe rewrites each use. See [Deprecated for removal in 0.7.0](#deprecated).
 - **A `VStream` terminal operation stops at an interrupt** ([#1428](https://github.com/higher-kinded-j/higher-kinded-j/issues/1428)). `toList`, `fold`, `drain` and the others did not check between pulls, so neither a timeout nor a cancelled `Scope` could stop a stream whose pulls never block. Each now fails with an `InterruptedException` and closes what it has read, so the finalisers there run. See [Running a stream](../monads/vstream.md#running-a-stream).
+- **`Free.foldMap` keeps what each step's value holds besides its result** ([#1460](https://github.com/higher-kinded-j/higher-kinded-j/pull/1460)). For a target that runs each step at once, such as `Writer` or `List`, it kept only the result. A `Writer` or `WriterT<Id, ...>` lost its log, a `List` its other elements and an `EitherOrBoth` its warnings. Each value now reaches the target whole. See [Free Monad](../monads/free_monad.md).
+- **`Free.foldMap` runs a deep program into `Id`, `Either` or `Writer` without overflowing the stack** ([#1460](https://github.com/higher-kinded-j/higher-kinded-j/pull/1460)). A recursive program of under a thousand steps overflowed it. Into `IO` or `State`, a deep program already ran. A `List` step that gives several results still adds to the stack, and so does each step of a `Reader` when it runs.
 
 ---
 
@@ -103286,6 +103287,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **`FunctionKindHelper.narrow` throws `KindUnwrapException`, as the other kind helpers do** ([#1318](https://github.com/higher-kinded-j/higher-kinded-j/issues/1318)). A null `Kind` threw `NullPointerException`, so catching that no longer catches it. Another type's `Kind` threw `IllegalArgumentException`, which `KindUnwrapException` extends, so catching that still does. See [When `narrow` throws](../hkts/core-concepts.md#when-narrow-throws).
 - **A `Selective` of your own no longer runs the effects its condition skips** ([#1358](https://github.com/higher-kinded-j/higher-kinded-j/pull/1358)), unless its `select` is built from `ap`. The default `whenS` ran its effect on a false condition, and the default `ifS` ran both branches, so a failing effect's error could hide the condition's. Run any effect you relied on yourself. The library's own instances are unchanged.
 - **`Context.recoverWith` now catches a failure from an earlier `map` or `flatMap` function** ([#1443](https://github.com/higher-kinded-j/higher-kinded-j/issues/1443)). Code that let such a failure escape a `recoverWith` gets the recovered value instead, and a recovery function's own failure reaches the next `recoverWith` out. A checked exception such a function throws, as Kotlin code can, reaches `run()` inside a `ContextException`, as one from `fail` does.
+- **`Free.foldMap` into a `Writer`, `List` or `EitherOrBoth` gives what each step's value holds** ([#1460](https://github.com/higher-kinded-j/higher-kinded-j/pull/1460)). A `Writer`'s log is no longer empty, and an `EitherOrBoth` that warned gives `Both`, where it gave `Right`. A `List` target runs the rest of the program, and its interpreter, once for each element a step gives.
 
 #### Optics {#runtime-optics}
 
