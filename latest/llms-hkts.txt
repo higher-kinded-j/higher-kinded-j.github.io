@@ -4601,7 +4601,7 @@ import org.higherkindedj.hkt.maybe.MaybeKind;
 A [Free](../monads/free_monad.md) program holds its steps, its instructions, as data. An interpreter runs it by turning each instruction into a real effect, and that turning is a `Natural`.
 
 - **A Free program's interpreter is a `Natural`.** `program.foldMap(interpreter, monad)` runs a program by converting each instruction with a `Natural<F, M>`, and a `FreeAp` program's `foldMap` does the same with an applicative. A test interpreter is another `Natural` for the same program, and `FreePath.foldMap` takes one too.
-- **`Free.translate(program, nat, functor)` moves a program from one instruction set to another.** [EitherF](../monads/eitherf.md#freetranslate-lifting-between-effect-types) shows it.
+- **`Free.translate(program, nat, functor)` moves a program from one instruction set to another.** [EitherF](../monads/eitherf.md#moving-a-program-into-the-pair) shows it.
 - **`Interpreters.combine` joins two interpreters into one.** A program over two instruction sets needs it, as [EitherF](../monads/eitherf.md) shows.
 - **`EffectBoundary.of` takes the interpreter to `IO` that runs a program at the edge.**
 - **A transformer's `mapT` takes `nat::apply`.** `EitherT`, `MaybeT`, `OptionalT`, `ReaderT`, `StateT` and `WriterT` each have one. It changes the outer container, for example from `IO` to `VTask`, and leaves the inner value alone.
@@ -14515,411 +14515,434 @@ Practise the pattern in [Tutorial 01: Effect Algebra Basics](https://github.com/
 
 <!-- Source: monads/free_applicative.md -->
 
-# Free Applicative
-## _Independent Computations and Parallel Composition_
+<!-- description: Hold a program of independent steps as data in Java with Free Applicative: read an order's prices before they run, fetch them in one call, report every unknown SKU. -->
 
-~~~admonish info title="What You'll Learn"
-- The difference between Free Monad (sequential) and Free Applicative (independent)
-- When to choose Free Applicative over Free Monad
-- Building programs with independent computations
-- Interpreting Free Applicative programs with natural transformations
-- Enabling parallel execution, batching, and static analysis
-- Validation patterns that accumulate all errors
+# Free Applicative: Programs You Can Read Whole
+
+_No step waits on another, so the whole program is known before any of it runs._
+
+~~~admonish abstract title="Free Applicative at a glance"
+| | |
+|---|---|
+| **Models** | A program of instructions that do not depend on one another, held as data and known whole before it runs |
+| **Replaces** | Independent calls made one at a time, when you want to count, check or batch them first |
+| **Effect Path** | [`FreeApPath`](../glossary/effect-paths.md#freeappath) |
+| **Instances** | `Functor`, `Applicative` |
+| **Choose it when** | No step needs the result of another; otherwise [Free](free_monad.md), or compare every type in [Choosing a Type](supported-types.md#choosing-a-type) |
 ~~~
 
-~~~admonish title="Hands On Practice"
-[Tutorial10_FreeApplicative.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial10_FreeApplicative.java)
+~~~admonish info title="What You'll Learn"
+- Build an order's prices as one program whose instructions are all known before it runs
+- Count a program's instructions and list what it will ask for, without running it
+- Price every line with one catalogue call, by reading the program first
+- Report every unknown SKU at once, by interpreting into `Validated`
+- Choose between Free Applicative and Free, and hold one inside the other
 ~~~
 
 ~~~admonish example title="See Example Code"
-- [FreeApTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/free_ap/FreeApTest.java) - Comprehensive test suite
-- [FreeApApplicativeTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/free_ap/FreeApApplicativeTest.java) - Applicative law verification
-- [FreeApplicativeExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/free_ap/FreeApplicativeExample.java) - Practical examples
-- [StaticAnalysisExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/free_ap/StaticAnalysisExample.java) - Analysing programs before execution
-- [PermissionCheckingExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/free_ap/PermissionCheckingExample.java) - Pre-execution permission analysis
+**The code on this page is [FreeApplicativeBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/freeap/FreeApplicativeBook.java)**: the page includes it, so the build compiles and runs it. [FreeApplicativeBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/freeap/FreeApplicativeBookTest.java) holds what the page says each method does.
 ~~~
 
-## Purpose
-
-The **Free Applicative** (`FreeAp`) is the applicative counterpart to the [Free Monad](free_monad.md). Whilst the Free Monad captures **sequential, dependent** computations, Free Applicative captures **independent** computations that can potentially run in parallel.
-
-### The Key Distinction
-
-Consider fetching a user and their posts:
-
-**With Free Monad (sequential, dependent):**
-<!-- verify -->
-```java
-// Each step depends on the previous result
-Free<DbOpKind.Witness, UserProfile> program =
-    getUser(userId)
-        .flatMap(user ->              // Must wait for user
-            getPosts(user.id())       // Uses user.id() from previous step
-                .flatMap(posts ->
-                    Free.pure(new UserProfile(user, posts))));
-```
-
-**With Free Applicative (independent):**
-<!-- verify -->
-```java
-// Both fetches are independent - neither needs the other's result
-FreeAp<DbOpKind.Witness, UserProfile> program =
-    FreeAp.lift(DB_OP.widen(new DbOp.GetUser(userId)))
-        .map2(
-            FreeAp.lift(DB_OP.widen(new DbOp.GetPosts(userId))),  // Independent of GetUser
-            UserProfile::new
-        );
-```
-
-The Free Applicative version makes it explicit that the two fetches are **independent**. A smart interpreter can execute them in parallel or batch them into a single database query.
-
-## Free Monad vs Free Applicative
-
-| Aspect | Free Monad | Free Applicative |
-|--------|------------|------------------|
-| **Composition** | Sequential, dependent | Independent, parallel |
-| **Core operation** | `flatMap: A -> Free[F, B]` | `ap: FreeAp[F, A->B] x FreeAp[F, A]` |
-| **Structure** | Tree (one branch at a time) | DAG (multiple independent branches) |
-| **Static analysis** | Cannot see full structure ahead | Full structure visible before interpretation |
-| **Parallelism** | Not possible (each step depends on previous) | Natural fit (independent computations) |
-| **Use case** | Workflows with conditional logic | Validation, parallel fetches, batching |
-
-~~~admonish note title="Choosing Between Them"
-Ask yourself: "Does step B need the **result** of step A?"
-- **Yes** -> Use Free Monad (`flatMap`)
-- **No** -> Use Free Applicative (`map2`, `map3`, etc.)
+~~~admonish tip title="Where Free Applicative fits"
+[`@EffectAlgebra`](../effect/effect_handlers.md#defining-effects) generates an instruction set's encoding, its `Functor` and its interpreter base class, and those serve a Free Applicative program as they serve a [Free](free_monad.md) one. Its generated constructors build `Free` programs only, so a `FreeAp` program lifts each instruction itself, as this page's `priceOf` does. [FreeApPath](../effect/path_freeap.md) documents the Path's operations; this page shows what independent steps buy you.
 ~~~
-
-## Core Structure
-
-`FreeAp<F, A>` is a sealed interface with three constructors:
-
-```java
-public sealed interface FreeAp<F, A> permits FreeAp.Pure, FreeAp.Lift, FreeAp.Ap {
-
-    // A completed computation with a value
-    record Pure<F, A>(A value) implements FreeAp<F, A> {}
-
-    // A suspended single operation in F
-    record Lift<F, A>(Kind<F, A> fa) implements FreeAp<F, A> {}
-
-    // Application: independent function and argument computations
-    record Ap<F, X, A>(
-        FreeAp<F, Function<X, A>> ff,  // Computation producing a function
-        FreeAp<F, X> fa                 // Computation producing a value
-    ) implements FreeAp<F, A> {}
-}
-```
-
-The crucial insight is in `Ap`: both `ff` and `fa` are **independent**. Neither depends on the other's result, which is what enables parallelism and static analysis.
-
-## Basic Usage
-
-### Creating FreeAp Values
-
-<!-- verify -->
-```java
-// Pure value (no effects)
-FreeAp<DbOpKind.Witness, Integer> pure = FreeAp.pure(42);
-
-// Lift a single instruction: widen it into the Kind first
-FreeAp<DbOpKind.Witness, User> userFetch =
-    FreeAp.lift(DB_OP.widen(new DbOp.GetUser(userId)));
-
-// Map over a FreeAp
-FreeAp<DbOpKind.Witness, String> userName = userFetch.map(User::name);
-```
-
-`FreeAp.pure(null)` throws at the call, and a `map` or `map2` function that returns null fails the program when it is interpreted, whichever applicative interprets it. [A Task Always Gives a Value](./vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
-
-### Combining Independent Computations
-
-The `map2` method combines two independent computations:
-
-<!-- verify -->
-```java
-FreeAp<DbOpKind.Witness, User> userFetch = FreeAp.lift(DB_OP.widen(new DbOp.GetUser(1)));
-FreeAp<DbOpKind.Witness, List<Post>> postsFetch =
-    FreeAp.lift(DB_OP.widen(new DbOp.GetPosts(1)));
-
-// Combine them - these are INDEPENDENT
-FreeAp<DbOpKind.Witness, UserProfile> profile = userFetch.map2(
-    postsFetch,
-    (user, posts) -> new UserProfile(user, posts)
-);
-```
-
-For more values, chain `map2` or use the applicative instance:
-
-<!-- verify -->
-```java
-FreeApApplicative<DbOpKind.Witness> applicative = FreeApApplicative.instance();
-
-// The applicative works on the Kind, so widen each FreeAp on the way in
-Kind<FreeApKind.Witness<DbOpKind.Witness>, Dashboard> combined = applicative.map3(
-    FREE_AP.widen(FreeAp.lift(DB_OP.widen(new DbOp.GetUser(1)))),
-    FREE_AP.widen(FreeAp.lift(DB_OP.widen(new DbOp.GetPosts(1)))),
-    FREE_AP.widen(FreeAp.lift(DB_OP.widen(new DbOp.GetNotifications(1)))),
-    Dashboard::new
-);
-
-FreeAp<DbOpKind.Witness, Dashboard> dashboard = FREE_AP.narrow(combined);
-```
-
-### Interpreting with foldMap
-
-To execute a `FreeAp` program, provide a natural transformation and an `Applicative` instance:
-
-<!-- verify -->
-```java
-// Natural transformation: DbOp ~> IO. `Natural`'s method is generic, so it takes an
-// anonymous class rather than a lambda.
-Natural<DbOpKind.Witness, IOKind.Witness> interpreter =
-    new Natural<>() {
-        @Override
-        @SuppressWarnings("unchecked") // the operation fixes A; the switch cannot say so
-        public <A> Kind<IOKind.Witness, A> apply(Kind<DbOpKind.Witness, A> fa) {
-            DbOp<A> op = DB_OP.narrow(fa);
-            IO<Object> io = switch (op) {
-                case DbOp.GetUser g -> IO.delay(() -> database.findUser(g.id()));
-                case DbOp.GetPosts g -> IO.delay(() -> database.findPosts(g.userId()));
-                case DbOp.GetNotifications g ->
-                    IO.delay(() -> database.findNotifications(g.userId()));
-            };
-            return (Kind<IOKind.Witness, A>) IO_OP.widen(io);
-        }
-    };
-
-// Interpret the program
-FreeAp<DbOpKind.Witness, Dashboard> program = dashboardProgram(1);
-Kind<IOKind.Witness, Dashboard> result = program.foldMap(interpreter, ioApplicative);
-```
-
-## Parallel Execution
-
-The power of Free Applicative emerges when the target `Applicative` supports parallelism. Consider using `CompletableFuture`:
-
-<!-- verify -->
-```java
-// Interpreter to CompletableFuture (can run in parallel)
-Natural<DbOpKind.Witness, CompletableFutureKind.Witness> parallelInterpreter =
-    new Natural<>() {
-        @Override
-        @SuppressWarnings("unchecked") // the operation fixes A; the switch cannot say so
-        public <A> Kind<CompletableFutureKind.Witness, A> apply(Kind<DbOpKind.Witness, A> fa) {
-            DbOp<A> op = DB_OP.narrow(fa);
-            CompletableFuture<Object> future = switch (op) {
-                case DbOp.GetUser g ->
-                    CompletableFuture.supplyAsync(() -> database.findUser(g.id()));
-                case DbOp.GetPosts g ->
-                    CompletableFuture.supplyAsync(() -> database.findPosts(g.userId()));
-                case DbOp.GetNotifications g ->
-                    CompletableFuture.supplyAsync(() -> database.findNotifications(g.userId()));
-            };
-            return (Kind<CompletableFutureKind.Witness, A>) FUTURE.widen(future);
-        }
-    };
-
-// When interpreted, GetUser and GetPosts can run in parallel!
-FreeAp<DbOpKind.Witness, UserProfile> program = userFetch.map2(postsFetch, UserProfile::new);
-Kind<CompletableFutureKind.Witness, UserProfile> future =
-    program.foldMap(parallelInterpreter, cfApplicative);
-```
-
-Because the Free Applicative structure makes independence explicit, the `CompletableFuture` applicative can start both operations immediately rather than waiting for one to complete.
-
-## Static Analysis
-
-Unlike Free Monad, Free Applicative programs can be analysed before execution. The `analyse` method (an alias for `foldMap`) emphasises this capability:
-
-<!-- verify -->
-```java
-// Count operations before executing
-Natural<DbOpKind.Witness, ConstKind.Witness<Integer>> counter =
-    new Natural<>() {
-        @Override
-        public <A> Kind<ConstKind.Witness<Integer>, A> apply(Kind<DbOpKind.Witness, A> fa) {
-            return CONST.widen(new Const<>(1));  // Each operation counts as 1
-        }
-    };
-
-FreeAp<DbOpKind.Witness, Dashboard> program = dashboardProgram(1);
-Kind<ConstKind.Witness<Integer>, Dashboard> analysis =
-    program.analyse(counter, constApplicative);
-
-int operationCount = CONST.narrow(analysis).value();
-System.out.println("Program will execute " + operationCount + " operations");
-```
-
-This is useful for:
-- **Query optimisation**: Batch similar database operations
-- **Cost estimation**: Calculate resource usage before execution
-- **Validation**: Check program structure meets constraints
-- **Logging**: Record what operations will be performed
-
-## Validation with Error Accumulation
-
-Free Applicative is excellent for validation that should report **all** errors, not just the first:
-
-<!-- verify -->
-```java
-// Define validation operations
-sealed interface ValidationOp<A> {
-    record ValidateEmail(String email) implements ValidationOp<String> {}
-    record ValidateAge(int age) implements ValidationOp<Integer> {}
-    record ValidateName(String name) implements ValidationOp<String> {}
-}
-
-record Pair<A, B>(A first, B second) {}
-
-record ValidatedUser(String name, String email, int age) {}
-```
-
-Each operation is lifted independently, so nothing short-circuits:
-
-<!-- verify -->
-```java
-// Build validation program
-FreeAp<ValidationOpKind.Witness, ValidatedUser> validateUser(
-        String name, String email, int age) {
-    return FreeAp.lift(VALIDATION_OP.widen(new ValidationOp.ValidateName(name))).map2(
-        FreeAp.lift(VALIDATION_OP.widen(new ValidationOp.ValidateEmail(email))).map2(
-            FreeAp.lift(VALIDATION_OP.widen(new ValidationOp.ValidateAge(age))),
-            (e, a) -> new Pair<>(e, a)
-        ),
-        (n, pair) -> new ValidatedUser(n, pair.first(), pair.second())
-    );
-}
-```
-
-The interpreter turns each operation into a `Validated`, and the `Validated` applicative
-accumulates every failure it meets:
-
-<!-- verify -->
-```java
-// Interpreter to Validated (accumulates all errors)
-Natural<ValidationOpKind.Witness, ValidatedKind.Witness<List<String>>> interpreter =
-    new Natural<>() {
-        @Override
-        @SuppressWarnings("unchecked") // the operation fixes A; the switch cannot say so
-        public <A> Kind<ValidatedKind.Witness<List<String>>, A> apply(
-                Kind<ValidationOpKind.Witness, A> fa) {
-            ValidationOp<A> op = VALIDATION_OP.narrow(fa);
-            Validated<List<String>, Object> validated = switch (op) {
-                case ValidationOp.ValidateName v ->
-                    v.name().length() >= 2
-                        ? Validated.valid(v.name())
-                        : Validated.invalid(List.of("Name must be at least 2 characters"));
-                case ValidationOp.ValidateEmail v ->
-                    v.email().contains("@")
-                        ? Validated.valid(v.email())
-                        : Validated.invalid(List.of("Invalid email format"));
-                case ValidationOp.ValidateAge v ->
-                    v.age() >= 0 && v.age() <= 150
-                        ? Validated.valid(v.age())
-                        : Validated.invalid(List.of("Age must be between 0 and 150"));
-            };
-            return (Kind<ValidatedKind.Witness<List<String>>, A>) VALIDATED.widen(validated);
-        }
-    };
-
-// Execute validation
-FreeAp<ValidationOpKind.Witness, ValidatedUser> program = validateUser("X", "invalid", -5);
-Kind<ValidatedKind.Witness<List<String>>, ValidatedUser> result =
-    program.foldMap(interpreter, validatedApplicative);
-
-// Result: Invalid(["Name must be at least 2 characters", "Invalid email format",
-//                  "Age must be between 0 and 150"]) - all three errors are reported.
-```
-
-## Retracting to the Original Applicative
-
-If your instruction type `F` is already an `Applicative`, you can "retract" back to it:
-
-<!-- verify -->
-```java
-FreeAp<IOKind.Witness, String> program = FreeAp.lift(IO_OP.widen(IO.delay(() -> "done")));
-
-// Retract: FreeAp[IO, A] -> IO[A]
-Kind<IOKind.Witness, String> io = program.retract(ioApplicative);
-
-// Equivalent to:
-Kind<IOKind.Witness, String> sameThing = program.foldMap(Natural.identity(), ioApplicative);
-```
-
-## Applicative Laws
-
-`FreeAp` satisfies the applicative laws by construction:
-
-1. **Identity**: `pure(id).ap(fa) == fa`
-2. **Homomorphism**: `pure(f).ap(pure(x)) == pure(f(x))`
-3. **Interchange**: `ff.ap(pure(x)) == pure(f -> f(x)).ap(ff)`
-4. **Composition**: `pure(.).ap(ff).ap(fg).ap(fa) == ff.ap(fg.ap(fa))`
-
-These laws ensure that combining computations behaves predictably.
-
-## When to Use Free Applicative
-
-### Good Use Cases
-
-1. **Parallel data fetching**: Multiple independent API calls or database queries
-2. **Validation**: Accumulate all validation errors rather than failing on first
-3. **Batching**: Combine similar operations into bulk requests
-4. **Static analysis**: Inspect program structure before execution
-5. **Cost estimation**: Calculate resource requirements upfront
-
-### When Free Monad is Better
-
-1. **Conditional logic**: "If user is admin, do X, otherwise do Y"
-2. **Sequential dependencies**: "Use the user ID from step 1 in step 2"
-3. **Early termination**: "Stop processing if validation fails"
-
-### Combining Both
-
-In practice, you might use both. Free Applicative for independent parts, Free Monad for the sequential orchestration:
-
-<!-- verify -->
-```java
-// Free Applicative: independent fetches
-FreeAp<DbOpKind.Witness, UserProfile> fetchProfile =
-    userFetch.map2(postsFetch, UserProfile::new);
-
-// Free Monad: `Free.Ap` holds a FreeAp as one step of a sequential workflow
-Free<DbOpKind.Witness, UserProfile> workflow =
-    new Free.Ap<>(fetchProfile)                 // Run the independent fetches
-        .flatMap(profile ->                     // Then use the result
-            getPosts(profile.user().id())       // This depends on fetchProfile
-                .map(posts -> new UserProfile(profile.user(), posts)));
-```
-
-## Summary
-
-Free Applicative provides:
-
-- **Independence**: Computations don't depend on each other's results
-- **Parallelism**: Smart interpreters can execute operations concurrently
-- **Static analysis**: Full program structure visible before execution
-- **Error accumulation**: Collect all errors rather than failing fast
-- **Batching potential**: Similar operations can be combined
-
-Use Free Applicative when your computations are independent; use Free Monad when they have sequential dependencies. Often the best solution combines both.
 
 ---
 
-~~~admonish tip title="See Also"
-- [Applicative, Selective or Monad?](../functional/abstraction_levels.md) - When to use Applicative vs Selective vs Monad
-- [Selective](../functional/selective.md) - Middle ground between Applicative and Monad
-- [Applicative](../functional/applicative.md) - The type class Free Applicative is based on
-~~~
+## Steps that do not depend on one another {#steps-that-do-not-depend-on-one-another}
 
-~~~admonish tip title="Further Reading"
-- **Functional Programming in Scala** (Red Book): Chapter 12 covers applicative functors and their relationship to monads
-- **Cats Documentation**: [Free Applicative](https://typelevel.org/cats/datatypes/freeapplicative.html) - Scala implementation with examples
-~~~
+Before checkout, the order service prices each line of a basket again from today's catalogue. In a [Free](free_monad.md) program each step may wait on the result of the one before, so an analysis [sees only as far as the first step that waits](free_monad.md#what-can-be-seen-before-it-runs). No line's price waits on another's, so the basket can be held as a Free Applicative program instead. Its steps are combined with `zipWith`, which gives neither step the other's result, and so every instruction is known before the program runs.
+
+The instructions are the `OrderOp` records the [Free](free_monad.md#instructions-held-as-data) page uses. Each carries a continuation `k`, from the instruction's result to what the program does next, and `@EffectAlgebra` generates `OrderOpKind`, `OrderOpFunctor` and `OrderOpInterpreter` from them:
+
+```java
+/**
+ * The order service's instructions, held as data so that a program built from them can be inspected
+ * before an interpreter runs it. {@code @EffectAlgebra} generates the {@code Kind} encoding, the
+ * {@code Functor}, the interpreter base class and the {@code Free} constructors.
+ */
+@NullMarked
+@EffectAlgebra
+public sealed interface OrderOp<A> permits OrderOp.PriceOf, OrderOp.Cancel {
+
+  /** Maps a function over the result type. */
+  <B> OrderOp<B> mapK(Function<? super A, ? extends B> f);
+
+  /**
+   * Looks up the price of a SKU.
+   *
+   * @param sku the SKU to price
+   * @param k continuation from the price to {@code A}
+   * @param <A> the result type
+   */
+  record PriceOf<A>(String sku, Function<BigDecimal, A> k) implements OrderOp<A> {
+    @Override
+    public <B> OrderOp<B> mapK(Function<? super A, ? extends B> f) {
+      return new PriceOf<>(sku, k.andThen(f));
+    }
+  }
+
+  /**
+   * Cancels an order.
+   *
+   * @param orderId the order to cancel
+   * @param k continuation from {@link Unit} to {@code A}
+   * @param <A> the result type
+   */
+  record Cancel<A>(UUID orderId, Function<Unit, A> k) implements OrderOp<A> {
+    @Override
+    public <B> OrderOp<B> mapK(Function<? super A, ? extends B> f) {
+      return new Cancel<>(orderId, k.andThen(f));
+    }
+  }
+}
+```
+
+The code on this page uses these imports:
+
+<!-- verify -->
+```java
+import static org.higherkindedj.example.book.foundations.OrderOpKindHelper.ORDER_OP;
+import static org.higherkindedj.hkt.constant.ConstKindHelper.CONST;
+import static org.higherkindedj.hkt.free_ap.FreeApKindHelper.FREE_AP;
+import static org.higherkindedj.hkt.id.IdKindHelper.ID;
+import static org.higherkindedj.hkt.instances.Witnesses.id;
+import static org.higherkindedj.hkt.validated.ValidatedKindHelper.VALIDATED;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.function.Function;
+import org.higherkindedj.example.book.foundations.OrderOp;
+import org.higherkindedj.example.book.foundations.OrderOpFunctor;
+import org.higherkindedj.example.book.foundations.OrderOpInterpreter;
+import org.higherkindedj.example.book.foundations.OrderOpKind;
+import org.higherkindedj.example.book.foundations.OrderOpOps;
+import org.higherkindedj.example.book.optics.cast.LineItem;
+import org.higherkindedj.hkt.Functor;
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.Monoids;
+import org.higherkindedj.hkt.Semigroups;
+import org.higherkindedj.hkt.Unit;
+import org.higherkindedj.hkt.constant.Const;
+import org.higherkindedj.hkt.constant.ConstKind;
+import org.higherkindedj.hkt.effect.FreeApPath;
+import org.higherkindedj.hkt.effect.FreePath;
+import org.higherkindedj.hkt.effect.Path;
+import org.higherkindedj.hkt.free.Free;
+import org.higherkindedj.hkt.free.ProgramAnalyser;
+import org.higherkindedj.hkt.free.ProgramAnalysis;
+import org.higherkindedj.hkt.free_ap.FreeAp;
+import org.higherkindedj.hkt.free_ap.FreeApAnalyzer;
+import org.higherkindedj.hkt.free_ap.FreeApApplicative;
+import org.higherkindedj.hkt.free_ap.FreeApKind;
+import org.higherkindedj.hkt.id.Id;
+import org.higherkindedj.hkt.id.IdKind;
+import org.higherkindedj.hkt.instances.Instances;
+import org.higherkindedj.hkt.validated.Validated;
+import org.higherkindedj.hkt.validated.ValidatedKind;
+```
+
+`Path.freeApLift` puts one instruction on a `FreeApPath`. `Function.identity()` is its continuation, which hands the price straight back as the step's result:
+
+```java
+  static final Functor<OrderOpKind.Witness> ORDER_OPS = OrderOpFunctor.instance();
+
+  // One instruction, held as data: nothing is priced until an interpreter runs it
+  static FreeApPath<OrderOpKind.Witness, BigDecimal> priceOf(String sku) {
+    return Path.freeApLift(
+        ORDER_OP.widen(new OrderOp.PriceOf<>(sku, Function.identity())), ORDER_OPS);
+  }
+
+```
+
+A line's total is its price times its quantity, and the basket's total adds the lines together with `zipWith`:
+
+```java
+  // A line at today's price: the price times the quantity
+  static FreeApPath<OrderOpKind.Witness, BigDecimal> lineTotal(LineItem line) {
+    return priceOf(line.sku()).map(price -> price.multiply(BigDecimal.valueOf(line.quantity())));
+  }
+
+  // Every line priced again; no line's price waits on another's
+  static FreeApPath<OrderOpKind.Witness, BigDecimal> basketTotal(List<LineItem> lines) {
+    return lines.stream()
+        .map(FreeApplicativeBook::lineTotal)
+        .reduce(
+            Path.freeApPure(BigDecimal.ZERO, ORDER_OPS), (a, b) -> a.zipWith(b, BigDecimal::add));
+  }
+
+```
+
+Nothing has been priced. `BASKET` holds one lamp and four bulbs, added last week at 38.00 and 2.40 each. The catalogue now prices a `LAMP` at 40.00 and a `BULB` at 2.50, so the basket comes to 50.00.
+
+## Reading a program before it runs {#reading-a-program-before-it-runs}
+
+An analysis is an interpreter too. This one turns each instruction into the SKU it would price, held in a [Const](const_type.md), which carries a value through the program and ignores what each step would give:
+
+```java
+  // An analysis is an interpreter too: each instruction gives the SKU it would price, in a Const
+  static final class SkusToPrice extends OrderOpInterpreter<ConstKind.Witness<List<String>>> {
+    @Override
+    protected <A> Kind<ConstKind.Witness<List<String>>, A> handlePriceOf(OrderOp.PriceOf<A> op) {
+      return CONST.widen(new Const<>(List.of(op.sku())));
+    }
+
+    @Override
+    protected <A> Kind<ConstKind.Witness<List<String>>, A> handleCancel(OrderOp.Cancel<A> op) {
+      return CONST.widen(new Const<>(List.of()));
+    }
+  }
+
+```
+
+`FreeApAnalyzer` counts the instructions, and `analyseWith` runs the analysis, joining the lists with `Monoids.list()`, a [Monoid](../functional/semigroup_and_monoid.md) that appends:
+
+```java
+    FreeAp<OrderOpKind.Witness, BigDecimal> program = basketTotal(BASKET).toFreeAp();
+
+    int instructions = FreeApAnalyzer.countOperations(program);
+    // 2
+
+    List<String> skus = FreeApAnalyzer.analyseWith(program, new SkusToPrice(), Monoids.list());
+    // [LAMP, BULB]
+```
+
+Nothing has been priced yet. A program of any length can be read: a basket of ten thousand lines is counted, analysed and run without overflowing the stack.
+
+## One catalogue call for the whole basket {#one-catalogue-call-for-the-whole-basket}
+
+Priced one line at a time, a basket of ten lines makes ten calls to the catalogue service: the N+1 problem, as when a loop of `findById` calls could have been one `IN (...)` query. Read first, it makes one call. `priceInOneCall` lists the SKUs, asks the catalogue for all of them at once, and then runs the program with an interpreter that prices from what came back:
+
+```java
+  // The catalogue service prices many SKUs in one call
+  interface Catalogue {
+    Map<String, BigDecimal> pricesFor(List<String> skus);
+  }
+
+  // Prices each instruction from prices already fetched, and records any cancellation
+  static final class FetchedPrices extends OrderOpInterpreter<IdKind.Witness> {
+    private final Map<String, BigDecimal> prices;
+    final List<UUID> cancelled = new ArrayList<>();
+
+    FetchedPrices(Map<String, BigDecimal> prices) {
+      this.prices = prices;
+    }
+
+    @Override
+    protected <A> Kind<IdKind.Witness, A> handlePriceOf(OrderOp.PriceOf<A> op) {
+      return ID.widen(Id.of(op.k().apply(prices.get(op.sku()))));
+    }
+
+    @Override
+    protected <A> Kind<IdKind.Witness, A> handleCancel(OrderOp.Cancel<A> op) {
+      cancelled.add(op.orderId());
+      return ID.widen(Id.of(op.k().apply(Unit.INSTANCE)));
+    }
+  }
+
+  // Reads the SKUs first, asks the catalogue once, then runs the program
+  static BigDecimal priceInOneCall(
+      FreeApPath<OrderOpKind.Witness, BigDecimal> program, Catalogue catalogue) {
+    List<String> skus =
+        FreeApAnalyzer.analyseWith(program.toFreeAp(), new SkusToPrice(), Monoids.list());
+    FetchedPrices fetched = new FetchedPrices(catalogue.pricesFor(skus));
+    return ID.narrow(program.foldMap(fetched, Instances.monad(id())).runKind()).value();
+  }
+
+```
+
+A stand-in catalogue records each call it is given, so the run can count them:
+
+```java
+    // A stand-in catalogue that records each call, and prices from CATALOGUE
+    List<List<String>> calls = new ArrayList<>();
+    Catalogue catalogue =
+        requested -> {
+          calls.add(requested);
+          return CATALOGUE;
+        };
+
+    BigDecimal total = priceInOneCall(basketTotal(BASKET), catalogue);
+    // 50.00
+
+    int catalogueCalls = calls.size();
+    // 1
+```
+
+`foldMap` hands the instructions to the interpreter in the order `zipWith` and `map2` wrote them, here the lamp and then the bulbs.
+
+## Every unknown SKU at once {#every-unknown-sku-at-once}
+
+An interpreter into [`Validated`](validated_monad.md) gives each price, or a failure naming the SKU the catalogue does not know:
+
+```java
+  // Gives a price, or a failure naming the SKU the catalogue does not know
+  static final class CheckedPrices extends OrderOpInterpreter<ValidatedKind.Witness<List<String>>> {
+    @Override
+    protected <A> Kind<ValidatedKind.Witness<List<String>>, A> handlePriceOf(
+        OrderOp.PriceOf<A> op) {
+      BigDecimal price = CATALOGUE.get(op.sku());
+      return price == null
+          ? VALIDATED.widen(Validated.invalid(List.of("no price for " + op.sku())))
+          : VALIDATED.widen(Validated.valid(op.k().apply(price)));
+    }
+
+    @Override
+    protected <A> Kind<ValidatedKind.Witness<List<String>>, A> handleCancel(OrderOp.Cancel<A> op) {
+      return VALIDATED.widen(Validated.valid(op.k().apply(Unit.INSTANCE)));
+    }
+  }
+
+```
+
+This basket holds two SKUs the catalogue does not know. `Validated`'s `ap` keeps the failures of both sides, so the run reports both:
+
+```java
+    List<LineItem> withUnknowns =
+        List.of(
+            new LineItem("RUG", 1, new BigDecimal("120.00")),
+            new LineItem("LAMP", 1, new BigDecimal("38.00")),
+            new LineItem("VASE", 2, new BigDecimal("15.00")));
+
+    Validated<List<String>, BigDecimal> checked =
+        VALIDATED.narrow(
+            basketTotal(withUnknowns)
+                .foldMap(new CheckedPrices(), Instances.validated(Semigroups.list()))
+                .runKind());
+
+    List<String> problems = checked.getError();
+    // [no price for RUG, no price for VASE]
+```
+
+The same lines as a `Free` program, interpreted the same way, report only the rug. Each of its steps waits on the one before, and `Validated`'s `flatMap` has no result to hand on after a failure.
+
+## Free or Free Applicative {#free-or-free-applicative}
+
+Ask whether a step needs the result of one before it. If it does, the program is a [Free](free_monad.md) one. If none does, it can be a Free Applicative one, and it gains what this page has shown:
+
+| | `Free` | Free Applicative |
+|---|---|---|
+| A step can | Wait on the result before it, and choose what comes next | Not see any other step's result |
+| Known before it runs | Up to the first step that waits on a result | Every instruction |
+| Built with | `via` | `zipWith` and `map` |
+| Run in | A `Monad` | An `Applicative`, such as `Validated`, which keeps every failure, or `Const`, which reads the program |
+
+Independent instructions can also run at the same time. Interpreted into `CompletableFuture`, whose `ap` combines futures already running, an interpreter that starts each price with `supplyAsync` prices the lamp and the bulbs at once.
+
+## Inside a Free program {#inside-a-free-program}
+
+A real program often has both kinds of step: the basket's prices, which are independent, then a decision that needs their total. `Free.Ap` holds a Free Applicative program as one step of a `Free` one:
+
+```java
+  // The basket's prices as one step of a Free program; the next step needs the total
+  static FreePath<OrderOpKind.Witness, Boolean> cancelIfTotalOver(
+      UUID orderId, List<LineItem> lines, BigDecimal limit) {
+    FreePath<OrderOpKind.Witness, BigDecimal> total =
+        Path.free(new Free.Ap<>(basketTotal(lines).toFreeAp()), ORDER_OPS);
+    return total.via(
+        sum ->
+            sum.compareTo(limit) > 0
+                ? Path.free(OrderOpOps.cancel(orderId, Function.identity()), ORDER_OPS)
+                    .map(_ -> true)
+                : Path.freePure(false, ORDER_OPS));
+  }
+
+```
+
+`LIMIT` is 30.00, and the basket comes to 50.00:
+
+```java
+    FetchedPrices store = new FetchedPrices(CATALOGUE);
+
+    boolean cancelled =
+        ID.narrow(
+                cancelIfTotalOver(ORDER, BASKET, LIMIT)
+                    .foldMap(store, Instances.monad(id()))
+                    .runKind())
+            .value();
+    // true
+
+    ProgramAnalysis analysis =
+        ProgramAnalyser.analyse(cancelIfTotalOver(ORDER, BASKET, LIMIT).toFree());
+
+    // ProgramAnalyser counts the basket's FreeAp as one parallel scope, and does not look inside
+    int basketSteps = analysis.parallelScopes();
+    // 1
+```
+
+`ProgramAnalyser` counts the basket as one step, a parallel scope, and does not look inside it. Read the basket with `FreeApAnalyzer` before you wrap it.
+
+## A program always gives a value {#a-program-always-gives-a-value}
+
+`Path.freeApPure(null, functor)` and `FreeAp.pure(null)` throw at the call, and a `map` or `zipWith` function that returns `null` fails the program when it is interpreted. [A Task Always Gives a Value](vtask_monad.md#a-task-always-gives-a-value) sets out the rule every lazy type follows.
+
+## Creating instances {#creating-instances}
+
+`Path.freeApLift(fa, functor)` lifts one instruction onto a `FreeApPath`, `Path.freeApPure(value, functor)` holds a result with no instruction, and `Path.freeAp(freeAp, functor)` puts a `FreeAp` on a Path. Without a Path, `FreeAp.lift(fa)` and `FreeAp.pure(value)` build a `FreeAp` directly, and need no `Functor`.
+
+## Methods {#methods}
+
+On a `FreeApPath`:
+
+| Method | What it does |
+|---|---|
+| `map(f)` | Change the result |
+| `zipWith(other, f)`, `zipWith3(b, c, f)` | Combine programs whose steps do not see one another's results |
+| `foldMap(interpreter, monad)` | Run the program, giving a `GenericPath` in the target monad |
+| `foldMapKind(interpreter, applicative)` | Run the program in any `Applicative`, giving a `Kind` |
+| `toFreeAp()` | Get the `FreeAp` |
+
+On a `FreeAp`, and with `FreeApAnalyzer`:
+
+| Method | What it does |
+|---|---|
+| `map2(other, f)`, `ap(ff)` | Combine two programs |
+| `foldMap(interpreter, applicative)` | Run the program, giving a `Kind`; `analyse(...)` is the same call, named for an analysis |
+| `retract(applicative)` | Run a program whose instructions are already an `Applicative`, such as `IO`, with no interpreter |
+| `FreeApAnalyzer.countOperations(program)` | Count the instructions |
+| `FreeApAnalyzer.collectOperations(program)`, `groupByType(program, narrow)` | List the instructions, or count them by record type |
+| `FreeApAnalyzer.containsOperation(program, test)` | Ask whether any instruction passes a test |
+| `FreeApAnalyzer.analyseWith(program, analysis, monoid)` | Run an analysis into `Const`, joining its values with the monoid |
+
+## Working with Kind {#working-with-kind}
+
+`FREE_AP.widen` and `FREE_AP.narrow`, from `FreeApKindHelper`, convert between a `FreeAp` and its `Kind`. Generic code takes it through `FreeApApplicative.instance()`, whose `map2` builds the program as `FreeAp`'s own does:
+
+```java
+    FreeApApplicative<OrderOpKind.Witness> applicative = FreeApApplicative.instance();
+
+    // A FreeAp is already its own Kind, so widen and narrow are casts
+    Kind<FreeApKind.Witness<OrderOpKind.Witness>, BigDecimal> lamp =
+        FREE_AP.widen(priceOf("LAMP").toFreeAp());
+    Kind<FreeApKind.Witness<OrderOpKind.Witness>, BigDecimal> bulb =
+        FREE_AP.widen(priceOf("BULB").toFreeAp());
+
+    Kind<FreeApKind.Witness<OrderOpKind.Witness>, BigDecimal> both =
+        applicative.map2(lamp, bulb, BigDecimal::add);
+
+    BigDecimal lampAndBulb =
+        ID.narrow(FREE_AP.narrow(both).foldMap(new FetchedPrices(CATALOGUE), Instances.monad(id())))
+            .value();
+    // 42.50
+```
+
+`FreeApApplicative` has no `flatMap`: a Free Applicative program is an `Applicative` and never a `Monad`, which is what keeps every instruction in view.
+
+## When to use Free Applicative {#when-to-use-free-applicative}
+
+| You need | Use |
+|---|---|
+| Independent lookups counted, checked or batched before they run | Free Applicative |
+| Every failure among independent checks | Free Applicative run in `Validated`, or [Validated](validated_monad.md) directly |
+| A step that needs another's result | [Free](free_monad.md), holding a Free Applicative step where the steps are independent |
+| Several instruction sets in one program | [EitherF](eitherf.md) |
+| Independent work run once, one way | [VTask](vtask_monad.md)'s `Par`, or a direct call |
 
 ~~~admonish info title="Hands-On Learning"
-- [Tutorial 10: Free Applicative](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial10_FreeApplicative.java) (6 exercises) - Building Free Applicative programs
-- [Tutorial 11: Static Analysis](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial11_StaticAnalysis.java) (10 exercises) - Analysing programs before execution
+Practise building programs in [Tutorial 10: Free Applicative](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial10_FreeApplicative.java) (6 exercises), and reading them in [Tutorial 11: Static Analysis](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial11_StaticAnalysis.java) (10 exercises), from the [Advanced Patterns](../tutorials/coretypes/advanced_journey.md) journey.
 ~~~
 
 ---
@@ -14929,201 +14952,364 @@ Use Free Applicative when your computations are independent; use Free Monad when
 
 <!-- Source: monads/eitherf.md -->
 
+<!-- description: Join two instruction sets in one Java program with EitherF: an order program that cancels and tells the customer, run by one interpreter per set. -->
+
 # EitherF: Composing Effect Vocabularies
-## _One program, many languages, one interpreter_
 
-> *"Only connect! That was the whole of her sermon."*
+_One program, two instruction sets, and each instruction sent to the interpreter for its own set._
+
+<!-- source: E. M. Forster, Howards End (1910), Chapter XXII; text checked against Project Gutenberg eBook #2946 -->
+> _"Only connect! That was the whole of her sermon."_
 >
-> — E.M. Forster, *Howards End*
+> — E. M. Forster, *Howards End* (Chapter XXII)
 
-Forster's imperative applies to effect algebras. A payment service speaks four separate languages: gateway operations, fraud checks, ledger entries, notifications. Each is a self-contained sealed interface with its own vocabulary. But a program orchestrating all four needs a single type that can hold any instruction from any vocabulary. `EitherF` is the connection: a union type at the type-constructor level that routes each instruction to the interpreter that speaks its language.
+Margaret Schlegel's sermon is meant for Henry Wilcox, who keeps the two halves of his life apart. Two instruction sets kept apart cannot share a program either. `EitherF` connects them: one program uses both, and each instruction still reaches the interpreter for its own set.
 
----
+~~~admonish abstract title="EitherF at a glance"
+| | |
+|---|---|
+| **Models** | One instruction from either of two instruction sets |
+| **Replaces** | One interface grown to hold every service's operations, or a dispatcher written by hand |
+| **Effect Path** | None: a program over the pair is a [`FreePath`](../glossary/effect-paths.md#freepath) |
+| **Instances** | `Functor` |
+| **Choose it when** | One program needs instructions from two or more sets, which [`@ComposeEffects`](../effect/effect_handlers.md#composing-effects) joins for you; otherwise [Free](free_monad.md) over one set, or compare every type in [Choosing a Type](supported-types.md#choosing-a-type) |
+~~~
 
 ~~~admonish info title="What You'll Learn"
-- Why programs using multiple effect algebras need a composed effect type
-- How `EitherF` represents "this instruction or that instruction" at the type constructor level
-- How `Inject` embeds single-effect instructions into the composed type
-- How `Interpreters.combine` merges individual interpreters into one
-- How `Free.translate` lifts programs between effect types
-- When `@ComposeEffects` generates all of this automatically
+- Join two instruction sets so that one program can use both
+- Run the program with an interpreter for each set, combined into one
+- Read what `@ComposeEffects` generates: an `Inject` for each set and the pair's `Functor`
+- Move a program written for one set into the pair without changing it
+- Nest a third and a fourth instruction set
 ~~~
 
-## The Problem: When One Vocabulary Isn't Enough
+~~~admonish example title="See Example Code"
+**The code on this page is [EitherFBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/eitherf/EitherFBook.java)**, with [OrderEffects.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/eitherf/OrderEffects.java): the page includes them, so the build compiles and runs them. [EitherFBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/eitherf/EitherFBookTest.java) holds what the page says each method does.
+~~~
 
-The [Free monad](free_monad.md) lets you build a program as a data structure and interpret it in different ways. But a Free program is parameterised by a single instruction type:
-
-<!-- verify -->
-```java
-Free<ConsoleOpKind.Witness, String> program = readLine();
-```
-
-This program can only contain console instructions. What if your workflow also needs database operations?
-
-<!-- verify -->
-```java
-// Console operations
-Free<ConsoleOpKind.Witness, Unit> greeting = printLine("Hello");
-
-// Database operations
-Free<DbOpKind.Witness, User> lookup = dbLookup("alice");
-
-// How do you combine them into one program?
-// Free<???, Unit> combined = greeting.flatMap(_ -> lookup);  // Type mismatch!
-```
-
-The type parameters `ConsoleOpKind.Witness` and `DbOpKind.Witness` are different. You cannot `flatMap` across them. You need a type that says "this instruction is *either* a console operation *or* a database operation."
-
-That type is `EitherF`.
-
-## The Solution: Either for Type Constructors
-
-Just as `Either<L, R>` holds a value that is either an `L` or an `R`, `EitherF<F, G, A>` holds an instruction that is either from effect set `F` or effect set `G`:
-
-```java
-public sealed interface EitherF<F, G, A>
-    permits EitherF.Left, EitherF.Right {
-
-  record Left<F, G, A>(Kind<F, A> value) implements EitherF<F, G, A> {}
-  record Right<F, G, A>(Kind<G, A> value) implements EitherF<F, G, A> {}
-}
-```
-
-The `F` suffix follows the established `modifyF` convention where it means "lifted to the functor/effect level."
-
-When an instruction arrives, dispatch is a simple pattern match:
-
-<pre class="hkj-ascii-diagram">
-Instruction arrives
-    │
-    ├── <span style="color:#2196F3">Left(consoleOp)  →  Console interpreter handles it</span>
-    │
-    └── <span style="color:#9C27B0">Right(dbOp)      →  Database interpreter handles it</span>
-</pre>
-
-Now both instruction types live in one combined type, and `Free<EitherFKind.Witness<ConsoleOp, DbOp>, A>` can hold instructions from either vocabulary.
-
-## Scaling Up: Right-Nesting for 3+ Effects
-
-Two effects use a flat `EitherF<F, G>`. Three or more effects nest on the right:
-
-```
-Two effects:    EitherF<F, G>
-Three effects:  EitherF<F, EitherF<G, H>>
-Four effects:   EitherF<F, EitherF<G, EitherF<H, I>>>
-```
-
-The [payment processing example](../examples/payment_processing.md) composes four effect algebras this way:
-
-```
-EitherF< PaymentGatewayOp,
-         EitherF< FraudCheckOp,
-                  EitherF< LedgerOp,
-                           NotificationOp >>>
-
-Dispatch:
-  Left?  → gateway interpreter
-  Right? → Left?  → fraud interpreter
-           Right? → Left?  → ledger interpreter
-                    Right? → notification interpreter
-```
-
-Each instruction is routed to exactly one interpreter based on its position in the nesting. Users never construct this nesting manually; the [`@ComposeEffects`](../effect/effect_handlers.md#composing-effects) annotation generates it automatically.
-
-## Inject: Embedding Instructions
-
-Without `Inject`, every instruction would need manual wrapping:
-
-```java
-// Without Inject: every instruction is wrapped by hand, once per nesting level
-// (`Composed` abbreviates the four-way EitherF nesting shown above)
-Free<Composed, RiskScore> checkFraud =
-    Free.liftF(
-        EITHERF.widen(EitherF.right(EITHERF.widen(EitherF.left(fraudOp)))),
-        composedFunctor);
-```
-
-<!-- verify -->
-```java
-// With Inject: clean and type-safe. `var` keeps the composed witness off the page.
-var fraud = PaymentEffectsWiring.boundSet().fraud();
-var checkFraud = fraud.checkTransaction(amount, customer, Function.identity());
-```
-
-`Inject<F, G>` witnesses that effect type `F` can be embedded into a larger composed type `G`:
-
-```java
-public interface Inject<F, G> {
-  <A> Kind<G, A> inject(Kind<F, A> fa);
-}
-```
-
-Standard instances (provided by `InjectInstances`):
-
-`injectLeft()`
-: Embeds into the left position of an `EitherF`
-
-`injectRight()`
-: Embeds into the right position of an `EitherF`
-
-`injectRightThen(Inject)`
-: Transitive injection for 3+ effects, chaining through nested right positions
-
-## Interpreters.combine: One Dispatcher for Everything
-
-Individual interpreters each handle one effect algebra. `Interpreters.combine` merges them into a single natural transformation that dispatches to the right handler:
-
-<!-- verify -->
-```java
-var interpreter = Interpreters.combine(
-    gatewayInterpreter,
-    fraudInterpreter,
-    ledgerInterpreter,
-    notificationInterpreter);
-
-// One call interprets the entire composed program
-var program = PaymentService.create().processPayment(customer, amount, method);
-IO<PaymentResult> result = IOKindHelper.IO_OP.narrow(
-    PaymentEffectsWiring.interpret(program, interpreter, Instances.monad(io())));
-```
-
-Overloads support 2, 3, and 4 effects. Internally, `combine` pattern-matches on `Left`/`Right` at each nesting level and delegates to the corresponding interpreter.
-
-## Free.translate: Lifting Between Effect Types
-
-`Free.translate` transforms `Free<F, A>` to `Free<G, A>` using a natural transformation and a target functor:
-
-```java
-Free<G, A> translated = Free.translate(program, inject::inject, functorG);
-```
-
-This is how `Bound` instances work internally: when you call `console.readLine(Function.identity())`, the `Bound` class lifts the single-effect instruction into the composed `EitherF` type via `Free.translate` and the appropriate `Inject` instance.
-
-## When @ComposeEffects Does It For You
-
-For most users, `EitherF` is an implementation detail. The [`@ComposeEffects`](../effect/effect_handlers.md#composing-effects) annotation generates the entire composition infrastructure:
-
-<!-- verify -->
-```java
-@ComposeEffects
-public record AppEffects(
-    Class<ConsoleOp<?>> console,
-    Class<DbOp<?>> db) {}
-// Generates: AppEffectsSupport with typed Inject instances, composed Functor, BoundSet
-```
-
-The generated `BoundSet` provides smart constructors that handle injection automatically. You write programs using `bounds.console().readLine(...)` and `bounds.db().save(...)` without thinking about `EitherF`, `Inject`, or nesting.
-
-Understanding EitherF matters when you need to debug type errors, write custom composition, or understand what the generated code does under the hood.
+~~~admonish tip title="Where EitherF fits"
+For most code, `EitherF` is an implementation detail. [`@ComposeEffects`](../effect/effect_handlers.md#composing-effects) generates what joins the sets, and the [Payment Processing](../examples/payment_processing.md) example composes four of them. Knowing what that code is made of helps when you read a type error, or join sets by hand.
+~~~
 
 ---
 
-~~~admonish tip title="See Also"
-- **[Free Monad](free_monad.md)** - The program-as-data foundation that EitherF compositions target
-- **[Effect Handlers Introduction](../effect/effect_handlers_intro.md)** - Motivation and terminology for the effect handler system
-- **[Effect Handler Reference](../effect/effect_handlers.md)** - Technical reference for `@EffectAlgebra` and `@ComposeEffects`
-- **[Payment Processing](../examples/payment_processing.md)** - Complete worked example composing four effect algebras
+## Two instruction sets, one program {#two-instruction-sets-one-program}
+
+The order service's [Free](free_monad.md) program prices a line and cancels the order when the line costs too much. Now it must also tell the customer why. Notices are a concern of their own, with their own interpreter: an outbox in a test, a mail service when the service runs. They are a second instruction set beside `OrderOp`:
+
+```java
+/**
+ * The order service's notices to customers, held as data beside {@link OrderOp}, so that one
+ * program can use both instruction sets. {@code @EffectAlgebra} generates the {@code Kind}
+ * encoding, the {@code Functor}, the interpreter base class and the {@code Free} constructors.
+ */
+@NullMarked
+@EffectAlgebra
+public sealed interface NoticeOp<A> permits NoticeOp.Send {
+
+  /** Maps a function over the result type. */
+  <B> NoticeOp<B> mapK(Function<? super A, ? extends B> f);
+
+  /**
+   * Sends the customer who placed an order a notice about it.
+   *
+   * @param orderId the order the notice is about
+   * @param text what the notice says
+   * @param k continuation from {@link Unit} to {@code A}
+   * @param <A> the result type
+   */
+  record Send<A>(UUID orderId, String text, Function<Unit, A> k) implements NoticeOp<A> {
+    @Override
+    public <B> NoticeOp<B> mapK(Function<? super A, ? extends B> f) {
+      return new Send<>(orderId, text, k.andThen(f));
+    }
+  }
+}
+```
+
+A `Free<OrderOpKind.Witness, A>` holds `OrderOp` instructions only, and a program over `NoticeOp` has another type, so `via` cannot chain one onto the other. Adding a `Send` record to `OrderOp` would mix the two concerns, and every `OrderOp` interpreter would have to handle notices. The code on this page uses these imports:
+
+<!-- verify -->
+```java
+import static org.higherkindedj.example.book.foundations.NoticeOpKindHelper.NOTICE_OP;
+import static org.higherkindedj.hkt.eitherf.EitherFKindHelper.EITHERF;
+import static org.higherkindedj.hkt.id.IdKindHelper.ID;
+import static org.higherkindedj.hkt.instances.Witnesses.id;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.function.Function;
+import org.higherkindedj.example.book.foundations.NoticeOp;
+import org.higherkindedj.example.book.foundations.NoticeOpFunctor;
+import org.higherkindedj.example.book.foundations.NoticeOpInterpreter;
+import org.higherkindedj.example.book.foundations.NoticeOpKind;
+import org.higherkindedj.example.book.foundations.NoticeOpOps;
+import org.higherkindedj.example.book.foundations.OrderOp;
+import org.higherkindedj.example.book.foundations.OrderOpFunctor;
+import org.higherkindedj.example.book.foundations.OrderOpInterpreter;
+import org.higherkindedj.example.book.foundations.OrderOpKind;
+import org.higherkindedj.example.book.foundations.OrderOpOps;
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.Natural;
+import org.higherkindedj.hkt.Unit;
+import org.higherkindedj.hkt.effect.FreePath;
+import org.higherkindedj.hkt.effect.Path;
+import org.higherkindedj.hkt.eitherf.EitherF;
+import org.higherkindedj.hkt.eitherf.EitherFFunctor;
+import org.higherkindedj.hkt.eitherf.EitherFKind;
+import org.higherkindedj.hkt.eitherf.Interpreters;
+import org.higherkindedj.hkt.free.Free;
+import org.higherkindedj.hkt.id.Id;
+import org.higherkindedj.hkt.id.IdKind;
+import org.higherkindedj.hkt.inject.Inject;
+import org.higherkindedj.hkt.inject.InjectInstances;
+import org.higherkindedj.hkt.instances.Instances;
+```
+
+## An instruction from either set {#an-instruction-from-either-set}
+
+`Either<L, R>` holds a value that is an `L` or an `R`. `EitherF<F, G, A>` holds an instruction that is from the set `F` or the set `G`, each giving an `A`: `Left` wraps an instruction from `F`, and `Right` one from `G`. The `F` in the name says it holds a type constructor's value, as `Kind<F, A>` does. A program over the pair holds instructions from both sets, and running it sends each to the interpreter for its side:
+
+```mermaid
+flowchart TB
+    accTitle: How one interpreter for the pair dispatches an instruction
+    accDescr: An instruction in the pair is an EitherF. A Left holds an OrderOp instruction, which goes to the InMemoryOrders interpreter. A Right holds a NoticeOp instruction, which goes to the Outbox interpreter.
+    I["an instruction in the pair"]:::domain --> D{"Left or Right?"}:::decision
+    D -->|Left| O["an OrderOp instruction"]:::domain
+    D -->|Right| N["a NoticeOp instruction"]:::domain
+    O --> IO["InMemoryOrders"]:::step
+    N --> OB["Outbox"]:::step
+    classDef domain fill:#a6d189,stroke:#40a02b,color:#232634
+    classDef step fill:#8caaee,stroke:#1e66f5,color:#232634
+    classDef decision fill:#e5c890,stroke:#df8e1d,color:#232634
+```
+
+## Joining the sets {#joining-the-sets}
+
+`@ComposeEffects` on a record that names the sets generates what the pair needs:
+
+```java
+/**
+ * The order service's two instruction sets as one. {@code @ComposeEffects} generates {@code
+ * OrderEffectsSupport}, with an {@code Inject} for each set, the pair's {@code Functor} and a
+ * {@code BoundSet} to hold each set's constructors.
+ */
+@NullMarked
+@ComposeEffects
+public record OrderEffects(Class<OrderOp<?>> orders, Class<NoticeOp<?>> notices) {}
+```
+
+The generated `OrderEffectsSupport`, in the record's own package, wires the pair. Its `functor` gives the pair's `Functor`, which `Free` needs, and its `injectOrders` and `injectNotices` say which side each set takes. Each set's own `@EffectAlgebra` generates a `boundTo`, which gives that set's constructors bound to its side. The pair's witness is `EitherFKind.Witness<OrderOpKind.Witness, NoticeOpKind.Witness>`:
+
+```java
+  // The pair's Functor maps an instruction from either set
+  static final EitherFFunctor<OrderOpKind.Witness, NoticeOpKind.Witness> ORDERS_AND_NOTICES =
+      OrderEffectsSupport.functor(OrderOpFunctor.instance(), NoticeOpFunctor.instance());
+
+  // Each set's generated constructors, bound to its side of the pair
+  static final OrderOpOps.Bound<EitherFKind.Witness<OrderOpKind.Witness, NoticeOpKind.Witness>>
+      ORDERS = OrderOpOps.boundTo(OrderEffectsSupport.injectOrders(), ORDERS_AND_NOTICES);
+  static final NoticeOpOps.Bound<EitherFKind.Witness<OrderOpKind.Witness, NoticeOpKind.Witness>>
+      NOTICES = NoticeOpOps.boundTo(OrderEffectsSupport.injectNotices(), ORDERS_AND_NOTICES);
+
+```
+
+`ORDERS.priceOf` and `NOTICES.send` give `Free` programs over the pair, so `via` chains them. The program cancels the order and tells the customer, or does neither:
+
+```java
+  // Cancels the order if the line costs more than the limit, and tells the customer why
+  static FreePath<EitherFKind.Witness<OrderOpKind.Witness, NoticeOpKind.Witness>, Boolean>
+      cancelAndTell(UUID orderId, String sku, BigDecimal limit) {
+    return Path.free(ORDERS.priceOf(sku, Function.identity()), ORDERS_AND_NOTICES)
+        .via(
+            price ->
+                price.compareTo(limit) <= 0
+                    ? Path.freePure(false, ORDERS_AND_NOTICES)
+                    : Path.free(ORDERS.cancel(orderId, Function.identity()), ORDERS_AND_NOTICES)
+                        .then(
+                            () ->
+                                Path.free(
+                                    NOTICES.send(
+                                        orderId,
+                                        "Cancelled: " + sku + " costs " + price,
+                                        Function.identity()),
+                                    ORDERS_AND_NOTICES))
+                        .map(_ -> true));
+  }
+
+```
+
+## One interpreter for the pair {#one-interpreter-for-the-pair}
+
+Each set keeps an interpreter of its own, written as [on the Free page](free_monad.md#one-program-two-interpreters). `InMemoryOrders` prices from a catalogue that holds a `LAMP` at 40.00, and records each cancellation. `Outbox` keeps each notice instead of sending it:
+
+```java
+  // Runs each order instruction against a catalogue and a list of cancelled orders
+  static final class InMemoryOrders extends OrderOpInterpreter<IdKind.Witness> {
+    final List<UUID> cancelled = new ArrayList<>();
+
+    @Override
+    protected <A> Kind<IdKind.Witness, A> handlePriceOf(OrderOp.PriceOf<A> op) {
+      return ID.widen(Id.of(op.k().apply(CATALOGUE.get(op.sku()))));
+    }
+
+    @Override
+    protected <A> Kind<IdKind.Witness, A> handleCancel(OrderOp.Cancel<A> op) {
+      cancelled.add(op.orderId());
+      return ID.widen(Id.of(op.k().apply(Unit.INSTANCE)));
+    }
+  }
+
+  // Keeps each notice in an outbox instead of sending it
+  static final class Outbox extends NoticeOpInterpreter<IdKind.Witness> {
+    final List<String> sent = new ArrayList<>();
+
+    @Override
+    protected <A> Kind<IdKind.Witness, A> handleSend(NoticeOp.Send<A> op) {
+      sent.add(op.text());
+      return ID.widen(Id.of(op.k().apply(Unit.INSTANCE)));
+    }
+  }
+
+```
+
+`Interpreters.combine` joins them into one interpreter for the pair, which hands a `Left` to the first and a `Right` to the second. `LIMIT` is 30.00:
+
+```java
+    InMemoryOrders orders = new InMemoryOrders();
+    Outbox outbox = new Outbox();
+
+    // One interpreter for the pair: each instruction goes to the one for its set
+    Natural<EitherFKind.Witness<OrderOpKind.Witness, NoticeOpKind.Witness>, IdKind.Witness> both =
+        Interpreters.combine(orders, outbox);
+
+    boolean cancelled =
+        ID.narrow(
+                cancelAndTell(ORDER, "LAMP", LIMIT).foldMap(both, Instances.monad(id())).runKind())
+            .value();
+    // true
+
+    List<String> notices = outbox.sent;
+    // [Cancelled: LAMP costs 40.00]
+```
+
+Within the limit, as for a `BULB`, the program cancels nothing and sends nothing.
+
+## What the generated code is {#what-the-generated-code-is}
+
+An `Inject<F, G>` puts an instruction from the set `F` into the larger set `G`. `OrderEffectsSupport`'s two are the library's `injectLeft` and `injectRight`. Written by hand, they draw the [HKJ checker](../tooling/compile_checks.md)'s `migration-nudge` warning, which points you to `@ComposeEffects`:
+
+```java
+  // What OrderEffectsSupport's two Injects are: orders go on the left, notices on the right
+  @SuppressWarnings("migration-nudge") // shows what @ComposeEffects generates
+  static final Inject<
+          OrderOpKind.Witness, EitherFKind.Witness<OrderOpKind.Witness, NoticeOpKind.Witness>>
+      INTO_ORDERS = InjectInstances.injectLeft();
+
+  @SuppressWarnings("migration-nudge") // shows what @ComposeEffects generates
+  static final Inject<
+          NoticeOpKind.Witness, EitherFKind.Witness<OrderOpKind.Witness, NoticeOpKind.Witness>>
+      INTO_NOTICES = InjectInstances.injectRight();
+
+```
+
+An injected instruction is an `EitherF`, as [Working with Kind](#working-with-kind) shows.
+
+## Three sets and more {#three-sets-and-more}
+
+A pair holds two sets. A third nests on the right, and so does a fourth, which is as many as `@ComposeEffects` and `Interpreters.combine` take:
+
+<pre class="hkj-ascii-diagram" role="img" aria-label="How EitherF nests as sets are added. Two sets are EitherF of F and G. Three are EitherF of F and an EitherF of G and H. Four nest once more on the right.">
+Two sets:    EitherF&lt;F, G&gt;
+Three sets:  EitherF&lt;F, EitherF&lt;G, H&gt;&gt;
+Four sets:   EitherF&lt;F, EitherF&lt;G, EitherF&lt;H, I&gt;&gt;&gt;
+</pre>
+
+`InjectInstances.injectRightThen(inner)` reaches into the nesting: `injectRightThen(injectLeft())` puts an instruction from `G` into the three-set nesting, as a `Right` holding a `Left`. `@ComposeEffects` writes each of these for you.
+
+## Moving a program into the pair {#moving-a-program-into-the-pair}
+
+A program written for `OrderOp` alone, before notices existed, joins the pair with `Free.translate`, which passes each instruction through a [natural transformation](../functional/natural_transformation.md). An `Inject`'s method is one:
+
+```java
+    // Written for OrderOp alone, before notices existed
+    FreePath<OrderOpKind.Witness, BigDecimal> lampAndBulb =
+        Path.free(OrderOpOps.priceOf("LAMP", Function.identity()), OrderOpFunctor.instance())
+            .zipWith(
+                Path.free(
+                    OrderOpOps.priceOf("BULB", Function.identity()), OrderOpFunctor.instance()),
+                BigDecimal::add);
+
+    // Each instruction moves to the left of the pair; the program is otherwise unchanged
+    Free<EitherFKind.Witness<OrderOpKind.Witness, NoticeOpKind.Witness>, BigDecimal> joined =
+        Free.translate(lampAndBulb.toFree(), INTO_ORDERS::inject, ORDERS_AND_NOTICES);
+
+    BigDecimal total =
+        ID.narrow(
+                joined.foldMap(
+                    Interpreters.combine(new InMemoryOrders(), new Outbox()),
+                    Instances.monad(id())))
+            .value();
+    // 42.50
+```
+
+Each bound constructor works the same way: `ORDERS.priceOf` builds the `OrderOp` program and translates it into the pair.
+
+## An instruction is never null {#an-instruction-is-never-null}
+
+`EitherF.left(null)` and `EitherF.right(null)` throw at the call, so an instruction in the pair always holds one from a set. Its result follows the rule of the `Free` program that holds it: [a program always gives a value](free_monad.md#a-program-always-gives-a-value).
+
+## Creating instances {#creating-instances}
+
+`@ComposeEffects` generates the `Inject`s and the `Functor`, and each set's generated `boundTo` gives its constructors in the pair. By hand, `InjectInstances.injectLeft()`, `injectRight()` and `injectRightThen(inner)` give the `Inject`s, `EitherFFunctor.of(left, right)` the `Functor`, and `EitherF.left(fa)` and `EitherF.right(ga)` an instruction.
+
+## Methods {#methods}
+
+| Method | What it does |
+|---|---|
+| `EitherF.left(fa)`, `EitherF.right(ga)` | Hold an instruction from the left set, or from the right one |
+| `eitherF.fold(onLeft, onRight)` | Act on the instruction from whichever side holds it |
+| `inject.inject(fa)` | Put an instruction from one set into a larger one |
+| `Interpreters.combine(f, g)`, up to four | Join one interpreter per set into one for the nesting |
+| `EitherFFunctor.of(left, right)` | The pair's `Functor`, built from each set's |
+| `Free.translate(program, natural, functor)` | Move a program to another instruction set |
+| `XOps.boundTo(inject, functor)` | A set's generated constructors, building programs in the larger set |
+
+## Working with Kind {#working-with-kind}
+
+An `EitherF` is already its own `Kind`, so `EITHERF.widen` and `EITHERF.narrow`, from `EitherFKindHelper`, are casts. An injected instruction narrows to one, and `fold` says which side holds it:
+
+```java
+    // An instruction in the pair is an EitherF: Left holds an order instruction, Right a notice
+    EitherF<OrderOpKind.Witness, NoticeOpKind.Witness, Unit> held =
+        EITHERF.narrow(
+            INTO_NOTICES.inject(
+                NOTICE_OP.widen(new NoticeOp.Send<>(ORDER, "Shipped", Function.identity()))));
+
+    // fold acts on whichever side holds the instruction
+    boolean aNotice = held.fold(_ -> false, _ -> true);
+    // true
+```
+
+Its only instance is `EitherFFunctor`, which maps through the instruction on whichever side holds it, using that set's `Functor`. That is all a `Free` program needs of its instruction set: `EitherF` has no `Applicative` or `Monad`, because the program is the monad.
+
+## When to use `EitherF` {#when-to-use-eitherf}
+
+| You need | Use |
+|---|---|
+| One program over two or more instruction sets | `@ComposeEffects`, which generates the `EitherF` nesting |
+| To read a type error in that program, or to join sets by hand | This page's `Inject`, `EitherF` and `Interpreters.combine` |
+| One instruction set | [Free](free_monad.md) on its own |
+| Two services called directly, run one way | A direct call to each |
+
+~~~admonish info title="Hands-On Learning"
+Practise joining instruction sets in [Tutorial 04: Combining Effects with EitherF](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/effecthandlers/Tutorial04_CombiningEffects.java) (3 exercises), from the [Effect Handlers](../tutorials/effecthandlers/ch_intro.md) journey.
 ~~~
+
+**Benchmarks:** `FreeEffectBenchmark` measures what dispatching through `EitherF` and `Interpreters.combine` costs beside a program over one instruction set. [Benchmarks & Performance](../benchmarks.md) says how to run it.
 
 ---
 
@@ -15132,311 +15318,269 @@ Understanding EitherF matters when you need to debug type errors, write custom c
 
 <!-- Source: monads/coyoneda.md -->
 
-# Coyoneda
-## _The Free Functor and Map Fusion_
+<!-- description: Hold every map in Java with Coyoneda: apply three maps to an order's lines in one walk, and give a warehouse's instruction set the Functor it lacks. -->
 
-~~~admonish info title="What You'll Learn"
-- What Coyoneda is and why it's called the "free functor"
-- How Coyoneda provides automatic Functor instances for any type constructor
-- The map fusion optimisation and how it works
-- Using Coyoneda with Free monads to simplify DSL definitions
-- The lift and lower pattern
-- When Coyoneda improves performance
+# Coyoneda: Maps Held for One Pass
+
+_Hold every `map` for one pass, and give an instruction set the `Functor` it lacks._
+
+<!-- source: Mark Twain, "The Late Benjamin Franklin" (written about 1870), collected in Sketches New and Old (1875); the maxim heads the sketch, signed "B. F."; text checked against Project Gutenberg eBook #3189 -->
+> _"Never put off till to-morrow what you can do day after to-morrow just as well."_
+>
+> — Mark Twain, *The Late Benjamin Franklin*
+
+Twain signs the maxim with Franklin's initials, in a sketch that mocks Franklin's maxims. A Coyoneda takes it as advice: every `map` is written down and put off. Only when you lower it is the work done, all of it in one pass.
+
+~~~admonish abstract title="Coyoneda at a glance"
+| | |
+|---|---|
+| **Models** | A value of `F` with the `map` calls made on it held back, to be applied in one pass |
+| **Replaces** | A `Functor` written by hand for an instruction set, or a chain of `map` calls that each walk the structure |
+| **Effect Path** | None |
+| **Instances** | `Functor` |
+| **Choose it when** | An instruction set has no `Functor` of its own; otherwise use the `Functor` that [`@EffectAlgebra`](../effect/effect_handlers.md#defining-effects) generates, or compare every type in [Choosing a Type](supported-types.md#choosing-a-type) |
 ~~~
 
-~~~admonish title="Hands On Practice"
-[Tutorial09_Coyoneda.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial09_Coyoneda.java)
+~~~admonish info title="What You'll Learn"
+- Hold three maps on a list, and apply them in one walk
+- Give an instruction set with no `Functor` one, so that a `Free` program can hold it
+- Run that program with `Coyoneda.interpreter`, or one held value with `foldMap`
+- Choose between Coyoneda and a `Functor` of the set's own, such as the one `@EffectAlgebra` generates
 ~~~
 
 ~~~admonish example title="See Example Code"
-- [CoyonedaTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/coyoneda/CoyonedaTest.java) - Comprehensive test suite
-- [CoyonedaFunctorTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-core/src/test/java/org/higherkindedj/hkt/coyoneda/CoyonedaFunctorTest.java) - Functor law verification
-- [CoyonedaExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/coyoneda/CoyonedaExample.java) - Practical examples
+**The code on this page is [CoyonedaBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/coyoneda/CoyonedaBook.java)**: the page includes it, so the build compiles and runs it. [CoyonedaBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/coyoneda/CoyonedaBookTest.java) holds what the page says each method does.
 ~~~
 
-## Purpose
-
-Coyoneda solves two practical problems:
-
-1. **Automatic Functor instances**: Any type constructor `F` can be wrapped in Coyoneda, which gives it a Functor instance for free, even if `F` itself doesn't have one.
-
-2. **Map fusion**: Multiple consecutive `map` operations are automatically fused into a single function composition, reducing overhead.
-
-### The Problem Coyoneda Solves
-
-When building Free monads, each instruction type needs a Functor instance. This can be tedious:
-
-<!-- verify -->
-```java
-// Without Coyoneda: must implement Functor for every DSL
-sealed interface DatabaseOp<A> {
-    record Query(String sql) implements DatabaseOp<ResultSet> {}
-    record Update(String sql) implements DatabaseOp<Integer> {}
-}
-
-// Tedious: implement Functor<DatabaseOp> manually
-// Even more tedious if DatabaseOp has many variants
-```
-
-With Coyoneda, you can skip the Functor implementation entirely:
-
-<!-- verify -->
-```java
-// With Coyoneda: wrap your DSL and get Functor for free
-Kind<DatabaseOpKind.Witness, ResultSet> query =
-    DATABASE_OP.widen(new DatabaseOp.Query("SELECT * FROM users"));
-Coyoneda<DatabaseOpKind.Witness, ResultSet> coyo = Coyoneda.lift(query);
-// Now you can map over it without implementing Functor<DatabaseOpKind.Witness>!
-```
-
-## How Coyoneda Works
-
-Coyoneda stores two things:
-1. A value of type `Kind<F, X>` (the original wrapped value)
-2. A function `X -> A` (the accumulated transformations)
-
-When you call `map(f)`, instead of applying `f` immediately, Coyoneda just composes `f` with the existing transformation:
-
-```
-Coyoneda(fx, transform).map(f) = Coyoneda(fx, f.compose(transform))
-```
-
-The actual mapping only happens when you "lower" back to `F` using a real Functor instance.
-
-```
-lift: F[A] ──────────────> Coyoneda[F, A]    (wrap with identity function)
-                               │
-                          map(f).map(g).map(h)
-                               │
-                               ▼
-                          Coyoneda[F, D]    (functions composed, not applied)
-                               │
-lower: Coyoneda[F, D] ─────────> F[D]       (apply composed function once)
-```
-
-## Core Interface
-
-```java
-public sealed interface Coyoneda<F, A> {
-
-    /**
-     * Lifts a Kind<F, A> into Coyoneda with the identity transformation.
-     */
-    static <F, A> Coyoneda<F, A> lift(Kind<F, A> fa);
-
-    /**
-     * Creates a Coyoneda with a value and transformation function.
-     */
-    static <F, X, A> Coyoneda<F, A> apply(Kind<F, X> fx, Function<? super X, ? extends A> transform);
-
-    /**
-     * Maps a function, composing it with existing transformations.
-     * No Functor instance required!
-     */
-    <B> Coyoneda<F, B> map(Function<? super A, ? extends B> f);
-
-    /**
-     * Lowers back to Kind<F, A> by applying the accumulated transformation.
-     * This is where the actual mapping happens.
-     */
-    Kind<F, A> lower(Functor<F> functor);
-
-    /**
-     * Returns the underlying Kind value (before transformations).
-     */
-    Kind<F, ?> underlying();
-}
-```
-
-## Basic Usage
-
-### Lifting and Mapping
-
-<!-- verify -->
-```java
-import static org.higherkindedj.hkt.maybe.MaybeKindHelper.MAYBE;
-
-// Lift a Maybe into Coyoneda
-Kind<MaybeKind.Witness, Integer> maybe = MAYBE.widen(Maybe.just(42));
-Coyoneda<MaybeKind.Witness, Integer> coyo = Coyoneda.lift(maybe);
-
-// Map without needing a Functor instance
-Coyoneda<MaybeKind.Witness, String> mapped = coyo
-    .map(x -> x * 2)           // 42 -> 84
-    .map(x -> x + 1)           // 84 -> 85
-    .map(Object::toString);    // 85 -> "85"
-
-// All three maps are fused into ONE composed function!
-// The function (x -> ((x * 2) + 1).toString()) is stored but not yet applied
-```
-
-### Lowering with a Functor
-
-<!-- verify -->
-```java
-// When ready, lower back using a Functor instance
-MaybeFunctor functor = MaybeFunctor.INSTANCE;
-Kind<MaybeKind.Witness, String> result = mapped.lower(functor);
-
-// Only NOW does the actual mapping happen - just once!
-Maybe<String> finalResult = MAYBE.narrow(result);
-// Result: Just("85")
-```
-
-### Using CoyonedaFunctor
-
-The `CoyonedaFunctor<F>` class provides a Functor instance for any `Coyoneda<F, _>`:
-
-<!-- verify -->
-```java
-CoyonedaFunctor<MaybeKind.Witness> coyoFunctor = CoyonedaFunctor.instance();
-
-Kind<CoyonedaKind.Witness<MaybeKind.Witness>, Integer> kindCoyo =
-    COYONEDA.widen(Coyoneda.lift(maybe));
-
-Kind<CoyonedaKind.Witness<MaybeKind.Witness>, String> mapped =
-    coyoFunctor.map(x -> x.toString(), kindCoyo);
-```
-
-## Map Fusion
-
-Map fusion is the key performance benefit. Consider:
-
-<!-- verify -->
-```java
-// Without Coyoneda: three separate traversals
-List<String> result = list.stream()
-    .map(x -> x * 2)
-    .map(x -> x + 1)
-    .map(Object::toString)
-    .toList();
-// Each map creates intermediate results
-```
-
-<!-- verify -->
-```java
-// With Coyoneda: functions are composed, single traversal
-Coyoneda<ListKind.Witness, Integer> coyo = Coyoneda.lift(LIST.widen(list));
-Coyoneda<ListKind.Witness, String> mapped = coyo
-    .map(x -> x * 2)
-    .map(x -> x + 1)
-    .map(Object::toString);
-// No mapping yet - just function composition
-
-Kind<ListKind.Witness, String> result = mapped.lower(listFunctor);
-// NOW the composed function is applied in ONE traversal
-```
-
-The benefit is most noticeable when:
-- The underlying structure is expensive to traverse
-- You have many consecutive map operations
-- The intermediate types are complex
-
-## Use with Free Monads
-
-Coyoneda is particularly useful with Free monads. Without Coyoneda, your instruction set must be a Functor:
-
-<!-- verify -->
-```java
-// Without Coyoneda: must implement Functor<ConsoleOp>
-Free<ConsoleOpKind.Witness, String> program = Free.liftF(readLine, consoleOpFunctor);
-```
-
-With Coyoneda, you can wrap any instruction set:
-
-<!-- verify -->
-```java
-// With Coyoneda: no Functor needed for ConsoleOp
-// The Free monad operates on Coyoneda<ConsoleOp, _> instead
-
-// Lift instruction into Coyoneda, then into Free
-Coyoneda<ConsoleOpKind.Witness, String> coyoOp = Coyoneda.lift(readLineKind);
-Free<CoyonedaKind.Witness<ConsoleOpKind.Witness>, String> program =
-    Free.liftF(COYONEDA.widen(coyoOp), new CoyonedaFunctor<>());
-```
-
-This eliminates boilerplate when you have many instruction types.
-
-## The Yoneda Lemma
-
-Coyoneda is based on the **covariant Yoneda lemma** from category theory. In simplified terms:
-
-```
-Coyoneda[F, A] ≅ F[A]
-```
-
-This isomorphism is witnessed by:
-- `lift`: `F[A] -> Coyoneda[F, A]` (wraps with identity function)
-- `lower`: `Coyoneda[F, A] -> F[A]` (applies accumulated function via Functor)
-
-The isomorphism holds for any Functor `F`. Coyoneda essentially "delays" the functor operations until lowering.
-
-## Functor Laws
-
-`CoyonedaFunctor` satisfies the Functor laws automatically:
-
-**Identity Law:**
-```java
-coyo.map(x -> x) == coyo
-// Composing with identity doesn't change the accumulated function
-```
-
-**Composition Law:**
-```java
-coyo.map(f).map(g) == coyo.map(x -> g.apply(f.apply(x)))
-// Multiple maps compose into one - this is map fusion!
-```
-
-These laws hold by construction because `map` simply composes functions.
-
-## When to Use Coyoneda
-
-### Good Use Cases
-
-1. **Free monad DSLs**: Avoid implementing Functor for each instruction type
-2. **Map fusion**: Optimise chains of map operations on expensive structures
-3. **Deferred computation**: Delay mapping until you have a Functor available
-4. **Generic programming**: Work with type constructors that don't have Functor instances
-
-### When You Might Not Need It
-
-1. **Single map operations**: No fusion benefit with just one map
-2. **Already have a Functor**: If implementing Functor is easy, Coyoneda adds indirection
-3. **Simple types**: For types like `Optional` or `List`, the built-in map is already efficient
-
-## Performance Considerations
-
-Coyoneda trades:
-- **Pros**: Reduced traversals, function composition is cheap, deferred execution
-- **Cons**: Object allocation for Coyoneda wrapper, slightly more complex types
-
-The benefit is most significant when:
-- The underlying `F` is expensive to map over (e.g., large trees, IO operations)
-- You have many consecutive map operations
-- You want to defer all mapping to a single point
-
-For simple cases with one or two maps on efficient structures, the overhead may not be worth it.
-
-## Summary
-
-Coyoneda provides:
-
-- **Automatic Functor instances**: Any type constructor gains a Functor via wrapping
-- **Map fusion**: Multiple maps compose into a single function application
-- **Deferred execution**: Actual mapping happens only at lowering
-- **DSL simplification**: Free monad instruction sets don't need Functor instances
-
-It's a powerful tool for optimising functional pipelines and simplifying Free monad definitions, based on the elegant mathematics of the Yoneda lemma.
+~~~admonish tip title="Where Coyoneda fits"
+An instruction set from [`@EffectAlgebra`](../effect/effect_handlers.md#defining-effects) gets a generated `Functor`, built on its records' `mapK`, which extends each record's continuation: the function from the instruction's result to what comes next. So it never needs Coyoneda. Coyoneda is for a set you write yourself whose records carry no continuation, and for holding many maps on a structure that is costly to walk.
+~~~
 
 ---
 
-~~~admonish tip title="Further Reading"
-- **Why it helps**: [Introduction to Yoneda and Coyoneda](https://gist.github.com/gregberns/ede18190d5117eea6fb51815e2eab9b2) - Explains Coyoneda as a _deferred map_
-- **Bartosz Milewski**: [The Yoneda Lemma](https://bartoszmilewski.com/2015/09/01/the-yoneda-lemma/) - The mathematical foundation (more theoretical)
-~~~
+## Three maps, one walk {#maps-held-for-one-pass}
+
+A Java `Stream` applies each element's maps in one pass. `List`'s `map`, like the `map` of most types with a `Functor`, does not. It walks the list and builds a new one, so three maps in a row make three walks and two lists that are thrown away. Coyoneda gives any such type the stream's single pass. It holds the list, and each `map` adds its function to the ones it holds without applying anything. `lower` hands them all to the list's `Functor` as one `map`, which passes each element through the functions in turn:
+
+```mermaid
+flowchart TB
+    accTitle: How a Coyoneda holds three maps and applies them in one pass
+    accDescr: lift wraps the basket's list of lines in a Coyoneda that holds no functions. Three calls to map add three functions to it, and apply none. lower hands the three to the List Functor as one map, which walks the list once and gives the list of prices.
+    L["the basket's lines"]:::domain -->|lift| C0["Coyoneda: the list, no functions"]:::domain
+    C0 -->|"map, map, map"| C3["Coyoneda: the list, three functions held"]:::domain
+    C3 -->|"lower: one walk"| R["the new prices"]:::domain
+    classDef domain fill:#a6d189,stroke:#40a02b,color:#232634
+```
+
+The code on this page uses these imports:
+
+<!-- verify -->
+```java
+import static org.higherkindedj.hkt.coyoneda.CoyonedaKindHelper.COYONEDA;
+import static org.higherkindedj.hkt.id.IdKindHelper.ID;
+import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.higherkindedj.example.book.optics.cast.LineItem;
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.Natural;
+import org.higherkindedj.hkt.TypeArity;
+import org.higherkindedj.hkt.WitnessArity;
+import org.higherkindedj.hkt.coyoneda.Coyoneda;
+import org.higherkindedj.hkt.coyoneda.CoyonedaFunctor;
+import org.higherkindedj.hkt.coyoneda.CoyonedaKind;
+import org.higherkindedj.hkt.effect.FreePath;
+import org.higherkindedj.hkt.effect.Path;
+import org.higherkindedj.hkt.id.Id;
+import org.higherkindedj.hkt.id.IdKind;
+import org.higherkindedj.hkt.id.IdMonad;
+import org.higherkindedj.hkt.list.ListKind;
+import org.higherkindedj.hkt.list.ListMonad;
+```
+
+The list here stands in for a structure that is costly to walk, such as a large tree or a page of results from a remote store. The basket holds a lamp at 40.00 and four bulbs at 2.50 each, and `VAT` is 1.20, so each line's price with VAT is 48.00 for the lamp and 3.00 for a bulb:
+
+```java
+    // Three maps, held as one: nothing is applied yet
+    Coyoneda<ListKind.Witness, BigDecimal> withVat =
+        Coyoneda.lift(LIST.widen(BASKET))
+            .map(LineItem::price)
+            .map(price -> price.multiply(VAT))
+            .map(price -> price.setScale(2, RoundingMode.HALF_EVEN));
+
+    // Lowering applies all three to each line, in one walk over the list, with List's Functor
+    // (ListMonad.INSTANCE is List's Monad, and so its Functor too)
+    List<BigDecimal> prices = LIST.narrow(withVat.lower(ListMonad.INSTANCE));
+    // [48.00, 3.00]
+```
+
+Through `List`'s own `map`, the same three functions walk the list three times; through Coyoneda, once. The held functions are applied in a loop, so a chain of a hundred thousand maps is lowered without overflowing the stack.
+
+## An instruction set with no Functor {#an-instruction-set-with-no-functor}
+
+A [Free](free_monad.md) program needs a `Functor` for its instructions, to put the rest of the program after each one. `OrderOp`'s records carry a continuation `k`, so `@EffectAlgebra` builds that `Functor` from `mapK`. The warehouse's instruction set cannot have one, because each record fixes its own result type and carries nothing for a `map` to extend:
+
+```java
+  // The warehouse's instructions. Each record fixes its own result type and carries no
+  // continuation, so there is nothing a map could change: StockOp can have no Functor.
+  sealed interface StockOp<A> extends Kind<StockOp.Witness, A> {
+    final class Witness implements WitnessArity<TypeArity.Unary> {
+      private Witness() {}
+    }
+
+    // How many of a SKU the warehouse holds
+    record Available(String sku) implements StockOp<Integer> {}
+
+    // Sets a quantity aside for an order, if the warehouse holds that many
+    record Reserve(String sku, int quantity) implements StockOp<Boolean> {}
+  }
+
+```
+
+Lifted into a Coyoneda, an instruction gets the `Functor` it lacks: `CoyonedaFunctor` holds each map instead of applying it. A `FreePath` over `CoyonedaKind.Witness<StockOp.Witness>` then holds the warehouse's instructions:
+
+```java
+  // Coyoneda gives any instruction set a Functor, so Free can hold StockOp's instructions
+  static final CoyonedaFunctor<StockOp.Witness> STOCK = CoyonedaFunctor.instance();
+
+  static <A> FreePath<CoyonedaKind.Witness<StockOp.Witness>, A> step(StockOp<A> op) {
+    return Path.freeLift(COYONEDA.lift(op), STOCK);
+  }
+
+  // Reserves a line if the warehouse holds enough of its SKU: the second step needs the count
+  static FreePath<CoyonedaKind.Witness<StockOp.Witness>, Boolean> reserveLine(LineItem line) {
+    return step(new StockOp.Available(line.sku()))
+        .via(
+            held ->
+                held >= line.quantity()
+                    ? step(new StockOp.Reserve(line.sku(), line.quantity()))
+                    : Path.freePure(false, STOCK));
+  }
+
+```
+
+## Running a program over Coyoneda {#running-a-program-over-coyoneda}
+
+The interpreter is written for `StockOp` alone, as a [`Natural`](../functional/natural_transformation.md) with a case for each record. Its warehouse holds three lamps and two bulbs:
+
+```java
+  // Runs each instruction against stock held in memory
+  static final class Warehouse implements Natural<StockOp.Witness, IdKind.Witness> {
+    final Map<String, Integer> levels = new HashMap<>(Map.of("LAMP", 3, "BULB", 2));
+
+    @Override
+    @SuppressWarnings("unchecked") // each record fixes A; the switch cannot say so
+    public <A> Kind<IdKind.Witness, A> apply(Kind<StockOp.Witness, A> fa) {
+      Object result =
+          switch ((StockOp<A>) fa) {
+            case StockOp.Available available -> levels.getOrDefault(available.sku(), 0);
+            case StockOp.Reserve reserve -> {
+              int held = levels.getOrDefault(reserve.sku(), 0);
+              if (held < reserve.quantity()) {
+                yield false;
+              }
+              levels.put(reserve.sku(), held - reserve.quantity());
+              yield true;
+            }
+          };
+      return (Kind<IdKind.Witness, A>) ID.widen(Id.of(result));
+    }
+  }
+
+```
+
+`Coyoneda.interpreter(warehouse, functor)` runs each instruction with it, and then applies the maps the Coyoneda held, with `Id`'s `Functor`:
+
+```java
+    Warehouse warehouse = new Warehouse();
+    IdMonad id = IdMonad.instance();
+
+    // Coyoneda.interpreter runs each instruction with the warehouse, then applies its held maps
+    boolean lampReserved =
+        ID.narrow(
+                reserveLine(BASKET.get(0))
+                    .foldMap(Coyoneda.interpreter(warehouse, id), id)
+                    .runKind())
+            .value();
+    // true
+
+    boolean bulbsReserved =
+        ID.narrow(
+                reserveLine(BASKET.get(1))
+                    .foldMap(Coyoneda.interpreter(warehouse, id), id)
+                    .runKind())
+            .value();
+    // false
+```
+
+The basket's second line wants four bulbs and the warehouse holds two, so nothing is set aside, and the warehouse's count is unchanged. One held value runs through an interpreter the same way, with `foldMap`:
+
+```java
+    // One held value runs through an interpreter with foldMap, and needs no Functor for StockOp
+    Coyoneda<StockOp.Witness, Boolean> enoughForTwo =
+        Coyoneda.lift(new StockOp.Available("LAMP")).map(count -> count >= 2);
+
+    boolean enough = ID.narrow(enoughForTwo.foldMap(new Warehouse(), id)).value();
+    // true
+```
+
+## Why it is called Coyoneda {#the-yoneda-lemma}
+
+Coyoneda is named for the co-Yoneda lemma: for a `Functor` `F`, a `Coyoneda<F, A>` and a `Kind<F, A>` hold the same information. `lift` and `lower` turn one into the other, and lowering a lifted list gives back the list. So holding the maps loses nothing: it only decides when they run.
+
+## A held value is never null {#a-held-value-is-never-null}
+
+`Coyoneda.lift(null)` and `Coyoneda.apply(null, f)` throw at the call. A held function runs only when you lower or interpret, through the target's own `map`, so a null it returns meets that type's rule, which [Values, never null](../hkts/core-concepts.md#values-never-null) sets out. [`Id`](identity.md), for one, keeps the null as its value.
+
+## Creating instances {#creating-instances}
+
+`Coyoneda.lift(fa)` holds a value with no functions, and `Coyoneda.apply(fx, f)` holds it with one. `COYONEDA.lift(fa)`, from `CoyonedaKindHelper`, gives the same, already widened to a `Kind` for a `Free` program.
+
+## Methods {#methods}
+
+| Method | What it does |
+|---|---|
+| `coyoneda.map(f)` | Hold one more function, applied after the others |
+| `lower(functor)` | Apply the held functions with `F`'s own `Functor`, in one `map` |
+| `foldMap(natural, functor)` | Run the held value through an interpreter into `G`, then apply the held functions with `G`'s `Functor` |
+| `Coyoneda.interpreter(natural, functor)` | An interpreter for a program whose instructions are Coyonedas |
+| `underlying()` | The value held, before any function |
+
+## Working with Kind {#working-with-kind}
+
+`COYONEDA.widen` and `COYONEDA.narrow`, from `CoyonedaKindHelper`, convert between a `Coyoneda` and its `Kind`. Its one instance, `CoyonedaFunctor`, works for any `F`, because its `map` only holds the function:
+
+```java
+    CoyonedaFunctor<ListKind.Witness> functor = CoyonedaFunctor.instance();
+
+    // A Coyoneda is already its own Kind, so widen and narrow are casts
+    Kind<CoyonedaKind.Witness<ListKind.Witness>, Integer> quantities =
+        COYONEDA.widen(Coyoneda.lift(LIST.widen(BASKET)).map(LineItem::quantity));
+    Kind<CoyonedaKind.Witness<ListKind.Witness>, Integer> doubled =
+        functor.map(quantity -> quantity * 2, quantities);
+
+    List<Integer> lowered = LIST.narrow(COYONEDA.narrow(doubled).lower(ListMonad.INSTANCE));
+    // [2, 8]
+```
+
+Coyoneda has no `Applicative` or `Monad`: combining two held values needs `F`'s own.
+
+## When to use `Coyoneda` {#when-to-use-coyoneda}
+
+| You need | Use |
+|---|---|
+| A `Free` program over an instruction set whose records carry no continuation | Coyoneda |
+| A `Free` program over an `@EffectAlgebra` instruction set | Its generated `Functor`, with no Coyoneda |
+| Many maps on a structure that is costly to walk | Coyoneda, lowered once |
+| A few maps on a `List` or an `Optional` | Their own `map` |
+| A pipeline over a Java `Stream` | The stream, which already applies each element's maps in one pass |
 
 ~~~admonish info title="Hands-On Learning"
-Practise Coyoneda in [Tutorial 09: Coyoneda](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial09_Coyoneda.java) (5 exercises).
+Practise lifting, mapping and lowering in [Tutorial 09: Coyoneda](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/tutorial/coretypes/Tutorial09_Coyoneda.java) (5 exercises), from the [Advanced Patterns](../tutorials/coretypes/advanced_journey.md) journey.
 ~~~
 
 ---
@@ -15446,380 +15590,194 @@ Practise Coyoneda in [Tutorial 09: Coyoneda](https://github.com/higher-kinded-j/
 
 <!-- Source: monads/const_type.md -->
 
-# The Const Type: Constant Functors with Phantom Types
+<!-- description: Read with code written to build, in Java with Const: one traversal of an order's lines rebuilds them in Id and adds them up in Const. -->
+
+# Const: The Value That Map Leaves Alone
+
+_A `Const<C, A>` holds a `C` and no `A`, so code written to build an `A` reads a `C` instead._
+
+<!-- source: Verbal Kint, The Usual Suspects (1995), directed by Bryan Singer, screenplay by Christopher McQuarrie; wording checked against Wikiquote's The Usual Suspects page -->
+> _"The greatest trick the Devil ever pulled was convincing the world he didn't exist."_
+>
+> — Verbal Kint, *The Usual Suspects*
+
+Verbal Kint is talking about Keyser Söze, a name that runs through every story he tells. The `A` in `Const<C, A>` is that kind of name: it is in every signature, and no object holds it.
+
+~~~admonish abstract title="Const at a glance"
+| | |
+|---|---|
+| **Models** | A value of type `C`, carried through code that expects an `A` it never holds |
+| **Replaces** | A second loop written beside a traversal, to sum, count or collect what it visits |
+| **Effect Path** | None |
+| **Instances** | `Functor`, `Applicative`, `Bifunctor` |
+| **Choose it when** | Code written for any `Applicative`, such as a traversal or a [Free Applicative](free_applicative.md) program, should read rather than build; otherwise [Id](identity.md), which rebuilds, or compare every type in [Choosing a Type](supported-types.md#choosing-a-type) |
+~~~
 
 ~~~admonish info title="What You'll Learn"
-- Understanding phantom types and how Const ignores its second type parameter
-- Using Const for efficient fold implementations and data extraction
-- Leveraging Const with bifunctor operations to transform constant values
-- Applying Const in lens and traversal patterns for compositional getters
-- Real-world use cases in validation, accumulation, and data mining
-- How Const relates to Scala's Const and van Laarhoven lenses
+- Hold a value whose second type is only a type, which every map leaves alone
+- Run one traversal two ways: in `Id` to rebuild an order's lines, and in `Const` to add them up
+- Explain why `Const`'s `Applicative` needs a `Monoid`, and what it combines
+- Recognise `Const` behind a traversal's `foldMap`, a lens's read and a Free Applicative program's analysis
 ~~~
 
-~~~admonish example title="See Example Code:"
-[ConstExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/constant/ConstExample.java)
+~~~admonish example title="See Example Code"
+**The code on this page is [ConstBook.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/book/foundations/constant/ConstBook.java)**: the page includes it, so the build compiles and runs it. [ConstBookTest.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/test/java/org/higherkindedj/example/book/foundations/constant/ConstBookTest.java) holds what the page says each method does.
 ~~~
 
-The `Const` type is a constant functor that holds a value of type `C` whilst treating `A` as a **phantom type parameter**: a type that exists only in the type signature but has no runtime representation. This seemingly simple property unlocks powerful patterns for accumulating values, implementing efficient folds, and building compositional getters in the style of van Laarhoven lenses.
-
-~~~admonish note
-New to phantom types? See the [Glossary](../glossary/type-system.md#phantom-type) for a detailed explanation with Java-focused examples, or continue reading for practical demonstrations.
+~~~admonish tip title="Where Const fits"
+You rarely build a `Const` yourself. A traversal's `foldMap`, `getAll` and `exists` run the traversal in a `Const` of their own, and `FreeApAnalyzer.analyseWith` runs a program in this one. This page shows the idea they share, for when you write code over any `Applicative` and want it to read.
 ~~~
 
 ---
 
-## What is Const?
+## A value, and a type that holds nothing {#a-value-and-a-type-that-holds-nothing}
 
-A `Const<C, A>` is a container that holds a single value of type `C`. The type parameter `A` is phantom: it influences the type signature for composition and type safety but doesn't correspond to any stored data. This asymmetry is the key to Const's utility.
-
-<!-- verify -->
-```java
-// Create a Const holding a String, with Integer as the phantom type
-Const<String, Integer> stringConst = new Const<>("Hello");
-
-// The constant value is always accessible
-String value = stringConst.value(); // "Hello"
-
-// Create a Const holding a count, with Person as the phantom type
-Const<Integer, Person> countConst = new Const<>(42);
-int count = countConst.value(); // 42
-```
-
-### Key Characteristics
-
-* **Constant value**: Holds a value of type `C` that can be retrieved via `value()`
-* **Phantom type**: The type parameter `A` exists only for type-level composition
-* **Bifunctor instance**: Implements `Bifunctor<ConstKind2.Witness>` where:
-  * `first(f, const)` transforms the constant value
-  * `second(g, const)` changes only the phantom type, leaving the constant value unchanged
-  * `bimap(f, g, const)` combines both transformations (but only `f` affects the constant)
-
----
-
-## Core Components
-
-**The Const Type**
-
-```java
-public record Const<C, A>(C value) {
-  public <D> Const<D, A> mapFirst(Function<? super C, ? extends D> firstMapper);
-  public <B> Const<C, B> mapSecond(Function<? super A, ? extends B> secondMapper);
-  public <D, B> Const<D, B> bimap(
-      Function<? super C, ? extends D> firstMapper,
-      Function<? super A, ? extends B> secondMapper);
-}
-```
-
-**The HKT Bridge for Const**
-
-* **`ConstKind2<C, A>`**: The HKT marker interface extending `Kind2<ConstKind2.Witness, C, A>`
-* **`ConstKind2.Witness`**: The phantom type witness for Const in the Kind2 system
-* **`ConstKindHelper`**: Utility providing `widen2` and `narrow2` for Kind2 conversions
-
-**Type Classes for Const**
-
-* **`ConstBifunctor`**: The singleton bifunctor instance implementing `Bifunctor<ConstKind2.Witness>`
-
----
-
-## The Phantom Type Property
-
-The defining characteristic of `Const` is that mapping over the second type parameter has **no effect** on the constant value. This property is enforced both conceptually and at runtime.
-
-~~~admonish example title="Example: Phantom Type Transformations"
-
-[ConstExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/constant/ConstExample.java)
+A `Const<C, A>` holds one value, of type `C`. Its `A` is a [phantom type](../glossary/type-system.md#phantom-type): it appears in the type and is stored nowhere. Mapping the `A` therefore has nothing to change. The code on this page uses these imports:
 
 <!-- verify -->
 ```java
 import static org.higherkindedj.hkt.constant.ConstKindHelper.CONST;
+import static org.higherkindedj.hkt.id.IdKindHelper.ID;
+import static org.higherkindedj.hkt.instances.Witnesses.id;
+import static org.higherkindedj.hkt.list.ListKindHelper.LIST;
 
-Bifunctor<ConstKind2.Witness> bifunctor = ConstBifunctor.INSTANCE;
-
-// Start with a Const holding an integer count
-Const<Integer, String> original = new Const<>(42);
-System.out.println("Original value: " + original.value());
-// Output: 42
-
-// Use second() to change the phantom type from String to Double
-Kind2<ConstKind2.Witness, Integer, Double> transformed =
-    bifunctor.second(
-        s -> s.length() * 2.0, // Function defines phantom type transformation
-        CONST.widen2(original));
-
-Const<Integer, Double> result = CONST.narrow2(transformed);
-System.out.println("After second(): " + result.value());
-// Output: 42 (UNCHANGED!)
-
-// The phantom type changed (String -> Double), but the constant value stayed 42
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.List;
+import java.util.function.Function;
+import org.higherkindedj.example.book.optics.cast.LineItem;
+import org.higherkindedj.hkt.Applicative;
+import org.higherkindedj.hkt.Kind;
+import org.higherkindedj.hkt.Kind2;
+import org.higherkindedj.hkt.Monoids;
+import org.higherkindedj.hkt.TypeArity;
+import org.higherkindedj.hkt.WitnessArity;
+import org.higherkindedj.hkt.constant.Const;
+import org.higherkindedj.hkt.constant.ConstApplicative;
+import org.higherkindedj.hkt.constant.ConstBifunctor;
+import org.higherkindedj.hkt.constant.ConstKind;
+import org.higherkindedj.hkt.constant.ConstKind2;
+import org.higherkindedj.hkt.id.Id;
+import org.higherkindedj.hkt.instances.Instances;
+import org.higherkindedj.hkt.list.ListKind;
+import org.higherkindedj.hkt.list.ListTraverse;
 ```
 
-**Note:** Whilst the mapper function in `second()` is never applied to actual data (since `A` is phantom), it is still validated and applied to `null` for exception propagation. This maintains consistency with bifunctor exception semantics.
-~~~
-
----
-
-## Const as a Bifunctor
-
-`Const` naturally implements the `Bifunctor` type class, providing three fundamental operations:
-
-### 1. `first()` - Transform the Constant Value
-
-The `first` operation transforms the **constant value** from type `C` to type `D`, leaving the phantom type unchanged.
-
-<!-- verify -->
 ```java
-Const<String, Integer> stringConst = new Const<>("hello");
+    // A Const<BigDecimal, LineItem> holds a BigDecimal, and no LineItem at all
+    Const<BigDecimal, LineItem> total = new Const<>(new BigDecimal("50.00"));
 
-// Transform the constant value from String to Integer
-Kind2<ConstKind2.Witness, Integer, Integer> lengthConst =
-    bifunctor.first(String::length, CONST.widen2(stringConst));
+    // Mapping the LineItem changes only the type: there is no LineItem to map
+    Const<BigDecimal, String> relabelled = total.mapSecond(LineItem::sku);
 
-Const<Integer, Integer> result = CONST.narrow2(lengthConst);
-System.out.println(result.value()); // Output: 5
+    BigDecimal unchanged = relabelled.value();
+    // 50.00
 ```
 
-### 2. `second()` - Transform Only the Phantom Type
+`mapSecond` never calls its function, and the `Functor`'s `map` leaves the value as it is too.
 
-The `second` operation changes the **phantom type** from `A` to `B` without affecting the constant value.
+## One traversal, two jobs {#one-traversal-two-jobs}
 
-<!-- verify -->
+[Foldable and Traverse](../functional/foldable_and_traverse.md) wrote a traversal once and ran it with `Validated` and with `Either`. `eachLine` is written the same way, for any `Applicative`: it visits every line, and rebuilds the list inside `F`:
+
 ```java
-Const<String, Integer> stringConst = new Const<>("constant");
+  // Written once, for any Applicative: visits every line, and rebuilds the list in F
+  static <F extends WitnessArity<TypeArity.Unary>>
+      Kind<F, Kind<ListKind.Witness, LineItem>> eachLine(
+          Applicative<F> applicative,
+          Function<LineItem, Kind<F, LineItem>> visit,
+          List<LineItem> lines) {
+    return ListTraverse.INSTANCE.traverse(applicative, visit, LIST.widen(lines));
+  }
 
-// Change the phantom type from Integer to Boolean
-Kind2<ConstKind2.Witness, String, Boolean> boolConst =
-    bifunctor.second(i -> i > 10, CONST.widen2(stringConst));
-
-Const<String, Boolean> result = CONST.narrow2(boolConst);
-System.out.println(result.value()); // Output: "constant" (unchanged)
 ```
 
-### 3. `bimap()` - Transform Both Simultaneously
+Run in [`Id`](identity.md), it rebuilds the lines. The basket holds a lamp at 40.00 and four bulbs at 2.50 each, and `VAT` is 1.20:
 
-The `bimap` operation combines both transformations, but remember: only the first function affects the constant value.
-
-<!-- verify -->
 ```java
-Const<String, Integer> original = new Const<>("hello");
+    // Run in Id, the traversal rebuilds the list: every line gets its price with VAT
+    Kind<ListKind.Witness, LineItem> repriced =
+        ID.narrow(
+                eachLine(
+                    Instances.applicative(id()), line -> ID.widen(Id.of(withVat(line))), BASKET))
+            .value();
 
-Kind2<ConstKind2.Witness, Integer, String> transformed =
-    bifunctor.bimap(
-        String::length,          // Transforms constant: "hello" -> 5
-        i -> "Number: " + i,     // Phantom type transformation only
-        CONST.widen2(original));
-
-Const<Integer, String> result = CONST.narrow2(transformed);
-System.out.println(result.value()); // Output: 5
+    List<BigDecimal> prices = LIST.narrow(repriced).stream().map(LineItem::price).toList();
+    // [48.00, 3.00]
 ```
 
----
+Run in `Const`, the same traversal builds nothing, as a `reduce` over the same loop would. Each visit gives a `Const` holding the line's total before VAT, and the `Applicative` adds the totals with `Monoids.bigDecimalAddition()`, a [Monoid](../functional/semigroup_and_monoid.md) that sums money exactly: 40.00 + 4 × 2.50. The list it would have rebuilt is only a type:
 
-## Use Case 1: Efficient Fold Implementations
-
-One of the most practical applications of `Const` is implementing folds that accumulate a single value whilst traversing a data structure. The phantom type represents the "shape" being traversed, whilst the constant value accumulates the result.
-
-~~~admonish example title="Example: Folding with Const"
-
-[ConstExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/constant/ConstExample.java)
-
-<!-- verify -->
 ```java
-// Count elements in a list using Const
-List<String> items = List.of("apple", "banana", "cherry", "date");
+    // Run in Const, the same traversal builds nothing: the monoid adds the totals before VAT
+    ConstApplicative<BigDecimal> summing = new ConstApplicative<>(Monoids.bigDecimalAddition());
 
-Const<Integer, String> count = items.stream()
-    .reduce(
-        new Const<>(0),                                           // Initial count
-        (acc, item) -> new Const<Integer, String>(acc.value() + 1), // Increment
-        (c1, c2) -> new Const<>(c1.value() + c2.value()));        // Combine
+    Kind<ConstKind.Witness<BigDecimal>, Kind<ListKind.Witness, LineItem>> visited =
+        eachLine(summing, line -> CONST.widen(new Const<>(lineTotal(line))), BASKET);
 
-System.out.println("Count: " + count.value());
-// Output: 4
-
-// Accumulate total length of all strings
-Const<Integer, String> totalLength = items.stream()
-    .reduce(
-        new Const<>(0),
-        (acc, item) -> new Const<Integer, String>(acc.value() + item.length()),
-        (c1, c2) -> new Const<>(c1.value() + c2.value()));
-
-System.out.println("Total length: " + totalLength.value());
-// Output: 23
+    BigDecimal basketTotal = CONST.narrow(visited).value();
+    // 50.00
 ```
 
-In this pattern, the phantom type (`String`) represents the type of elements we're folding over, whilst the constant value (`Integer`) accumulates the result. This mirrors the implementation of folds in libraries like [Cats](https://typelevel.org/cats/datatypes/const.html) and [Scalaz](https://github.com/scalaz/scalaz) in Scala.
-~~~
+## Why the Applicative needs a Monoid {#why-the-applicative-needs-a-monoid}
 
----
+An `Applicative`'s `of` must give a value with nothing in it, and its `ap` must combine two. A `Const` has only its `C` to do that with, so `ConstApplicative` takes a `Monoid<C>`. `of` gives the monoid's empty value, so an empty basket comes to zero. `ap` combines the two sides' values, the left one first, so a list monoid collects what each line gives in the order of the lines. There is no `flatMap`: a next step would need the `A`, and there is none.
 
-## Use Case 2: Getters and Van Laarhoven Lenses
+## Const behind folds, reads and analyses {#const-behind-folds-reads-and-analyses}
 
-`Const` is fundamental to the lens pattern pioneered by Edward Kmett and popularised in Scala libraries like [Monocle](https://www.optics.dev/Monocle/). A lens is an abstraction for focusing on a part of a data structure, and `Const` enables the "getter" half of this abstraction.
+The library uses the same idea in two places:
 
-### The Getter Pattern
+- A [traversal's `foldMap`](../optics/folds.md#step-4-aggregation-with-foldmap-and-monoids), and the `getAll` and `exists` built on it, run the traversal in a constant functor. A Focus path's `foldMap` uses this `Const`; a plain `Traversal`'s fold uses the optics module's own copy of it, which behaves the same.
+- [Free Applicative](free_applicative.md#reading-a-program-before-it-runs) analyses a program the same way, with an interpreter that gives each instruction's SKU in a `Const`.
 
-A getter extracts a field from a structure without transforming it. Using `Const`, we represent this as a function that produces a `Const` where the phantom type tracks the source structure.
+The idea also explains a lens. A lens written once for any `Functor`, in the van Laarhoven style, reads its focus when it runs in `Const`, and sets it when it runs in `Id`. A lens's `modifyF` run in `Const` gives the focus and rebuilds nothing.
 
-~~~admonish example title="Example: Compositional Getters"
+## A Const always holds a value {#a-const-always-holds-a-value}
 
-[ConstExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/constant/ConstExample.java)
+`new Const<>(null)` throws `NullPointerException`, and so do `mapFirst` and `bimap` when their function returns `null`. A traversal's fold therefore fails at the element whose function returned `null`, rather than passing the `null` to its monoid. [Values, never null](../hkts/core-concepts.md#values-never-null) sets out the rule.
 
-<!-- verify -->
+## Creating instances {#creating-instances}
+
+`new Const<>(value)` holds a value, and an applicative's `of(anything)` gives one holding the monoid's empty value. `new ConstApplicative<>(monoid)` builds the `Applicative` for a `Monoid<C>`, since `Const` has no `Instances` entry: its instance depends on the monoid you choose.
+
+## Methods {#methods}
+
+| Method | What it does |
+|---|---|
+| `constant.value()` | Get the value held |
+| `mapFirst(f)` | Change the value |
+| `mapSecond(g)` | Change only the phantom type; `g` is never called |
+| `bimap(f, g)` | Both at once; only `f` touches the value |
+| `new ConstApplicative<>(monoid)` | The `Applicative` that combines values with the monoid |
+| `ConstBifunctor.INSTANCE` | The `Bifunctor`, over `ConstKind2` |
+
+## Working with Kind {#working-with-kind}
+
+A `Const` is already its own `Kind` twice over. As a `Kind<ConstKind.Witness<C>, A>`, with the value's type fixed, it takes `ConstApplicative`; `CONST.widen` and `CONST.narrow` are casts. As a `Kind2<ConstKind2.Witness, C, A>` it takes `ConstBifunctor`, through `CONST.widen2` and `CONST.narrow2`:
+
 ```java
-record Person(String name, int age, String city) {}
-record Company(String name, Person ceo) {}
+    ConstBifunctor bifunctor = ConstBifunctor.INSTANCE;
 
-Person alice = new Person("Alice", 30, "London");
-Company acmeCorp = new Company("ACME Corp", alice);
+    // first changes the value; second changes only the type
+    Kind2<ConstKind2.Witness, BigDecimal, LineItem> held =
+        CONST.widen2(new Const<>(new BigDecimal("50.00")));
+    Kind2<ConstKind2.Witness, BigDecimal, String> rounded =
+        bifunctor.second(
+            LineItem::sku, bifunctor.first(sum -> sum.setScale(0, RoundingMode.HALF_EVEN), held));
 
-// Define a getter using Const
-Function<Person, Const<String, Person>> nameGetter =
-    person -> new Const<>(person.name());
-
-// Extract the name
-Const<String, Person> nameConst = nameGetter.apply(alice);
-System.out.println("CEO name: " + nameConst.value());
-// Output: Alice
-
-// Define a getter for the CEO from a Company
-Function<Company, Const<Person, Company>> ceoGetter =
-    company -> new Const<>(company.ceo());
-
-// Compose getters: get CEO name from Company using mapFirst
-Function<Company, Const<String, Company>> ceoNameGetter = company ->
-    ceoGetter.apply(company)
-        .mapFirst(person -> nameGetter.apply(person).value());
-
-Const<String, Company> result = ceoNameGetter.apply(acmeCorp);
-System.out.println("Company CEO name: " + result.value());
-// Output: Alice
+    BigDecimal whole = CONST.narrow2(rounded).value();
+    // 50
 ```
 
-This pattern is the foundation of van Laarhoven lenses, where `Const` is used with `Functor` or `Applicative` to implement compositional getters. For a deeper dive, see [Van Laarhoven Lenses](https://www.twanvl.nl/blog/haskell/cps-functional-references) and [Scala Monocle](https://www.optics.dev/Monocle/docs/focus).
-~~~
+## When to use `Const` {#when-to-use-const}
 
----
-
-## Use Case 3: Data Extraction from Validation Results
-
-When traversing validation results, you often want to extract accumulated errors or valid data without transforming the individual results. `Const` provides a clean way to express this pattern.
-
-~~~admonish example title="Example: Validation Data Mining"
-
-[ConstExample.java](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-examples/src/main/java/org/higherkindedj/example/basic/constant/ConstExample.java)
-
-<!-- verify -->
-```java
-record ValidationResult(boolean isValid, List<String> errors, Object data) {}
-
-List<ValidationResult> results = List.of(
-    new ValidationResult(true, List.of(), "Valid data 1"),
-    new ValidationResult(false, List.of("AppError A", "AppError B"), null),
-    new ValidationResult(true, List.of(), "Valid data 2"),
-    new ValidationResult(false, List.of("AppError C"), null)
-);
-
-// Extract all errors using Const
-List<String> allErrors = new ArrayList<>();
-
-for (ValidationResult result : results) {
-    // Use Const to extract errors, phantom type represents ValidationResult
-    Const<List<String>, ValidationResult> errorConst = new Const<>(result.errors());
-    allErrors.addAll(errorConst.value());
-}
-
-System.out.println("All errors: " + allErrors);
-// Output: [AppError A, AppError B, AppError C]
-
-// Count valid results
-Const<Integer, ValidationResult> validCount = results.stream()
-    .reduce(
-        new Const<>(0),
-        (acc, result) -> new Const<Integer, ValidationResult>(
-            result.isValid() ? acc.value() + 1 : acc.value()),
-        (c1, c2) -> new Const<>(c1.value() + c2.value()));
-
-System.out.println("Valid results: " + validCount.value());
-// Output: 2
-```
-
-The phantom type maintains the "context" of what we're extracting from (ValidationResult), whilst the constant value accumulates the data we care about (errors or counts).
-~~~
-
----
-
-## Const vs Other Types
-
-Understanding how `Const` relates to similar types clarifies its unique role:
-
-| Type | First Parameter | Second Parameter | Primary Use |
-|------|----------------|------------------|-------------|
-| `Const<C, A>` | Constant value (stored) | Phantom (not stored) | Folds, getters, extraction |
-| `Tuple2<A, B>` | First element (stored) | Second element (stored) | Pairing related values |
-| `Identity<A>` | Value (stored) | N/A (single parameter) | Pure computation wrapper |
-| `Either<L, R>` | Error (sum type) | Success (sum type) | Error handling |
-
-**Use Const when:**
-- You need to accumulate a single value during traversal
-- You're implementing getters or read-only lenses
-- You want to extract data without transformation
-- The phantom type provides useful type-level information for composition
-
-**Use Tuple2 when:**
-- You need to store and work with both values
-- Both parameters represent actual data
-
-**Use Identity when:**
-- You need a minimal monad wrapper with no additional effects
-
----
-
-## Exception Propagation Note
-
-Although `mapSecond` doesn't transform the constant value, the mapper function is still applied to `null` to ensure exception propagation. This maintains consistency with bifunctor semantics.
-
-<!-- verify -->
-```java
-Const<String, Integer> const_ = new Const<>("value");
-
-// This will throw NullPointerException from the mapper
-Const<String, Double> result = const_.mapSecond(i -> {
-    if (i == null) throw new NullPointerException("Expected non-null");
-    return i * 2.0;
-});
-```
-
-This behaviour ensures that invalid mappers are detected, even though the mapper's result isn't used. For null-safe mappers, simply avoid dereferencing the parameter:
-
-<!-- verify -->
-```java
-// Null-safe phantom type transformation
-Const<String, Double> safe = const_.mapSecond(i -> 3.14);
-```
-
----
-
-## Summary
-
-* **Const<C, A>** holds a constant value of type `C` with a phantom type parameter `A`
-* **Phantom types** exist only in type signatures, enabling type-safe composition without runtime overhead
-* **Bifunctor operations**:
-  * `first` transforms the constant value
-  * `second` changes only the phantom type
-  * `bimap` combines both (but only affects the constant via the first function)
-* **Use cases**:
-  * Efficient fold implementations that accumulate a single value
-  * Compositional getters in lens and traversal patterns
-  * Data extraction from complex structures without transformation
-* **Scala heritage**: Mirrors `Const` in Cats, Scalaz, and Monocle
-* **External resources**:
-  * [Cats Const Documentation](https://typelevel.org/cats/datatypes/const.html)
-  * [Monocle Getter Optics](https://www.optics.dev/Monocle/docs/optics/getter)
-  * [Van Laarhoven Lenses](https://www.twanvl.nl/blog/haskell/cps-functional-references)
-
-Understanding `Const` empowers you to write efficient, compositional code for data extraction and accumulation, leveraging patterns battle-tested in the Scala functional programming ecosystem.
+| You need | Use |
+|---|---|
+| To sum, count or collect what code written for any `Applicative` visits | `Const` with the matching monoid |
+| To read through a traversal or a Focus path | Its `foldMap`, `getAll` or `exists`, which use `Const` for you |
+| To read a Free Applicative program before it runs | `FreeApAnalyzer.analyseWith` |
+| Two values that both hold data | A record |
+| One value with no effect | [Id](identity.md) |
 
 ---
 
