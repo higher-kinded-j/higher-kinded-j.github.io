@@ -3806,7 +3806,7 @@ IOPath<String> resilient = Path.io(() -> callFlakyService())
     .withBulkhead(serviceBulkhead);                          // cap concurrent callers
 ```
 
-`IOPath` has no typed error channel, so failures surface on the failure channel: `withTimeout` fails with a `CompletionException` wrapping the `TimeoutException` (the same surfacing as `CompletableFuturePath.withTimeout`), an open circuit throws `CircuitOpenException`, and a full bulkhead throws `BulkheadFullException`. When the time runs out, the computation is interrupted, and the path fails once it has stopped; to fail on time whether or not it can stop, put `detachOnCancel()` before `withTimeout`, as [VTaskPath](path_vtask.md#timeouts) explains. An interrupt of the caller reaches it too, and surfaces as a `VTaskExecutionException` wrapping the `InterruptedException`, with the interrupt status set. To land a timeout or rejection as a typed `Left` instead, use the static `EitherPath` combinators (`EitherPath.withTimeout(step, duration, onTimeout)` and friends).
+`IOPath` has no typed error channel, so failures surface on the failure channel: `withTimeout` fails with a `CompletionException` wrapping the `TimeoutException` (the same surfacing as `CompletableFuturePath.withTimeout`), a circuit breaker that turns the call away throws `CircuitOpenException`, and a full bulkhead throws `BulkheadFullException`. When the time runs out, the computation is interrupted, and the path fails once it has stopped; to fail on time whether or not it can stop, put `detachOnCancel()` before `withTimeout`, as [VTaskPath](path_vtask.md#timeouts) explains. An interrupt of the caller reaches it too, and surfaces as a `VTaskExecutionException` wrapping the `InterruptedException`, with the interrupt status set. To land a timeout or rejection as a typed `Left` instead, use the static `EitherPath` combinators (`EitherPath.withTimeout(step, duration, onTimeout)` and friends).
 
 See [Resilience Patterns](../resilience/ch_intro.md) for the per-carrier availability table, and [Patterns and Recipes](patterns.md) for more recipes.
 
@@ -15954,7 +15954,7 @@ VTask<Data> robust = Retry.retryTask(
 - How to configure failure thresholds, recovery timeouts, and call timeouts
 - How to protect VTask operations with a shared circuit breaker
 - How to chain `withCircuitBreaker` on Path carriers, and why a `Left` never trips the circuit
-- How to use fallbacks when the circuit is open
+- How to use fallbacks when the circuit rejects a call
 - How to monitor circuit breaker health via metrics
 ~~~
 
@@ -15962,7 +15962,7 @@ VTask<Data> robust = Retry.retryTask(
 
 A retry policy assumes that trying again will eventually work. Sometimes it will not. If the database is down, retrying every 200 milliseconds for the next 30 seconds just generates 150 doomed requests. The service needs time to recover, and hammering it with traffic makes recovery harder.
 
-A circuit breaker solves this by tracking recent failures and, when enough accumulate, *stopping* calls entirely for a cooling-off period. After the period expires, it cautiously allows a single probe request through. If the probe succeeds, normal traffic resumes. If it fails, the circuit re-opens.
+A circuit breaker solves this by tracking recent failures and, when enough accumulate, *stopping* calls entirely for a cooling-off period. After the period expires, it cautiously lets probe requests through, as many at once as the successes it still needs (one by default), and turns the rest away. If the probes succeed, normal traffic resumes. If one fails, the circuit re-opens.
 
 ## The State Machine
 
@@ -15991,7 +15991,11 @@ stateDiagram-v2
 |-------|-----------|----------------|
 | **CLOSED** | All calls allowed. Consecutive failures counted. | OPEN (when failures reach threshold) |
 | **OPEN** | All calls rejected immediately with `CircuitOpenException`. | HALF_OPEN (after open duration expires) |
-| **HALF_OPEN** | One probe call allowed. | CLOSED (probe succeeds) or OPEN (probe fails) |
+| **HALF_OPEN** | A call runs as a probe while running and successful probes are fewer than `successThreshold`. Any other call is rejected with a `CircuitOpenException` whose `status()` is `HALF_OPEN`. | CLOSED (`successThreshold` probes succeed) or OPEN (a probe fails) |
+
+A call counts towards the state it was admitted in. One still running when the circuit opens, or when `reset()` closes it, finishes without moving it, though the metrics still count it. So a slow success from before an outage cannot close the circuit while it is half-open. A half-open rejection's `retryAfter()` is the call timeout, and an open one's is the time left before the circuit half-opens.
+
+Protect a call with one breaker once. A breaker that protects a call it already protects counts each outcome twice. While half-open, the inner call takes a second probe place if one is free, so one request can supply two of the successes that close the circuit. When none is free, the inner call is rejected.
 
 ## Configuration
 
@@ -16010,14 +16014,14 @@ CircuitBreakerConfig config = CircuitBreakerConfig.builder()
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `failureThreshold` | 5 | Consecutive failures before the circuit opens |
-| `successThreshold` | 1 | Successful probes in HALF_OPEN before closing |
+| `successThreshold` | 1 | Successful probes in HALF_OPEN before closing; running and successful probes together never exceed it |
 | `openDuration` | 60s | How long the circuit stays open |
 | `callTimeout` | 10s | Timeout applied to each protected call: a slower call is interrupted, and fails once it has stopped |
 | `recordFailure` | all exceptions | Predicate determining which exceptions count |
 
 The `recordFailure` predicate is important: not every exception means the service is unhealthy. A `400 Bad Request` or a business validation error reflects a problem with the *request*, not the *service*. Only count failures that indicate the service itself is struggling. A cancelled call counts as neither a success nor a failure, whatever `recordFailure` says, and its `InterruptedException` passes through.
 
-A call slower than `callTimeout` counts once it has stopped, so a call that hangs where an interrupt cannot reach it would keep the circuit closed. Detach the call before protecting it, and the breaker counts it when the time runs out:
+A call slower than `callTimeout` counts once it has stopped. So a call that hangs where an interrupt cannot reach it would keep the circuit closed, or, running as a half-open probe, hold its place until it stops. With the default threshold of one, every other call is turned away meanwhile. Detach the call before protecting it, and the breaker counts it when the time runs out:
 
 <!-- verify -->
 ```java
@@ -16065,7 +16069,7 @@ This is the correct design. A circuit breaker protects a *service endpoint*, not
 
 ## Fallbacks
 
-When the circuit is open, `protect()` throws `CircuitOpenException`. Use `protectWithFallback()` to provide a default value instead:
+When the breaker rejects a call, because it is open or half-open with every probe place taken, `protect()` throws `CircuitOpenException`. Use `protectWithFallback()` to provide a default value instead:
 
 <!-- verify -->
 ```java
@@ -16110,7 +16114,7 @@ On the typed-error carriers the breaker is railway-aware: a `Left` is a *success
 A circuit breaker measures *service health*, not business outcomes. A breaker that counts every non-success trips on a healthy service the moment clients send a burst of bad requests, taking the service away from everyone else exactly when it was answering correctly. On the typed carriers the largest class of non-successes, business `Left`s, is excluded by construction; `recordFailure` then only has to classify what still arrives as a thrown exception.
 ~~~
 
-The typed overloads keep an open-circuit rejection on the typed channel instead of surfacing `CircuitOpenException`:
+The typed overloads keep the breaker's rejection on the typed channel instead of surfacing `CircuitOpenException`:
 
 <!-- verify -->
 ```java
@@ -16146,7 +16150,7 @@ log.info("Circuit breaker: total={}, success={}, failed={}, rejected={}, transit
 | `totalCalls` | Total calls attempted (including rejected and cancelled) |
 | `successfulCalls` | Calls recorded as successes, including those whose exception `recordFailure` does not select |
 | `failedCalls` | Calls that failed (counted by the failure predicate) |
-| `rejectedCalls` | Calls rejected because the circuit was open |
+| `rejectedCalls` | Calls rejected because the circuit was open, or half-open with every probe place taken |
 | `stateTransitions` | Number of state transitions |
 | `lastStateChange` | When the last transition occurred |
 
@@ -16154,7 +16158,7 @@ log.info("Circuit breaker: total={}, success={}, failed={}, rejected={}, transit
 
 <!-- verify -->
 ```java
-// Reset to CLOSED with zeroed counters
+// Reset to CLOSED, with its failure and probe counts at zero
 breaker.reset();
 
 // Manually trip to OPEN (e.g., during maintenance)
@@ -16181,7 +16185,7 @@ Note the retry predicate: `CircuitOpenException` should *not* be retried, becaus
 
 ~~~admonish info title="Key Takeaways"
 * **Three states**: CLOSED counts consecutive failures and opens at `failureThreshold`; OPEN rejects instantly for `openDuration`
-* **Recovery is probed**: HALF_OPEN needs `successThreshold` probe successes to close, and any probe failure re-opens
+* **Recovery is probed**: HALF_OPEN runs a call as a probe while running and successful probes are fewer than `successThreshold`, and turns the rest away; that many successes close it, and any probe failure re-opens it
 * **One breaker per protected endpoint**: `protect()` is generic, so a single instance guards every call to that endpoint and they share failure state; unrelated endpoints get their own breakers
 * **Only faults trip it**: on the typed carriers a business `Left` never counts; the `onOpen` overload lands rejections as typed `Left`s
 * **Tune `recordFailure`**: a 400 or a validation error reflects the request, not the service; count only what signals an unhealthy dependency
@@ -101613,7 +101617,7 @@ VTask<Result> result = connResource.use(conn ->
 
 ## Circuit Breaker
 
-**Definition:** A resilience pattern that remembers recent failures and stops calling a dependency that is clearly down, so a system does not waste effort on doomed requests whilst a service recovers. It is a state machine across three states: **closed** (calls flow), **open** (calls are rejected immediately once failures cross a threshold), and **half-open** (after a timeout, a single probe is allowed; success closes the breaker, failure re-opens it). Applied as `withCircuitBreaker` in the resilience vocabulary.
+**Definition:** A resilience pattern that remembers recent failures and stops calling a dependency that is clearly down, so a system does not waste effort on doomed requests whilst a service recovers. It is a state machine across three states: **closed** (calls flow), **open** (calls are rejected immediately once failures cross a threshold), and **half-open** (after a timeout, a few probes are let through, one by default, and other calls are still rejected). Enough probe successes close the breaker, and a failure re-opens it. Applied as `withCircuitBreaker` in the resilience vocabulary.
 
 **Related:** [Circuit Breaker](../resilience/circuit_breaker.md), [Resilience Combinators](#resilience-combinators), [Bulkhead](#bulkhead)
 
@@ -102222,6 +102226,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `Selective` of your own runs only the branch its condition picks** ([#1358](https://github.com/higher-kinded-j/higher-kinded-j/pull/1358)). The default `whenS` ran its effect for a false condition, and the default `ifS` ran both branches. Both now leave the choice to `select`: one that keeps its contract skips what the condition does not pick, and one built from `ap` still runs every effect. See [Selective](../functional/selective.md).
 - **`mapError` on `MaybePath`, `TryPath` and `CompletableFuturePath` carries the mapped error** ([#1332](https://github.com/higher-kinded-j/higher-kinded-j/issues/1332)): `recover` after it sees that error, where it used to see the old one. A success is a `Right` and the mapper is not called. `MaybePath` and `TryPath` return an `EitherPath`. `CompletableFuturePath` returns a `VResultPath`. See [Recoverable (MonadError)](../effect/capabilities.md#recoverable-monaderror).
 - **`toEitherPath`, `toMaybePath` and `toTryPath` follow `recover` on a failed `CompletableFuturePath`** ([#1354](https://github.com/higher-kinded-j/higher-kinded-j/issues/1354)). A cancelled future gives `Left` of its `CancellationException`, or `Nothing`, instead of throwing. `toTryPath` holds the exception the future failed with, not a `CompletionException` around it.
+- **A half-open `CircuitBreaker` admits a call only while running and successful probes are fewer than `successThreshold`** ([#1481](https://github.com/higher-kinded-j/higher-kinded-j/pull/1481)); it admitted every call. Any other call gets a `CircuitOpenException`, as when the circuit is open. A call now counts only towards the state it was admitted in, so a success from before an outage cannot close the circuit. See [Circuit Breaker](../resilience/circuit_breaker.md#the-state-machine).
 - **A `VStream`'s `recoverWith`, `mapError` and `onError` act on a failure at any element** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). They acted on the first pull only, and so did `VStreamPath`'s. A later `recover` still resumes from the element after the failure. See [VStream](../monads/vstream.md).
 - **A `VStream`'s `recover` after a failed `mapTask` carries on through the operators between them** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). The elements after the failure skipped those operators, so a `filter` let them through, and a `map` or `zipWith` handed on elements of the wrong type. A failed element is now a `Step.Fail`, which each operator passes on. See [When an element fails](../monads/vstream.md#when-an-element-fails).
 - **One exception instance thrown at several elements, or by several `VStream`s, no longer mixes them up** ([#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029)). A `recover` could go back to an earlier element or into another stream, and each failure added to the instance's suppressed exceptions. A failed element now holds the rest of its own stream, so nothing is added for it.
@@ -102330,6 +102335,10 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `VTaskPath` handler sees a checked exception as its task threw it** ([#1396](https://github.com/higher-kinded-j/higher-kinded-j/pull/1396)). Code that called `getCause()` on a `VTaskExecutionException` now receives the exception itself. That holds in `runSafe` and `catching`, in a handler or retry after `via`, in the future from `runAsync()`, and in `VTaskContext.runOrElseGet` and `StreamTraversal.modifyVTask`. `unsafeRun()` still wraps one.
 - **`recover`, `recoverWith`, `mapError` and `toEitherPath` on a `CompletableFuturePath` keep a `CompletionException` that has no cause** ([#1398](https://github.com/higher-kinded-j/higher-kinded-j/issues/1398)). A handler that was given an empty `RuntimeException` now gets the `CompletionException`.
 - **A timed-out task is interrupted, and the timeout waits for it to stop** ([#1372](https://github.com/higher-kinded-j/higher-kinded-j/issues/1372)). A task blocked in `CompletableFuture.join()`, or otherwise out of an interrupt's reach, holds the failure back until it finishes, and an interrupt of the caller now waits for it too. To fail at the time limit, as before, time out `task.detachOnCancel()`.
+- **A half-open `CircuitBreaker` rejects a call once `successThreshold` probes are running or have succeeded** ([#1481](https://github.com/higher-kinded-j/higher-kinded-j/pull/1481)). It let every call through. The rejection is a `CircuitOpenException` whose `status()` is `HALF_OPEN` and `retryAfter()` the call timeout, and `metrics().rejectedCalls()` counts it. A fallback or `onOpen` mapping handles it; code that tests for `OPEN` should accept `HALF_OPEN` too.
+- **A `CircuitBreaker` call still running when the circuit changes state no longer moves it** ([#1481](https://github.com/higher-kinded-j/higher-kinded-j/pull/1481)), including across `reset()` and `tripOpen()`. Its outcome counted towards whatever state the circuit was in when it finished. The metrics still count it.
+- **A half-open probe that an interrupt cannot reach holds its probe place until it stops** ([#1481](https://github.com/higher-kinded-j/higher-kinded-j/pull/1481)). With the default threshold of one, every other call is turned away meanwhile. Protect `task.detachOnCancel()`, as for any call that can hang, so that the call timeout frees its place.
+- **A `CircuitBreaker` whose `recordFailure` predicate throws counts the call as a failure** ([#1481](https://github.com/higher-kinded-j/higher-kinded-j/pull/1481)). The predicate's exception replaced the call's. Now the call's own exception reaches the caller, with the predicate's attached as suppressed.
 - **A `fromPublisher` stream subscribes when a run's first pull runs, not when it is built** ([#1442](https://github.com/higher-kinded-j/higher-kinded-j/pull/1442)). A hot publisher, such as a `SubmissionPublisher`, sends a run only what it publishes after the run subscribes, so what it publishes between building the stream and reading it is lost. Publish once the run has subscribed, which `getNumberOfSubscribers()` shows.
 - **Code compiled against 0.5.0 that calls `GenericPath.mapK` or a `VStreamTransformations` method must be recompiled** ([#1455](https://github.com/higher-kinded-j/higher-kinded-j/pull/1455)). Each now names `Natural` in its signature, so the old call fails with `NoSuchMethodError`. A `mapK` call that passes a `NaturalTransformation` still compiles, with a removal warning.
 - **A `VStream`'s `recover`, `recoverWith`, `mapError` and `onError` let an interrupt through** ([#1428](https://github.com/higher-kinded-j/higher-kinded-j/issues/1428)). Their functions saw it, so `recover` ended the stream with its value, `mapError` replaced it and an `onError` hook logged it. Now the run fails with the `InterruptedException`. To give a value when a run is stopped, recover outside what stops it, as in `toList().timeout(d).recover(e -> List.of())`.
