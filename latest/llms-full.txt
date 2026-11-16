@@ -948,7 +948,7 @@ String msg = eitherPath.run().fold(
 | `.run()` | Extract the underlying value | All paths |
 | `.unsafeRun()` | Execute a deferred effect (may throw) | IOPath, VTaskPath |
 | `.runSafe()` | Execute safely, returning `Try` | IOPath, VTaskPath |
-| `.fold(onErr, onOk)` | Handle both tracks (error-first) | EitherPath, TryPath, ValidationPath |
+| `.fold(onErr, onOk)` | Handle both tracks (error-first) | EitherPath, TryPath, ValidationPath, MaybePath, OptionalPath |
 | `.fold(identity, op)` | Reduce a sequence to one value | ListPath, NonDetPath, StreamPath, VStreamPath |
 | `.foldLeft(seed, fn)` / `.foldRight(seed, fn)` | Directional reduce (type-changing) | ListPath, NonDetPath, StreamPath |
 | `.foldMap(monoid, fn)` | Map then combine via a `Monoid` | ListPath, NonDetPath, StreamPath, VStreamPath |
@@ -2882,6 +2882,7 @@ MaybePath<String> path = Path.just("hello");
 Maybe<String> maybe = path.run();
 String value = path.getOrElse("default");
 String computed = path.getOrElseGet(() -> expensiveDefault());
+String described = path.fold(() -> "nothing", s -> "got " + s);
 ```
 
 ---
@@ -7223,6 +7224,7 @@ OptionalPath<String> path = Path.present("hello");
 
 Optional<String> optional = path.run();
 String value = path.getOrElse("default");
+String described = path.fold(() -> "nothing", s -> "got " + s);
 boolean hasValue = path.isPresent();
 
 // Convert to MaybePath for richer operations
@@ -74013,7 +74015,7 @@ The two `Nothing` results look the same: one order has not shipped, and the othe
     // Left(NotFound[orderId=00000000-0000-0000-0000-000000000009])
 ```
 
-`city` is `"not dispatched yet"`. `get()` returns a `Just`'s value and throws `NoSuchElementException` on `Nothing`, so keep it for tests. `Just` and `Nothing` are not public types, so a `switch` cannot name them: read a `Maybe` through its methods.
+`city` is `"not dispatched yet"`. `get()` returns a `Just`'s value and throws `NoSuchElementException` on `Nothing`, so keep it for tests. `Just` and `Nothing` are not public types, so a `switch` cannot name them: read a `Maybe` through its methods, such as `fold`, which turns either case into one result.
 
 ## Bridging to the JDK {#interacting-with-maybe-values}
 
@@ -74078,6 +74080,7 @@ import org.higherkindedj.hkt.effect.Path;
 | `map(f)` | Changes a `Just`'s value; a function that returns `null` gives `Nothing` |
 | `flatMap(f)` | Runs a step that gives a `Maybe` on a `Just`'s value; `Nothing` passes through |
 | `orElse(other)`, `orElseGet(supplier)` | Return the value, or a fallback |
+| `fold(onNothing, onJust)` | Turns either case into one result |
 | `toEither(error)`, `toEither(supplier)` | Give an `Either` whose `Left` says why the value is missing |
 | `stream()` | Gives a stream of zero or one element |
 | `get()` | Returns the value, or throws `NoSuchElementException` on `Nothing` |
@@ -102449,6 +102452,7 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 - **A `fold` can return `null` to a caller whose result type is nullable** ([#1433](https://github.com/higher-kinded-j/higher-kinded-j/issues/1433)). `fold` on `Either`, `Validated`, `EitherOrBoth`, `EitherF`, `Try`, `EitherPath`, `ValidationPath`, `EitherOrBothPath` and `TryPath`, and the deprecated `foldFailureFirst` on `Try` and `TryPath`, take a `@Nullable` result type, so a nullness checker accepts `parsed.<@Nullable Integer>fold(_ -> null, n -> n)`. See [Values, never null](../hkts/core-concepts.md#values-never-null).
 - **`VResultPath` runs in one call with `unsafeRun()` and `runAsync()`, as `VTaskPath` does** ([#803](https://github.com/higher-kinded-j/higher-kinded-j/issues/803)). `unsafeRun()` returns the `Either` that `run().run()` gave, and `runAsync()` starts the task on a virtual thread and returns a future of it. A typed failure still arrives as a `Left`, and only an exception the task throws escapes.
 - **`Try` and `TryPath` gain `fold`, failure first** ([#546](https://github.com/higher-kinded-j/higher-kinded-j/issues/546)), as `Either.fold`, `Validated.fold` and their Paths' `fold` already are. `foldFailureFirst`, which takes the same two functions in the same order, is deprecated for removal in 0.7.0, and the `MigrateDeprecationsTo0_7_0` recipe renames each call. A `Try` traversal's generated code calls `fold`. See [Reading a Try](../monads/try_monad.md#handling-failures-foldfailurefirst-recover-recoverwith) and [Deprecated for removal in 0.7.0](#deprecated).
+- **`Maybe`, `MaybePath` and `OptionalPath` gain `fold`, empty case first** ([#1490](https://github.com/higher-kinded-j/higher-kinded-j/issues/1490)). `fold(onNothing, onJust)` turns either case into one result, as `fold` already does on `Either` and `Try`. Unlike `map(f).orElseGet(s)`, it never runs `s` for a `Just`. Its result type may be `@Nullable`, as on the other folds.
 - **`Try` and `Validated` gain `toOptional`, as `Either` and `Maybe` have** ([#1509](https://github.com/higher-kinded-j/higher-kinded-j/issues/1509)). `toOptional()` keeps a `Success` or `Valid` value, and gives an empty `Optional` for a `Failure` or an `Invalid`.
 - **`ListPath` and `NonDetPath` name the null they refuse** ([#1438](https://github.com/higher-kinded-j/higher-kinded-j/issues/1438)). A null element, or a `map`, `zipWith` or `zipWith3` function that returns null, threw a `NullPointerException` with no message. The message now says which, as `StreamPath`'s does.
 - **A `Selective` of your own runs only the branch its condition picks** ([#1358](https://github.com/higher-kinded-j/higher-kinded-j/pull/1358)). The default `whenS` ran its effect for a false condition, and the default `ifS` ran both branches. Both now leave the choice to `select`: one that keeps its contract skips what the condition does not pick, and one built from `ap` still runs every effect. See [Selective](../functional/selective.md).
