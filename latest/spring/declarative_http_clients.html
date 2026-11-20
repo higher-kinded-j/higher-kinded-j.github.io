@@ -460,6 +460,7 @@ public class UserProfiles {
 <hr />
 <h2 id="choosing-a-return-type"><a class="header" href="#choosing-a-return-type">Choosing a Return Type</a></h2>
 <p>Each method picks how the call is run and what shape the result takes. (<code>Right</code>/<code>Left</code> are the success and typed-error arms of <code>Either</code>; <code>Just</code>/<code>Nothing</code> are present/absent for <code>Maybe</code>.)</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJ8IiwgIkVpdGhlclBhdGg8VW5pdCIsICJUIiwgIm9yIiwgIlZUYXNrUGF0aDxFaXRoZXI8VW5pdCIsICJUIiwgInwiLCAiQXMiLCAiRWl0aGVyUGF0aDxFIiwgIlQiLCAib3IiLCAiVlRhc2tQYXRoPEVpdGhlcjxFIiwgIlQiLCAifCIsICJSaWdodChib2R5IiwgInwiLCAiTGVmdChVbml0LklOU1RBTkNFIiwgImJvZHkiLCAiaWdub3JlZCIsICJ8IiwgIlRoZSIsICJjYWxsZXIiLCAibmVlZHMiLCAidG8iLCAia25vdyIsICJvbmx5IiwgInRoYXQiLCAidGhlIiwgImNhbGwiLCAiZmFpbGVkIiwgInwiXQ==" data-since="v0.5.0"></div>
 <div class="table-wrapper"><table><thead><tr><th>Return type</th><th>Evaluation</th><th>2xx</th><th>non-2xx</th><th>Use when</th></tr></thead><tbody>
 <tr><td><code>EitherPath&lt;E, T&gt;</code></td><td>Eager, blocks the calling thread</td><td><code>Right(body)</code></td><td><code>Left(decoded error)</code></td><td>A straightforward request/response call</td></tr>
 <tr><td><code>VTaskPath&lt;Either&lt;E, T&gt;&gt;</code></td><td>Deferred onto a virtual thread</td><td><code>Right(body)</code></td><td><code>Left(decoded error)</code></td><td>You want retries, a circuit breaker, a timeout, or a <code>Retry-After</code> hook</td></tr>
@@ -467,6 +468,7 @@ public class UserProfiles {
 <tr><td><code>EitherPath&lt;E, Unit&gt;</code></td><td>Eager, blocks the calling thread</td><td><code>Right(Unit.INSTANCE)</code>, body ignored</td><td><code>Left(decoded error)</code></td><td>The endpoint sends no body, such as a <code>DELETE</code> answered with 204</td></tr>
 <tr><td><code>VTaskPath&lt;Either&lt;E, Unit&gt;&gt;</code></td><td>Deferred onto a virtual thread</td><td><code>Right(Unit.INSTANCE)</code>, body ignored</td><td><code>Left(decoded error)</code></td><td>As above, with retries or a timeout</td></tr>
 <tr><td><code>MaybePath&lt;Unit&gt;</code></td><td>Eager, blocks the calling thread</td><td><code>Just(Unit.INSTANCE)</code>, body ignored</td><td>404 → <code>Nothing</code></td><td>The endpoint sends no body and may answer 404</td></tr>
+<tr><td><code>EitherPath&lt;Unit, T&gt;</code> or <code>VTaskPath&lt;Either&lt;Unit, T&gt;&gt;</code></td><td>As <code>EitherPath&lt;E, T&gt;</code> or <code>VTaskPath&lt;Either&lt;E, T&gt;&gt;</code></td><td><code>Right(body)</code></td><td><code>Left(Unit.INSTANCE)</code>, body ignored</td><td>The caller needs to know only that the call failed</td></tr>
 </tbody></table>
 </div><div id="admonition-semantics-worth-pinning" class="admonition admonish-note" role="note" aria-labelledby="admonition-semantics-worth-pinning-title">
 <div class="admonition-title">
@@ -499,7 +501,7 @@ public class UserProfiles {
 <h2 id="decoding-errors"><a class="header" href="#decoding-errors">Decoding Errors</a></h2>
 <p>The default decoder reads the server's <code>{"success":false,"error":…}</code> envelope and binds the <code>error</code> node to your method's declared error type.</p>
 <div class="hkj-ct-mark" data-kind="new" data-run="solo" data-since="v0.5.0"></div>
-<p>A <code>Unit</code> error type reads no body. Every error response decodes to <code>Unit.INSTANCE</code>, whatever its body, just as a <code>Unit</code> success ignores its body. Declare it where the caller needs to know only that the call failed.</p>
+<p>A <code>Unit</code> error type reads no body. Every error response decodes to <code>Unit.INSTANCE</code>, whatever its body, just as a <code>Unit</code> success ignores its body. Declare it where the caller needs to know only that the call failed. The processor refuses <code>Void</code> as a method's error type, and as an <code>@OnStatus</code> error type, because no <code>Left</code> can hold one; <code>Unit</code> is the type to declare.</p>
 <p>A <strong>concrete</strong> error type binds with no extra annotations. A <strong>sealed</strong> <code>DomainError</code> hierarchy needs Jackson polymorphic type information so the decoder can pick the subtype:</p>
 <!-- verify -->
 <pre><code class="language-java">@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
@@ -551,7 +553,8 @@ EitherPath&lt;DomainError, UserDto&gt; getUser(@PathVariable String id);
       404: com.example.UserNotFoundError
       429: com.example.RateLimitError
 </code></pre>
-<p>For each method, a configured status whose type is <strong>assignable</strong> to that method's declared error type decodes into the subtype; non-assignable and unmapped statuses fall back to the declared type. An unresolvable class name fails fast at startup.</p>
+<div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJvciIsICJqYXZhLmxhbmcuVm9pZCJd" data-since="v0.5.0"></div>
+<p>For each method, a configured status whose type is <strong>assignable</strong> to that method's declared error type decodes into the subtype; non-assignable and unmapped statuses fall back to the declared type. An unresolvable class name, or <code>java.lang.Void</code>, fails fast at startup.</p>
 <h4 id="3-wholesale-a-custom-decoder-bean"><a class="header" href="#3-wholesale-a-custom-decoder-bean">3. Wholesale: a custom decoder bean</a></h4>
 <p><strong>The problem:</strong> you call a non-HKJ server that does not emit the envelope.</p>
 <div class="hkj-ct-mark" data-kind="modified" data-run="solo" data-words="WyJ1bmxlc3MiLCAidGhlIiwgImVycm9yIiwgInR5cGUiLCAiaXMiLCAiVW5pdCJd" data-since="v0.5.0"></div>
