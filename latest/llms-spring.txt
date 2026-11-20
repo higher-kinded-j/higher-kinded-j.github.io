@@ -956,7 +956,7 @@ When a controller returns a functional type directly, the return-value handler s
 - **Validated errors** produce `{"valid": false, "errors": [...], "errorCount": n}`.
 - **EitherOrBoth `Both`** produces the unwrapped value plus the `X-Hkj-Warnings` header (see [above](#eitherorboth-success-with-warnings)).
 
-### Nested values (the Jackson module)
+### Nested values (the Jackson module) {#nested-values-the-jackson-module}
 
 When an `Either`, `Validated`, `EitherOrBoth`, or `NonEmptyList` appears **inside** a DTO (for example a batch result containing `List<Either<DomainError, User>>`), the `HkjJacksonModule` serialises it with a tagged shape:
 
@@ -974,7 +974,12 @@ When an `Either`, `Validated`, `EitherOrBoth`, or `NonEmptyList` appears **insid
 // Nested EitherOrBoth
 {"kind": "right", "right": ...}
 {"kind": "both", "left": [...warnings...], "right": ...}
+
+// Nested Either.right(Unit.INSTANCE)
+{"isRight": true, "right": null}
 ```
+
+The module writes a `Unit` as `null` wherever it sits, as a `Void` success was written, whatever `spring.jackson.use-jackson2-defaults` says. It reads a value typed `Unit` from `null`, or from the `"()"` or `"INSTANCE"` that a mapper without the module writes.
 
 These shapes are fixed: there is no format-toggle property. The only Jackson-related switch is:
 
@@ -985,7 +990,7 @@ hkj:
 ```
 
 ~~~admonish warning title="No Maybe or Try Jackson support"
-The Jackson module covers `Either`, `Validated`, `EitherOrBoth`, and `NonEmptyList`. `Maybe` and `Try` have **no** nested-serialisation support; return them at the top level (where the handlers apply) or convert them to a supported type before embedding them in a DTO.
+The Jackson module covers `Either`, `Validated`, `EitherOrBoth`, `NonEmptyList`, and `Unit`. `Maybe` and `Try` have **no** nested-serialisation support; return them at the top level (where the handlers apply) or convert them to a supported type before embedding them in a DTO.
 ~~~
 
 For complete serialisation details, see [hkj-spring/JACKSON_SERIALIZATION.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/JACKSON_SERIALIZATION.md).
@@ -1940,9 +1945,11 @@ Only an HTTP **error response** (`RestClientResponseException`) is folded into t
 
 ---
 
-## Decoding Errors
+## Decoding Errors {#decoding-errors}
 
 The default decoder reads the server's `{"success":false,"error":…}` envelope and binds the `error` node to your method's declared error type.
+
+A `Unit` error type reads no body. Every error response decodes to `Unit.INSTANCE`, whatever its body, just as a `Unit` success ignores its body. Declare it where the caller needs to know only that the call failed.
 
 A **concrete** error type binds with no extra annotations. A **sealed** `DomainError` hierarchy needs Jackson polymorphic type information so the decoder can pick the subtype:
 
@@ -2010,7 +2017,7 @@ For each method, a configured status whose type is **assignable** to that method
 
 **The problem:** you call a non-HKJ server that does not emit the envelope.
 
-**The solution:** supply a `ResponseErrorDecoder` (or replace the `ResponseErrorDecoderFactory` bean) that maps the status and body to your error type however you like. Without one, a foreign or empty body raises `ResponseErrorDecodeException`.
+**The solution:** supply a `ResponseErrorDecoder` (or replace the `ResponseErrorDecoderFactory` bean) that maps the status and body to your error type however you like. Without one, a foreign or empty body raises `ResponseErrorDecodeException`, unless the error type is `Unit`.
 
 ---
 

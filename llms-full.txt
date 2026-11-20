@@ -93548,7 +93548,7 @@ Delete each mark an earlier run left on a site the rewrite has fixed, such as `/
 The rewrite changes what a running program, or another build, sees:
 
 - **A 200 response that answered `Right(null)` now sends no body.** On 0.4.x the handler wrote a JSON `null`, and on 0.5.0 a `Unit` success writes none, as the [0.5.0 notes](../release-history/v0_5_0.md#runtime-spring) say. A client parsing it notices.
-- **A `Unit` inside a response body writes as a string.** Only a handler's own success writes no body. A `Unit` in a field or a list element writes as `"()"`, its `toString()`, where `Void` wrote `null`. With `spring.jackson.use-jackson2-defaults=true` it writes `"INSTANCE"`.
+- **On 0.5.x, a nested `Unit` writes as a string.** Jackson writes `"()"`, or `"INSTANCE"` with `spring.jackson.use-jackson2-defaults=true`, where `Void` wrote `null`. 0.6.0 writes `null`, which a 0.5.x reader refuses or reads as Java `null`, so upgrade that reader first. See [Nested values](../spring/spring_boot_integration.md#nested-values-the-jackson-module).
 - **A library typed with `Void` changes its signature for its own consumers.** Each caller and implementer in the run changes with it. Migrate the library first, or the builds that use it stop compiling where they call it.
 
 The recipe adds the `Unit` import, or writes `org.higherkindedj.hkt.Unit` in full in a file that uses another type, or a variable, named `Unit`. It leaves these for you:
@@ -96165,7 +96165,7 @@ When a controller returns a functional type directly, the return-value handler s
 - **Validated errors** produce `{"valid": false, "errors": [...], "errorCount": n}`.
 - **EitherOrBoth `Both`** produces the unwrapped value plus the `X-Hkj-Warnings` header (see [above](#eitherorboth-success-with-warnings)).
 
-### Nested values (the Jackson module)
+### Nested values (the Jackson module) {#nested-values-the-jackson-module}
 
 When an `Either`, `Validated`, `EitherOrBoth`, or `NonEmptyList` appears **inside** a DTO (for example a batch result containing `List<Either<DomainError, User>>`), the `HkjJacksonModule` serialises it with a tagged shape:
 
@@ -96183,7 +96183,12 @@ When an `Either`, `Validated`, `EitherOrBoth`, or `NonEmptyList` appears **insid
 // Nested EitherOrBoth
 {"kind": "right", "right": ...}
 {"kind": "both", "left": [...warnings...], "right": ...}
+
+// Nested Either.right(Unit.INSTANCE)
+{"isRight": true, "right": null}
 ```
+
+The module writes a `Unit` as `null` wherever it sits, as a `Void` success was written, whatever `spring.jackson.use-jackson2-defaults` says. It reads a value typed `Unit` from `null`, or from the `"()"` or `"INSTANCE"` that a mapper without the module writes.
 
 These shapes are fixed: there is no format-toggle property. The only Jackson-related switch is:
 
@@ -96194,7 +96199,7 @@ hkj:
 ```
 
 ~~~admonish warning title="No Maybe or Try Jackson support"
-The Jackson module covers `Either`, `Validated`, `EitherOrBoth`, and `NonEmptyList`. `Maybe` and `Try` have **no** nested-serialisation support; return them at the top level (where the handlers apply) or convert them to a supported type before embedding them in a DTO.
+The Jackson module covers `Either`, `Validated`, `EitherOrBoth`, `NonEmptyList`, and `Unit`. `Maybe` and `Try` have **no** nested-serialisation support; return them at the top level (where the handlers apply) or convert them to a supported type before embedding them in a DTO.
 ~~~
 
 For complete serialisation details, see [hkj-spring/JACKSON_SERIALIZATION.md](https://github.com/higher-kinded-j/higher-kinded-j/blob/main/hkj-spring/JACKSON_SERIALIZATION.md).
@@ -97149,9 +97154,11 @@ Only an HTTP **error response** (`RestClientResponseException`) is folded into t
 
 ---
 
-## Decoding Errors
+## Decoding Errors {#decoding-errors}
 
 The default decoder reads the server's `{"success":false,"error":…}` envelope and binds the `error` node to your method's declared error type.
+
+A `Unit` error type reads no body. Every error response decodes to `Unit.INSTANCE`, whatever its body, just as a `Unit` success ignores its body. Declare it where the caller needs to know only that the call failed.
 
 A **concrete** error type binds with no extra annotations. A **sealed** `DomainError` hierarchy needs Jackson polymorphic type information so the decoder can pick the subtype:
 
@@ -97219,7 +97226,7 @@ For each method, a configured status whose type is **assignable** to that method
 
 **The problem:** you call a non-HKJ server that does not emit the envelope.
 
-**The solution:** supply a `ResponseErrorDecoder` (or replace the `ResponseErrorDecoderFactory` bean) that maps the status and body to your error type however you like. Without one, a foreign or empty body raises `ResponseErrorDecodeException`.
+**The solution:** supply a `ResponseErrorDecoder` (or replace the `ResponseErrorDecoderFactory` bean) that maps the status and body to your error type however you like. Without one, a foreign or empty body raises `ResponseErrorDecodeException`, unless the error type is `Unit`.
 
 ---
 
@@ -103046,6 +103053,8 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 ## Spring {#spring}
 
+- **A `Unit` inside a JSON body writes `null`, as `Void` did** ([#1522](https://github.com/higher-kinded-j/higher-kinded-j/issues/1522)). A `Unit` in a field or a list element wrote as `"()"`, or as `"INSTANCE"` under `spring.jackson.use-jackson2-defaults=true`, so its JSON changed on a move from `Void`. `HkjJacksonModule` now reads all three, so a service reads what an older peer sends. See [Nested values](../spring/spring_boot_integration.md#nested-values-the-jackson-module).
+- **An `@HkjHttpClient` method with a `Unit` error type reads no error body** ([#1522](https://github.com/higher-kinded-j/higher-kinded-j/issues/1522)). With the default decoder, every error response decodes to `Unit.INSTANCE`, whatever its body, as a `Unit` success already ignores its body. Such a client needs no `HkjJacksonModule` for it. See [Decoding Errors](../spring/declarative_http_clients.md#decoding-errors).
 - **A `VTaskPath` response timeout interrupts its task** ([#1412](https://github.com/higher-kinded-j/higher-kinded-j/issues/1412)). When `hkj.virtual-threads.default-timeout-ms` runs out, the starter answers 504 and interrupts the task, without waiting for it to stop. The task used to run on after the response had gone. See [VTaskPath](../spring/spring_boot_integration.md#vtaskpath-virtual-thread-async).
 
 ---
@@ -103161,6 +103170,8 @@ To try them, depend on `0.6.0-SNAPSHOT` from the snapshots repository, as [Gradl
 
 #### Spring {#runtime-spring}
 
+- **A `Unit` inside a JSON body writes `null`, not `"()"`** ([#1522](https://github.com/higher-kinded-j/higher-kinded-j/issues/1522)). A client that read that string, or `"INSTANCE"` under `spring.jackson.use-jackson2-defaults=true`, now gets `null`. Upgrade the services that read it first: before 0.6.0, a reader refuses the `null` or takes it as a Java `null`, and an `@HkjHttpClient` throws on a `Unit` error.
+- **A `Unit` error no longer fails to decode** ([#1522](https://github.com/higher-kinded-j/higher-kinded-j/issues/1522)). With the default decoder, an `@HkjHttpClient` method whose error type is `Unit` threw `ResponseErrorDecodeException` for an empty or foreign error body. It now gives `Left(Unit.INSTANCE)`, so code that caught that exception, and a retry or circuit breaker that counted it, sees the `Left` instead.
 - **A `VTaskPath` request that times out interrupts its task** ([#1412](https://github.com/higher-kinded-j/higher-kinded-j/issues/1412)). The 504 goes out as before. The task used to run on in the background, and is now interrupted, as [Effect Paths](#runtime-effect-paths) says.
 - **Start work that must outlive a `VTaskPath` response with its own `runAsync()`** ([#1412](https://github.com/higher-kinded-j/higher-kinded-j/issues/1412)). Started inside the `VTaskPath` the controller returns, it keeps running when the timeout interrupts the request's task. Or raise `hkj.virtual-threads.default-timeout-ms`.
 - **A timed-out `CompletableFuturePath` request over `runAsync()` interrupts its task** ([#1412](https://github.com/higher-kinded-j/higher-kinded-j/issues/1412)). When `hkj.async.default-timeout-ms` runs out, the starter cancels the path's future, which now reaches the task.
