@@ -93377,7 +93377,7 @@ This page is the authoritative catalogue. The same recipe set is also referenced
 
 ```kotlin
 plugins {
-    id("org.openrewrite.rewrite") version "7.28.1"
+    id("org.openrewrite.rewrite") version "7.39.0"
 }
 
 dependencies {
@@ -93393,6 +93393,8 @@ rewrite {
 ./gradlew rewriteDryRun   # preview changes
 ./gradlew rewriteRun      # apply changes
 ```
+
+If Gradle reports `Could not find org.openrewrite:rewrite-bom` for the newest plugin, use the release before it. A plugin release has at times depended on a `rewrite-bom` that had not yet reached Maven Central.
 
 ### Maven
 
@@ -93427,6 +93429,33 @@ mvn rewrite:run      # apply changes
 ```
 
 `hkj-openrewrite` is published from 0.4.11. Each release keeps every recipe before it, so the latest version carries them all. A recipe for an API deprecated after 0.4.11 arrives with the release that deprecates it. A recipe for a signature that changes with no deprecation first, such as `StateT`'s in 0.5.0, arrives with the release that changes it: run it before the project moves to that release. A recipe can also join a group later, as the 0.5.0 group's `Void` rewrite does with 0.6.0, so take the latest release.
+
+### Without changing the build {#init-script}
+
+A one-off migration need not add the plugin to the build. Save this as `rewrite.gradle`, outside the project or ignored by it:
+
+```groovy
+initscript {
+    repositories { gradlePluginPortal() }
+    dependencies { classpath("org.openrewrite:plugin:7.39.0") }
+}
+rootProject {
+    plugins.apply(org.openrewrite.gradle.RewritePlugin)
+    dependencies { rewrite("io.github.higher-kinded-j:hkj-openrewrite:LATEST_VERSION") }
+    rewrite { activeRecipe("org.higherkindedj.openrewrite.MigrateDeprecationsTo0_5_0") }
+}
+```
+
+```bash
+./gradlew --init-script rewrite.gradle rewriteDryRun   # preview changes
+./gradlew --init-script rewrite.gradle rewriteRun      # apply changes
+```
+
+Applied to the root project, the plugin reads the sources of every subproject. The script is Groovy, and it works whether the build is written in Groovy or Kotlin. If the run stops with `no repositories are defined`, the root project declares none of its own: add `repositories { mavenCentral() }` inside `rootProject { }`.
+
+### On a large build {#large-build}
+
+The recipes hold every source file in memory, so a large build can exhaust Gradle's default daemon heap. A build of about 1,300 source files ran out, and finished with 8 GB. Raise the heap for one run with `-Dorg.gradle.jvmargs=-Xmx8g`, or set `org.gradle.jvmargs=-Xmx8g` in `gradle.properties`. Under Maven, set `MAVEN_OPTS=-Xmx8g`.
 
 ---
 
@@ -102931,6 +102960,19 @@ Already moved without step 1? Run it on your last commit on 0.4.x, or check each
 
 The 0.5.0 notes give the details in [Upgrading from 0.4.11](v0_5_0.md#upgrading). Run `MigrateDeprecationsTo0_5_0` first, while the project is still on 0.4.11, since its recipes find the APIs in [Removals in 0.5.0](#removals-in-050) only there. Take `hkj-openrewrite` 0.6.0 or later for it, which rewrites `Void` to `Unit` where 0.5.0 only marks it, as [`Void` becomes `Unit`](../tooling/openrewrite.md#void-becomes-unit) explains. [Before you upgrade](v0_5_0.md#before-you-upgrade) lists that step and the others to take first. Then read [What a running program can notice](v0_5_0.md#runtime-changes), most of it about null values, because the compiler cannot point at those changes. Each entry in [What stops a build that compiled](v0_5_0.md#build-changes) fails at a line the message names, with its fix. That table's entries for a nullness checker leave out a lambda that returns null through `VTask.of`, `Try.of`, `IO.delay` or another factory taking a JDK `Supplier` or `Callable`. NullAway flags one only with the two options in [What a nullness checker sees](../hkts/core-concepts.md#what-a-nullness-checker-sees).
 
+Two more changes come with 0.5.0, and neither stops the build:
+
+- **A 200 response that answered `Right(null)` now sends no body**: on 0.4.x the handler wrote a JSON `null`. Its `Unit` replacement writes no body, as a `void` controller method does, so a client that parses the body notices. A 204 response is unchanged.
+- **`hkj-spring` brings Spring Boot 4.1's own changes**: under Gradle it raises your Spring Boot to 4.1.1, so read [Spring Boot 4.1's release notes](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.1-Release-Notes) too. Boot 4.1 split the servlet `OAuth2ResourceServerAutoConfiguration` in two, and silently skips an excluded class it cannot find, so excluding the old class excludes nothing. Name both new classes in its place:
+
+  ```properties
+  # Spring Boot 4.0
+  spring.autoconfigure.exclude=org.springframework.boot.security.oauth2.server.resource.autoconfigure.servlet.OAuth2ResourceServerAutoConfiguration
+  # Spring Boot 4.1
+  spring.autoconfigure.exclude=org.springframework.boot.security.oauth2.server.resource.autoconfigure.OAuth2ResourceServerAutoConfiguration,\
+    org.springframework.boot.security.oauth2.server.resource.autoconfigure.web.OAuth2ResourceServerWebSecurityAutoConfiguration
+  ```
+
 ---
 
 ## To 0.4.11 {#to-0411}
@@ -103200,6 +103242,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 - **The Type Classes glossary gains `MonadReader`, `MonadState` and `MonadWriter`** ([#1527](https://github.com/higher-kinded-j/higher-kinded-j/issues/1527)). Each gives a definition, its core operations and a link to its page in the MTL chapter.
 - **The Either and EitherPath pages say when to lift an `Either` to an `EitherPath`** ([#1466](https://github.com/higher-kinded-j/higher-kinded-j/issues/1466)). Stay on `Either` to hold and pass a result. Lift it with `Path.either` to run steps along it, such as `peek` and `ensure`, and take it back with `run()`.
 - **Path or Transformer? and Where to Start send async work with a typed error to `VResultPath`** ([#1467](https://github.com/higher-kinded-j/higher-kinded-j/issues/1467)). Both sent it to `EitherT<VTaskKind.Witness, E, A>`, a transformer stack that `VResultPath` already covers with less ceremony. Path or Transformer? also lists `VResultPath` in its table of the transformers each Path replaces.
+- **More help upgrading to 0.5.0** ([#1368](https://github.com/higher-kinded-j/higher-kinded-j/issues/1368)). The Upgrading page says a 200 response that answered `Right(null)` now sends no body, and that `hkj-spring` brings Spring Boot 4.1's own changes. Migration Recipes shows how to run the recipes without changing the build, and how to give a large build more heap. See [To 0.5.0](upgrading.md#to-050).
 
 ---
 
