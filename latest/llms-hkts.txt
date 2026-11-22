@@ -10632,7 +10632,7 @@ Each arrow ends at the operator that answers it. `orders` is the `unfold` and `f
 | `range(from, to)` | The integers from `from` up to, not including, `to` |
 | `iterate(seed, f)`, `generate(supplier)`, `repeat(value)` | A stream without end, which `take` or `takeWhile` limits |
 | `unfold(state, f)` | An element and the next state from a task, until it gives `Optional.empty()` |
-| `fromIterator(iterator)`, `fromStream(stream)` | The elements of an iterator or a Java `Stream`, which a run uses up: a later run carries on where the last one stopped |
+| `fromIterator(iterator)`, `fromStream(stream)` | The elements of an iterator or a Java `Stream`, which a run uses up: a later run carries on where the last one stopped. `fromStream` closes the Java `Stream` when a run is over, so read a file with `bracket`, as [A file, a line at a time](vstream_resources.md#a-file-a-line-at-a-time) shows |
 | `defer(supplier)` | A stream built afresh each time it runs |
 | `empty()`, `fail(error)` | A stream that ends at once, or fails at its first pull |
 | `bracket(acquire, use, release)` | A stream that holds a resource while it is read, as [Resource-Safe Streaming](vstream_resources.md) shows |
@@ -11657,6 +11657,8 @@ A file is read the same way, with `java.nio.file.Files`, `java.nio.file.Path` an
 
 `java.nio.file.Path` and the library's `Path` share a name, so code that uses both imports one and writes the other in full. The example keeps the file in a class of its own.
 
+`VStream.fromStream(Files.lines(file))` closes the file when a run is over too, but `Files.lines` opens the file as soon as it is called. So a stream that no run pulls keeps the file open, and so does a run on an interrupted thread, which fails before it pulls. A run after one that stopped early or failed, such as a retry, reads on from the closed file. Over a large file it can give the lines already buffered, then fail with `UncheckedIOException`. `bracket` opens the file afresh for each run, and only once the run starts. To read on across runs instead, pass the stream's iterator to `fromIterator`, which leaves closing it to you.
+
 ## When something fails {#when-something-fails}
 
 A failure closes the connection too, and a close that fails is reported. `new LoggedFeedService(log, feed)` serves another feed, and `LoggedFeedService.failingToClose(log, feed)` gives connections whose close throws:
@@ -11756,6 +11758,7 @@ A `use` such as `connection -> orders(connection).concat(next)` instead keeps th
 - **Several finalisers run in the order they were attached.**
 - **After a recovered failure, the finaliser runs when the stream ends.** When a `recover` reads on after a failed `mapTask` task, the run goes on, and the finaliser waits for its end.
 - **A failing finaliser is reported as a failing release is**, as [When something fails](#when-something-fails) shows. When several fail, the others still run, the first one's exception is thrown, and each later one is suppressed onto it.
+- **A shared exception gathers every run's finaliser failure**, as it does [on a path](../effect/advanced_topics.md#the-bracket-pattern). `VStream.fail(e)` fails each run with the one `e`. Create it inside `defer`, as in `VStream.defer(() -> VStream.fail(new IOException("feed down")))`, to give each run its own.
 
 `bracket` is built on `onFinalize`: its release is the finaliser of the stream that `use` gives.
 
@@ -12012,7 +12015,7 @@ For one stream, `toList().run()` gives a `List`. `VStreamTransformations` is for
     // 6
 ```
 
-`listToVStream` and `streamToVStream` read nothing until the stream is pulled. `vstreamToList` and `vstreamToStream` read the whole stream when they are applied, on the calling thread, so take a prefix of an endless stream first. A Java `Stream` can be read only once, so each run of a `VStream` made from one carries on from where the last run stopped, and after a full run it gives nothing.
+`listToVStream` and `streamToVStream` read nothing until the stream is pulled. `vstreamToList` and `vstreamToStream` read the whole stream when they are applied, on the calling thread, so take a prefix of an endless stream first. A Java `Stream` can be read only once, so each run of a `VStream` made from one carries on from where the last run stopped. `streamToVStream` builds it with `fromStream`, which closes the Java `Stream` when a run is over, so a later run over a file can fail, as [A file, a line at a time](vstream_resources.md#a-file-a-line-at-a-time) says.
 
 ## Finding a Path, and registering a provider {#pathprovider-spi-registration}
 
