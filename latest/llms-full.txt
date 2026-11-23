@@ -10223,9 +10223,9 @@ ErrorContext<IOKind.Witness, DbError, Invoice> invoice =
 
 Each step receives the previous result. If any step fails, subsequent steps are skipped; the failure propagates to the end.
 
-### flatMap: Type-Preserving Chain
+### flatMap: Another Name for via
 
-`flatMap` is equivalent to `via` but with a more explicit type signature:
+`flatMap` is another name for `via`, for readers who know the monad vocabulary:
 
 <!-- verify -->
 ```java
@@ -10236,7 +10236,7 @@ ErrorContext<IOKind.Witness, ApiError, Profile> profile =
         .flatMap(prof -> enrichProfile(prof));
 ```
 
-Choose based on readability. Both short-circuit on failure.
+The two are one method, so choose based on readability. Both short-circuit on failure, and javac checks their steps the same way.
 
 ### then: Sequence Without Using the Value
 
@@ -10250,6 +10250,75 @@ ErrorContext<IOKind.Witness, String, Unit> workflow =
         .then(() -> performAction())
         .then(() -> logAction("Completed"));
 ```
+
+### What a Step May Return {#what-a-step-may-return}
+
+javac checks each step of `via`, `flatMap` and `then`. A step must be an `ErrorContext` over the same effect. It may fail with the chain's error type or a subtype of it. So a helper typed on one variant of a sealed error chains as it is:
+
+<!-- verify -->
+```java
+ErrorContext<IOKind.Witness, LookupError, Profile> lookedUp =
+    ErrorContext.<LookupError, String>success(userId)
+        .via(id -> findUser(id))              // fails with UserMissing
+        .via(user -> loadProfile(user));      // fails with any LookupError
+```
+
+A chain's error type is its first context's, which is why that chain starts on `LookupError`. A chain started by `findUser(id)` stays on `UserMissing`, so it refuses `loadProfile`. Widen such a chain before its first step:
+
+<!-- verify -->
+```java
+ErrorContext<IOKind.Witness, LookupError, Profile> widened =
+    findUser(userId)
+        .<LookupError>mapError(e -> e)
+        .via(user -> loadProfile(user));
+```
+
+A step with another error type does not compile. Here `fetchFromCache` fails with a `String`, in a chain whose error is `ApiError`:
+
+<!-- verify:rejects "ApiError,B>" -->
+```java
+ErrorContext<IOKind.Witness, ApiError, User> cached =
+    fetchUser(userId)
+        .via(user -> fetchFromCache(user.id()));
+```
+
+javac reports the step's type and the type the chain needs:
+
+```text
+error: incompatible types: cannot infer type-variable(s) B
+    (argument mismatch; bad return type in lambda expression
+      ErrorContext<Witness,String,User> cannot be converted to ErrorContext<Witness,? extends ApiError,B>)
+```
+
+Map the step's error to the chain's with [`mapError`](#maperror-change-the-error-type) before returning it:
+
+<!-- verify -->
+```java
+ErrorContext<IOKind.Witness, ApiError, User> cached =
+    fetchUser(userId)
+        .via(user -> fetchFromCache(user.id())
+            .mapError(message -> new ApiError(404, message)));
+```
+
+Convert an `OptionalContext` step with `toErrorContext`, giving it the error an empty result fails with:
+
+<!-- verify -->
+```java
+ErrorContext<IOKind.Witness, ApiError, User> known =
+    ErrorContext.<ApiError, String>success(userId)
+        .via(id -> findCachedUser(id).toErrorContext(new ApiError(404, "no user")));
+```
+
+A step that calls a method on a factory's result names the error type. javac infers it from the chain only when the factory call is the whole step:
+
+<!-- verify -->
+```java
+ErrorContext<IOKind.Witness, ApiError, Integer> idLength =
+    fetchUser(userId)
+        .via(user -> ErrorContext.<ApiError, String>success(user.id()).map(String::length));
+```
+
+[`recoverWith`](#recoverwith-provide-a-fallback-computation) and [`orElse`](#orelse-alternative-without-inspecting-error) follow the same rule for the fallback they return.
 
 ---
 
@@ -10668,7 +10737,9 @@ OptionalContext<IOKind.Witness, Address> address =
 
 If the user isn't found, the address lookup never runs. If the user exists but has no address, the result is empty. Both cases produce the same `none()` outcome.
 
-### flatMap: Type-Preserving Chain
+### flatMap: Another Name for via
+
+`flatMap` is another name for `via`, for readers who know the monad vocabulary:
 
 <!-- verify -->
 ```java
@@ -10687,6 +10758,36 @@ OptionalContext<IOKind.Witness, String> result =
         .then(() -> fetchData())
         .then(() -> processResult());
 ```
+
+### What a Step May Return {#what-a-step-may-return}
+
+javac checks each step of `via`, `flatMap` and `then`. A step must be the chain's own kind of context over the same effect, so a `JavaOptionalContext` step in an `OptionalContext` chain does not compile:
+
+<!-- verify:rejects "Address> cannot be converted to" -->
+```java
+OptionalContext<IOKind.Witness, Address> address =
+    lookupUser(userId)
+        .via(found -> findAddress(found));
+```
+
+javac reports the step's type and the type the chain needs:
+
+```text
+error: incompatible types: cannot infer type-variable(s) B
+    (argument mismatch; bad return type in lambda expression
+      JavaOptionalContext<Witness,Address> cannot be converted to OptionalContext<Witness,B>)
+```
+
+Convert the step with `toOptionalContext()` first:
+
+<!-- verify -->
+```java
+OptionalContext<IOKind.Witness, Address> address =
+    lookupUser(userId)
+        .via(found -> findAddress(found).toOptionalContext());
+```
+
+Nothing converts the other way, so build a step for a `JavaOptionalContext` chain with `JavaOptionalContext`'s own factories.
 
 ---
 
@@ -11089,7 +11190,9 @@ private ConfigContext<IOKind.Witness, AppConfig, List<Order>> fetchOrders(UserId
 
 Each step has access to the same configuration. The config flows through without explicit passing.
 
-### flatMap: Type-Preserving Chain
+### flatMap: Another Name for via
+
+`flatMap` is another name for `via`, for readers who know the monad vocabulary:
 
 <!-- verify -->
 ```java
@@ -11108,6 +11211,34 @@ ConfigContext<IOKind.Witness, Config, String> workflow =
         .then(() -> doWork())
         .then(() -> logComplete())
         .then(() -> ConfigContext.pure("done"));
+```
+
+### What a Step May Return {#what-a-step-may-return}
+
+javac checks each step of `via`, `flatMap` and `then`. A step must be a `ConfigContext` over the same effect. It may read the chain's configuration type or a supertype of it, such as an interface the configuration implements, because such a step needs less of it. A step that reads another type does not compile. Here `databaseUrl` reads a `DbConfig`, in a chain whose configuration is `PlatformConfig`:
+
+<!-- verify:rejects "PlatformConfig,B>" -->
+```java
+ConfigContext<IOKind.Witness, PlatformConfig, String> url =
+    ConfigContext.<PlatformConfig>ask()
+        .via(config -> databaseUrl());
+```
+
+javac reports the step's type and the type the chain needs:
+
+```text
+error: incompatible types: cannot infer type-variable(s) B
+    (argument mismatch; bad return type in lambda expression
+      ConfigContext<Witness,DbConfig,String> cannot be converted to ConfigContext<Witness,? super PlatformConfig,B>)
+```
+
+Give the step the part of the configuration it reads with [`contramap`](#contramap-transform-the-required-config):
+
+<!-- verify -->
+```java
+ConfigContext<IOKind.Witness, PlatformConfig, String> url =
+    ConfigContext.<PlatformConfig>ask()
+        .via(config -> databaseUrl().contramap(PlatformConfig::database));
 ```
 
 ---
@@ -11573,6 +11704,34 @@ MutableContext<IOKind.Witness, Counter, Unit> incrementThrice =
     MutableContext.<Counter>modify(Counter::increment)
         .then(() -> MutableContext.modify(Counter::increment))
         .then(() -> MutableContext.modify(Counter::increment));
+```
+
+### What a Step May Return {#what-a-step-may-return}
+
+javac checks each step of `via`, `flatMap` and `then`. A step must be a `MutableContext` over the same effect and the same state type, because a step both reads and writes the state. So a helper typed on part of the state does not compile in a chain over the whole of it:
+
+<!-- verify:rejects "AppState,B>" -->
+```java
+var counted =
+    MutableContext.<AppState>get()
+        .via(state -> increment());
+```
+
+javac reports the step's type and the type the chain needs:
+
+```text
+error: incompatible types: cannot infer type-variable(s) B
+    (argument mismatch; bad return type in lambda expression
+      MutableContext<Witness,Counter,Unit> cannot be converted to MutableContext<Witness,AppState,B>)
+```
+
+Write the step on the chain's state, reaching the part it changes:
+
+<!-- verify -->
+```java
+MutableContext<IOKind.Witness, AppState, Unit> counted =
+    MutableContext.<AppState>get()
+        .via(state -> MutableContext.modify(s -> s.withCounter(s.counter().increment())));
 ```
 
 ### Pattern: Accumulator
@@ -103143,6 +103302,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 ## Effect Paths {#effect-paths}
 
 - **javac checks each chain step's kind of Path and error type** ([#1314](https://github.com/higher-kinded-j/higher-kinded-j/issues/1314)). A step passed to `via` or another chaining method must be the chain's own kind of Path, so a mismatch is a compile error rather than an exception at run time. A step may still fail with a variant of the chain's error. See [The Family Parameter](../effect/capabilities.md#the-family-parameter).
+- **javac checks each Effect Context step, as it does a Path's** ([#1567](https://github.com/higher-kinded-j/higher-kinded-j/issues/1567)). A `via` step of another kind, or with another error, configuration or state type, compiled and could throw a `ClassCastException` later. Chaining methods also take an `ErrorContext` step failing with a variant of its error, or a `ConfigContext` step reading less configuration. See [What a Step May Return](../effect/effect_contexts_error.md#what-a-step-may-return).
 - **`EitherPath` gains `ensure`** ([#1338](https://github.com/higher-kinded-j/higher-kinded-j/issues/1338)): `ensure(test, onFail)` keeps a success whose value passes `test` and turns any other success into a failure built from its value, so a guard no longer needs an `if` returning a `Left`. See [EitherPath](../effect/path_either.md#error-handling).
 - **`TrampolinePath` and `FreePath` combine three paths with `zipWith3`** ([#1302](https://github.com/higher-kinded-j/higher-kinded-j/issues/1302)): both already combined two paths with `zipWith`. The three-way combine stays lazy until `run()` or `foldMap`, so a deep chain stays stack-safe. See [Combinable (Applicative)](../effect/capabilities.md#combinable-applicative).
 - **`NonDetPath` gains six list operations that `ListPath` already had** ([#1337](https://github.com/higher-kinded-j/higher-kinded-j/issues/1337)): `lastOption`, `anyMatch`, `allMatch`, `takeWhile`, `dropWhile` and `get`. Each behaves as its `ListPath` counterpart.
@@ -103199,7 +103359,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 - **`OptionalContext.io` and `JavaOptionalContext.io` take a supplier that never returns null** ([#1488](https://github.com/higher-kinded-j/higher-kinded-j/issues/1488)). Under a nullness checker they took only a `Supplier<@Nullable A>`, so a `Supplier<String>` variable was refused. They now take `Supplier<? extends @Nullable A>`.
 - **Stop a `runAsync()` task by cancelling its future** ([#1412](https://github.com/higher-kinded-j/higher-kinded-j/issues/1412)). `cancel(true)` on the future from `runAsync()` on `VTask`, `VTaskPath`, `VResultPath`, `VTaskContext` or `VStream`, or from `EffectBoundary.runAsync`, interrupts the task, as a future from an `ExecutorService` does, and `cancel(false)` leaves it running. See [Running a task](../monads/vtask_monad.md#running-a-task).
 - **`@GeneratePathBridge` reads an inherited method whose type parameter is bounded by interfaces alone** ([#1552](https://github.com/higher-kinded-j/higher-kinded-j/issues/1552)). A bound such as `<R extends Comparable<T> & Serializable>`, on a method inherited from a generic interface, stopped the build with an `IndexOutOfBoundsException` from the processor.
-- **A Path's type-mismatch message names the method and both Path types** ([#401](https://github.com/higher-kinded-j/higher-kinded-j/issues/401)). Every built-in Path words it as `MaybePath` did, with no `Default*` class name, and points to the conversion methods and the Path factories. An Effect Context's `via` names both context types the same way. See [A step that returns the wrong kind of Path](../effect/compiler_errors.md#2-a-step-that-returns-the-wrong-kind-of-path).
+- **A Path's type-mismatch message names the method and both Path types** ([#401](https://github.com/higher-kinded-j/higher-kinded-j/issues/401)). Every built-in Path words it as `MaybePath` did, with no `Default*` class name, and points to the conversion methods and the Path factories. See [A step that returns the wrong kind of Path](../effect/compiler_errors.md#2-a-step-that-returns-the-wrong-kind-of-path).
 
 ---
 
@@ -103332,7 +103492,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 - **`cancel(true)` on a future from `runAsync()` interrupts the task** ([#1412](https://github.com/higher-kinded-j/higher-kinded-j/issues/1412)). A task that ran on after its future was cancelled is now interrupted: a sleep, a wait or a blocking socket call in it fails, and Java closes that socket. A task that catches the interrupt and carries on still runs on. The future from `EffectBoundary.runAsync` does the same.
 - **Cancelling a `CompletableFuturePath` over a `runAsync()` future interrupts the task** ([#1412](https://github.com/higher-kinded-j/higher-kinded-j/issues/1412)). That holds for `Path.future(task.runAsync())`, and for a path `withTimeout` or `completeOnTimeout` makes from it, with either flag. A `map` or `via` makes a new future, which breaks the chain. See [CompletableFuture](../monads/cf_monad.md#on-a-completablefuturepath).
 - **Every built-in Path's type-mismatch message names the method and both Path types** ([#401](https://github.com/higher-kinded-j/higher-kinded-j/issues/401)), and points to conversions and the Path factories. A raw type, an unchecked cast, a hand-written `Combinable` or a 0.5.0 build reaches it. Match the type names where code matched the old text, `MaybePath`'s included. See [A step that returns the wrong kind of Path](../effect/compiler_errors.md#2-a-step-that-returns-the-wrong-kind-of-path).
-- **An Effect Context's `via` names both context types when its function returns another kind of context** ([#401](https://github.com/higher-kinded-j/higher-kinded-j/issues/401)). A typed chain reaches this check. Each context said `via function must return` its own type and a class name; the message now names a conversion or the expected context's factory methods, and `flatMap`, which javac checks. See [Effect Contexts](../effect/effect_contexts.md).
+- **An Effect Context's `via` no longer checks its step's kind when the chain runs** ([#1567](https://github.com/higher-kinded-j/higher-kinded-j/issues/1567)), since javac checks it. A jar built against 0.5.0 that hands `via` another kind of context gets a `ClassCastException` in place of an `IllegalArgumentException`. One that calls `via` on an `EffectContext` gets a `NoSuchMethodError`. Rebuild it against 0.6.0.
 
 #### Spring {#runtime-spring}
 
@@ -103355,6 +103515,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 | Effect Paths | A chain whose receiver is typed with a wildcard error, such as `EitherPath<? extends AppError, String>` | Widen it first, as in `p.<AppError>mapError(e -> e).via(...)`, or declare it as `EitherPath<AppError, String>` | [#1314](https://github.com/higher-kinded-j/higher-kinded-j/issues/1314) |
 | Effect Paths | A pattern or cast from a capability type to a concrete Path, such as `case MaybePath<String> m` on a `Chainable<?, String>`; a cast is unchecked, so it fails under `-Werror` | Match from `Composable<String>`, or build the concrete Path directly | [#1314](https://github.com/higher-kinded-j/higher-kinded-j/issues/1314) |
 | Effect Paths | A step after `mapError` on a `MaybePath`, `TryPath` or `CompletableFuturePath` that returns the Path it started from | Return an `EitherPath` from the step (a `VResultPath` after a `CompletableFuturePath`), or use `recover` or `mapException` before changing the error type | [#1332](https://github.com/higher-kinded-j/higher-kinded-j/issues/1332) |
+| Effect Paths | A `via` step on an Effect Context of another kind of context, or with an error, configuration or state type the chain does not carry. Also a step or receiver typed as `EffectContext`, a chain started on one variant of its error, and a receiver typed with a wildcard, such as `ErrorContext<F, ? extends AppError, A>` | Convert or map the step, as [What a Step May Return](../effect/effect_contexts_error.md#what-a-step-may-return) shows. Declare a helper's return type as its concrete context. Widen an error where the chain starts, as in `.<AppError>mapError(e -> e)`, and a `? super R` receiver with `.<R>contramap(r -> r)`. A step that calls a method on a factory's result names the factory's types, as in `ErrorContext.<AppError, String>success(id).map(f)` | [#1567](https://github.com/higher-kinded-j/higher-kinded-j/issues/1567) |
 | Optics | An optic interpreter or other code of your own that names an `OpticOp` record: a pattern or type such as `OpticOp.Get<?, ?>` or `OpticOp.Set<S, A>`, or a constructor call such as `new OpticOp.Get<>(source, getter)` | Add the third type argument, as in `OpticOp.Get<?, ?, ?>`, and pass a continuation, `Function.identity()`, to a constructor. Hand each result to `op.k()` and return what it gives, in place of `Free.pure(result)` | [#1154](https://github.com/higher-kinded-j/higher-kinded-j/issues/1154) |
 | Effect Paths | An exhaustive `switch` over `VStream.Step`, in code that pulls a stream by hand or in a stream of your own | Add a `Step.Fail` case. A stream of your own passes it on with itself over the tail, as its `Emit` case does; code that stops there closes the tail and throws the error | [#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029) |
 | Optics | A call to the traversal `@GenerateTraversals` generated for a sorted container with a wildcard where it is ordered, such as `PSortedSet<? extends String>` or `PSortedMap<? extends String, V>`. The method is no longer generated, and a note says why | Declare the component with concrete type arguments, such as `PSortedSet<String>` | [#1430](https://github.com/higher-kinded-j/higher-kinded-j/issues/1430) |
