@@ -7774,6 +7774,7 @@ fix. The fix sentence is the one to act on; in short:
 | `which Java does not allow as the name of a class` | The suffix makes a reserved word, such as `record` | Choose another suffix |
 | `That is the type it is generated for` | An empty suffix lands the Path on the annotated type itself | Give a suffix, or a `targetPackage` |
 | `A type of that name is already declared in the compilation` | Another type already has the Path's name | Change the suffix, or rename that type |
+| `A type of that name is already on the classpath` | A class read from a class file without HKJ's `@Generated` has the Path's name, as a dependency's may | Change the suffix, set a `targetPackage`, or rename that class where it is yours |
 | `is not a package name` | `targetPackage` is not a package name | Give a name such as `com.shop.paths` |
 | `witness 'int' is not a class` | The witness is a primitive, `void` or an array | Name the witness marker class |
 | `is generic, and a class literal can name only its raw type` | The witness, or the error type at `RECOVERABLE`, takes type arguments | Use `GenericPath`, or a non-generic error type |
@@ -44040,7 +44041,7 @@ The annotation processor adds one code-generation pass to compilation. On a code
 
 Generated sources land under `build/generated/sources/annotationProcessor/java/main` (Gradle) or `target/generated-sources/annotations` (Maven). Most IDEs index these automatically after the first build. If autocomplete cannot see `XLenses` or `XFocus` types, a rebuild and project refresh resolves it.
 
-Incremental compilation is supported, conservatively: every processor that generates code is registered with Gradle as *aggregating*, so a change to any annotated type re-runs generation across the source set rather than regenerating one companion class. That is deliberate, an isolating claim that turned out wrong would produce silently stale output, and consuming source sets stay incremental regardless. The one processor that generates nothing is registered as isolating: it marks hkj's annotations as handled, so that javac's `-Xlint:processing` does not report them (see below).
+Incremental compilation is supported: a change recompiles what it touches, not the whole source set. [Incremental compilation](../tooling/manual_setup.md#incremental-compilation) says how each processor is registered with Gradle, and how `-parameters` and `-implicit:class` keep an incremental build writing what a clean build writes. The HKJ build plugin adds both.
 
 Every class file the processors write carries `@Generated`: the companion class, the navigator and stage classes nested inside it, and the classes that implement each traversal and fold. The marker has class retention, which is what JaCoCo's generated-code filter reads, so a coverage floor needs no exclude patterns for `XLenses`, `XFocus`, `XTraversals` or anything nested in them, and a build that carried such patterns can drop them. The same marker is what the [compile-time checks](../tooling/compile_checks.md#what-the-checker-detects) gate on.
 
@@ -46315,6 +46316,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`'x' takes parameters`](#generateisos-x-takes-parameters) | The `@GenerateIsos` method takes arguments |
 | [`does not return an Iso with both type arguments`](#generateisos-x-does-not-return-an-iso-with-both-type-arguments) | The `@GenerateIsos` method returns something else |
 | [`cannot be reached from 'p'`](#generateisos-x-cannot-be-reached-from-p) | The `@GenerateIsos` method is not visible from the generated package |
+| [`has the name of a class on the classpath`](#generateisos-name-on-the-classpath) | `@GenerateIsos`: a class no HKJ generator wrote already has the iso class's name |
 | [`The generated companion is a top-level class`](#companion-cannot-be-reached) | A type the generated companion names is `private`, or hidden in another package |
 | [`has a wildcard type argument`, `has a raw Either`](#generatefocus-record-component-xy-has-a-wildcard-type-argument-in-set-extends-t) | A widened SPI container, such as `Either`, is raw or has a wildcard |
 | [`cannot navigate to`](#generatefocus-navigator-cannot-navigate) | A record that writes `generateNavigators = true` reaches a record with a field named like a no-argument path method |
@@ -46655,6 +46657,12 @@ final class LengthIsos {
 }
 ```
 ~~~
+
+### "@GenerateIsos: the generated class '...' has the name of a class on the classpath" {#generateisos-name-on-the-classpath}
+
+The class the iso fields are written into, `XIsos`, is already on the classpath as a class file without HKJ's `@Generated`. It is a dependency's, another processor's, or a hand-written class that Gradle's incremental build read from its class file rather than recompile. javac would write the generated class over it.
+
+**Fix.** Set `targetPackage` to write the iso class into another package, rename the class on the classpath where it is yours, or rename the class declaring the method, whose name the iso class takes. Where the class is an earlier build's output, rebuild from clean. [Incremental compilation](../tooling/manual_setup.md#incremental-compilation) says which generators refuse such a name.
 
 ### "@GenerateLenses: record component 'x' of 'X' names 'Y', which cannot be reached from 'p'" {#companion-cannot-be-reached}
 
@@ -55262,6 +55270,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Does a spec compiled in another module nest?](structure.md#across-modules) | Yes, when that module ran `hkj-processor`. | by design |
 | [What if two dependencies map the same pair?](#how-a-dependencys-specs-are-found) | The more specific is used, with a note. Where neither is, your own spec or a leaf picks one. | by design |
 | [Can a spec-carrying module sit on the module path?](#how-a-dependencys-specs-are-found) | Not with the index: keep those jars on the classpath, or delegate with a leaf. | not supported yet |
+| [Can a generated `Impl` or envelope reuse a class name from the classpath?](../tooling/manual_setup.md#incremental-compilation) | No, unless HKJ wrote that class: the processor refuses it, `has the name of a class on the classpath`. | by design |
 | **Emission tiers** | | |
 | [Why does a bean mapping, or an `@OptionalBridge` component, lose `asIso()`?](#where-a-bean-or-bridged-component-lands) | A reference property can be unset, and a bridged value can be absent. An all-primitive bean keeps it. | by design |
 | [Why does a record wire's `@Nullable` component cost `asIso()` or `asLens()`?](#where-a-nullable-record-component-lands) | Where the domain declares it non-null, an optic would hand over a `null` the domain's type rules out; `parse` refuses it. | by design |
@@ -55320,6 +55329,7 @@ Each question links to its rule. *By design* means the behaviour or the refusal 
 | [Can a merge fill a component through a spec's `build`?](#how-a-merge-fills) | No: a merge runs a spec's `parse` only. | not supported yet |
 | [Can a merge fill a component through a threaded spec?](#how-a-merge-fills) | Yes, by the rule a mapping nests it by. | by design |
 | [Can a merge fill a component through an element-mapped spec?](#how-a-merge-fills) | No: a leaf over the whole pair builds it with `of(...)`. | not supported yet |
+| [Does an incremental build need `-parameters` for a merge?](../tooling/manual_setup.md#incremental-compilation) | Yes: a merge's null checks name its sources, so the processor refuses a spec whose class file records no parameter names. | by design |
 | [Can an error envelope hierarchy be generic?](#error-envelope-rules) | No: the hierarchy, its variants and the context are non-generic. | by design |
 | [Does an error envelope over a deprecated type compile under `-Werror`?](../optics/production_readiness.md#build-time-impact) | No: the generated envelope names the type, and nothing there suppresses the warning. | not supported yet |
 
@@ -55441,7 +55451,7 @@ What else takes the `null`, and the fix the processor offers there:
 - **`@Nullable` is read as for [a copy](#nullable-copy-into-non-null)**, a type argument the spec writes `@Nullable` included. Holding such a component as an `Optional` is no fix, so its type argument is offered instead.
 - **A record's own accessor decides.** `build` calls it, so the processor accepts an accessor that answers a value where the field holds `null`.
 - **A bridge onto a site declared non-null needs it nullable too**, so the fix line says to mark it. A leaf a mix-in declares is overridden on the spec, carrying `@OptionalBridge`, since the mix-in serves specs whose component is no `Optional`.
-- **A Lombok class read from a class file is copied as before.** Lombok keeps `@Singular` in source only, so a compiled builder cannot show whether it skips a `null`.
+- **A Lombok class read from a class file is copied as before**, with Lombok 1.18.34 or later. Lombok keeps `@Singular` in source only, so a compiled builder cannot show whether it skips a `null`. That includes a bean Gradle's [incremental build](../tooling/manual_setup.md#incremental-compilation) did not recompile, so the next clean build refuses what that build let through.
 - **`parse` never produces such a `null`.** It refuses any read that no `Optional` bridges, as [the null contract](#the-null-contract-precisely) says, so carrying the `null` through `build` would make the two directions disagree.
 - **The processor leaves a `@GenerateMerge` with a leaf or a nested spec alone.** Such a merge is fallible, and guards each read, reporting a `null` as `must not be null`.
 - **A mapping that only parses writes nothing**, so this rule never refuses it.
@@ -92831,7 +92841,7 @@ The HKJ tooling reports the first kind before your code ever runs, and names the
 
 ### Without the Plugin
 
-A manual setup requires dependencies, annotation processors, the compile-time checker, and preview flags wired into every task that needs them. The full build file runs to roughly 30 lines; see [Manual Gradle and Maven Setup](manual_setup.md) for the complete configuration.
+A manual setup requires dependencies, annotation processors, the compile-time checker, preview flags and compiler flags wired into every task that needs them. The full build file runs to roughly 30 lines; see [Manual Gradle and Maven Setup](manual_setup.md) for the complete configuration.
 
 ### With the Plugin
 
@@ -92842,7 +92852,7 @@ plugins {
 }
 ```
 
-That is it. The plugin wires in dependencies, preview flags, compile-time checks, and Javadoc configuration automatically. It also enables "-parameters", which keeps constructor parameter names in the compiled class files: some copy strategies read them today, and the [record mapper](../mapping/ch_intro.md) uses them too. In a multi-module build, apply the plugin to **every** module that declares mapping specs or `@GenerateFocus` records other modules navigate into, not only the one that consumes them: a spec is nested through its generated `Impl` and a record is navigated through its generated `Focus`, so each must exist. See [Multi-module builds](manual_setup.md#multi-module-builds).
+That is it. The plugin wires in dependencies, preview flags, compile-time checks, and Javadoc configuration automatically. It also enables `-parameters`, which keeps parameter names in the compiled class files: some copy strategies and the [record mapper](../mapping/ch_intro.md) read them, and an [incremental build](manual_setup.md#incremental-compilation) needs them to write what a clean build writes. In a multi-module build, apply the plugin to **every** module that declares mapping specs or `@GenerateFocus` records other modules navigate into, not only the one that consumes them: a spec is nested through its generated `Impl` and a record is navigated through its generated `Focus`, so each must exist. See [Multi-module builds](manual_setup.md#multi-module-builds).
 
 A build that applies the plugin can turn on Gradle's [configuration cache](https://docs.gradle.org/current/userguide/configuration_cache.html).
 
@@ -92915,6 +92925,7 @@ With default settings, the plugin adds:
 - `--enable-preview` to `JavaCompile`, `Test`, `JavaExec`, and `Javadoc` tasks
 - `--release`, at the javadoc tool's version, to a `Javadoc` task that passes no `-source` or `--release` of its own: javadoc takes `--enable-preview` only beside one of the two. A task that passes javadoc `--add-exports` for a JDK module sets `options.source` instead, since javadoc refuses that beside `--release`
 - `-parameters` to every `JavaCompile` task (unconditional)
+- `-implicit:class` to every `JavaCompile` task that sets no `-implicit` policy of its own, so a modular source set's incremental build passes under `-Werror` (see [Incremental compilation](manual_setup.md#incremental-compilation))
 - `-Xplugin:HKJChecker` to compiler arguments, or nothing to a task that already names the checker, such as one that [sets the checker's options](compile_checks.md#configuration)
 
 ---
@@ -93108,9 +93119,10 @@ dependencies {
     annotationProcessor("io.github.higher-kinded-j:hkj-processor-plugins:LATEST_VERSION")
 }
 
-// Enable Java preview features, for code that reaches the preview classes (see Prerequisites)
+// Enable Java preview features, for code that reaches the preview classes (see Prerequisites).
+// -parameters and -implicit:class keep incremental builds sound (see Incremental compilation).
 tasks.withType<JavaCompile>().configureEach {
-    options.compilerArgs.add("--enable-preview")
+    options.compilerArgs.addAll(listOf("--enable-preview", "-parameters", "-implicit:class"))
 }
 
 tasks.withType<Test>().configureEach {
@@ -93212,14 +93224,46 @@ For SNAPSHOT versions, add the Sonatype snapshots repository to your `pom.xml`:
 ---
 
 ~~~admonish tip title="Prefer the Plugin"
-The [HKJ build plugin](gradle_plugin.md) handles all of the above (dependencies, preview flags, annotation processors, and compile-time Path type checking) with a single `plugins { }` block. Unless you have a specific reason to avoid it, the plugin is the recommended path.
+The [HKJ build plugin](gradle_plugin.md) handles all of the above (dependencies, preview flags, compiler flags, annotation processors, and compile-time Path type checking) with a single `plugins { }` block. Unless you have a specific reason to avoid it, the plugin is the recommended path.
 ~~~
 
 ---
 
-## Incremental compilation
+## Incremental compilation {#incremental-compilation}
 
-The HKJ annotation processors register with Gradle's incremental annotation processing: the processors that generate code as aggregating, since cross-spec features such as nested mapping resolution may read any annotated element in the compilation and the mapping processors also read the classpath index described below; and `CompanionAnnotationProcessor`, which generates nothing and claims hkj's annotations so that `-Xlint:processing` does not report them, as isolating. A source set using them keeps incremental compilation; no configuration is needed. Unregistered third-party processors on the same processor path disable incrementality for the whole source set, so if compile times regress, audit the other entries on the path first.
+The HKJ annotation processors register with Gradle's incremental annotation processing, so a change recompiles what it touches rather than the whole source set. Each registers as one of Gradle's two kinds:
+
+| Processor | Registered as | After a change, Gradle |
+|---|---|---|
+| The generators in `hkj-processor` | aggregating | reprocesses every annotated type, reading each unchanged one from its class file |
+| The `@HkjHttpClient` processor | isolating | regenerates a client's files only when it recompiles that client |
+| `CompanionAnnotationProcessor`, in both | isolating | has nothing to redo, as it generates nothing |
+
+The generators aggregate because a spec's output can depend on any other annotated type in the compilation. Nested mapping resolution reads the other specs, and the mapping processors also read the classpath index described in [Multi-module builds](#multi-module-builds). Each client's files depend only on that client and what it extends. `CompanionAnnotationProcessor` claims hkj's annotations so that `-Xlint:processing` does not report them.
+
+Two compiler flags keep incremental builds sound. The [HKJ build plugin](gradle_plugin.md) adds both, and the Gradle setup on this page passes them itself.
+
+- **`-parameters` keeps an incremental build writing what a clean build writes.** Without it javac reads the parameters of an unchanged interface's methods as `arg0`, `arg1`, since the class file keeps no names for them.
+- **`-implicit:class` keeps a modular source set building under `-Werror`.** Its javadoc-only `package-info.java` files have no class file, so an incremental compile reads them from the source path. With no policy set, javac warns `Implicitly compiled files were not subject to annotation processing`. The flag sets javac's default policy explicitly, which only silences that warning.
+
+Where a name was lost that way, what each processor does depends on whether the name would reach run time:
+
+| Read from a class file without `-parameters` | What the processor does |
+|---|---|
+| A `@GenerateMerge` spec, whose Impl names each source in its null check | Refuses it: `merge method '…' was read from a class file that records no parameter names` |
+| A client binding written without its name, as a bare `@PathVariable`, on a method inherited from a base that Gradle did not recompile, or from a jar | Refuses the binding, `cannot name the binding of`, as [Declarative HTTP Clients](../spring/declarative_http_clients.md#generic-clients) says |
+| Any other method a generator writes again from a class file | Names its parameters `arg0`, `arg1`, which changes nothing a program does |
+
+`@GenerateMapping`, `@GenerateMerge`, `@GenerateErrorEnvelope`, `@GenerateIsos`, `@PathSource` and `@HkjHttpClient` refuse a class name that a hand-written class already has, as a clean build does. Where Gradle reads that class from its class file, the message is `the generated class '…' has the name of a class on the classpath`, or for a Path `A type of that name is already on the classpath`. Only a class file carrying HKJ's `@Generated`, which every generator writes, is a generator's to replace. A hand-written class added after its client is the exception: Gradle reruns `@HkjHttpClient` only on a client it recompiles, so the clash is reported when the client next compiles, or by a clean build. The other generators do not refuse a class file's name yet.
+
+A class file keeps no annotation retained in source alone, so what such an annotation decides happens only where Gradle compiles its type from source:
+
+- **A warning is reported by the build compiling its declaration.** An incremental build that reads the declaration from its class file does not report it again, as javac repeats none of its own lint warnings for a class it does not recompile. So a warning `@SuppressWarnings` kept quiet stays quiet.
+- **A check reading another library's source-only annotation needs source.** The [`@Singular` refusal](../mapping/rules.md#nullable-where-build-throws) is one, so the next clean build reports what an incremental one let through.
+- **A Lombok bean's class file is read as Lombok's by `lombok.Generated`.** Lombok writes it by default from 1.18.34. With an earlier Lombok, an incremental build reads the bean's methods as hand-written, and can refuse what a clean build accepts. Use Lombok 1.18.34 or later, or set `lombok.addLombokGeneratedAnnotation = true` in `lombok.config`.
+- **A base's source-only annotation reaches a client from source alone.** An annotation such as `@SuppressWarnings` on a base interface's method is copied onto the client's generated interface only where Gradle compiles the base. The client compiles the same either way.
+
+Unregistered third-party processors on the same processor path disable incrementality for the whole source set, so if compile times regress, audit the other entries on the path first. Gradle's `--info` output names the cause of a full recompilation, as in `Full recompilation is required because ...`.
 
 ## Multi-module builds
 
@@ -93236,7 +93280,7 @@ Navigators across modules use no index either. A [navigator](../optics/focus_nav
 
 ## Lombok {#lombok}
 
-Lombok and the HKJ processors run in the same javac invocation, and the pairing is covered by a test in the HKJ build: a `@Data` class works as a bean-shaped `@GenerateMapping` wire, with the generated getters and setters visible to the bean analyser. **Order matters: list Lombok before `hkj-processor`** (within a javac round, processors run in listed order, and the bean analyser needs the accessors already materialised; the reverse order fails with a clear diagnostic). No binding artefact is needed beyond that:
+Lombok and the HKJ processors run in the same javac invocation, and the pairing is covered by a test in the HKJ build: a `@Data` class works as a bean-shaped `@GenerateMapping` wire, with the generated getters and setters visible to the bean analyser. Use Lombok 1.18.34 or later, which marks what it writes `@lombok.Generated`, so an [incremental build](#incremental-compilation) reads a bean it did not recompile as Lombok's. **Order matters: list Lombok before `hkj-processor`** (within a javac round, processors run in listed order, and the bean analyser needs the accessors already materialised; the reverse order fails with a clear diagnostic). No binding artefact is needed beyond that:
 
 ```gradle
 dependencies {
@@ -93964,6 +94008,8 @@ HKJ Configuration:
     annotationProcessor:     io.github.higher-kinded-j:hkj-processor-plugins:0.3.7-SNAPSHOT
     annotationProcessor:     io.github.higher-kinded-j:hkj-checker:0.3.7-SNAPSHOT
   Compiler args added:
+    -parameters
+    -implicit:class (where a task sets no -implicit policy)
     --enable-preview
     -Xplugin:HKJChecker
 ```
@@ -97419,7 +97465,7 @@ Every supported return type maps to the same native method shape, `ResponseEntit
 | `MaybePath<T>` | `ResponseEntity<T>` |
 | `EitherPath<E, Unit>`, `VTaskPath<Either<E, Unit>>` or `MaybePath<Unit>` | `ResponseEntity<Void>` |
 
-You never reference the generated names. You autowire your own interface.
+You never reference the generated names. You autowire your own interface. Nor can another class take one. A class compiled beside the client fails the write. One read from a class file, a dependency's or a hand-written class Gradle's [incremental build](../tooling/manual_setup.md#incremental-compilation) did not recompile, is refused with `has the name of a class on the classpath`. Rename that class, or rename the client.
 
 The generated files restate each method the client declares or inherits: the facade, `UserClientApiClient`, implements it, and the native interface, `UserClientApiHttpExchange`, declares it again. Your own `@SuppressWarnings` cannot reach them. So where a method is deprecated, or its signature names a deprecated type, each generated declaration that would draw the warning suppresses `deprecation`, or `removal`, itself. The facade's method overrides the deprecated method and names its types, so it suppresses both; the native method carries the method's copied `@Deprecated`, and suppresses only the types it names. A deprecated error type is suppressed on the facade's decoder field and constructor as well, and a deprecated `@OnStatus` error type on the constructor. A deprecated bound of a generic client's type parameter is suppressed on the facade and the native interface. A deprecated client, or one nested in a deprecated class, is suppressed on the facade and its configuration class. javac reports each deprecation where your own source names it, so the client builds under `-Werror` wherever that source does. A type-use annotation deprecated by a javadoc `@deprecated` tag alone is left off the restated types, as one marked `@Deprecated` is.
 
@@ -97651,7 +97697,8 @@ interface AnyErrorApi<E> extends CrudApi<E, UserDto, String> {}
 - **A sealed error type with no `@JsonTypeInfo`.** Jackson cannot pick the subtype, so decoding fails. Add the type info, or use a concrete error type.
 - **Client interfaces outside the component scan.** If your `@HkjHttpClient` interfaces are not under your `@SpringBootApplication`'s scanned packages, the generated configuration is not picked up and Spring never creates the proxy. Add an explicit `@ImportHttpServices(basePackages = "...")`.
 - **Expecting a transport failure to become a `Left`.** Connection-refused and timeout are not domain errors; they propagate. Use the `VTaskPath` variant and `runSafe()` to capture them as the failure arm of `Try<Either<E, T>>`.
-- **Inheriting methods from a precompiled base.** A super-interface in a dependency jar must be compiled with `-parameters`, or its `@PathVariable`/`@RequestParam` arguments bind to `arg0`-style names. A jar built against 0.4.10 or earlier also carries none of its `@OnStatus` overrides, which were discarded when it was compiled, so its methods ignore them until it is rebuilt. Interfaces compiled in your own build have neither problem. Wherever the base is compiled, a module declaring `@OnStatus` should expose `hkj-spring-boot-client` to the modules that use it (Gradle's `api` configuration): its class files name the annotation, and a module compiling against them without it warns under `-Xlint:all`, which fails a `-Werror` build.
+- **A base read from a class file needs `-parameters`.** The processor names a bare `@PathVariable` after its parameter. Without the flag it refuses the binding: `cannot name the binding of`. Compile the base with it, write the name, as `@PathVariable("id")`, or redeclare the method. That covers a jar's interface, and a base your [incremental build](../tooling/manual_setup.md#incremental-compilation) did not recompile.
+- **Inheriting methods from a precompiled base.** A jar built against 0.4.10 or earlier carries none of its `@OnStatus` overrides, discarded when it was compiled, so its methods ignore them until it is rebuilt. Wherever the base is compiled, a module declaring `@OnStatus` should expose `hkj-spring-boot-client` to the modules that use it (Gradle's `api`): its class files name the annotation, and a module compiling against them without it warns under `-Xlint:all`, which fails a `-Werror` build.
 - **An `@OnStatus` error type that is not assignable to the method's error type.** This is a compile error, by design.
 ~~~
 
@@ -103439,6 +103486,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 - **`StreamTraversal.toTraversal()` works over a `VStream`** ([#1442](https://github.com/higher-kinded-j/higher-kinded-j/pull/1442)). On `forVStream()`, or a composition built on it, the result read its source twice, so a `fromIterator` source came out empty, and threw `NoSuchElementException` when read again. It now reads the source once, and gives a stream that replays the results. See [Converting to a Traversal](../monads/vstream_advanced.md#conversion-to-standard-traversal).
 - **`ValidatedPrism`'s bulk parses take a container that may hold a `null`** ([#1511](https://github.com/higher-kinded-j/higher-kinded-j/issues/1511)). Under a nullness checker, `parseAll`, `parseValues`, `parseKeys` and `parseEntries` took only a container declared to hold none, though each reports a `null`. They now take `List<? extends @Nullable S>`, and the same for sets, arrays and maps, so a `List<@Nullable String>` read from JSON passes. See [The bulk forms](../optics/validated_prism.md#the-bulk-forms-parseall-and-parsevalues).
 - **`AffinePath.ofNullable` takes a getter that never returns null** ([#1488](https://github.com/higher-kinded-j/higher-kinded-j/issues/1488)). Under a nullness checker it took only a `Function<S, @Nullable A>`, so a `Function<S, String>` variable was refused. It now takes `Function<? super S, ? extends @Nullable A>`.
+- **A warning suppressed on an `@ImportOptics` lens stays quiet in an incremental build** ([#855](https://github.com/higher-kinded-j/higher-kinded-j/issues/855)). Gradle reads an unchanged spec from its class file, which keeps no `@SuppressWarnings`, so `shorter-constructor` and `dropped-result` came back and failed a `-Werror` build. The processor no longer repeats a warning about a declaration read from a class file. See [Incremental compilation](../tooling/manual_setup.md#incremental-compilation).
 
 ---
 
@@ -103517,6 +103565,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 - **An `@HkjHttpClient` interface takes a type-level `@HttpExchange` from its base** ([#1561](https://github.com/higher-kinded-j/higher-kinded-j/issues/1561)). A client with none of its own sent its requests without the base's URL prefix, media types, headers and version, and nothing warned of it. It now takes the base's, as a Spring HTTP interface does. See [Generic Clients](../spring/declarative_http_clients.md#generic-clients).
 - **A base's annotations no longer break an `@HkjHttpClient` build inside generated code** ([#1571](https://github.com/higher-kinded-j/higher-kinded-j/issues/1571)). The processor names a base's annotation the client cannot copy, leaves off one Spring never reads, and suppresses a deprecated one's warning. A client also waits for a type another processor writes, where a mapping annotation's constant came out as `"<error>"`. See [Generic Clients](../spring/declarative_http_clients.md#generic-clients).
 - **An `@HkjHttpClient` client over a deprecated method or type compiles under `-Werror`** ([#1583](https://github.com/higher-kinded-j/higher-kinded-j/issues/1583)). The generated facade and `…HttpExchange` restate each method, and a deprecated one, or a deprecated type in its signature, drew warnings there that your own `@SuppressWarnings` cannot reach. Each declaration that restates one, and a deprecated client's facade, suppresses `deprecation`, or `removal`, itself. See [What Gets Generated](../spring/declarative_http_clients.md#what-gets-generated).
+- **A client inheriting a bare `@PathVariable` from a base compiled without `-parameters` is refused** ([#855](https://github.com/higher-kinded-j/higher-kinded-j/issues/855)). The base's class file names the parameter `arg0`, so the client bound `arg0` and the request failed at run time. The processor now says `cannot name the binding of`. Compile the base with `-parameters`, name the binding, or redeclare the method. See [Declarative HTTP Clients](../spring/declarative_http_clients.md#generic-clients).
 
 ---
 
@@ -103539,6 +103588,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 - **The 0.5.0 migration now rewrites a `Void` success to `Unit`** ([#1369](https://github.com/higher-kinded-j/higher-kinded-j/issues/1369)). `Void` becomes `Unit` in `Either<E, Void>` and every other success type, and each `null` it can tie to the value becomes `Unit.INSTANCE`, through wrappers and lambdas too. A `Void` value is marked only when passed straight to a factory. Move to 0.5.0 in the same change. See [`Void` becomes `Unit`](../tooling/openrewrite.md#void-becomes-unit).
 - **`MigrateDeprecationsTo0_5_0` puts a lambda's mark on the `null` it returns** ([#1370](https://github.com/higher-kinded-j/higher-kinded-j/issues/1370)). The mark sat at the start of the call's chain, which could be many lines before the `null`. See [0.5.0 deprecation migration](../tooling/openrewrite.md#050-deprecation-migration).
 - **The 0.5.0 migration marks a `Void` error on a Path, a `Validated` and an `EitherOrBoth`** ([#1545](https://github.com/higher-kinded-j/higher-kinded-j/issues/1545)). `DetectNullErrorValuesRecipe` marked `Void` as the error type of an `Either` and `EitherT` and their monads only, so `EitherPath<Void, A>`, which can only ever succeed, went unmarked. It now marks `Void` there, and in `ValidationPath`, `EitherOrBothPath`, `VResultPath`, `Validated`, `EitherOrBoth` and `ValidatedMonad`. See [Migration Recipes](../tooling/openrewrite.md).
+- **A source set using `@GenerateMapping`, `@GenerateMerge`, `@GenerateIsos`, `@GenerateErrorEnvelope`, `@PathSource` or `@HkjHttpClient` compiles incrementally** ([#855](https://github.com/higher-kinded-j/higher-kinded-j/issues/855)). Every change recompiled it in full. The first five are now kept in the class file, and Gradle regenerates a client only when recompiling it. A build [set up by hand](../tooling/manual_setup.md#incremental-compilation) needs `-parameters`, and a modular one under `-Werror` needs `-implicit:class`; the HKJ plugin adds both.
 
 ---
 
@@ -103663,6 +103713,12 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 | Effect Paths | A pattern or cast from a capability type to a concrete Path, such as `case MaybePath<String> m` on a `Chainable<?, String>`; a cast is unchecked, so it fails under `-Werror` | Match from `Composable<String>`, or build the concrete Path directly | [#1314](https://github.com/higher-kinded-j/higher-kinded-j/issues/1314) |
 | Effect Paths | A step after `mapError` on a `MaybePath`, `TryPath` or `CompletableFuturePath` that returns the Path it started from | Return an `EitherPath` from the step (a `VResultPath` after a `CompletableFuturePath`), or use `recover` or `mapException` before changing the error type | [#1332](https://github.com/higher-kinded-j/higher-kinded-j/issues/1332) |
 | Effect Paths | A `via` step on an Effect Context of another kind of context, or with an error, configuration or state type the chain does not carry. Also a step or receiver typed as `EffectContext`, a chain started on one variant of its error, and a receiver typed with a wildcard, such as `ErrorContext<F, ? extends AppError, A>` | Convert or map the step, as [What a Step May Return](../effect/effect_contexts_error.md#what-a-step-may-return) shows. Declare a helper's return type as its concrete context. Widen an error where the chain starts, as in `.<AppError>mapError(e -> e)`, and a `? super R` receiver with `.<R>contramap(r -> r)`. A step that calls a method on a factory's result names the factory's types, as in `ErrorContext.<AppError, String>success(id).map(f)` | [#1567](https://github.com/higher-kinded-j/higher-kinded-j/issues/1567) |
+| Build and tooling | A Gradle build set up by hand for a modular source set, built with `-Werror` and using an annotation that now compiles incrementally: javac warns `Implicitly compiled files were not subject to annotation processing` | Add `-implicit:class`, which the HKJ Gradle plugin adds, as [Incremental compilation](../tooling/manual_setup.md#incremental-compilation) shows | [#855](https://github.com/higher-kinded-j/higher-kinded-j/issues/855) |
+| Mapping | In an incremental Gradle build without `-parameters`, a `@GenerateMerge` spec that Gradle did not recompile: `was read from a class file that records no parameter names` | Compile with `-parameters`, which the HKJ Gradle plugin adds, as [Incremental compilation](../tooling/manual_setup.md#incremental-compilation) shows | [#855](https://github.com/higher-kinded-j/higher-kinded-j/issues/855) |
+| Spring | A bare `@PathVariable`, `@RequestParam`, `@RequestHeader` or `@CookieValue` on a method a client inherits from a jar's base compiled without `-parameters`, which bound the name `arg0` at run time: `cannot name the binding of` | Compile the base with `-parameters`, write the name, as `@PathVariable("id")`, or redeclare the method on the client | [#855](https://github.com/higher-kinded-j/higher-kinded-j/issues/855) |
+| Spring | In an incremental Gradle build without `-parameters`, the same bare binding on a method inherited from a base of your own source set that Gradle did not recompile: `cannot name the binding of` | Compile with `-parameters`, which Spring Boot's Gradle plugin and the HKJ Gradle plugin add | [#855](https://github.com/higher-kinded-j/higher-kinded-j/issues/855) |
+| Mapping | With a Lombok older than 1.18.34, in an incremental Gradle build, a mapping over a Lombok bean Gradle did not recompile, whose methods it then reads as hand-written: a refusal a clean build does not make | Use Lombok 1.18.34 or later, or set `lombok.addLombokGeneratedAnnotation = true` in `lombok.config` | [#855](https://github.com/higher-kinded-j/higher-kinded-j/issues/855) |
+| Build and tooling | A class on the classpath that no HKJ generator wrote, such as a dependency's, with the name of a generated Impl, error companion, iso class, Path or HTTP client class: `has the name of a class on the classpath`, or for a Path `A type of that name is already on the classpath` | Rename that class, or the type the class is generated from; for a Path, set a suffix that names a free class | [#855](https://github.com/higher-kinded-j/higher-kinded-j/issues/855) |
 | Optics | An optic interpreter or other code of your own that names an `OpticOp` record: a pattern or type such as `OpticOp.Get<?, ?>` or `OpticOp.Set<S, A>`, or a constructor call such as `new OpticOp.Get<>(source, getter)` | Add the third type argument, as in `OpticOp.Get<?, ?, ?>`, and pass a continuation, `Function.identity()`, to a constructor. Hand each result to `op.k()` and return what it gives, in place of `Free.pure(result)` | [#1154](https://github.com/higher-kinded-j/higher-kinded-j/issues/1154) |
 | Effect Paths | An exhaustive `switch` over `VStream.Step`, in code that pulls a stream by hand or in a stream of your own | Add a `Step.Fail` case. A stream of your own passes it on with itself over the tail, as its `Emit` case does; code that stops there closes the tail and throws the error | [#1029](https://github.com/higher-kinded-j/higher-kinded-j/issues/1029) |
 | Optics | A call to the traversal `@GenerateTraversals` generated for a sorted container with a wildcard where it is ordered, such as `PSortedSet<? extends String>` or `PSortedMap<? extends String, V>`. The method is no longer generated, and a note says why | Declare the component with concrete type arguments, such as `PSortedSet<String>` | [#1430](https://github.com/higher-kinded-j/higher-kinded-j/issues/1430) |
