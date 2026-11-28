@@ -7884,9 +7884,9 @@ record Traced<A>(A value, List<String> log) implements TracedKind<A> {}
 
 ### A witness another processor writes {#a-witness-another-processor-writes}
 
-The witness may be a type another annotation processor generates in the same build. javac runs
-the processors again over each batch of generated sources, a round at a time, so `@PathSource`
-waits, and writes the Path in the round after the witness appears. A witness that never appears is
+The witness may be a type another annotation processor generates in the same build, and so may one
+of its supertypes. javac runs the processors again over each batch of generated sources, a round at
+a time, so `@PathSource` waits, and writes the Path in the round after that type appears. A witness that never appears is
 left for javac to report: `cannot find symbol`, or `package TracedKind does not exist` for a
 `Witness` nested in a `Kind` interface that was never generated. The other effect annotations wait
 in the same way, as [Effect annotations naming what other processors generate](../tooling/manual_setup.md#effect-annotations-naming-what-other-processors-generate)
@@ -46413,6 +46413,7 @@ Rows below and headings on the page say which, wherever it is not an error.
 | [`is already taken`](#pathvia-the-bridge-signature-for-x-is-already-taken) | Two `@PathVia` methods produce the same bridge signature |
 | [`is not a method name`](#pathvia-pathvianame---is-not-a-method-name) | `@PathVia(name = ...)` is not a Java identifier |
 | [`cannot be reached from 'p'`](#generatepathbridge-on-x-the-signature-names-y-which-cannot-be-reached-from-p) | Under `targetPackage`, part of the signature is not visible there |
+| [`cannot be generated in this compilation`](#generatepathbridge-cannot-be-generated-in-this-compilation) | An incremental build hides a supertype another processor writes |
 | [`no @PathVia method was found`](#generatepathbridge-no-pathvia-method-was-found-among-xs-members-a-warning) | **Warning.** The interface has nothing to bridge |
 
 **From javac, on code you wrote** ([Focus DSL chains](#focus-dsl-chains), [Free Monad](#free-monad-dsl-programs)):
@@ -48951,6 +48952,20 @@ interface Vault {
     Optional<Secret> find(String id);
 }
 ```
+~~~
+
+### "@GeneratePathBridge: the bridge for 'X' cannot be generated in this compilation" {#generatepathbridge-cannot-be-generated-in-this-compilation}
+
+A supertype of the interface, however far up, is a type another annotation processor writes that a class file this build read names, so the interface is refused whatever that type declares. Only an incremental build, such as Gradle's, compiles beside class files that way.
+
+```
+error: @GeneratePathBridge: the bridge for 'com.example.UserService' cannot be generated in this compilation. javac shows annotation processors none of the methods of its supertype 'com.example.Lookups'. A class file this compilation read, such as one Gradle did not recompile, names it, and another processor writes it. javac looked the name up as the file was written, found nothing, and keeps that answer for every processor until the compilation ends. Build from clean, which compiles every type from source; each incremental build after a change refuses the bridge again. To build incrementally, declare 'Lookups' in source rather than have a processor write it.
+```
+
+**Fix.** Build from clean, which compiles every type from source, or declare the supertype in source rather than have a processor write it. [Incremental compilation](../tooling/manual_setup.md#incremental-compilation) lists what each effect processor does in that build.
+
+~~~admonish note title="Why" collapsible=true
+javac shows annotation processors none of that type's methods, so the bridge cannot be written with the methods the interface inherits. A bridge written without them would compile, short of what a clean build bridges, so the interface is refused instead. An interface read from its class file has no position, so the message may have no file or line, and names the interface in full.
 ~~~
 
 ### "@GeneratePathBridge: no @PathVia method was found among 'X's members" (a warning)
@@ -93314,12 +93329,16 @@ Where a class file Gradle reads names a type another processor writes, javac sho
 
 | An effect annotation over such a type | In the build after a change |
 |---|---|
-| `@PathSource`, naming it as the witness or error type | generates the Path a clean build does, and leaves checking that type to javac's compile of the Path |
+| `@PathSource`, naming it as the witness or error type, or as a supertype of the witness | generates the Path a clean build does, and leaves checking that type to javac's compile of the Path |
 | `@Handles`, naming it as the algebra | checks the interpreter as a clean build does |
 | `@EffectAlgebra`, on it | refuses it, `the support classes of '…' cannot be generated in this compilation`, as its type parameter and `mapK` cannot be read |
+| `@EffectAlgebra`, naming it in an operation's component | generates the classes a clean build does |
 | `@ComposeEffects`, naming it as an algebra | refuses the component, `which @EffectAlgebra rejects because javac shows annotation processors none of its type parameters or methods` |
+| `@GeneratePathBridge`, naming it in a bridged signature or a bound | generates the bridge a clean build does |
+| `@GeneratePathBridge`, on an interface extending it | refuses the interface, `the bridge for '…' cannot be generated in this compilation`, whatever that type declares, as the methods it inherits cannot be read |
+| `@GeneratePathBridge` or `@EffectAlgebra`, naming it as a type-use annotation in what it copies | generates what a clean build does, without that annotation, as an optic leaves one off |
 
-An algebra carrying `@EffectAlgebra` is refused whichever annotation names it. A clean build generates it, and each incremental build after a change refuses it again, so declare such an algebra in source to build incrementally.
+An algebra carrying `@EffectAlgebra` is refused whichever annotation names it. So is a `@GeneratePathBridge` interface with a type another processor writes, which a class file names, anywhere among its supertypes, even a supertype declaring no `@PathVia` method. A clean build generates both, and each incremental build after a change refuses them again, so declare such an algebra or supertype in source to build incrementally.
 
 Unregistered third-party processors on the same processor path disable incrementality for the whole source set, so if compile times regress, audit the other entries on the path first. Gradle's `--info` output names the cause of a full recompilation, as in `Full recompilation is required because ...`.
 
@@ -93368,13 +93387,13 @@ The effect processors wait too:
 
 | Annotation | Waits while any of this is not written yet |
 |---|---|
-| `@GeneratePathBridge` | its own values, and the `@PathVia` values of each method the bridge wraps, inherited ones included |
-| `@EffectAlgebra` | its own values |
-| `@ComposeEffects` | its own values, each algebra it names, and the `@EffectAlgebra` values of each |
-| `@PathSource` | its own values, its witness and error type included |
+| `@GeneratePathBridge` | its own values, the `@PathVia` values of each method the bridge wraps, inherited ones included, and every type in those methods' signatures, in the interface's type-parameter bounds and among its supertypes, however far up |
+| `@EffectAlgebra` | its own values, and every type in each operation's components, type-use annotations included |
+| `@ComposeEffects` | its own values, each algebra it names, and what `@EffectAlgebra` waits for in each |
+| `@PathSource` | its own values, its witness and error type included, and the witness's supertypes |
 | `@Handles` | its value: the algebra the interpreter is checked against |
 
-Each processor waits for a constant or a class another annotation processor writes, where it reads one. A bridge declared with `@GeneratePathBridge(suffix = Names.SUFFIX)`, say, is generated once `Names` exists, and is what it would be were the constant written by hand. Waiting for a type another processor writes into an algebra's operations, a bridged method's signature or a bridged interface's supertype is not supported yet.
+Each processor waits for a constant or a type another annotation processor writes, where it reads one. A bridge declared with `@GeneratePathBridge(suffix = Names.SUFFIX)`, say, is generated once `Names` exists, and a bridge over `UserService extends Lookups` once `Lookups` does. Either is what it would be were that type written by hand. A dependency's class file names each of its types in full, so nothing waits for one it names, even one the classpath lacks, such as an annotation the dependency declares compile-only. A bridged interface's supertype is the exception: the bridge waits for it, and javac reports one the classpath lacks, `class file for … not found`. Waiting for an operation another processor writes, which an algebra's `permits` clause names, is not supported yet.
 
 If what it waits for never appears, the processor generates nothing for the declaration, and javac names what is missing where the source writes it. Code that uses the class the processor would have written reports that class missing too; supply what is missing and both errors go. A `@PathSource` witness waits in the same way, as [A witness another processor writes](../effect/path_source.md#a-witness-another-processor-writes) shows. In Gradle's incremental build a written type can reach the processors only in part, as [Incremental compilation](#incremental-compilation) says.
 
@@ -103647,6 +103666,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 - **Stop a `runAsync()` task by cancelling its future** ([#1412](https://github.com/higher-kinded-j/higher-kinded-j/issues/1412)). `cancel(true)` on the future from `runAsync()` on `VTask`, `VTaskPath`, `VResultPath`, `VTaskContext` or `VStream`, or from `EffectBoundary.runAsync`, interrupts the task, as a future from an `ExecutorService` does, and `cancel(false)` leaves it running. See [Running a task](../monads/vtask_monad.md#running-a-task).
 - **`@GeneratePathBridge` reads an inherited method whose type parameter is bounded by interfaces alone** ([#1552](https://github.com/higher-kinded-j/higher-kinded-j/issues/1552)). A bound such as `<R extends Comparable<T> & Serializable>`, on a method inherited from a generic interface, stopped the build with an `IndexOutOfBoundsException` from the processor.
 - **An effect annotation may name a constant another processor writes** ([#1614](https://github.com/higher-kinded-j/higher-kinded-j/issues/1614)). Set to such a constant, a `@GeneratePathBridge`, `@PathVia`, `@EffectAlgebra` or `@ComposeEffects` value stopped javac with an `AnnotationTypeMismatchException`. Each processor now waits for it, as `@PathSource` does. A `@ComposeEffects` or `@Handles` naming an algebra another processor writes waits for that algebra too. See [Effect annotations naming what other processors generate](../tooling/manual_setup.md#effect-annotations-naming-what-other-processors-generate).
+- **A bridge, an algebra or a Path may name a type another processor writes** ([#1623](https://github.com/higher-kinded-j/higher-kinded-j/issues/1623)). In a bridged signature or an operation's component, it could leave generated code that failed to compile. A bridge dropped such a supertype's methods, and a `@PathSource` witness implementing one was refused. Each now waits for it. See [Effect annotations naming what other processors generate](../tooling/manual_setup.md#effect-annotations-naming-what-other-processors-generate).
 - **An incremental build writes the `@PathSource` Path a clean build writes** ([#1622](https://github.com/higher-kinded-j/higher-kinded-j/issues/1622)). After a change, a Path over a witness `@EffectAlgebra` writes went missing, and a `@Handles` check over an algebra another processor writes was skipped. Both now match a clean build, and in that build an effect algebra another processor writes is refused with the reason. See [Incremental compilation](../tooling/manual_setup.md#incremental-compilation).
 - **A Path's type-mismatch message names the method and both Path types** ([#401](https://github.com/higher-kinded-j/higher-kinded-j/issues/401)). Every built-in Path words it as `MaybePath` did, with no `Default*` class name, and points to the conversion methods and the Path factories. See [A step that returns the wrong kind of Path](../effect/compiler_errors.md#2-a-step-that-returns-the-wrong-kind-of-path).
 
@@ -103831,6 +103851,7 @@ Copies, guards and `JsonNullable` reads keep what a `@Nullable` component declar
 | Optics | Built with `-Werror`, a record naming a type another processor writes into the record's own package, with a warning the processor could not reach while that type did not exist, such as an `includeFields` entry for a component of that type with no navigator. The record is now generated once the type exists, and checked as if written by hand | Do what the warning asks, as [Compiler Messages](../optics/compiler_errors.md) shows | [#1598](https://github.com/higher-kinded-j/higher-kinded-j/issues/1598) |
 | Optics | A type-use annotation on a record's component whose class literal names a class the record's generator writes, as `@Tag(PersonLenses.class)` does. The annotation was left off; the record now waits for that class, and is reported as [generating nothing](../optics/compiler_errors.md#generated-nothing-no-round-resolved) | Name a class written by hand there, or leave the annotation off | [#1598](https://github.com/higher-kinded-j/higher-kinded-j/issues/1598) |
 | Effect Paths | A `@Handles` interpreter or `@ComposeEffects` record naming a type another processor writes. The processor passed over it, and now checks it once that type exists, as if written by hand. An interpreter that misses a handler fails with `No handler for operation`, and under `-Werror` one with a handler that matches no operation fails with `doesn't match any operation`. A component naming a type without `@EffectAlgebra` fails with `is not annotated @EffectAlgebra`. In Gradle's incremental build, an effect algebra another processor writes, which a class file names, is refused instead, as [Incremental compilation](../tooling/manual_setup.md#incremental-compilation) says | Do what the message asks: add or remove the handler, or name an effect algebra. For that refusal, build from clean or declare the algebra in source | [#1614](https://github.com/higher-kinded-j/higher-kinded-j/issues/1614), [#1622](https://github.com/higher-kinded-j/higher-kinded-j/issues/1622) |
+| Effect Paths | A `@GeneratePathBridge` interface extending a type another processor writes. The bridge left out the `@PathVia` methods that type declares. It now bridges and checks them as if written by hand, so one it refuses, such as one naming a raw type, fails the build. In Gradle's incremental build, where a class file names that type, the interface is refused instead, whatever that type declares, as [Incremental compilation](../tooling/manual_setup.md#incremental-compilation) says | Do what the message asks. For that refusal, build from clean, or declare the supertype in source | [#1623](https://github.com/higher-kinded-j/higher-kinded-j/issues/1623) |
 | Effect Paths | Code that keeps a `VStreamTransformations` result as a `NaturalTransformation`, such as `NaturalTransformation<ListKind.Witness, VStreamKind.Witness> nt = VStreamTransformations.listToVStream()` | Declare it `Natural`, as the `MigrateDeprecationsTo0_7_0` recipe does | [#1455](https://github.com/higher-kinded-j/higher-kinded-j/pull/1455) |
 | Mapping | A `@Nullable` value that `build`, or a plain merge, hands where it cannot be taken. That is a component copied into a site declared non-null, or handed to a leaf, a nested spec, a lifted container, an `Optional` leg, a flattened group, a oneof, a `@Singular` method, a getter-only list or a protobuf-java setter. It is also an element or map key, or one inside a key, copied, converted or passed through where it cannot be taken, and a type argument a nested spec takes, or builds into a wire site, that rules it out. A type argument counts as the spec writes it | Mark the site `@Nullable`, hold a nullable component as an `Optional` the bridge carries, add `ignoreNullCollections = true` to a `@Singular`, let the nested spec's types take the `null`, or declare the source non-null | [#1431](https://github.com/higher-kinded-j/higher-kinded-j/issues/1431), [#1503](https://github.com/higher-kinded-j/higher-kinded-j/issues/1503), [#1525](https://github.com/higher-kinded-j/higher-kinded-j/issues/1525) |
 | Mapping | A call to `asIso()` or `asLens()` on a record mapping whose wire declares a component, or its elements, map keys or what a key holds, `@Nullable` where the domain declares them non-null. The method is no longer generated | Call `asValidatedPrism()` in place of `asIso()`, or `patch(domain, wire)` in place of `asLens()`: each reports the `null` as a located error. Or give the pair one nullness | [#1501](https://github.com/higher-kinded-j/higher-kinded-j/issues/1501), [#1515](https://github.com/higher-kinded-j/higher-kinded-j/issues/1515), [#1525](https://github.com/higher-kinded-j/higher-kinded-j/issues/1525) |
