@@ -608,9 +608,7 @@ The same method runs unchanged on an `Either`:
     // Left(order already shipped)
 ```
 
-~~~admonish warning title="The compiler does not check `E`"
-`Instances.monadError` takes `E` from the variable you assign it to, and nothing checks it against the instance. `MonadError<MaybeKind.Witness, String>` compiles, then throws `ClassCastException` when you raise a `String`. Declare the error type the instance has, `Unit` for `Maybe`, from the table in [Obtaining Instances](../functional/instances_facade.md#zero-argument-lookups).
-~~~
+Each variable declares the error type its instance has, `Unit` for `Maybe` and the left type for `Either`, because `Instances.monadError` takes `E` from the instance, as [what the compiler checks](../functional/instances_facade.md#what-the-compiler-checks) explains.
 
 ## Recover in code for any container {#recover-in-code-for-any-container}
 
@@ -640,9 +638,9 @@ You can now write one method over a type class and run it on any container that 
 ~~~
 
 ~~~admonish question title="Checkpoint: an error type the instance does not have" id="check-kind-error-type"
-This compiles. What happens when it runs?
+Does this compile? If not, what is the fix?
 
-<!-- verify -->
+<!-- verify:rejects "inference variable E has incompatible equality constraints" -->
 ```java
 MonadError<OptionalKind.Witness, String> me = Instances.monadError(optional());
 me.raiseError("out of stock");
@@ -650,7 +648,7 @@ me.raiseError("out of stock");
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-kind-error-type-answer"
-**`raiseError` throws `ClassCastException`.** `Instances.monadError` takes `E` from the variable, and nothing checks it against the instance: `Optional`'s error type is `Unit`, not `String`. Declare `MonadError<OptionalKind.Witness, Unit>`, and raise `Unit.INSTANCE`.
+**No: javac reports "inference variable E has incompatible equality constraints String,Unit".** `Instances.monadError` takes `E` from the instance, and `Optional`'s error type is `Unit`, not `String`. Declare `MonadError<OptionalKind.Witness, Unit>`, and raise `Unit.INSTANCE`.
 
 Where this lives: [Take it through the steps](#take-it-through-the-steps), with each type's error type in [Obtaining Instances](../functional/instances_facade.md#zero-argument-lookups).
 ~~~
@@ -686,7 +684,7 @@ Where this lives: [Recover in code for any container](#recover-in-code-for-any-c
 
 <!-- Source: functional/instances_facade.md -->
 
-<!-- description: Get any Higher-Kinded-J type class instance in one shape, Instances.monad(maybe()), and know which lookups the compiler checks. -->
+<!-- description: Get any Higher-Kinded-J type class instance in one shape, Instances.monad(maybe()), with the compiler checking each capability you ask for. -->
 
 # Obtaining Instances: The `Instances` Facade
 
@@ -697,7 +695,7 @@ Each type class in Higher-Kinded-J has a standard instance for each type, and `o
 ~~~admonish info title="What You'll Learn"
 - Ask `Instances` for a `Functor`, `Applicative`, `Monad` or `MonadError` with a token from `Witnesses`
 - Pass the dependency an instance needs, such as a `Semigroup`, a `Monoid` or an outer `Monad`
-- Tell the lookups the compiler checks from the three that can fail at run time
+- Read what javac reports when you ask a type for a capability its instance lacks
 - Name the error type a `MonadError` really has
 ~~~
 
@@ -745,13 +743,11 @@ Alternative<OptionalKind.Witness>   alt = Instances.alternative(optional());
 | `monadZero` | `Maybe`, `Optional`, `List`, `Stream` | |
 | `alternative` | `Maybe`, `Optional`, `List`, `Stream`, `VStream` | |
 
-~~~admonish warning title="These three lookups compile for any token"
-The compiler cannot check that a type has the capability you ask for. A type without it, as in `Instances.monadZero(either())`, throws `ClassCastException` when the call runs. A wrong error type compiles too: `MonadError<MaybeKind.Witness, String>` throws `ClassCastException` once you raise a `String`. Take `E` from the table.
-~~~
+The compiler checks each of these lookups against the type's instance. A type outside the table does not compile, and nor does a `MonadError` with an error type the table does not give, as [what the compiler checks](#what-the-compiler-checks) shows.
 
 ### Type parameters come from your variable {#type-inference-for-phantom-typed-types}
 
-Each token has a generic type, `Of<F>`, rather than a `Class`. Java has no generic class literals, so a `Class` would lose `Either`'s left type or `Reader`'s environment. The four tokens for types with such a parameter, `either()`, `reader()`, `context()` and `state()`, are generic methods, so the parameter comes from the variable you assign to:
+Each token has a generic type, `Of<F, M>`, rather than a `Class`: `F` is the type's witness, and `M` the class of its instance. Java has no generic class literals, so a `Class` would lose `Either`'s left type or `Reader`'s environment. The four tokens for types with such a parameter, `either()`, `reader()`, `context()` and `state()`, are generic methods, so the parameter comes from the variable you assign to:
 
 <!-- verify -->
 ```java
@@ -801,11 +797,17 @@ You can now get any built-in instance in one shape: a token for a type that need
 ~~~
 
 ~~~admonish question title="Checkpoint: two lookups on `IO`" id="check-facade-cast"
-Which of these throws, and when: `Instances.monad(io())` or `Instances.alternative(io())`?
+One of these lines compiles. Which one, and what does javac report for the other?
+
+<!-- verify:rejects "cannot be applied to given types" -->
+```java
+Monad<IOKind.Witness> monad = Instances.monad(io());
+Alternative<IOKind.Witness> alternative = Instances.alternative(io());
+```
 ~~~
 
 ~~~admonish success title="Answer and why" collapsible=true id="check-facade-cast-answer"
-**`Instances.alternative(io())` throws `ClassCastException` when the call runs, and `Instances.monad(io())` succeeds.** The compiler cannot check that a type has the capability you ask for, and `IO`'s instance has no `Alternative`.
+**`Instances.monad(io())` compiles. For `Instances.alternative(io())`, javac reports "method alternative in class Instances cannot be applied to given types".** Every token gives a `Monad`, and `IO`'s instance, an `IOMonad`, has no `Alternative`.
 
 Where this lives: [Zero-argument lookups](#zero-argument-lookups).
 ~~~
@@ -833,8 +835,51 @@ Where this lives: [Argument-carrying instances](#argument-carrying-instances).
 
 `Instances` is a class of static methods, with no registry, no `ServiceLoader` and nothing to configure. A token lookup returns the instance its token carries, and a lookup that takes an argument builds a new instance on each call.
 
-- **`monad`, `applicative` and `functor` are checked.** Every token carries a `Monad`, so these three always succeed.
-- **`monadError`, `monadZero` and `alternative` cast, and the compiler cannot check the cast.** The warning in [Zero-argument lookups](#zero-argument-lookups) shows what fails, and when.
+- **A token's type names its instance's class.** `maybe()` is an `Of<MaybeKind.Witness, MaybeMonad>`, and `either()` an `Of<EitherKind.Witness<L>, EitherMonad<L>>`.
+- **`monad`, `applicative` and `functor` accept every token.** Every instance is a `Monad`.
+- **The three richer lookups accept a token whose instance has the capability.** `monadZero` takes an `Of<F, ? extends MonadZero<F>>`.
+- **`monadError` reads the error type from the instance's class.** `MaybeMonad` is a `MonadError<MaybeKind.Witness, Unit>`, so `E` is `Unit`, even with `var`.
+
+For a type whose instance lacks the capability, javac reports "method monadZero in class Instances cannot be applied to given types":
+
+<!-- verify:rejects "cannot be applied to given types" -->
+```java
+MonadZero<EitherKind.Witness<String>> zero = Instances.monadZero(either());
+```
+
+For a variable declared with another error type, javac reports "inference variable E has incompatible equality constraints String,Unit", because `Maybe`'s error type is `Unit`:
+
+<!-- verify:rejects "inference variable E has incompatible equality constraints" -->
+```java
+MonadError<MaybeKind.Witness, String> wrong = Instances.monadError(maybe());
+```
+
+To keep a token in a local variable, declare it with `var`, which keeps the instance's class. A field or parameter names the capability its code asks for, or `?` where only `monad`, `applicative` or `functor` reads it. Either survives a token's class changing to one with more capabilities, which naming the class would not:
+
+<!-- verify -->
+```java
+var token = maybe();
+MonadZero<MaybeKind.Witness> zero = Instances.monadZero(token);
+
+Witnesses.Of<MaybeKind.Witness, ? extends MonadZero<MaybeKind.Witness>> zeroToken = maybe();
+Alternative<MaybeKind.Witness> alternative = Instances.alternative(zeroToken);
+
+Witnesses.Of<MaybeKind.Witness, ?> anyInstance = maybe();
+Monad<MaybeKind.Witness> monad = Instances.monad(anyInstance);
+
+var errors = Instances.monadError(maybe());
+MonadError<MaybeKind.Witness, Unit> sameType = errors;
+```
+
+A generic method that passes a token on to a richer lookup bounds the instance the same way:
+
+<!-- verify -->
+```java
+<F extends WitnessArity<TypeArity.Unary>> MonadZero<F> zeroFor(
+        Witnesses.Of<F, ? extends MonadZero<F>> token) {
+    return Instances.monadZero(token);
+}
+```
 
 ### The accessors behind the facade {#the-accessors-behind-the-facade}
 
@@ -2262,7 +2307,7 @@ Where this lives: [Should you use `recoverWith` or `handleErrorWith`?](#constant
 | `EitherT`, `MaybeT`, `OptionalT`, whose errors are `L`, `Unit` and `Unit` | `Instances.eitherT(outer)`, `Instances.maybeT(outer)` and `Instances.optionalT(outer)` |
 | `IO`, `List`, `Writer`, `State`, `Reader` and the other transformers | Nowhere: they have none |
 
-`Instances.monadError(token)` casts the token's `Monad`, and the compiler can check neither that cast nor `E`. [What the compiler checks](instances_facade.md#what-the-compiler-checks) says what fails, and when.
+`Instances.monadError(token)` takes `E` from the token's instance, and does not compile for a token whose instance has none, such as `io()`, as [what the compiler checks](instances_facade.md#what-the-compiler-checks) explains.
 
 ### The same names on a Path {#the-same-names-on-a-path}
 
@@ -5185,7 +5230,7 @@ import org.higherkindedj.hkt.maybe.MaybeKind;
 ~~~admonish warning title="Common Misunderstandings"
 - **"`orElse` always falls back."** `Maybe`'s and `Optional`'s do. `List`'s, `Stream`'s and `VStream`'s join both containers.
 - **"`orElse` picks whichever value is present."** It prefers the first. Two present prices give the offer, not the catalogue's.
-- **"Every type with a `Monad` has an `Alternative`."** Only `Maybe`, `Optional`, `List`, `Stream` and `VStream` have one. `Instances.alternative(either())` compiles, and throws `ClassCastException` when it runs, as [what the compiler checks](instances_facade.md#what-the-compiler-checks) explains.
+- **"Every type with a `Monad` has an `Alternative`."** Only `Maybe`, `Optional`, `List`, `Stream` and `VStream` have one. `Instances.alternative(either())` does not compile, as [what the compiler checks](instances_facade.md#what-the-compiler-checks) explains.
 - **"This `orElse` is `Selective`'s."** [Selective](selective.md)'s `orElse` takes a list of `Choice` containers, and is a different method.
 ~~~
 
@@ -5301,7 +5346,7 @@ Each type's zero is what a failed test leaves:
 | `Optional` | `Optional.empty()` | Ends the chain at an empty `Optional` |
 | `Stream` | An empty stream | Drops that element, lazily |
 
-`Instances.monadZero(token)` gives the instance for `list()`, `maybe()`, `optional()` and `stream()`, and for any other token fails when it runs, as [what the compiler checks](instances_facade.md#what-the-compiler-checks) explains.
+`Instances.monadZero(token)` gives the instance for `list()`, `maybe()`, `optional()` and `stream()`, and for any other token does not compile, as [what the compiler checks](instances_facade.md#what-the-compiler-checks) explains.
 
 ## Guarding a `For` comprehension with `when` {#guarding-a-for-comprehension-with-when}
 
@@ -5402,7 +5447,7 @@ import org.higherkindedj.hkt.maybe.MaybeKind;
 - **"Filtering needs a `For` comprehension."** `filter(predicate, ma)` filters directly, as `bulk` does.
 - **"`when` works with any `Monad`."** Only a comprehension given a `MonadZero` has it.
 - **"A filtered `Maybe` keeps the value it failed on."** It gives `Nothing`, and the value is gone, as it is from `optional.filter`.
-- **"`Either` has a zero."** `Either` has no empty value to give, since a `Left` must hold an error. `Instances.monadZero(either())` compiles, and throws `ClassCastException` when it runs.
+- **"`Either` has a zero."** `Either` has no empty value to give, since a `Left` must hold an error. `Instances.monadZero(either())` does not compile.
 ~~~
 
 ---
@@ -10909,7 +10954,7 @@ Generic code takes a container through its instances, as [Working with Kind](vst
 | `Functor`, `Applicative`, `Monad`, `Alternative` | `Instances.functor(vstream())`, or `applicative`, `monad` or `alternative` | `VStreamAlternative.INSTANCE`, which extends `VStreamMonad` |
 | `Foldable`, `Traverse` | `VStreamTraverse.INSTANCE` | `VStreamTraverse` |
 
-All four lookups give that one object, viewed as each type class. `VStream` has no `MonadZero` and no `Selective`, so `Instances.monadZero(vstream())` compiles but throws a `ClassCastException`. [The hierarchy](../functional/ch_intro.md#the-hierarchy) shows how the type classes extend each other.
+All four lookups give that one object, viewed as each type class. `VStream` has no `MonadZero` and no `Selective`, so `Instances.monadZero(vstream())` does not compile. [The hierarchy](../functional/ch_intro.md#the-hierarchy) shows how the type classes extend each other.
 
 ## `ap` pairs every function with every value {#ap-pairs-every-function-with-every-value}
 
@@ -16063,7 +16108,7 @@ Because generic code changes one half and keeps the other. `Kind<F, A>` reads as
 
 No: you pass the instance, as a value. Scala finds a `Monad` for a type through an implicit or a `given`, and Haskell through instance resolution. Java has neither, so a method written once for any container takes a `Monad<F>` parameter, and its caller supplies one, such as `Instances.monad(either())`.
 
-`either()` returns a token, a small object that carries `Either`'s instance, and `Instances.monad` hands that instance back. The token is not the witness type `EitherKind.Witness`, which never exists at run time, as the next answer says. The compiler checks only that the instance and the values share the witness. [The Instances facade](../functional/instances_facade.md) shows each call.
+`either()` returns a token, a small object that carries `Either`'s instance, and `Instances.monad` hands that instance back. The token is not the witness type `EitherKind.Witness`, which never exists at run time, as the next answer says. The compiler checks that the instance and the values share the witness. [The Instances facade](../functional/instances_facade.md) shows each call.
 
 ## Is the witness type ever instantiated? Does it allocate? {#is-the-witness-type-ever-instantiated-does-it-allocate}
 
